@@ -1,6 +1,6 @@
 # Impuestos indirectos en hostelería (España, vigente septiembre 2026)
 
-Referencia de producto para Anfitorio. Es la base del catálogo fiscal por región
+Referencia de producto para ehotelOS. Es la base del catálogo fiscal por región
 (`packages/compliance/src/spain/indirect-tax.ts`) y de la provisión automática de
 impuestos al crear una propiedad (Tanda 3 de la auditoría 360). No sustituye al
 asesor fiscal del hotel: los tipos se validan contra la ordenanza/ley vigente en
@@ -70,7 +70,7 @@ Los tipos del IPSI cambian por ordenanza anual: el catálogo los marca como
 | Illes Balears | ITS (impost del turisme sostenible) | 1–4 €/persona/noche según categoría; temporada baja (1-nov→30-abr) 25 % menos; menores de 16 exentos; a partir de la 9ª noche bonificación 50 % | + 10 % IVA sobre la cuota |
 | Resto de España | sin tasa autonómica (Valencia derogó la suya en 2024) | — | — |
 
-Anfitorio modela la tasa como línea de folio `tourist_tax` con cálculo por
+ehotelOS modela la tasa como línea de folio `tourist_tax` con cálculo por
 (personas adultas × noches gravadas × tarifa) y la incluye en la base del IVA al
 10 % cuando el territorio lo exige.
 

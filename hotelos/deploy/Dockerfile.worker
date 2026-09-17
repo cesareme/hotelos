@@ -1,4 +1,4 @@
-# Anfitorio worker · production image (pg-boss jobs: webhooks.deliver)
+# ehotelOS worker · production image (pg-boss jobs: webhooks.deliver)
 #
 # Mirrors deploy/Dockerfile.api (pnpm 9.15.0 via corepack, frozen lockfile,
 # Prisma client generated, tsx runtime). The worker only runs queue jobs; the

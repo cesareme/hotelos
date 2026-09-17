@@ -11,6 +11,7 @@
 // feed en `auto`, duplicados por hash, perfil ausente / en pausa, tenencia.
 
 import { z } from "zod";
+import { BRAND } from "../lib/brand.js";
 import {
   PMS_SHADOW_ALERT_CODES,
   PMS_SHADOW_FEEDS,
@@ -162,7 +163,7 @@ export type ManualRunInput = z.infer<typeof ManualRunSchema>;
 const dictionary = (name: string) =>
   z
     .record(z.string().trim().min(1, { message: `${name}: la clave no puede estar vacía.` }).max(80, { message: `${name}: la clave no puede superar 80 caracteres.` }), z.string().trim().max(80, { message: `${name}: el valor no puede superar 80 caracteres.` }), {
-      invalid_type_error: `${name} debe ser un objeto código OPERA → código Anfitorio.`
+      invalid_type_error: `${name} debe ser un objeto código OPERA → código ${BRAND.name}.`
     })
     .refine((value) => Object.keys(value).length <= PMS_SHADOW_MAX_DICTIONARY_KEYS, { message: `${name} no puede tener más de ${PMS_SHADOW_MAX_DICTIONARY_KEYS} entradas.` });
 

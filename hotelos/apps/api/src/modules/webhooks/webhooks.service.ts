@@ -6,6 +6,7 @@
 // and delivery handled by the worker (`apps/worker/src/jobs/webhook-delivery.job.ts`).
 
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../lib/brand.js";
 import { createHmac, randomBytes } from "node:crypto";
 import { requirePermissions } from "../auth/auth.service.js";
 import type { UserContext } from "../../lib/demo-store.js";
@@ -171,7 +172,7 @@ export async function testSubscription(input: {
     eventId: `test_${Date.now()}`,
     eventType: "test.ping",
     deliveredAt: new Date().toISOString(),
-    data: { hello: "from HotelOS" }
+    data: { hello: `from ${BRAND.name}` }
   });
   const secret = sub.secretRef ?? `${SECRET_PREFIX}dev`;
   const signature = `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;

@@ -47,7 +47,7 @@ const ROWS: Row[] = [
   { id: "oc", name: "Oficina central", organizationId: "org_far", organizationName: "Faranda", kind: "office", code: "OC", legalEntityId: "le_far", legalEntityName: "CELUISMA S.A." },
   { id: "ra", name: "Rías Altas", organizationId: "org_far", organizationName: "Faranda", kind: "hotel", code: "RA", legalEntityId: "le_far", legalEntityName: "CELUISMA S.A." },
   { id: "lt", name: "Los Tilos", organizationId: "org_far", organizationName: "Faranda", kind: "hotel", code: "LT", legalEntityId: "le_far", legalEntityName: "CELUISMA S.A." },
-  { id: "prop_123", name: "Hotel Demo Madrid Centro", organizationId: "org_123", organizationName: "HotelOS Demo Group", kind: "hotel", code: "AMC", legalEntityId: "le_hd", legalEntityName: "HotelOS Demo SL" },
+  { id: "prop_123", name: "Hotel Demo Madrid Centro", organizationId: "org_123", organizationName: "Grupo Hotelero Demo", kind: "hotel", code: "AMC", legalEntityId: "le_hd", legalEntityName: "Grupo Hotelero Demo SL" },
   { id: "legacy", name: "Sin estructura", organizationId: "org_old", organizationName: "Antigua" }
 ];
 
@@ -57,7 +57,7 @@ describe("shell · switcher agrupado por sociedad (Tanda 6b · L7)", () => {
 
   it("groups by sociedad in order of appearance, hotels first and the oficina central under «Centros no alojativos»", () => {
     const groups = groupSwitchableProperties(ROWS);
-    assert.deepEqual(groups.map((g) => g.label), ["CELUISMA S.A.", "HotelOS Demo SL", "Antigua"]);
+    assert.deepEqual(groups.map((g) => g.label), ["CELUISMA S.A.", "Grupo Hotelero Demo SL", "Antigua"]);
     assert.deepEqual(groups[0].hotels.map((r) => r.code), ["RA", "LT"]);
     assert.deepEqual(groups[0].nonOperational.map((r) => r.code), ["OC"]);
     assert.deepEqual(groups[1].nonOperational, []);

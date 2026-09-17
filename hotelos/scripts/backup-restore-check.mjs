@@ -7,7 +7,7 @@ const checklist = [
   "Record restore duration and operator"
 ];
 
-console.log("HotelOS backup restore rehearsal");
+console.log("ehotelOS backup restore rehearsal");
 for (const [index, item] of checklist.entries()) {
   console.log(`${index + 1}. ${item}`);
 }

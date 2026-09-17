@@ -1298,7 +1298,7 @@ export const RESERVATION_IMPORT_ROW_CODES = [
   // ---- Tanda 7b · perfil OPERA Cloud y modo `sync` (diseño §4, §5, §6.3) ----
   /** aviso · `importe_total` estimado como RATE (primera noche) × noches × habitaciones; se sustituye por el importe real cuando llegue. */
   "RESERVATION_IMPORT_ROW_OPERA_TOTAL_ESTIMATED",
-  /** omisión · estado Waitlist: sin equivalente en Anfitorio. */
+  /** omisión · estado Waitlist: sin equivalente en ehotelOS. */
   "RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED",
   /** omisión · room type pseudo (PM, HOUSE…): no es inventario. */
   "RESERVATION_IMPORT_ROW_OPERA_PSEUDO_ROOM",
@@ -1461,9 +1461,9 @@ export const RESERVATION_IMPORT_ROW_CODE_LABELS_ES: Readonly<Record<ReservationI
   RESERVATION_IMPORT_ROW_OPERA_TOTAL_ESTIMATED: "Importe total estimado (tarifa de la primera noche × noches × habitaciones)",
   RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED: "Lista de espera (waitlist): sin equivalente, omitida",
   RESERVATION_IMPORT_ROW_OPERA_PSEUDO_ROOM: "Pseudo room de OPERA: no es inventario, omitida",
-  RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION: "Conflicto con una reserva creada en Anfitorio",
+  RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION: "Conflicto con una reserva creada en ehotelOS",
   RESERVATION_IMPORT_ROW_OPERA_CHECKIN_WITHOUT_ROOM: "Check-in en OPERA sin habitación válida: permanece confirmada",
-  RESERVATION_IMPORT_ROW_SYNC_STATUS_REGRESSION: "Estado anterior al actual en Anfitorio: no se retrocede",
+  RESERVATION_IMPORT_ROW_SYNC_STATUS_REGRESSION: "Estado anterior al actual en ehotelOS: no se retrocede",
   RESERVATION_IMPORT_ROW_SYNC_CANCEL_AFTER_CHECKIN: "Cancelación o no-show sobre una reserva ya alojada: no se aplica",
   RESERVATION_IMPORT_ROW_SYNC_ROOM_MOVE_IGNORED: "Cambio de habitación de una reserva alojada: no se aplica",
   RESERVATION_IMPORT_ROW_SYNC_UPDATE_FAILED: "El PMS rechazó la actualización",

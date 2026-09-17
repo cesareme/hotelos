@@ -86,6 +86,7 @@ import {
   type VatPeriodicityCode
 } from "@hotelos/shared";
 import { HttpError } from "../../../lib/http-error.js";
+import { BRAND } from "../../../lib/brand.js";
 import { ZERO, money, sumMoney, type Decimal } from "../accounting.service.js";
 import { accountGroup } from "../chart-of-accounts.service.js";
 import { RESULT_ACCOUNT, assertBalanced, signedLine, type RuleLine } from "../posting-rules.js";
@@ -676,7 +677,7 @@ export function buildJournalEntries(sageEntries: readonly SageJournalEntry[], ct
   result.unmapped = [...unmappedByAccount.values()].sort((a, b) => compareCodes(a.sourceAccount, b.sourceAccount));
   result.unmappedAnalytics = [...unmappedCentres.values()].sort((a, b) => a.sourceCode.localeCompare(b.sourceCode));
   result.unmappedCostCentres = [...unmappedCost.values()].sort((a, b) => a.sourceCode.localeCompare(b.sourceCode));
-  if (paymentHeuristicCount > 0) result.warnings.push(`${paymentHeuristicCount} cobros excluidos por coincidencia de importe y fecha (± ${NATIVE_PAYMENT_DATE_TOLERANCE_DAYS} días) con cobros propios de Anfitorio: revísalos en la lista de excluidos.`);
+  if (paymentHeuristicCount > 0) result.warnings.push(`${paymentHeuristicCount} cobros excluidos por coincidencia de importe y fecha (± ${NATIVE_PAYMENT_DATE_TOLERANCE_DAYS} días) con cobros propios de ${BRAND.name}: revísalos en la lista de excluidos.`);
   // (f) orden por fecha, nº Sage y centro.
   result.entries.sort((a, b) => (a.entryDate < b.entryDate ? -1 : a.entryDate > b.entryDate ? 1 : 0) || compareCodes(a.source?.entryNumber ?? "", b.source?.entryNumber ?? "") || a.propertyCode.localeCompare(b.propertyCode));
   return result;
@@ -1257,7 +1258,7 @@ export function buildVatBookRows(vatRows: readonly CanonicalVatRow[], ctx: VatBo
       deductible: row.libro === "recibidas" ? !(row.cuota_deducible !== null && money(row.cuota_deducible).isZero() && !money(row.cuota).isZero()) : true
     });
   }
-  if (skippedNative.length > 0) warnings.push(`Modo sombra: ${skippedNative.length} factura(s) del libro de Sage son documentos propios de Anfitorio (ya materializados en los libros) y se omiten.`);
+  if (skippedNative.length > 0) warnings.push(`Modo sombra: ${skippedNative.length} factura(s) del libro de Sage son documentos propios de ${BRAND.name} (ya materializados en los libros) y se omiten.`);
   return { rows, warnings, skippedNative };
 }
 
@@ -1309,7 +1310,7 @@ export type ReconciliationResult = {
 
 const IMPORTED_SOURCE_TYPES: readonly string[] = [LEDGER_IMPORT_SOURCE_TYPES.journal, LEDGER_IMPORT_SOURCE_TYPES.balance];
 
-export const RECONCILIATION_CRITERION = "Diario de Anfitorio con status ≠ draft, sin parejas de reversión; movimientos del rango sin regularization / closing / opening; saldo a la fecha final con apertura (balance_at) y sin la regularización ni el cierre fechados ese día. Sage: sumas y saldos nivel 0 agrupadas por cuenta destino del mapa; saldo = el acumulado de la última fila de cada cuenta; IVA por tipo (472 / 477) comparado por prefijo.";
+export const RECONCILIATION_CRITERION = `Diario de ${BRAND.name} con status ≠ draft, sin parejas de reversión; movimientos del rango sin regularization / closing / opening; saldo a la fecha final con apertura (balance_at) y sin la regularización ni el cierre fechados ese día. Sage: sumas y saldos nivel 0 agrupadas por cuenta destino del mapa; saldo = el acumulado de la última fila de cada cuenta; IVA por tipo (472 / 477) comparado por prefijo.`;
 
 /**
  * Balance de Sage (filas del periodo) frente al diario de Anfitorio por cuenta destino:
@@ -1400,11 +1401,11 @@ export function buildReconciliationRows(sageBalanceRows: readonly CanonicalBalan
     } else if (!within) {
       if (!s && l && ledgerHasAmounts && l.sourceTypes.length > 0 && !l.sourceTypes.some((type) => IMPORTED_SOURCE_TYPES.includes(type))) {
         classification = "native_only";
-        note = `movimiento solo en Anfitorio (${l.sourceTypes.join(", ")})`;
+        note = `movimiento solo en ${BRAND.name} (${l.sourceTypes.join(", ")})`;
         nativeOnly += 1;
       } else if (s && sourceHasAmounts && (!l || !ledgerHasAmounts)) {
         classification = "missing_in_ledger";
-        note = "Sage tiene movimiento y el diario de Anfitorio no";
+        note = `Sage tiene movimiento y el diario de ${BRAND.name} no`;
         missingInLedger += 1;
       } else {
         classification = "amount_diff";

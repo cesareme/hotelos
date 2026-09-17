@@ -78,8 +78,8 @@ export const LEDGER_IMPORT_FORMAT_LABELS_ES: Readonly<Record<LedgerImportFormat,
   sage_excel: "Excel o CSV exportado de Sage 200",
   sage_ime_csv: "CSV de asientos de Sage 200 (formato de importación, 60 columnas)",
   sage_xml: "XML «Datos contables» de Sage 200",
-  canonical_csv: "CSV canónico de Anfitorio",
-  canonical_json: "JSON canónico de Anfitorio"
+  canonical_csv: "CSV canónico de ehotelOS",
+  canonical_json: "JSON canónico de ehotelOS"
 });
 
 /** `LedgerImport.status` (enum Prisma `LedgerImportStatus`): draft (previsualizado, nada escrito) → posted → reversed. */
@@ -99,7 +99,7 @@ export type LedgerImportEntryStatus = (typeof LEDGER_IMPORT_ENTRY_STATUSES)[numb
 export const LEDGER_IMPORT_ENTRY_STATUS_LABELS_ES: Readonly<Record<LedgerImportEntryStatus, string>> = Object.freeze({
   draft: "Previsualizado",
   posted: "Contabilizado",
-  skipped_native: "Omitido: documento propio de Anfitorio",
+  skipped_native: "Omitido: documento propio de ehotelOS",
   skipped_existing: "Omitido: ya importado",
   unmapped: "Cuenta o analítica sin mapear",
   unbalanced: "Descuadrado",
@@ -314,8 +314,8 @@ export type LedgerReconciliationClassification = (typeof LEDGER_RECONCILIATION_C
 
 export const LEDGER_RECONCILIATION_CLASSIFICATION_LABELS_ES: Readonly<Record<LedgerReconciliationClassification, string>> = Object.freeze({
   amount_diff: "Importe distinto",
-  native_only: "Solo en Anfitorio",
-  missing_in_ledger: "Falta en Anfitorio",
+  native_only: "Solo en ehotelOS",
+  missing_in_ledger: "Falta en ehotelOS",
   vat_diff: "Diferencia de IVA"
 });
 

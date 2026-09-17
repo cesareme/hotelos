@@ -21,6 +21,7 @@
 //     [--dry-run | --apply] [--ingest-url http://localhost:3000 --api-key <clientId.secret>] [--json]
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
+import { BRAND } from "../lib/brand.js";
 import { basename, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prisma } from "@hotelos/database";
@@ -65,7 +66,7 @@ export const USAGE = [
   "  --folder <dir>           carpeta con los cortes (SFTP local del VPS): se toman los .csv/.txt/.xml/.xlsx, por nombre",
   "  --file <ruta>            un solo fichero (carga manual, p. ej. --feed revenue --file GEN_XMLBO_REVENUE.xml)",
   `  --feed <feed|auto>       feed de TODOS los ficheros (${PMS_SHADOW_FEEDS.join(", ")}) o auto (por nombre / cabecera; defecto)`,
-  "  --business-date <fecha>  business date del corte (recomendado: en modo sombra el business date de Anfitorio no avanza);",
+  `  --business-date <fecha>  business date del corte (recomendado: en modo sombra el business date de ${BRAND.name} no avanza);`,
   "                           sin él, el API usa el business date actual + offset del feed, y en revenue la fecha del XML",
   "  --move-to <dir>          tras entregar (202 o 409 duplicado) mueve el fichero a esa carpeta (p. ej. procesados/); solo con --apply",
   "  --dry-run                (por defecto) lista los ficheros y su feed clasificado; no escribe nada; salida 0",

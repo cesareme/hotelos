@@ -16,6 +16,7 @@
 // Performance contract: ONE query per source + in-memory maps (no N+1).
 
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../lib/brand.js";
 import type { Prisma } from "@hotelos/database";
 import { NotFoundError } from "../../lib/http-error.js";
 import { filterOperationalProperties } from "../../lib/tenancy.js";
@@ -218,7 +219,7 @@ const METRIC_NOTES = [
  * own subtotals.
  */
 export function pmsForecastMetricNote(totalRooms: number): string {
-  return `Previsión importada del PMS: ADR sobre habitaciones pagadas y ocupación sobre habitaciones disponibles (${totalRooms} − OOO); los subtotales de Anfitorio usan ${totalRooms}`;
+  return `Previsión importada del PMS: ADR sobre habitaciones pagadas y ocupación sobre habitaciones disponibles (${totalRooms} − OOO); los subtotales de ${BRAND.name} usan ${totalRooms}`;
 }
 
 /**

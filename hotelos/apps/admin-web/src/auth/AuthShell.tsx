@@ -16,9 +16,10 @@ import { checkPassword, type PasswordPolicy } from "../services/authApi";
 import { CocoaButton, CocoaCallout, CocoaCard, CocoaField, CocoaInput, toneColor, type CocoaTone } from "../components/cocoa";
 import { CheckCircleIcon, ExclamationCircleIcon, InfoCircleIcon, XCircleIcon, type CocoaIconProps } from "../components/cocoa-icons/StatusIcons";
 import { ACTIONS, FIELD_LABELS } from "../content/actions";
+import { BRAND } from "../config/brand";
 
 /** Eyebrow of every public auth screen (same as the login). */
-export const AUTH_EYEBROW = "ehotelOS · Back Office";
+export const AUTH_EYEBROW = `${BRAND.name} · Back Office`;
 
 const noop = () => {
   /* read-only / hidden controls have nothing to update */

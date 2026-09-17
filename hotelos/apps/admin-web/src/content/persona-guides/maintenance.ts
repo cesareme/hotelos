@@ -1,9 +1,10 @@
 import type { PersonaGuide } from "./types";
+import { BRAND } from "../../config/brand";
 
 export const MAINTENANCE_GUIDE: PersonaGuide = {
   id: "mantenimiento",
   roleTokens: ["mantenimiento"],
-  title: "Mantenimiento: tus averías en ehotelOS",
+  title: `Mantenimiento: tus averías en ${BRAND.name}`,
   summary: "Partes de avería por urgencia, activos del hotel y consumos de energía y agua.",
   dailyFlow: [
     "Abre Operaciones › Mantenimiento › Mis averías (en el móvil es tu pantalla de inicio): los partes abiertos ordenados por urgencia.",

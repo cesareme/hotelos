@@ -13,6 +13,7 @@
 
 import { CocoaPage } from "../../components/cocoa";
 import { navigateTo } from "../../lib/navigate";
+import { BRAND } from "../../config/brand";
 
 function openCommandPalette(): void {
   const event = new KeyboardEvent("keydown", {
@@ -29,7 +30,7 @@ function openCommandPalette(): void {
 export function CocoaNotFoundScreen() {
   return (
     <CocoaPage
-      eyebrow="ehotelOS · Error 404"
+      eyebrow={`${BRAND.name} · Error 404`}
       title="Página no encontrada"
       aria-label="Página no encontrada"
       state="error"

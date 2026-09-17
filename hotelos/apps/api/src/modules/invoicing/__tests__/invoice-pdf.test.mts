@@ -17,7 +17,7 @@ function model(overrides: Partial<InvoicePdfModel> = {}): InvoicePdfModel {
     cancelledAt: null,
     simplified: false,
     currencyCode: "EUR",
-    issuer: { legalName: "HotelOS Demo SL", taxId: "B12345674", address: "Gran Vía 1, Madrid", propertyName: "Anfitorio Madrid Centro", placeholder: false, legalFooter: "Inscrita en el Registro Mercantil de Madrid." },
+    issuer: { legalName: "Grupo Hotelero Demo SL", taxId: "B12345674", address: "Gran Vía 1, Madrid", propertyName: "Hotel Demo Madrid Centro", placeholder: false, legalFooter: "Inscrita en el Registro Mercantil de Madrid." },
     customer: { type: "guest", name: "María Pérez García", taxId: "12345678Z" },
     lines: [
       { description: "Habitación doble · 2 noches", quantity: 2, unitPrice: 76.75, taxRate: 10, calificacion: "S1", total: 153.5 },
@@ -82,12 +82,12 @@ describe("buildInvoicePdf", () => {
     const pdf = buildInvoicePdf(model());
     const out = latin1(pdf);
     assert.ok(pdf.subarray(0, 5).toString("latin1") === "%PDF-");
-    for (const expected of ["FACTURA", "FAC-2026-000016", "NIF: B12345674", "HotelOS Demo SL", "Mar\\xeda P\\xe9rez Garc\\xeda".replace(/\\x([0-9a-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))), "NIF: 12345678Z", "Habitaci\xf3n doble", "IVA 21 %", "IVA 10 %", "No sujeto", "Base imponible", "TOTAL", "215,50 \x80", "QR tributario", "VERI*FACTU", "Cobrado: 100,00", "Registro Mercantil"]) {
+    for (const expected of ["FACTURA", "FAC-2026-000016", "NIF: B12345674", "Grupo Hotelero Demo SL", "Mar\\xeda P\\xe9rez Garc\\xeda".replace(/\\x([0-9a-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))), "NIF: 12345678Z", "Habitaci\xf3n doble", "IVA 21 %", "IVA 10 %", "No sujeto", "Base imponible", "TOTAL", "215,50 \x80", "QR tributario", "VERI*FACTU", "Cobrado: 100,00", "Registro Mercantil"]) {
       assert.ok(out.includes(expected), `PDF must contain «${expected}»`);
     }
     // The QR is drawn as filled squares (many `re` operators) on the first page.
     assert.ok((out.match(/ re/g) ?? []).length > 300, "QR modules rendered");
-    assert.ok(out.includes("/Producer (Anfitorio)"));
+    assert.ok(out.includes("/Producer (ehotelOS)"));
   });
 
   it("marks drafts, simplified, rectifying and cancelled documents", () => {
@@ -126,12 +126,12 @@ describe("buildInvoicePdf", () => {
 
 describe("composeInvoiceEmail — Spanish system template", () => {
   it("fills subject and body from the invoice and keeps a caller subject", () => {
-    const mail = composeInvoiceEmail({ invoiceNumber: "FAC-2026-000016", invoiceType: "F1", simplified: false, issuerLegalName: "HotelOS Demo SL", issuerTaxId: "B12345674", propertyName: "Anfitorio Madrid Centro", issuedAt: "2026-09-15T10:00:00.000Z", total: 215.5, currencyCode: "EUR", customerName: "María", message: "Gracias por su estancia." });
-    assert.equal(mail.subject, "Factura FAC-2026-000016 — HotelOS Demo SL");
+    const mail = composeInvoiceEmail({ invoiceNumber: "FAC-2026-000016", invoiceType: "F1", simplified: false, issuerLegalName: "Grupo Hotelero Demo SL", issuerTaxId: "B12345674", propertyName: "Hotel Demo Madrid Centro", issuedAt: "2026-09-15T10:00:00.000Z", total: 215.5, currencyCode: "EUR", customerName: "María", message: "Gracias por su estancia." });
+    assert.equal(mail.subject, "Factura FAC-2026-000016 — Grupo Hotelero Demo SL");
     assert.ok(mail.body.startsWith("Hola María,"));
-    assert.ok(mail.body.includes("factura FAC-2026-000016 de HotelOS Demo SL (NIF B12345674), expedida el 15/09/2026, por un importe total de 215,50 €"));
+    assert.ok(mail.body.includes("factura FAC-2026-000016 de Grupo Hotelero Demo SL (NIF B12345674), expedida el 15/09/2026, por un importe total de 215,50 €"));
     assert.ok(mail.body.includes("Gracias por su estancia."));
-    assert.ok(mail.body.includes("— HotelOS Demo SL · Anfitorio Madrid Centro"));
+    assert.ok(mail.body.includes("— Grupo Hotelero Demo SL · Hotel Demo Madrid Centro"));
     const custom = composeInvoiceEmail({ invoiceNumber: "REC-2026-000001", invoiceType: "R1", simplified: false, issuerLegalName: "X", issuerTaxId: null, propertyName: null, issuedAt: null, total: -10, currencyCode: "EUR", customerName: null, subject: "Su abono" });
     assert.equal(custom.subject, "Su abono");
     assert.ok(custom.body.startsWith("Hola,"));

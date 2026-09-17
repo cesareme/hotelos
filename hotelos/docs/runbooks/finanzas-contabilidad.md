@@ -47,7 +47,7 @@ campos marcados «heredado» existían antes y se mantienen por compatibilidad.
 | `PayrollCostImportStatus` | `draft` · `posted` · `reversed` | Lote de coste de personal importado (`PayrollCostImport.status`, Tanda 6c, §18): borrador sin asientos → contabilizado (un asiento por centro × mes) → revertido (todos sus asientos reversados; el hash del fichero queda libre). |
 | `CashClosureStatus` | `open` · `closed` · `approved` | Arqueo: abierto (turno) → cerrado (recuento) → aprobado (dirección). |
 | `VatBook` | `emitidas` · `recibidas` · `bienes_inversion` | Libros registro de IVA (RD 1619/2012). |
-| `VatBookSourceType` | `invoice` · `rectification` · `simplified` · `supplier_bill` · `expense` · `sage200` | Documento origen de una fila del libro. `sage200` (Tanda 7c, §19): fila importada del Libro Registro de IVA de Sage 200 (`sourceId <empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:R]`, el NIF solo en recibidas); `rebuildVatBooks` la conserva y el lote omite los documentos propios de Anfitorio (nunca la misma factura como `sage200` e `invoice` / `supplier_bill`). Primer `ALTER TYPE … ADD VALUE` de la cadena de migraciones (`20260917110000_sage200_importacion`). |
+| `VatBookSourceType` | `invoice` · `rectification` · `simplified` · `supplier_bill` · `expense` · `sage200` | Documento origen de una fila del libro. `sage200` (Tanda 7c, §19): fila importada del Libro Registro de IVA de Sage 200 (`sourceId <empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:R]`, el NIF solo en recibidas); `rebuildVatBooks` la conserva y el lote omite los documentos propios de ehotelOS (nunca la misma factura como `sage200` e `invoice` / `supplier_bill`). Primer `ALTER TYPE … ADD VALUE` de la cadena de migraciones (`20260917110000_sage200_importacion`). |
 | `VatPeriodicity` | `quarterly` · `monthly` | Modelo 303 trimestral (general) o mensual (REDEME / gran empresa). |
 | `VatRegime` | `general` · `redeme` · `recargo` | Régimen de IVA de la organización. |
 | `FinancialStatementKind` | `balance` · `pyg` · `ecpn` · `memoria` · `usali` | Estado guardado en `FinancialStatementSnapshot`. |
@@ -1092,7 +1092,7 @@ corepack pnpm --filter @hotelos/api sage200:import -- --template journal --out p
 #   Orden: plan → fiscal_years → journal (por meses) → vat_books → third_parties → balances (ejercicios sin diario) → reconciliación.
 #   Usuario de sistema usr_system_sage200_import; salida 2 uso · 1 fallo o canPost:false · 0 ok. Ficheros > 20 MiB o > 20.000 asientos: solo por CLI y troceados por meses.
 #   --replace reversa ENTEROS los lotes que dupliquen o solapen (empresa, ejercicio, periodo, asiento): nunca sobre Faranda salvo para sustituir un mes completo.
-#   --allow-closed --reason: contabiliza en periodos cerrados de Anfitorio (auditado); por HTTP allowClosed → 400 VALIDATION_ERROR.
+#   --allow-closed --reason: contabiliza en periodos cerrados de ehotelOS (auditado); por HTTP allowClosed → 400 VALIDATION_ERROR.
 ```
 
 Operaciones por API (todas con zod estricto; importes como cadenas `"121.00"`):
@@ -1241,7 +1241,7 @@ Organization (grupo · tenant: usuarios, roles, proveedores, mapeo USALI, módul
   columnas censales `cadastralReference`, `surfaceM2` (Decimal 10,2), `iaeEpigraph`,
   `bedCapacity`, `starRating`, `openingMonths`, `tourismRegistryNumber`,
   `sesEstablishmentCode`, `socialSecurityCcc`, `laborCenterCode` (se informan y
-  exportan a la gestoría; Anfitorio no liquida IAE ni TGSS).
+  exportan a la gestoría; ehotelOS no liquida IAE ni TGSS).
 - **`InvoiceSequence.legalEntityId`**, **`Invoice.legalEntityId` /
   `installationId`**, **`VerifactuSubmission.installationId`**,
   **`BankAccount.legalEntityId`**: nulables, rellenados por el backfill.
@@ -1329,8 +1329,10 @@ Finanzas y `packages/compliance`: los siete lectores heredados (`modelo-303`,
 la segunda pasada planifica 0 escrituras). Por organización: sociedad implícita
 (`legalName ?? name`, NIF solo si es válido, no es el relleno `B00000000` y no lo
 tiene otra sociedad → si no, `null` + aviso `TAX_ID_*`), `code` derivado (iniciales
-sin palabras genéricas ni de marca: Rías Altas → RA, Los Tilos → LT, Anfitorio
-Madrid Centro → AMC, Anfitorio Tenerife Sur → ATS; sufijo numérico si colisiona),
+sin palabras genéricas ni de marca: Rías Altas → RA, Los Tilos → LT; los centros demo
+conservan AMC y ATS, derivados de sus nombres originales e inmutables tras el
+rebrand a «Hotel Demo Madrid Centro» / «Hotel Demo Tenerife Sur» (D3); sufijo
+numérico si colisiona),
 `kind` hotel (defecto), `tradeName` desde el `legalName` antiguo cuando difiere de la
 razón social, una `VerifactuInstallation` solo para propiedades **con envíos**
 (número = el `NumeroInstalacion` declarado en su `software_json` si es único, si
@@ -1346,7 +1348,7 @@ pasada 0 escrituras):
 
 | Organización | Sociedad | Centros | Instalaciones | Series | Facturas | Envíos | Bancos | Avisos |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| org_123 «HotelOS Demo SL» | `HD` · B12345674 | AMC (prop_123, tradeName «Anfitorio Madrid Centro SL»), ATS (prop_canary, tradeName «Anfitorio Tenerife Sur SL») | `DEV-001` → prop_123 (7 facturas, 7 envíos) · `DEV-001-ATS` → prop_canary (1, 1) | 4/4 | 8/8 | 8/8 | 0 | INSTALLATION_NUMBER_SUFFIXED · SERIES_PREFIX_CLASH (FAC-2026-/2026) · INVOICE_NUMBER_DUPLICATE (FAC-2026-000001) |
+| org_123 «Grupo Hotelero Demo SL» | `HD` · B12345674 | AMC (prop_123, tradeName «Hotel Demo Madrid Centro SL»), ATS (prop_canary, tradeName «Hotel Demo Tenerife Sur SL») | `DEV-001` → prop_123 (7 facturas, 7 envíos) · `DEV-001-ATS` → prop_canary (1, 1) | 4/4 | 8/8 | 8/8 | 0 | INSTALLATION_NUMBER_SUFFIXED · SERIES_PREFIX_CLASH (FAC-2026-/2026) · INVOICE_NUMBER_DUPLICATE (FAC-2026-000001) |
 | Faranda `cmrhw9jy30002fyvb6tsdiugt` | `FAR` «Faranda Hotels & Resorts» · B99999997 (ficticio, checksum ✔) | RA (Rías Altas, tradeName «Hotel Faranda Rías Altas by Ascend Collection»), LT (Los Tilos) | `DEV-001` → RA (25 facturas encadenadas, 33 envíos) | 4/4 | 25/25 | 33/33 | 0 | SII_FLAG_ON_PROPERTY (RA) |
 
 Faranda tras el backfill (solo lectura): 25 facturas con sus tres NIF históricos
@@ -1913,7 +1915,7 @@ USALI cargaba todo el 640/642 en Administración y general. Esta tanda **devenga
 de empresa** (D 640 sueldos y salarios / D 642 Seguridad Social a cargo de la empresa) por
 centro de trabajo y mes a partir de un informe **agregado**, y enruta la línea `labor`
 del USALI por el **centro de coste** del apunte (§4 paso 0). No sustituye a la nómina real
-de Anfitorio (`PayrollPeriod` → recibos → `payroll_slip`): cuando un centro y mes ya
+de ehotelOS (`PayrollPeriod` → recibos → `payroll_slip`): cuando un centro y mes ya
 tenga nómina real contabilizada, la previsualización lo avisa (`payrollPeriodsPosted`) y el
 resultado de create / post repite el aviso en `warnings` —el cajón y el CLI `--apply` lo
 muestran— (corrector 6c, contable-6C-08) para no devengar dos veces; no bloquea porque el lote
@@ -2491,9 +2493,9 @@ sage200-import-helpers.ts}` y `services/ledgerImportApi.ts`.
 
 Encargo de César (2026-09-16/17): «importar toda la información contable, a cualquier nivel,
 desde el diario hasta el balance, desde Sage 200». Sage 200 sigue siendo el sistema contable
-de registro de CELUISMA (modo sombra: Sage sigue, Anfitorio replica y compara, luego cambia).
+de registro de CELUISMA (modo sombra: Sage sigue, ehotelOS replica y compara, luego cambia).
 Administración exporta por listado (Diario con desglose analítico, Sumas y saldos nivel 0,
-Plan de cuentas, Libro Registro de IVA formato AEAT, Clientes / Proveedores) y Anfitorio los
+Plan de cuentas, Libro Registro de IVA formato AEAT, Clientes / Proveedores) y ehotelOS los
 importa por **lotes de seis tipos** (`plan` · `fiscal_years` · `journal` · `vat_books` ·
 `third_parties` · `balances`, `LEDGER_IMPORT_KINDS`, idénticos a `--type` del CLI) en
 **cinco formatos** (`sage_excel` por cabecera con sinónimos, `sage_ime_csv` de 60 columnas,
@@ -2526,7 +2528,7 @@ asiento resumen por (ejercicio, periodo, centro) y la apertura), con `SOURCE_TYP
 | Tabla | Qué guarda | Clave |
 | --- | --- | --- |
 | `ledger_imports` | el lote: sociedad (`resolveLedgerScope`), `system sage200`, `kind`, `format`, `contentHash` (sha256 de las filas normalizadas **antes** del mapa), empresa Sage, ejercicio, `periodFrom` / `periodTo` (`YYYY-MM`), estado, contadores, `mappingJson`, totales `Decimal(14,2)`, `journalEntryIds[]`, `reversalJournalEntryIds[]`, `replacedById`, datos del reverso | índices `(org, kind, status, periodFrom, periodTo)` y `(org, contentHash)` |
-| `ledger_import_entries` | un asiento Sage por (asiento, centro): clave Sage (empresa, ejercicio, periodo, asiento, canal), fecha, `propertyCode` (`SOC` a nivel sociedad), asiento Anfitorio producido, `status` (`draft` · `posted` · `skipped_native` · `skipped_existing` · `unmapped` · `unbalanced` · `error`), `entryKind`, líneas, debe / haber, asiento nativo con el que colisiona | única `(importId, empresa, ejercicio, periodo, asiento, propertyCode)` |
+| `ledger_import_entries` | un asiento Sage por (asiento, centro): clave Sage (empresa, ejercicio, periodo, asiento, canal), fecha, `propertyCode` (`SOC` a nivel sociedad), asiento ehotelOS producido, `status` (`draft` · `posted` · `skipped_native` · `skipped_existing` · `unmapped` · `unbalanced` · `error`), `entryKind`, líneas, debe / haber, asiento nativo con el que colisiona | única `(importId, empresa, ejercicio, periodo, asiento, propertyCode)` |
 | `ledger_import_balances` | fila del sumas y saldos de Sage por ejercicio × periodo (`YYYY-MM` · `YYYY-Qn` · `YYYY` · `apertura`) × centro × cuenta Sage, con la cuenta PGC mapeada y apertura / periodo / saldo; se conserva aunque el lote se revierta | única `(importId, periodCode, propertyCode, sourceAccount)` |
 | `ledger_account_maps` | mapa de cuentas: `action` (`map` · `map_by_rate` · `create` · `collapse` · `block`), cuenta destino (`null` solo en `block`), USALI de la subcuenta nueva, `carryCounterparty` | única `(org, system, sourceAccount)` |
 | `ledger_analytics_maps` | mapa analítico: dimensión + código Sage → `propertyId` y / o `costCentreCode` USALI | única `(org, system, dimension, sourceCode)` |
@@ -2578,7 +2580,7 @@ centro). Apuntes 6/7 sin analítica → `unassignedPolicy` `block` (defecto) · 
 `property:<id>`; nunca `societyLevel`.
 
 **Modo sombra (§5 del diseño):** el lote **excluye** los asientos de documentos nativos de
-Anfitorio (`skipped_native`: factura por serie + número normalizados contra `seriesCode` +
+ehotelOS (`skipped_native`: factura por serie + número normalizados contra `seriesCode` +
 `invoiceNumber` de las facturas de los centros de la organización —`Invoice` no lleva
 `organizationId`—, y su cobro por documento o por importe + fecha ± 3 días contra
 `payment/<paymentId>`); los asientos propios se conservan tal cual; el replay y la proyección
@@ -2611,7 +2613,7 @@ la **misma regla de lectura que los estados** (`status ≠ draft`, sin parejas d
 1-5). Tolerancias (`LEDGER_RECONCILIATION_TOLERANCES`): **0,00** consolidado y cuentas solo
 importadas; **0,01 × asientos repartidos** en cuentas de balance por centro; **0,01 por tipo**
 de IVA. Clasificación: `amount_diff` · `native_only` (esperado en `4300`, `705.x`, `477.x`,
-`57x` mientras Anfitorio emita, y en `28x` / `68x` por `payables/ledger-port.ts`) ·
+`57x` mientras ehotelOS emita, y en `28x` / `68x` por `payables/ledger-port.ts`) ·
 `missing_in_ledger` (asientos del lote `unmapped` / `error` / `skipped_native`) · `vat_diff`.
 Se lanza **tras el commit** del lote (`aggregateAccountBalances` lee con el `prisma` raíz),
 por HTTP (`POST /accounting/ledger-imports/reconciliation`), por CLI (`--reconcile --balance`)
@@ -2619,7 +2621,7 @@ o adjuntando el balance al lote `journal`; resultado en `ledger_reconciliations`
 `summary` (`criterion` en español) y CSV (`GET /accounting/ledger-imports/reconciliation/:id/csv`). A fin de año no
 coincide con la pantalla «Sumas y saldos» (`buildTrialBalance` no excluye `entryKind`):
 runbook nuevo §6. Cadencia mensual: importar → reconciliar → si `ok`, cerrar el periodo; relevo
-tras dos cierres mensuales `ok` y un trimestre declarado con los libros de Anfitorio.
+tras dos cierres mensuales `ok` y un trimestre declarado con los libros de ehotelOS.
 
 ### 19.6 Rutas, CLI, front y códigos
 
@@ -2688,5 +2690,5 @@ decisiones abiertas (`pgc_variant`, `VatSettings`, SII, facturas sandbox de RA).
 por defecto de esta tanda (diseño §10.1 y runbook nuevo §10): colapso de terceros a `4300` /
 `400` / `410`, dimensión `delegacion` y política `block`, reparto proporcional a Σ|6/7|,
 nómina real frente a coste importado solo avisada, exclusión de las facturas de RA emitidas en
-Anfitorio, saldos para los ejercicios sin diario, relevo tras dos cierres `ok` + un trimestre
+ehotelOS, saldos para los ejercicios sin diario, relevo tras dos cierres `ok` + un trimestre
 declarado, `vat_settings` nunca creada por el importador.

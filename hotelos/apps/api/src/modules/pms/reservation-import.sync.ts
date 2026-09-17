@@ -33,6 +33,7 @@
 // GDPR: ningún mensaje cita valores del fichero; el diff solo lleva NOMBRES de campo.
 
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../lib/brand.js";
 import {
   RESERVATION_IMPORT_AMOUNT_MAX,
   RESERVATION_IMPORT_LABELS_ES,
@@ -696,7 +697,7 @@ export function decideSyncAction(input: {
   if (!link) {
     const local = input.activeUnlinkedReservation ?? null;
     if (local) {
-      issues.push(issueOf(rowNumber, "RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION", `${label("referencia_externa")} coincide con la reserva ${local.code}, creada en Anfitorio por otra vía: no se toca y se omite la fila.`, "referencia_externa", { reservationCode: local.code }));
+      issues.push(issueOf(rowNumber, "RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION", `${label("referencia_externa")} coincide con la reserva ${local.code}, creada en ${BRAND.name} por otra vía: no se toca y se omite la fila.`, "referencia_externa", { reservationCode: local.code }));
       return { ...base, action: "skip", currentStatus: local.status };
     }
     return createDecision(base, normalized, rowNumber);

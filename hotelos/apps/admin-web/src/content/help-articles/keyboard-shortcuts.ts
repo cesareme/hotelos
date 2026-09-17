@@ -14,6 +14,7 @@
 // («sin jerga … 0 atajos anunciados que no existen»).
 
 import type { CocoaHelpArticle } from "../../components/cocoa-guidance/CocoaSearchableHelpModal";
+import { BRAND } from "../../config/brand";
 
 export interface KeyboardShortcut {
   /** Mac notation; Windows/Linux readers swap ⌘ for Ctrl. */
@@ -79,7 +80,7 @@ export const KEYBOARD_SHORTCUTS_ARTICLE: CocoaHelpArticle = {
   category: "Atajos de teclado",
   tags: ["atajos", "teclado", "productividad", "paleta", "buscar", "ayuda"],
   bodyMd: [
-    "Combinaciones de teclado disponibles en ehotelOS. En Windows y Linux sustituye `⌘` por `Ctrl`.",
+    `Combinaciones de teclado disponibles en ${BRAND.name}. En Windows y Linux sustituye \`⌘\` por \`Ctrl\`.`,
     "",
     ...KEYBOARD_SHORTCUTS.flatMap(shortcutsTable),
     "Consejo: los atajos globales no actúan mientras escribes en un campo de texto, para no interferir con lo que estás tecleando."

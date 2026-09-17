@@ -41,6 +41,7 @@ import { CocoaButton, CocoaCallout, CocoaDialog, CocoaPage, CocoaSection } from 
 import { useToast } from "../../components/Toast";
 import { HistoryList, historySummary } from "../../components/cocoa-rate-grid/HistoryDrawer";
 import { JournalStaleDialog } from "../../components/cocoa-rate-grid/JournalStaleDialog";
+import { BRAND } from "../../config/brand";
 
 const PAGE_SIZE = 50;
 
@@ -181,7 +182,7 @@ export function useRateJournal(propertyId: string, options: { enabled?: boolean;
       try {
         const original = items.find((row) => row.id === journalId) ?? null;
         const res = await revertJournal(propertyId, journalId, { reason: force ? "Reversión forzada desde el historial" : "Reversión desde el historial", ...(force ? { force: true } : {}) });
-        showToast(`Cambio revertido en ehotelOS (${pluralize(res.updated, "celda restaurada", "celdas restauradas")}). Los canales conservan el valor anterior hasta que lo envíes.`, { variant: "success" });
+        showToast(`Cambio revertido en ${BRAND.name} (${pluralize(res.updated, "celda restaurada", "celdas restauradas")}). Los canales conservan el valor anterior hasta que lo envíes.`, { variant: "success" });
         setPendingRevertId(null);
         setStaleRevert(null);
         refresh();
@@ -342,7 +343,7 @@ export function RateJournalScreen() {
         onClose={journal.cancelRevert}
         tone="destructive"
         title="Revertir este cambio"
-        description="Se crea una entrada nueva que restaura en ehotelOS los valores anteriores de todas las celdas de este cambio. Los canales no se tocan: desde el editor de tarifas podrás enviarles las celdas revertidas."
+        description={`Se crea una entrada nueva que restaura en ${BRAND.name} los valores anteriores de todas las celdas de este cambio. Los canales no se tocan: desde el editor de tarifas podrás enviarles las celdas revertidas.`}
         confirmLabel={journal.reverting ? "Revirtiendo…" : ACTIONS.revert}
         cancelLabel={ACTIONS.cancel}
         busy={journal.reverting}

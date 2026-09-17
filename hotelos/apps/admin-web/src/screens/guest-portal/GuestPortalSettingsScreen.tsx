@@ -35,6 +35,7 @@ import {
   CocoaSpan,
   CocoaSwitch
 } from "../../components/cocoa";
+import { BRAND } from "../../config/brand";
 
 // Hours travel as strings (Cocoa inputs are string-controlled).
 type PortalConfig = {
@@ -122,7 +123,7 @@ function initialConfig(): PortalConfig {
 
 function publicUrlOf(config: PortalConfig): string {
   const domain = config.customDomain.trim();
-  return domain || `huesped.hotelos.app/${config.brandName.toLowerCase().replace(/\s+/g, "-")}`;
+  return domain || `${BRAND.guestPortalHost}/${config.brandName.toLowerCase().replace(/\s+/g, "-")}`;
 }
 
 export function GuestPortalSettingsScreen() {

@@ -1,5 +1,6 @@
 // glossary — hotel and Spanish-compliance vocabulary, one help article per term.
 import type { CocoaHelpArticle } from '../../components/cocoa-guidance/CocoaSearchableHelpModal';
+import { BRAND } from '../../config/brand';
 
 export const GLOSSARY_CATEGORY = 'Glosario';
 
@@ -120,7 +121,7 @@ const GLOSSARY: readonly GlossaryTerm[] = [
     definition:
       'Property Management System. Sistema central que gestiona reservas, check-in, folios, housekeeping y facturación del hotel. Es el corazon operativo y el sistema de registro de la actividad diaria.',
     example:
-      'Opera, Mews o el PMS de hotelOS centralizan todas las operaciones de front office.',
+      `Opera, Mews o el PMS de ${BRAND.name} centralizan todas las operaciones de front office.`,
     relatedTerms: ['ERP', 'CRS', 'RMS', 'Folio'],
   },
   {

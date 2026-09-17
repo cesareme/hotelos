@@ -1,4 +1,4 @@
-# Anfitorio · CI (Tanda 4 · instalabilidad)
+# ehotelOS · CI (Tanda 4 · instalabilidad)
 #
 # Lives at the GIT ROOT (.github/workflows) because GitHub Actions only reads
 # workflows from there; the previous copies under hotelos/.github/workflows/

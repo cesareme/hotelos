@@ -228,7 +228,7 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   // series, establishments — riskLevel "high" on its routes, L2).
   "accounting.entity.read": "Read the finances of the whole legal entity (every work centre, not only the assigned properties)",
   "organization.structure.manage": "Manage the legal entity and its work centres (NIF, razón social, series, establishments)",
-  "admin.tenants.manage": "Manage platform tenants (HotelOS staff console; never granted to hotel roles)"
+  "admin.tenants.manage": "Manage platform tenants (ehotelOS staff console; never granted to hotel roles)"
 };
 
 // ---------------------------------------------------------------------------

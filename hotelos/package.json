@@ -2,7 +2,7 @@
   "name": "hotelos",
   "private": true,
   "version": "0.1.0",
-  "description": "Mobile-first HotelOS monorepo for PMS, compliance, operations, accounting, assets, concierge, and AI tool orchestration.",
+  "description": "Mobile-first ehotelOS monorepo for PMS, compliance, operations, accounting, assets, concierge, and AI tool orchestration.",
   "packageManager": "pnpm@9.15.0",
   "workspaces": [
     "apps/*",

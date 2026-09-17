@@ -5,6 +5,7 @@
 // Cumplimiento · Informes · Configuración). Only real shortcuts are mentioned
 // (see ./keyboard-shortcuts.ts).
 import type { CocoaHelpArticle } from "../../components/cocoa-guidance/CocoaSearchableHelpModal";
+import { BRAND } from "../../config/brand";
 
 export const GETTING_STARTED_CATEGORY = "Primeros pasos";
 
@@ -16,7 +17,7 @@ export const GETTING_STARTED_ARTICLES: readonly CocoaHelpArticle[] = [
     tags: ["check-in", "recepción", "llegadas", "reservas", "huéspedes", "documento"],
     bodyMd: `# Cómo hacer mi primer check-in
 
-El check-in es el primer contacto con el huésped. En ehotelOS se completa desde la tarjeta de llegada de «Mi día», con el documento de identidad y la garantía de pago en el mismo panel.
+El check-in es el primer contacto con el huésped. En ${BRAND.name} se completa desde la tarjeta de llegada de «Mi día», con el documento de identidad y la garantía de pago en el mismo panel.
 
 ## Paso a paso
 
@@ -53,7 +54,7 @@ Una llamada, un correo o un cliente sin reserva: la alta manual se hace desde Re
 
 ## Buenas prácticas
 
-- Si el huésped ya existe, ehotelOS lo sugiere por correo o teléfono y rellena la ficha.
+- Si el huésped ya existe, ${BRAND.name} lo sugiere por correo o teléfono y rellena la ficha.
 - Marca el origen (teléfono, correo, sin reserva) para que Informes › Rendimiento de canales lo refleje.`
   },
   {
@@ -115,7 +116,7 @@ Conectar una agencia en línea sincroniza disponibilidad, tarifas, restricciones
 
 1. **Abre Comercial › Canales de venta** y pulsa «Conectar» en el canal. Necesitarás el identificador del hotel en la agencia.
 2. **Acepta la conexión desde la extranet de la agencia** (apartado de conectividad): este paso lo haces tú en su web.
-3. **Relaciona las habitaciones** en la pestaña Correspondencias: cada tipo de la agencia debe corresponder a un tipo de ehotelOS.
+3. **Relaciona las habitaciones** en la pestaña Correspondencias: cada tipo de la agencia debe corresponder a un tipo de ${BRAND.name}.
 4. **Relaciona los planes de tarifa** (pública, no reembolsable, con desayuno) y confirma las reglas de derivación.
 5. **Activa la sincronización** de disponibilidad, tarifas y reservas. La primera sincronización completa puede tardar hasta dos horas.
 6. **Haz una reserva de prueba** desde la agencia y comprueba que entra en Recepción › Reservas y descuenta inventario.
@@ -132,7 +133,7 @@ Conectar una agencia en línea sincroniza disponibilidad, tarifas, restricciones
     tags: ["verifactu", "cumplimiento", "facturación", "aeat", "fiscal", "certificado"],
     bodyMd: `# Cómo activar VeriFactu
 
-VeriFactu es el sistema de facturación verificable de la AEAT. Activarlo en ehotelOS implica configurar los datos fiscales, el certificado digital y las series de facturación.
+VeriFactu es el sistema de facturación verificable de la AEAT. Activarlo en ${BRAND.name} implica configurar los datos fiscales, el certificado digital y las series de facturación.
 
 ## Paso a paso
 

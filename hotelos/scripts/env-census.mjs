@@ -210,8 +210,8 @@ function wrap(text, width = 78, prefix = "# ") {
 export function renderExample(contract, { production }) {
   const out = [];
   const title = production
-    ? "Anfitorio · entorno de PRODUCCIÓN (deploy/.env.production)"
-    : "Anfitorio · entorno de desarrollo (.env en la raíz del monorepo)";
+    ? "ehotelOS · entorno de PRODUCCIÓN (deploy/.env.production)"
+    : "ehotelOS · entorno de desarrollo (.env en la raíz del monorepo)";
   out.push(`# ${title}`);
   out.push("#");
   out.push("# GENERADO por scripts/env-census.mjs a partir de apps/api/src/lib/env.ts");

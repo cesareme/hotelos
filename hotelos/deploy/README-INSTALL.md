@@ -1,4 +1,4 @@
-# Anfitorio · Instalación, actualización y adopción de un VPS
+# ehotelOS · Instalación, actualización y adopción de un VPS
 
 Guía única de despliegue (Tanda 4 · instalabilidad). Sustituye a
 `README-HOSTINGER.md`, `README-REMOTE-DEV.md`, `docs/deploy-pilot.md` y
@@ -105,7 +105,7 @@ ssh root@<vps>
 apt-get install -y git
 git clone https://github.com/cesareme/hotelos.git /opt/anfitorio
 cd /opt/anfitorio/hotelos          # repo anidado: el código vive en hotelos/
-sudo bash deploy/scripts/install-from-scratch.sh --demo --domain demo.hotelos.es --yes
+sudo bash deploy/scripts/install-from-scratch.sh --demo --domain demo.ehotelos.com --yes
 ```
 
 Modo `--real` (hotel real, sin datos ficticios):
@@ -166,7 +166,7 @@ general.
    Ejecuta los CLI de datos **con el API parado**: la cadena de auditoría
    mantiene su tip en memoria por instancia y dos escritores la bifurcan.
 1. **Inventario, sin tocar nada**
-   `bash deploy/scripts/vps-inventory.sh --app-dir /opt/anfitorio --domain demo.hotelos.es`
+   `bash deploy/scripts/vps-inventory.sh --app-dir /opt/anfitorio --domain demo.ehotelos.com`
    (`/opt/anfitorio` es el default de los scripts; pasa `--app-dir` si el clon
    vive en otra ruta, p. ej. el antiguo `/opt/hotelos`).
    (o `install-from-scratch.sh --adopt`, que además imprime el plan).
@@ -229,7 +229,7 @@ es `true`). Secrets `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`; variable `APP_DIR`.
 ## 6. Smoke
 
 ```bash
-bash deploy/scripts/smoke.sh --base-url https://demo.hotelos.es/api --web-url https://demo.hotelos.es \
+bash deploy/scripts/smoke.sh --base-url https://demo.ehotelos.com/api --web-url https://demo.ehotelos.com \
   --web-dist /srv/anfitorio/admin-web --email reception@example.com --password hotelos-demo
 ```
 
@@ -279,7 +279,7 @@ solo cubre `/health`).
 Nunca ejecutes los seeds demo en una instalación real: crean un super-admin
 con contraseña conocida.
 
-## 9. Checklist para el VPS demo 76.13.55.180 (demo.hotelos.es) cuando haya acceso
+## 9. Checklist para el VPS demo 76.13.55.180 (demo.ehotelos.com) cuando haya acceso
 
 **Procedimiento completo, paso a paso y con las salidas esperadas:**
 `docs/runbooks/vps-demo-actualizacion-2026-09-17.md` (ensayado en local el
@@ -290,7 +290,7 @@ API anterior a Tanda 2, `/api/admin/tenants` → 500, **modo demo activo**
 (`GET /api/properties` sin token → 200), Faranda no visible. Orden estricto —
 un `git pull` sin migrar tumba el API público:
 
-1. `bash deploy/scripts/vps-inventory.sh --domain demo.hotelos.es` (solo lectura) y guardar la salida.
+1. `bash deploy/scripts/vps-inventory.sh --domain demo.ehotelos.com` (solo lectura) y guardar la salida.
 2. Autorizar la clave SSH del Mac; comprobar `sudo -n systemctl restart anfitorio-api` para el usuario de deploy.
 3. `pg_dump` completo a `/var/backups/anfitorio/` **y** copia al Mac. Si más
    adelante se restaura ese dump (anterior a la baseline, sin
@@ -300,10 +300,64 @@ un `git pull` sin migrar tumba el API público:
 5. Parar el API (`systemctl stop anfitorio-api`), `git fetch && git reset --hard origin/main`, `corepack pnpm install --frozen-lockfile --prod=false` (lockfile: sección 4.4), `db:generate`.
 6. Esquema: `db:adopt-baseline -- --apply` → `db:migrate:deploy` → `db:drift:check` = 0. Si adopt-baseline se niega porque el esquema es anterior a la baseline, alinear según la sección 4.5 (dump alineado o BD nueva + `migrate deploy` + `pg_restore --data-only`); **nunca `db push`** en esa BD.
 7. CLI de datos, **en este orden y con el API parado** (ensayo 2026-09-17): `rbac:sync -- --dry-run` → `demo:refresh -- --scope all` (dry-run) y `--apply` → `demo:fix-identity -- --dry-run` y `--apply --confirm …` → `backfill-legal-structure.ts --dry-run` y `--apply --confirm all` → `accounting:provision-chart … --dry-run` y `--apply --confirm …` → `backfill:payment-hash`, `backfill:taxes`, `backfill:guest-register` (dry-run y `--apply`). `demo:refresh` y `demo:fix-identity` van ANTES del backfill de estructura: `refresh-demo-dataset.ts` no conoce `legal_entities` (deja sociedades huérfanas y sale con exit 1 si el backfill ya corrió) y `fix-demo-legal-identity.ts` no corrige `legal_entities` (la sociedad quedaría con la razón social contaminada y NIF nulo).
-8. Build del front con `VITE_API_URL=https://demo.hotelos.es/api` → `/srv/anfitorio/admin-web`.
-9. Instalar las unidades y el Caddyfile versionados; `systemctl restart anfitorio-api anfitorio-worker`; `systemctl reload caddy`.
+8. Build del front con `VITE_API_URL=https://demo.ehotelos.com/api` → `/srv/anfitorio/admin-web`.
+9. Instalar las unidades y el Caddyfile versionados (dominio y bloque de transición: ver «Corte de dominio» más abajo); `systemctl restart anfitorio-api anfitorio-worker`; `systemctl reload caddy`.
 10. `smoke.sh` con `reception@example.com` (y sin `HOTELOS_ALLOW_DEMO_AUTH`: preferible usuario demo real a modo demo sin token; si se mantiene el modo demo, exige `HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true` y el smoke fallará en el 401 por diseño).
 11. Activar `deploy.yml` (secrets) solo cuando el paso 10 esté verde dos veces.
+
+**Corte de dominio a `demo.ehotelos.com` (rebrand 2026-09, D5).** El código
+ya apunta al dominio nuevo; `docs/runbooks/vps-demo-actualizacion-2026-09-17.md`
+es anterior al rebrand: donde cite el dominio anterior, léase
+`demo.ehotelos.com` (o crea un runbook nuevo fechado). En el VPS, en este orden:
+
+1. DNS: registro `A demo.ehotelos.com → 76.13.55.180` (VPS demo; 72.61.194.216
+   es el VPS de desarrollo `hotelos-dev`). Caddy solo emite el certificado
+   Let's Encrypt cuando el nombre resuelve: `dig +short demo.ehotelos.com`
+   debe devolver esa IP ANTES de recargar Caddy (si no, ACME falla para ese
+   host; los bloques del Caddyfile van separados para que el dominio anterior
+   siga sirviendo mientras tanto).
+2. El buzón `admin@ehotelos.com` (contacto ACME de `Caddyfile.native`) debe
+   existir: recibe los avisos de caducidad del certificado.
+3. `deploy.sh` NO regenera `/etc/caddy/Caddyfile` en el rol `production-native`
+   (solo la vía compose toca Caddy): `sudo cp deploy/caddy/Caddyfile.native
+   /etc/caddy/Caddyfile`. El fichero versionado ya lleva `demo.ehotelos.com`,
+   `/srv/anfitorio/admin-web` y el bloque de transición con el redirect 301
+   del dominio anterior, que la demo SÍ quiere (el rango `d` del `sed` de
+   `install-from-scratch.sh` solo lo elimina en instalaciones nuevas). Después
+   `sudo caddy validate --config /etc/caddy/Caddyfile` y `sudo systemctl
+   reload caddy` (verbo ya permitido en `/etc/sudoers.d/anfitorio-deploy`).
+4. `/etc/anfitorio/api.env`: `APP_BASE_URL=https://demo.ehotelos.com`,
+   `API_PUBLIC_URL=https://demo.ehotelos.com/api` y `CORS_ALLOWED_ORIGINS`
+   con el origen nuevo y, durante la transición, también el antiguo (sin
+   ellos el login falla por CORS). El SIF VeriFactu NO sigue a la marca:
+   comprobar con `grep -E '^VERIFACTU_SYSTEM_(NAME|VERSION)=' /etc/anfitorio/api.env`
+   y, si faltan, AÑADIR estas dos líneas (nombre y versión de la declaración
+   responsable vigente, los mismos que llevan los registros ya remitidos;
+   los valores por defecto nuevos del código son `ehotelOS` y `1.0.0` y
+   entrarían en `NombreSistemaInformatico` / `Version` sin declaración
+   firmada):
+
+   ```
+   VERIFACTU_SYSTEM_NAME=Anfitorio
+   VERIFACTU_SYSTEM_VERSION=0.1.0
+   ```
+
+   Se retiran juntas solo tras firmar la nueva declaración (D4;
+   `docs/compliance/verifactu-declaracion-responsable.md` §4.7). Reiniciar
+   `anfitorio-api anfitorio-worker` y reconstruir el front con
+   `VITE_API_URL=https://demo.ehotelos.com/api` (paso 8).
+5. GitHub: cambiar el VALOR de la variable `PUBLIC_DOMAIN` a
+   `demo.ehotelos.com` (`deploy.yml`; el nombre de la variable no cambia).
+6. Verificar: `bash deploy/scripts/smoke.sh --base-url
+   https://demo.ehotelos.com/api --web-url https://demo.ehotelos.com` y
+   `curl -I https://<dominio anterior>/` → `301` con
+   `Location: https://demo.ehotelos.com/`.
+7. Mantener el dominio anterior como redirect 301 hasta que caduque la
+   transición; entonces retirar su bloque de `Caddyfile.native` y del VPS.
+8. Infraestructura intacta (no forma parte de la marca): unidades
+   `anfitorio-api` / `anfitorio-worker`, `/opt|/etc|/srv|/var/backups/anfitorio`,
+   usuario / BD / rol `anfitorio`, sudoers `anfitorio-deploy` y las cabeceras
+   de protocolo `X-HotelOS-Idempotency` / `X-Anfitorio-Signature`.
 
 ## 10. Vía Docker (secundaria)
 

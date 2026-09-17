@@ -45,6 +45,7 @@ import {
   type CocoaTableColumn,
   type CocoaTone
 } from "../../components/cocoa";
+import { BRAND } from "../../config/brand";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -237,7 +238,7 @@ function FirstRunWelcomeCard({ propertyId }: { propertyId: string }) {
       padding="lg"
       headingLevel={2}
       title={setupDone ? "Todo listo: registra la primera reserva" : "Configura tu hotel en 4 pasos"}
-      meta="Bienvenido a ehotelOS"
+      meta={`Bienvenido a ${BRAND.name}`}
     >
       <div className="cocoa-stack" data-gap="3">
         <p style={bodyTextStyle}>

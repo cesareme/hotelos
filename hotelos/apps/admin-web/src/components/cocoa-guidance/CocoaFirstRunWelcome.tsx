@@ -43,6 +43,7 @@ import {
 import { createPortal } from "react-dom";
 
 import { CocoaButton } from "../cocoa/CocoaButton";
+import { BRAND } from "../../config/brand";
 
 export interface CocoaFirstRunWelcomeProps {
   open: boolean;
@@ -398,8 +399,8 @@ export function CocoaFirstRunWelcome({
   if (typeof document === "undefined") return null;
 
   const greeting = userName
-    ? `Bienvenido a ehotelOS ${userName}`
-    : "Bienvenido a ehotelOS";
+    ? `Bienvenido a ${BRAND.name} ${userName}`
+    : `Bienvenido a ${BRAND.name}`;
 
   const node = (
     <div

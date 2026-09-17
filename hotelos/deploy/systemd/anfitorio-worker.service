@@ -1,4 +1,4 @@
-# Anfitorio worker · systemd unit (pg-boss queue jobs: webhooks.deliver)
+# ehotelOS worker · systemd unit (pg-boss queue jobs: webhooks.deliver)
 #
 # Same runtime and environment file as anfitorio-api.service. The worker
 # NEVER runs the in-process schedulers: RUN_SCHEDULERS=false is forced on the
@@ -11,7 +11,7 @@
 #   sudo systemctl daemon-reload && sudo systemctl enable --now anfitorio-worker
 
 [Unit]
-Description=Anfitorio worker (pg-boss jobs, tsx runtime)
+Description=ehotelOS worker (pg-boss jobs, tsx runtime)
 Documentation=file:///opt/anfitorio/hotelos/deploy/README-INSTALL.md
 After=network-online.target postgresql.service anfitorio-api.service
 Wants=network-online.target

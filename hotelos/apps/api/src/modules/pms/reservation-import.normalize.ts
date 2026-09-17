@@ -49,6 +49,7 @@
 // Los mensajes citan columna («Llegada») y nº de fila, nunca valores del fichero.
 
 import { createHash } from "node:crypto";
+import { BRAND } from "../../lib/brand.js";
 import {
   RESERVATION_IMPORT_AMOUNT_MAX,
   RESERVATION_IMPORT_FAR_FUTURE_DAYS,
@@ -655,7 +656,7 @@ export function normalizeRow(
     if (target === null) err("RESERVATION_IMPORT_ROW_INVALID_STATUS", `${label("estado")} no está en el diccionario de estados del perfil (Reserved, Checked In, Checked Out, Cancelled, No Show, Waitlist…).`, "estado");
     else {
       targetStatus = target;
-      if (target === "skip") err("RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED", `${label("estado")} es lista de espera (waitlist): sin equivalente en Anfitorio, se omite la fila.`, "estado");
+      if (target === "skip") err("RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED", `${label("estado")} es lista de espera (waitlist): sin equivalente en ${BRAND.name}, se omite la fila.`, "estado");
     }
     if (get("referencia_externa") === "") {
       err("RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE", `falta ${label("referencia_externa")} (nº de confirmación del PMS): sin ella la fila no se puede sincronizar.`, "referencia_externa");

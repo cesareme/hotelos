@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Anfitorio · instalación desde cero en Ubuntu 24.04 (nativa: systemd + Caddy, sin Docker).
+# ehotelOS · instalación desde cero en Ubuntu 24.04 (nativa: systemd + Caddy, sin Docker).
 #
 # Idempotente: cada paso comprueba su estado antes de actuar y puede repetirse.
 #
-#   sudo bash install-from-scratch.sh --demo  --domain demo.hotelos.es [opciones]
+#   sudo bash install-from-scratch.sh --demo  --domain demo.ehotelos.com [opciones]
 #   sudo bash install-from-scratch.sh --real  --domain pms.hotel.es    [opciones]
 #   sudo bash install-from-scratch.sh --adopt [--app-dir /opt/anfitorio] [--domain ...]
 #
@@ -112,9 +112,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------- --adopt: detección sin escritura ----------
 if [[ "$MODE" == "adopt" ]]; then
     c_blue "═══════════════════════════════════════════════════════════"
-    c_blue " Anfitorio · modo --adopt · solo lectura"
+    c_blue " ehotelOS · modo --adopt · solo lectura"
     c_blue "═══════════════════════════════════════════════════════════"
-    bash "$SCRIPT_DIR/vps-inventory.sh" --app-dir "$APP_DIR" --domain "${DOMAIN:-demo.hotelos.es}" --env-file "$ENV_FILE" --web-root "$WEB_ROOT" --user "$APP_USER"
+    bash "$SCRIPT_DIR/vps-inventory.sh" --app-dir "$APP_DIR" --domain "${DOMAIN:-demo.ehotelos.com}" --env-file "$ENV_FILE" --web-root "$WEB_ROOT" --user "$APP_USER"
     printf '\n'
     c_blue "Propuesta de adopción (nada de esto se ha ejecutado):"
     cat <<PLAN
@@ -153,7 +153,7 @@ fi
 
 # ---------- prerrequisitos ----------
 [[ $EUID -eq 0 ]] || die "Ejecuta como root (sudo): instala paquetes, crea el usuario y las unidades systemd." 2
-[[ -n "$DOMAIN" ]] || die "--domain es obligatorio en modo --$MODE (p. ej. --domain demo.hotelos.es)" 2
+[[ -n "$DOMAIN" ]] || die "--domain es obligatorio en modo --$MODE (p. ej. --domain demo.ehotelos.com)" 2
 [[ -z "$ACME_EMAIL" ]] && ACME_EMAIL="admin@$DOMAIN"
 if [[ -r /etc/os-release ]]; then
     # shellcheck disable=SC1091
@@ -169,7 +169,7 @@ APP_BASE_URL="https://$DOMAIN"
 VITE_API_URL="$APP_BASE_URL/api"
 
 c_blue "═══════════════════════════════════════════════════════════"
-c_blue " Anfitorio · instalación --$MODE · $DOMAIN"
+c_blue " ehotelOS · instalación --$MODE · $DOMAIN"
 c_blue " clon $APP_DIR · usuario $APP_USER · BD $DB_NAME · env $ENV_FILE"
 c_blue "═══════════════════════════════════════════════════════════"
 
@@ -456,7 +456,14 @@ if [[ $WITH_CADDY -eq 1 ]]; then
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' >/etc/apt/sources.list.d/caddy-stable.list
         apt-get update -qq && apt-get install -y -qq caddy >/dev/null
     fi
-    sed -e "s#demo\.hotelos\.es#$DOMAIN#g" -e "s#admin@hotelos\.es#$ACME_EMAIL#" -e "s#/srv/anfitorio/admin-web#$WEB_ROOT#g" \
+    # El rango `d` elimina el bloque de transición 301 del dominio anterior de la
+    # demo (Caddyfile.native): una instalación nueva no debe pedir certificados
+    # para ese host. Va PRIMERO: sed evalúa las expresiones en orden sobre cada
+    # línea y, si $DOMAIN fuera el dominio anterior, el `s` del dominio nuevo
+    # renombraría antes el bloque principal a ese host y el rango lo borraría
+    # también (Caddyfile sin sitios). `caddy validate` (abajo) valida el
+    # resultado.
+    sed -e '/^demo\.hotelos\.es {$/,/^}$/d' -e "s#demo\.ehotelos\.com#$DOMAIN#g" -e "s#admin@ehotelos\.com#$ACME_EMAIL#" -e "s#/srv/anfitorio/admin-web#$WEB_ROOT#g" \
         "$ROOT/deploy/caddy/Caddyfile.native" >/etc/caddy/Caddyfile
     mkdir -p /var/log/caddy && chown caddy:caddy /var/log/caddy 2>/dev/null || true
     caddy validate --config /etc/caddy/Caddyfile >/dev/null

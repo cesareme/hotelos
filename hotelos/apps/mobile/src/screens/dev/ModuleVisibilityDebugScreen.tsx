@@ -11,7 +11,7 @@ export function ModuleVisibilityDebugScreen() {
       <Text style={styles.title}>Module Visibility</Text>
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Current user</Text>
-        <Text style={styles.body}>admin@hotelos.local - Local Super Admin - HotelOS Demo Hotel</Text>
+        <Text style={styles.body}>admin@hotelos.local - Local Super Admin - Hotel Demo</Text>
       </View>
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Enabled modules</Text>

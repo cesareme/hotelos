@@ -1,6 +1,6 @@
-# Anfitorio · Caddyfile for the NATIVE deployment (systemd API + static SPA).
+# ehotelOS · Caddyfile for the NATIVE deployment (systemd API + static SPA).
 #
-# This is what the public demo VPS (demo.hotelos.es) runs: Caddy terminates
+# This is what the public demo VPS (demo.ehotelos.com) runs: Caddy terminates
 # HTTPS (Let's Encrypt, automatic), serves the admin-web build from disk and
 # reverse-proxies the API, which listens on 127.0.0.1:3000 under systemd.
 # deploy/Caddyfile is the Docker-compose variant (upstreams api:3000 /
@@ -20,13 +20,16 @@
 #                      (/accept-invite and /reset-password deep links included)
 #   index.html is served with Cache-Control: no-store so a deploy is visible
 #   on the next page load; hashed /assets/* are immutable for a year.
+#
+# El último bloque es la transición 301 desde el dominio anterior de la demo
+# (rebrand 2026-09): install-from-scratch.sh lo elimina en instalaciones nuevas.
 
 {
 	# Let's Encrypt account contact (expiry notices).
-	email admin@hotelos.es
+	email admin@ehotelos.com
 }
 
-demo.hotelos.es {
+demo.ehotelos.com {
 	encode zstd gzip
 
 	header {
@@ -76,4 +79,12 @@ demo.hotelos.es {
 		}
 		format json
 	}
+}
+
+demo.hotelos.es {
+	redir https://demo.ehotelos.com{uri} permanent
+	# Transición del rebrand 2026-09: el dominio anterior de la demo responde 301
+	# permanente al nuevo. Bloque aparte (un fallo ACME de un host no bloquea al
+	# otro); install-from-scratch.sh lo elimina en instalaciones nuevas. Retirar
+	# cuando expire la transición.
 }

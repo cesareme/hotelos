@@ -1,6 +1,6 @@
 // SistemaInformatico block of every VeriFactu registro (RD 1007/2023 art. 13
 // and Orden HAC/1177/2024, anexo). It identifies the PRODUCER of the software
-// (Anfitorio's legal owner) — a different concept from the invoice issuer
+// (ehotelOS's legal owner) — a different concept from the invoice issuer
 // (Invoice.issuerTaxId) — and every value MUST match what the producer stated
 // in its declaración responsable (docs/compliance/verifactu-declaracion-
 // responsable.md). One resolver, shared by the API and the worker, so a retry
@@ -9,9 +9,9 @@
 // Environment variables (empty string == not set):
 //   VERIFACTU_SOFTWARE_NAME     NombreRazon of the producer (≤120)         required
 //   VERIFACTU_SOFTWARE_NIF      NIF of the producer (checksum-valid)        required
-//   VERIFACTU_SYSTEM_NAME       NombreSistemaInformatico (≤30)              default "Anfitorio"
+//   VERIFACTU_SYSTEM_NAME       NombreSistemaInformatico (≤30)              default "ehotelOS"
 //   VERIFACTU_SYSTEM_ID         IdSistemaInformatico (exactly 2 chars)      default "01"
-//   VERIFACTU_SYSTEM_VERSION    Version (≤50) — falls back to APP_VERSION   default "0.1.0"
+//   VERIFACTU_SYSTEM_VERSION    Version (≤50) — falls back to APP_VERSION   default "1.0.0"
 //   VERIFACTU_INSTALL_NUMBER    NumeroInstalacion (≤100), assigned by the
 //                               producer per installation (NOT by AEAT).
 //                               Since Tanda 6b (estructura societaria) the
@@ -106,9 +106,9 @@ export const VERIFACTU_SOFTWARE_LIMITS = Object.freeze({
 });
 
 export const VERIFACTU_SOFTWARE_DEFAULTS = Object.freeze({
-  nombreSistema: "Anfitorio",
+  nombreSistema: "ehotelOS",
   idSistema: "01",
-  version: "0.1.0",
+  version: "1.0.0",
   multiOT: "S" as VerifactuSoftwareFlag,
   // Sandbox-only fillers; never sent to AEAT because `ok` is false with them.
   nombreRazon: "PRODUCTOR SIN CONFIGURAR",

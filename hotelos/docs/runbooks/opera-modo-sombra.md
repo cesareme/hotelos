@@ -27,19 +27,19 @@ RA `cmrhw9jy40003fyvbuu2ec2w7`, buzón `opera-rias@example.com`, host SFTP `sftp
 ## 1 · Qué es el modo sombra y qué NO hace
 
 **Qué es.** OPERA Cloud sigue siendo el **sistema de registro** del hotel: recepción, folios,
-facturas, VeriFactu (vía partner fiscal a través de OFIS) y night audit ocurren en OPERA. Anfitorio
+facturas, VeriFactu (vía partner fiscal a través de OFIS) y night audit ocurren en OPERA. ehotelOS
 recibe **cada día** un corte (feed) de reservas (llegadas y próximos 30 días, en casa, salidas, nuevas /
 canceladas / no-show del día anterior), los ingresos del día por transaction code y, con menos
 frecuencia, estadísticas para conciliar; nunca escribe en OPERA; ante conflicto **gana OPERA**. Cada
 fichero recibido es un `PmsShadowRun`; cada reserva conocida tiene un `PmsShadowLink` (clave natural:
 propiedad + nº de confirmación de OPERA); cada día de ingresos es un `PmsShadowRevenueImport` con su
 asiento; cada desviación es una `PmsShadowAlert` que se resuelve en el panel con motivo. Objetivo:
-que el día del cambio de PMS Anfitorio ya tenga el histórico, las reservas futuras y la contabilidad
+que el día del cambio de PMS ehotelOS ya tenga el histórico, las reservas futuras y la contabilidad
 de gestión conciliados, y mientras tanto sirva de cuadro de mando y contabilidad PGC / USALI.
 
 | Vía | Dónde | Para qué | Quién |
 | --- | --- | --- | --- |
-| **B1 · Informes por e-mail** (día 1) | Report Scheduler de OPERA → buzón `opera-<código>@…` → conector de correo con propósito `pms_shadow` (§4, §10) | reservas, cambios y conciliación, a diario y sin coste Oracle | César en OPERA (1 h por hotel); Dirección o Administrador en Anfitorio |
+| **B1 · Informes por e-mail** (día 1) | Report Scheduler de OPERA → buzón `opera-<código>@…` → conector de correo con propósito `pms_shadow` (§4, §10) | reservas, cambios y conciliación, a diario y sin coste Oracle | César en OPERA (1 h por hotel); Dirección o Administrador en ehotelOS |
 | **B2 · Exports por SFTP** (día 1 para ingresos) | Exports de OPERA → SFTP del VPS → agente `pms-shadow:pull` → `POST /integrations/pms-shadow/ingest` con clave de API (§5) | XML de ingresos `GEN_XMLBO_REVENUE` y, opcionalmente, reservas | César en OPERA + Toolbox; operador del VPS |
 | **A · Manual** (arranque y contingencia) | panel «Modo sombra OPERA» › «Subir corte» o Reservas › Importar con perfil OPERA (§6) | cualquier informe descargado a mano | Dirección, Administrador; Recepción solo por Reservas › Importar |
 | **C · OHIP REST** (fase 2) | fuera de esta tanda | deltas intradía, perfiles, disponibilidad | — |
@@ -52,12 +52,12 @@ de gestión conciliados, y mientras tanto sirva de cuadro de mando y contabilida
 - **0 correos a huéspedes.** Las reservas sincronizadas nacen sin `bookerEmail` (como en la Tanda 7) y
   las actualizaciones (`updateReservationShadow`) no emiten eventos de dominio: ningún `ReservationCreated`
   / `ReservationConfirmed` que dispare la confirmación por correo (`event-hooks.service.ts:48-69`).
-- **Sin facturas ni VeriFactu en Anfitorio** para estos ingresos: las emite OPERA + partner fiscal. El
+- **Sin facturas ni VeriFactu en ehotelOS** para estos ingresos: las emite OPERA + partner fiscal. El
   asiento diario (§8) es contabilidad de gestión conciliable con el Trial Balance, no facturación; los
   25 documentos y 33 envíos VeriFactu de Faranda no se tocan (§12).
 - **Sin cargos de folio**: el check-in y el check-out sombra no cargan ni cobran nada (los cargos viven en
   OPERA); el ingreso entra agregado por día (§8), no por reserva.
-- **Sin SES Hospedajes** desde Anfitorio para reservas `opera:*`: se sigue enviando desde OPERA / partner.
+- **Sin SES Hospedajes** desde ehotelOS para reservas `opera:*`: se sigue enviando desde OPERA / partner.
 - **No guarda los ficheros** (GDPR, como la Tanda 7): se procesan en memoria y se descartan; los
   registros, alertas y JSON citan nº de confirmación, códigos OPERA, métricas e importes, nunca nombre,
   e-mail, teléfono ni documento. `NAME_ON_CARD` no se lee jamás.
@@ -77,12 +77,12 @@ de gestión conciliados, y mientras tanto sirva de cuadro de mando y contabilida
 4. **SFTP (solo vía B2), sin SR a Oracle.**
    (a) Toolbox › System Setup › Outbound › **Outbound Domain Allowlist** › New: Context Property
    (Global exige la task «Global Outbound Domain Allowlisting»), Hostname = `sftp.example.com` (host
-   SFTP de Anfitorio), Protocol SFTP, Port 22 › Save; un usuario con la task «Approve Outbound Domain
+   SFTP de ehotelOS), Protocol SFTP, Port 22 › Save; un usuario con la task «Approve Outbound Domain
    Allowlisting» aprueba la entrada «Awaiting Approval» (Actions › Approve); «Processing may take up to
    6 hours»: dejarlo el día anterior.
    (b) Toolbox › System Setup › **SFTP Configuration** › New: Context Property, SFTP Code (p. ej.
    `ANFITORIO_RIAS`), Host Name `sftp.example.com`, Port 22, Authentication Key, Username
-   (`opera-rias`), **Private Key** (OPERA es el cliente SFTP: Anfitorio genera un par de claves por
+   (`opera-rias`), **Private Key** (OPERA es el cliente SFTP: ehotelOS genera un par de claves por
    hotel, entrega la privada por canal seguro y pone la pública en `authorized_keys` del VPS), Host Key
    (salida de `ssh-keyscan -p 22 sftp.example.com`), Folder Name/Path por hotel (`/opera/rias/`),
    Validate cada carpeta antes de guardar.
@@ -90,7 +90,7 @@ de gestión conciliados, y mientras tanto sirva de cuadro de mando y contabilida
    (`RIAS` en este runbook), hora habitual del night audit por hotel, y los listados de configuración
    de §3.1 para rellenar el mapeo.
 
-## 3 · Alta en Anfitorio paso a paso
+## 3 · Alta en ehotelOS paso a paso
 
 ### 3.1 · Perfil «Modo sombra OPERA» (Configuración › Módulos e integraciones › Modo sombra OPERA)
 
@@ -215,7 +215,7 @@ a las 06:00 hora del hotel (tras el night audit; ajustar por hotel), destino Ema
 destino por modo, varios modos a la vez). **Un solo File Format por programación**: un informe en XML
 y PDF son dos programaciones.
 
-| # | Informe (`código`) | Formato | Parámetros (Date Option + Offset) | Feed en Anfitorio | Estado del perfil |
+| # | Informe (`código`) | Formato | Parámetros (Date Option + Offset) | Feed en ehotelOS | Estado del perfil |
 | --- | --- | --- | --- | --- | --- |
 | 1 | Departures (`departure_all`) | Delimited Data | fecha = business date **− 1** (salidas de ayer, ya «Checked Out»; con + 0 a primera hora llegan «Due Out» y el check-out sombra no se produce, SC-07 en §3.1) | `departures` (offset `-1`) | 19 columnas confirmadas; fichero **sin fila de cabecera** (`headerOverride`, §6.2) |
 | 2 | Arrivals: Detailed (`res_detail`), Include Checked-In Today, Display solo Room Number y Print Rate, Sort Room No. | Delimited Data | llegadas de business date + 0 a + 30 | `arrivals` (`horizonDays` 30) | columnas **no publicadas**: pendiente de muestra (paso 5). Mientras tanto, `RESPONSYS_RESV_AUTO` por SFTP (33 columnas confirmadas) |
@@ -267,10 +267,10 @@ corepack pnpm --filter @hotelos/api pms-shadow:pull -- --property <id> --folder 
 
 | Flag | Significado |
 | --- | --- |
-| `--property <id>` | propiedad de Anfitorio (`cmrhw9jy40003fyvbuu2ec2w7` para Rías Altas) |
+| `--property <id>` | propiedad de ehotelOS (`cmrhw9jy40003fyvbuu2ec2w7` para Rías Altas) |
 | `--folder <dir>` | carpeta a recorrer (`/srv/sftp/opera/rias`); solo ficheros regulares `.csv`, `.txt`, `.xml`, `.xlsx`; ignora `procesados/` |
 | `--feed auto` (defecto) | clasifica cada fichero por nombre y cabecera (`GEN_XMLBO_REVENUE*.xml` → `revenue`, cabecera `RESERVATION_ID,…` → `arrivals`, `departure_all` → `departures`…); un feed explícito (`--feed revenue`) fuerza el mismo para todos |
-| `--business-date YYYY-MM-DD` | business date del corte; por defecto el más reciente entre el business date de Anfitorio (`business_dates."current_date"`, que en modo sombra no avanza) y hoy en la zona del hotel, corregido por el `businessDateOffset` del feed (misma regla que el conector de correo y el check-in) |
+| `--business-date YYYY-MM-DD` | business date del corte; por defecto el más reciente entre el business date de ehotelOS (`business_dates."current_date"`, que en modo sombra no avanza) y hoy en la zona del hotel, corregido por el `businessDateOffset` del feed (misma regla que el conector de correo y el check-in) |
 | `--move-to <dir>` | tras un 202 (o un 409 duplicado ya conocido) mueve el fichero a **esa carpeta tal cual** (sin subcarpeta por fecha; una ruta relativa se resuelve desde el directorio en que corre el CLI —`apps/api` con `pnpm --filter`—, así que conviene la absoluta: `/srv/sftp/opera/rias/procesados`; si ya existe un fichero con el mismo nombre se antepone una marca de tiempo); el cron de abajo **borra a los 30 días** lo que hay en `procesados/` (GDPR: nunca se conservan más) |
 | `--dry-run` (defecto) / `--apply` | dry-run lista los ficheros con su tamaño y el feed clasificado (por nombre y por los primeros 4 KiB) sin llamar al API ni a la BD; `--apply` con `--ingest-url` sube por HTTP; `--apply` **sin** `--ingest-url` es el **modo directo**: llama al servicio en proceso con el usuario de sistema `usr_system_pms_shadow` (`source cli`), pensado para el arranque y la carga histórica **con los API parados** (cadena de auditoría in-memory, deuda 12(c) de `CLAUDE.md`) |
 | `--ingest-url` + `--api-key` | endpoint y clave (`<clientId>.<clientSecret>`); si faltan se leen de `PMS_SHADOW_INGEST_URL` / `PMS_SHADOW_API_KEY` del entorno del agente (**preferible**: la clave en argv queda visible en `ps`, en el crontab y en el historial del shell; ponla en un fichero de entorno del cron con permisos 600). La carpeta se recorre con `lstat`: los enlaces simbólicos se ignoran. Con ingest el CLI **no toca la BD**: la cadena de auditoría la escribe el API (sin parar servidores) |
@@ -305,7 +305,7 @@ solo por `X-Api-Key: <clientId>.<clientSecret>` de una `DeveloperApp` activa con
 | --- | --- |
 | `propertyId` | obligatorio; debe pertenecer a la organización de la app |
 | `feed` | `arrivals` · `inhouse` · `departures` · `changes` · `revenue` · `stats` · `auto` (clasificación por nombre y cabecera; no reconocible → 400 `PMS_SHADOW_FEED_UNKNOWN` + alerta `OPERA_FEED_UNRECOGNIZED`) |
-| `businessDate?` | `YYYY-MM-DD`; por defecto el más reciente entre el business date de Anfitorio y hoy en la zona del hotel, más el `businessDateOffset` del feed (los ingresos toman la fecha del propio XML) |
+| `businessDate?` | `YYYY-MM-DD`; por defecto el más reciente entre el business date de ehotelOS y hoy en la zona del hotel, más el `businessDateOffset` del feed (los ingresos toman la fecha del propio XML) |
 | `fileName` | ≤ 200 caracteres; se guarda en el run (nunca el contenido) |
 | `contentBase64` | bytes del fichero, ≤ 5 MiB reales (`PMS_SHADOW_MAX_FILE_BYTES`; 400 `PMS_SHADOW_FILE_TOO_LARGE`), ≤ 7·1024·1024 caracteres |
 | `force?` | repite un fichero ya recibido para el mismo feed y día (crea un run nuevo) |
@@ -388,7 +388,7 @@ Cada corte se procesa fila a fila, en serie, con el `analyse` de la Tanda 7 en m
 | con enlace y **mismo** `rowHash` | `unchanged` | solo `lastSeenAt`, `lastBusinessDate`, `lastImportId`, `missingStreak = 0` |
 | con enlace y hash **distinto**, mismo estado | `update` | `updateReservationShadow` (`pms.service.ts`, aditiva): `arrivalDate`, `departureDate`, `roomTypeId`, `ratePlanId`, `adults` / `children`, `roomsCount`, `totalAmount`, `marketSegment`, `channel`, `groupCode`, `assignedRoomId`; **sin eventos de dominio ni correos**; el diff (campos, sin PII) va a `ReservationImportRow.warningsJson` |
 | con enlace y estado destino distinto | `update` + `transition` | lo anterior y la transición de §7.3 |
-| con enlace, reserva `cancelled` / `no_show` en Anfitorio y fila viva (`Reserved`…) | `create` (reactivación) | reserva **nueva** con `RESERVATION_IMPORT_ROW_REFERENCE_REUSED_CANCELLED`; el enlace pasa a apuntar a la nueva (decisión 4 de la Tanda 7) |
+| con enlace, reserva `cancelled` / `no_show` en ehotelOS y fila viva (`Reserved`…) | `create` (reactivación) | reserva **nueva** con `RESERVATION_IMPORT_ROW_REFERENCE_REUSED_CANCELLED`; el enlace pasa a apuntar a la nueva (decisión 4 de la Tanda 7) |
 | fila sin nº de confirmación en un feed que lo exige (`arrivals`, `inhouse`, `changes`) | error | `RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE` |
 
 El `rowHash` es sha256 de la fila normalizada (fechas ISO, códigos plegados, importes con dos decimales):
@@ -410,12 +410,12 @@ la Tanda 7 (`confirmada` / `tentativa` / `cancelada`). `Prospect` y `Requested` 
 
 ### 7.3 · Transiciones y sus condiciones
 
-| Transición OPERA | Acción en Anfitorio | Condición / si no se cumple |
+| Transición OPERA | Acción en ehotelOS | Condición / si no se cumple |
 | --- | --- | --- |
 | → Cancelled | `transitionReservation(cancelled, "Cancelada en OPERA · <business date>")` | reserva `confirmed`. Si ya está `checked_in` / `checked_out` → **no se cancela**, aviso `RESERVATION_IMPORT_ROW_SYNC_CANCEL_AFTER_CHECKIN` y alerta (Recepción revisa en OPERA) |
-| → No Show | `transitionReservation(no_show)` | reserva `confirmed` y business date ≥ llegada + 1; sin fee de Anfitorio |
+| → No Show | `transitionReservation(no_show)` | reserva `confirmed` y business date ≥ llegada + 1; sin fee de ehotelOS |
 | → Checked In | **check-in sombra**: `checkInReservation` (`pms.service.ts:1580`) con la habitación mapeada de `ROOM_NUMBER` / «Room No.» (si hay varias separadas por coma, la primera), firma centinela `signatureObjectKey = "opera:<confirmación>"` (no hay firma real: el registro se hizo en OPERA) y `allowEarlyCheckIn: true` en ambos sentidos (el corte puede llegar antes o después de la ventana de check-in del hotel) | habitación válida, disponible y del tipo (o compatible). Sin habitación válida → la reserva **permanece `confirmed`**, aviso `RESERVATION_IMPORT_ROW_OPERA_CHECKIN_WITHOUT_ROOM` + alerta `OPERA_CHECKIN_WITHOUT_ROOM`; el siguiente corte lo reintenta. Sin cargos de folio |
-| → Checked Out | **check-out sombra**: `checkOutReservationDetailed` (`pms.service.ts:1782`) + cierre del folio primario si está a cero (mismo patrón que `POST /reservations/:id/check-out`, `server.ts:4849-4862`) → `checked_out`, folio `closed`, `Stay`. Si la reserva no estaba `checked_in` en Anfitorio (llegada pasada que nunca vimos) → camino `historical` de la Tanda 7: estancia cerrada atómica | sin importes de folio: el ingreso lo contabiliza §8, no la reserva |
+| → Checked Out | **check-out sombra**: `checkOutReservationDetailed` (`pms.service.ts:1782`) + cierre del folio primario si está a cero (mismo patrón que `POST /reservations/:id/check-out`, `server.ts:4849-4862`) → `checked_out`, folio `closed`, `Stay`. Si la reserva no estaba `checked_in` en ehotelOS (llegada pasada que nunca vimos) → camino `historical` de la Tanda 7: estancia cerrada atómica | sin importes de folio: el ingreso lo contabiliza §8, no la reserva |
 | Checked In → Reserved, Checked Out → Checked In… (regresión) | **nada** | aviso `RESERVATION_IMPORT_ROW_SYNC_STATUS_REGRESSION`: OPERA no retrocede estados; casi siempre es un fichero viejo o del hotel equivocado |
 | cambio de habitación de una reserva ya `checked_in` | **nada** en la habitación | aviso `RESERVATION_IMPORT_ROW_SYNC_ROOM_MOVE_IGNORED` (el traslado se hace en recepción con `move`, que es transaccional); el resto de campos sí se actualiza |
 | fallo del `updateReservationShadow` | fila `error` | `RESERVATION_IMPORT_ROW_SYNC_UPDATE_FAILED` (mensaje sin valores); el bucle sigue |
@@ -429,7 +429,7 @@ ingest (`usr_system_pms_shadow`) los tiene.
 ### 7.4 · Reactivación
 
 `Cancelled → Reserved` en OPERA (la reserva cancelada vuelve a estar viva) no reabre la reserva
-cancelada de Anfitorio (el PMS no tiene esa transición): se crea una **nueva** con
+cancelada de ehotelOS (el PMS no tiene esa transición): se crea una **nueva** con
 `RESERVATION_IMPORT_ROW_REFERENCE_REUSED_CANCELLED`, el enlace pasa a apuntar a ella y la cancelada
 conserva su historial. Lo mismo tras un deshacer del lote que la creó.
 
@@ -441,7 +441,7 @@ del corte** (`arrivals`: [business date, + `horizonDays`]; `departures`: salida 
 
 - `missingStreak += 1`. Con `missingStreak = 1` se abre `OPERA_MISSING_IN_SNAPSHOT` (`warning`, con nº
   de confirmación, feed y business date). Con 2 cortes consecutivos ausentes la alerta sube a `error`.
-- **Nunca se cancela sola.** Recepción confirma en OPERA: si está cancelada, la cancela en Anfitorio
+- **Nunca se cancela sola.** Recepción confirma en OPERA: si está cancelada, la cancela en ehotelOS
   desde la reserva (motivo «Cancelada en OPERA · confirmada manualmente») y resuelve la alerta; si sigue
   viva (p. ej. movida fuera de la ventana), resuelve la alerta con el motivo y el snapshot semanal la
   volverá a ver.
@@ -568,18 +568,18 @@ no bloquea: el bloqueo es solo por código sin mapear). Por transaction code la 
 ### 9.1 · Reconciliación
 
 `GET /properties/:propertyId/pms-shadow/reconciliation?businessDate=2026-09-16` (`accounting.read`)
-compara **lo que Anfitorio calcula** (reservas enlazadas y asiento del día) con **lo que OPERA declara**
+compara **lo que ehotelOS calcula** (reservas enlazadas y asiento del día) con **lo que OPERA declara**
 (`declared` del feed `stats` del día o del corte que las trajo):
 
-| `metric` | Anfitorio | OPERA (fuente) | Tolerancia (`PMS_SHADOW_RECON_TOLERANCES`) |
+| `metric` | ehotelOS | OPERA (fuente) | Tolerancia (`PMS_SHADOW_RECON_TOLERANCES`) |
 | --- | --- | --- | --- |
 | `arrivals`, `departures`, `rooms_occupied`, `occupancy_pct`, `no_shows` | reservas enlazadas por fecha y estado | Manager Report: Arrival Rooms, Departure Rooms, Rooms Occupied, % Rooms Occupied, No Show Rooms (columna Day); o `GEN_XMLBO_STATISTICS` | `rooms: 0` (conteo exacto) |
 | `revenue_total`, `revenue_rooms`, `tax_total` | Σ líneas del asiento `pms_shadow_revenue` del día (705.x, 705.1, 477.x) | Trial Balance «Transaction Total Today» / Revenue Total; Manager Report Room Revenue / Total Revenue; `findeptcodes` Day Net | `revenuePerCode: 0.01`, `revenueTotal: 1.00` |
 | `adr`, `revpar` | 705.1 / habitaciones ocupadas; 705.1 / habitaciones disponibles | Manager Report ADR / Revenue per Available Room | `adr: 0.05` |
-| `reservations_made`, `cancellations` | **sin dato** (`null` → fila `missing`, nunca `OPERA_RECON_COUNT_MISMATCH`): con snapshots la fecha de creación en Anfitorio es la del corte que la trajo (un corte inicial «hace» 30 días de reservas ese día) y la cancelación se ve el día del corte; se calcularán con el feed `changes` (`resreservyesterday` / `rescancel`) o con el async de OHIP (fase 2) | Manager Report Reservations Made Today / Cancellations Made Today | 0 |
+| `reservations_made`, `cancellations` | **sin dato** (`null` → fila `missing`, nunca `OPERA_RECON_COUNT_MISMATCH`): con snapshots la fecha de creación en ehotelOS es la del corte que la trajo (un corte inicial «hace» 30 días de reservas ese día) y la cancelación se ve el día del corte; se calcularán con el feed `changes` (`resreservyesterday` / `rescancel`) o con el async de OHIP (fase 2) | Manager Report Reservations Made Today / Cancellations Made Today | 0 |
 
 Cada fila devuelve `{ metric, opera, anfitorio, delta, status: ok | mismatch | missing }` (`missing` =
-OPERA no declaró la métrica: el feed `stats` no llegó; o Anfitorio no la calcula todavía, como
+OPERA no declaró la métrica: el feed `stats` no llegó; o ehotelOS no la calcula todavía, como
 `reservations_made` / `cancellations`). La reconciliación se ejecuta al recibir el feed `stats` o `revenue`
 del día (job §10) y a demanda; el KPI «último día conciliado» del panel (`lastReconciledDate`) es el último
 business date con todas las filas `ok`. Un `mismatch` de conteo abre `OPERA_RECON_COUNT_MISMATCH`; uno de
@@ -604,8 +604,8 @@ tiene modo «todas»).
 
 | Código | Severidad | Cuándo | Qué hacer |
 | --- | --- | --- | --- |
-| `OPERA_MISSING_IN_SNAPSHOT` | warning (error al 2.º corte) | reserva enlazada, en ventana, ausente del corte y sin cancelación / no-show en `changes` (§7.5) | comprobar en OPERA; si está cancelada, cancelarla en Anfitorio desde la reserva y resolver; si sigue viva, resolver con motivo |
-| `OPERA_CONFLICT_LOCAL_RESERVATION` | warning | fila cuya confirmación coincide con la `externalReference` de una reserva **sin enlace** (creada en Anfitorio) | decidir cuál gobierna: cancelar la local (OPERA la sustituye en el siguiente corte) o dejarla y resolver; nunca se toca sola |
+| `OPERA_MISSING_IN_SNAPSHOT` | warning (error al 2.º corte) | reserva enlazada, en ventana, ausente del corte y sin cancelación / no-show en `changes` (§7.5) | comprobar en OPERA; si está cancelada, cancelarla en ehotelOS desde la reserva y resolver; si sigue viva, resolver con motivo |
+| `OPERA_CONFLICT_LOCAL_RESERVATION` | warning | fila cuya confirmación coincide con la `externalReference` de una reserva **sin enlace** (creada en ehotelOS) | decidir cuál gobierna: cancelar la local (OPERA la sustituye en el siguiente corte) o dejarla y resolver; nunca se toca sola |
 | `OPERA_CHECKIN_WITHOUT_ROOM` | warning | OPERA dice `Checked In` y la fila no trae habitación válida (vacía, no mapeada, de otro tipo u ocupada) | revisar `roomTypes` / el nº de habitación en OPERA; el siguiente corte reintenta; o hacer el check-in en recepción |
 | `OPERA_TRX_CODE_UNMAPPED` | error | el fichero de ingresos trae un transaction code sin entrada en `trxMappingJson` (p. ej. OPERA creó un código nuevo) | completar el mapeo en el perfil (cuenta + USALI o `ignore`) y volver a contabilizar el día (el fichero queda en `procesados/` o se resube con `force`) |
 | `OPERA_ROOM_TYPE_UNMAPPED` | error | room type de OPERA sin entrada en `roomTypes` ni en `pseudoRoomTypes` | añadir el mapeo; las filas afectadas quedaron en error y entran en el siguiente corte |
@@ -835,7 +835,7 @@ SELECT "current_date" FROM business_dates WHERE property_id = '<propertyId>';
 
 **Para arrancar Rías Altas (día 1):**
 
-1. Hotel Code de Property Controls de cada hotel ↔ código Anfitorio (RA, LT, PG, MC, AS, FN, LL); en este
+1. Hotel Code de Property Controls de cada hotel ↔ código ehotelOS (RA, LT, PG, MC, AS, FN, LL); en este
    runbook `RIAS` es ficticio.
 2. Hora habitual del night audit por hotel (fija `expectedTime` y `businessDateOffset` de §3.1).
 3. Listados de configuración (§7.4 del diseño, PDF o Delimited, una vez por hotel): `cf_roomtypes`,
@@ -866,7 +866,7 @@ responde `RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED`):
 | Cuál de las dos plantillas «Revenue By Date» está vigente (`GEN_XMLBO_REVENUE_DY` / `GEN_XMLBO_REV_DAY`) | histórico de ingresos pendiente | respuesta de Oracle / consultor |
 | **Signo de los cobros** (`PAYMENT`) en `GEN_XMLBO_REVENUE` y en Day Net de `findeptcodes` | el importador asume el convenio del XML de los tests de L2 (cobros **negativos**, `received = −amount`); un `findeptcodes` con cobros positivos da `totals.payments` negativo y, con `includePayments: true`, contabilizaría los cobros al revés → mantener `includePayments: false` (valor por defecto) hasta la muestra | XML de Revenue y `findeptcodes` reales del mismo día |
 | **Fila de cabecera del export Responsys** (`RESPONSYS_RESV_AUTO`) | el perfil y el clasificador del feed (`classifyFeed`: `RESERVATION_ID` + `ARRIVAL_DATE` en la primera línea) asumen que el CSV trae los nombres de columna; si el export real llega sin cabecera, se añade `headerless` a `feeds.arrivals` como en `departures` | primer export real (SFTP o descarga manual) |
-| **Adopción de reservas ya existentes en Anfitorio** (creadas por recepción, canal o lote en modo crear) como gobernadas por OPERA | no hay ruta: la misma referencia sin enlace es `OPERA_CONFLICT_LOCAL_RESERVATION` (fila omitida, alerta); en la demo del integrador los 29 enlaces del lote de la Tanda 7 se crearon por SQL (`pms_shadow_links` con `first_import_id` del lote y `row_hash` centinela) | decisión de producto (§8.1 del diseño): opción `adoptLocal` del importador o CLI `pms-shadow:adopt` auditado |
+| **Adopción de reservas ya existentes en ehotelOS** (creadas por recepción, canal o lote en modo crear) como gobernadas por OPERA | no hay ruta: la misma referencia sin enlace es `OPERA_CONFLICT_LOCAL_RESERVATION` (fila omitida, alerta); en la demo del integrador los 29 enlaces del lote de la Tanda 7 se crearon por SQL (`pms_shadow_links` con `first_import_id` del lote y `row_hash` centinela) | decisión de producto (§8.1 del diseño): opción `adoptLocal` del importador o CLI `pms-shadow:adopt` auditado |
 
 Documentos relacionados: [`reservas-importacion.md`](reservas-importacion.md) (§18 modo sincronizar),
 [`finanzas-contabilidad.md`](finanzas-contabilidad.md) (motor contable, reversos, periodos cerrados),

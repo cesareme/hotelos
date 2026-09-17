@@ -4,7 +4,7 @@ import type { Page, TestInfo } from "@playwright/test";
  * Detects whether the app is currently sitting on the LoginScreen.
  *
  * The LoginScreen is rendered when there is no persisted user in localStorage
- * (see AuthGate in src/App.tsx). It shows a heading "HotelOS" and a button
+ * (see AuthGate in src/App.tsx). It shows the eyebrow "ehotelOS · Back Office" and a button
  * with the label "Iniciar sesión". When the dev env doesn't have a bypass
  * (auto-login or seeded user) we skip the body of the spec with a TODO marker
  * rather than failing the suite — this keeps the smoke suite green while the

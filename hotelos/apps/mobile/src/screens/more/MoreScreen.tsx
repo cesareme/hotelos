@@ -142,7 +142,7 @@ export function MoreScreen(props: { onNavigate?: (route: string) => void }) {
 
       <View style={styles.debugCard}>
         <Text style={styles.cardTitle}>Dev Module Debug</Text>
-        <Text style={styles.cardBody}>Current user: admin@hotelos.local - role: Local Super Admin - property: HotelOS Demo Hotel.</Text>
+        <Text style={styles.cardBody}>Current user: admin@hotelos.local - role: Local Super Admin - property: Hotel Demo.</Text>
         <Text style={styles.cardBody}>Enabled modules include revenue_profit_engine, distribution_hub, ai_onboarding_migration, owner_mode, ai_governance and spain_guest_register_compliance.</Text>
         <Text style={styles.cardBody}>Admin web URL: {adminUrl ?? "not configured, using BackOfficePreview fallback"}</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Open Module Visibility" onPress={() => props.onNavigate?.("ModuleVisibilityDebug")} style={styles.inlineButton}>

@@ -13,7 +13,7 @@ export function ManualSetupPreviewScreen(props: { onNavigate?: (route: string) =
         <Text style={styles.title}>Manual Setup Center</Text>
         <Text style={styles.body}>
           Every hotel-entered setup option is visible here with the input categories, permission, route and database target needed
-          to configure HotelOS without AI migration.
+          to configure ehotelOS without AI migration.
         </Text>
         <View style={styles.chips}>
           <StatusChip label={`${MANUAL_SETUP_COVERAGE_SUMMARY.uncheckedOptions} unchecked blockers`} tone="success" />

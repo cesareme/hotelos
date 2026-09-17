@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { BRAND } from "./lib/brand.js";
 import { resolve as resolvePath2 } from "node:path";
 {
   const candidates = [
@@ -2616,7 +2617,7 @@ export async function buildApiServer() {
     try {
       const r = await handleEmailOAuthCallback(q.state, q.code);
       reply.type("text/html");
-      return `<html><body style="font-family:sans-serif;padding:40px"><h2>✅ Buzón conectado</h2><p>${r.emailAddress ?? r.provider}. Ya puedes cerrar esta pestaña y volver a HotelOS.</p></body></html>`;
+      return `<html><body style="font-family:sans-serif;padding:40px"><h2>✅ Buzón conectado</h2><p>${r.emailAddress ?? r.provider}. Ya puedes cerrar esta pestaña y volver a ${BRAND.name}.</p></body></html>`;
     } catch (err) {
       reply.type("text/html");
       return `<html><body style="font-family:sans-serif;padding:40px"><h2>Error al conectar</h2><p>${err instanceof Error ? err.message : "Error"}</p></body></html>`;

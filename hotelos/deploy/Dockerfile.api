@@ -1,4 +1,4 @@
-# Anfitorio API · production image (pnpm workspace + tsx runtime)
+# ehotelOS API · production image (pnpm workspace + tsx runtime)
 #
 # Tanda 4 (instalabilidad): the previous image was installed with npm on a pnpm
 # `workspace:*` monorepo (EUNSUPPORTEDPROTOCOL) and started a `dist/server.js`

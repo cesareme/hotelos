@@ -13,7 +13,7 @@ import { resolveVerifactuSoftware, VERIFACTU_SOFTWARE_DEFAULTS } from "../softwa
 const COMPLETE = {
   VERIFACTU_SOFTWARE_NAME: "Anfitorio Software SL",
   VERIFACTU_SOFTWARE_NIF: "B12345674",
-  VERIFACTU_SYSTEM_NAME: "Anfitorio",
+  VERIFACTU_SYSTEM_NAME: "ehotelOS",
   VERIFACTU_SYSTEM_ID: "01",
   VERIFACTU_SYSTEM_VERSION: "1.4.0",
   VERIFACTU_INSTALL_NUMBER: "VPS-HOSTINGER-001",
@@ -27,7 +27,7 @@ test("complete environment resolves ok with every field and the fixed VERI*FACTU
   assert.deepEqual(result.software, {
     nombreRazon: "Anfitorio Software SL",
     nif: "B12345674",
-    nombreSistema: "Anfitorio",
+    nombreSistema: "ehotelOS",
     idSistema: "01",
     version: "1.4.0",
     numeroInstalacion: "VPS-HOSTINGER-001",
@@ -54,7 +54,7 @@ test("blank strings count as absent: the demo .env (NIF= and INSTALL_NUMBER=) is
   assert.notEqual(result.software.nif, "");
 });
 
-test("defaults: system name Anfitorio, id 01, version from APP_VERSION, MultiOT S", () => {
+test("defaults: system name ehotelOS, id 01, version from APP_VERSION, MultiOT S", () => {
   const result = resolveVerifactuSoftware({
     VERIFACTU_SOFTWARE_NAME: "Anfitorio Software SL",
     VERIFACTU_SOFTWARE_NIF: "B12345674",
@@ -62,18 +62,18 @@ test("defaults: system name Anfitorio, id 01, version from APP_VERSION, MultiOT 
     APP_VERSION: "2026.09.1"
   });
   assert.equal(result.ok, true);
-  assert.equal(result.software.nombreSistema, "Anfitorio");
+  assert.equal(result.software.nombreSistema, "ehotelOS");
   assert.equal(result.software.idSistema, "01");
   assert.equal(result.software.version, "2026.09.1");
   assert.equal(result.software.tipoUsoPosibleMultiOT, "S");
   assert.equal(result.software.indicadorMultiplesOT, "S");
 });
 
-test("VERIFACTU_SYSTEM_VERSION wins over APP_VERSION and falls back to 0.1.0", () => {
+test("VERIFACTU_SYSTEM_VERSION wins over APP_VERSION and falls back to 1.0.0", () => {
   const explicit = resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_SYSTEM_VERSION: "3.0.0", APP_VERSION: "dev" });
   assert.equal(explicit.software.version, "3.0.0");
   const none = resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_SYSTEM_VERSION: "", APP_VERSION: "" });
-  assert.equal(none.software.version, "0.1.0");
+  assert.equal(none.software.version, "1.0.0");
 });
 
 test("NIF is normalised and checksum-validated (producer NIF, not the issuer)", () => {

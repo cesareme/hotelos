@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HotelOS · bootstrap a fresh Hostinger VPS (Ubuntu 24.04 LTS) into a
+# ehotelOS · bootstrap a fresh Hostinger VPS (Ubuntu 24.04 LTS) into a
 # production-ready Docker host. Run this once after `ssh`-ing in as root.
 #
 # Idempotent: re-runnable, skips steps already done.
@@ -77,7 +77,7 @@ if ! swapon --show | grep -q '/swapfile'; then
     sysctl vm.swappiness=10 || true
 fi
 
-log "8/9 · Clone HotelOS repo to /opt/hotelos (if not present)"
+log "8/9 · Clone ehotelOS repo to /opt/hotelos (if not present)"
 mkdir -p /opt/hotelos
 chown hotelos:hotelos /opt/hotelos
 if [[ -z "${REPO_URL:-}" ]]; then

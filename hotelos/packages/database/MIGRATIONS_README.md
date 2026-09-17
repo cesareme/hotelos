@@ -1,6 +1,6 @@
 # Database migrations — operations guide
 
-This package owns the Postgres schema of Anfitorio (HotelOS) through Prisma
+This package owns the Postgres schema of ehotelOS through Prisma
 migrations. Since 2026-09-14 (Tanda 4, DATA-01) the chain is **one squashed
 baseline** generated from `schema.prisma`, and every environment must carry it
 in `_prisma_migrations` — either because `migrate deploy` applied it (new

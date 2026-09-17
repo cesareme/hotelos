@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HotelOS · setup-vps.sh · ORQUESTADOR MAESTRO
+# ehotelOS · setup-vps.sh · ORQUESTADOR MAESTRO
 #
 # Corre ESTO desde tu Mac (el Mac Pro, máquina única). Hace el flujo completo de
 # configuración de un VPS dev de cero a "Claude Code listo":
@@ -56,7 +56,7 @@ if [[ -z "$VPS_IP" ]]; then
 fi
 
 c_blue "═══════════════════════════════════════════════════════════"
-c_blue " HotelOS · Setup VPS dev · $VPS_IP (user: $DEV_USER)"
+c_blue " ehotelOS · Setup VPS dev · $VPS_IP (user: $DEV_USER)"
 c_blue "═══════════════════════════════════════════════════════════"
 
 # ---------- 1. conectividad ----------

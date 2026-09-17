@@ -48,7 +48,7 @@ son ficticios**: empresa Sage `1` «CELUISMA DEMO S.A.» con NIF ficticio `A0000
 
 ### 1.2 · Instrucción exacta por listado de Sage 200 [S: menús de la ayuda de Sage; confirmar con la primera exportación real]
 
-| Listado | En Sage 200 | Opciones que hay que marcar | Lote Anfitorio |
+| Listado | En Sage 200 | Opciones que hay que marcar | Lote ehotelOS |
 | --- | --- | --- | --- |
 | **Diario** de un mes | Contabilidad › Consultas y listados › Diario | Límites de fechas = el mes; «Totalizar por asiento»; **«Desglose analítico»** (canal, delegación, departamento, sección y proyecto por apunte); **«Enviar a Excel»** (no «formato libros», que omite columnas). Un fichero por mes | `journal` (`sage_excel`) |
 | **Sumas y saldos nivel 0** del mismo mes | Contabilidad › Consultas y listados › Sumas y saldos | **«Nivel 0»** (cuentas detalladas); columnas «Debe / Haber / Saldo» (o «Debe / Haber / Deudor / Acreedor»); **«Comparativo periodo acumulado»** (apertura + periodo + acumulado por cuenta); «Solo cuentas con saldo» **desmarcado**; **«Hoja adicional canales/delegaciones»** marcada — es el hueco 7 del diseño §10.3: sin esa hoja no hay reconciliación por centro, solo el consolidado de sociedad | reconciliación (§6) y `balances` |
@@ -181,7 +181,7 @@ del proveedor —dos proveedores numeran «1», «2»… a la vez— y la clave 
 la serie + número propios ya son únicos), `period` recalculado con `periodCodeForDate` según la
 periodicidad de `vat_settings` (nunca se toma del Excel) y `counterpartyNif` /
 `counterpartyName` (alimentan el 347). **Modo sombra (§5.1):** una emitida cuya serie + número
-es una factura de Anfitorio, o una recibida ya contabilizada en Anfitorio (NIF + número del
+es una factura de ehotelOS, o una recibida ya contabilizada en ehotelOS (NIF + número del
 proveedor, `SupplierBill` posted / paid), no se importa (`nativeSkipped[]` en la preview, fila
 `skipped_native` en el lote): su fila del libro ya la materializa el propio documento y el
 303 / 347 / 390 no la cuenta dos veces. Dos lotes `vat_books` con alguna fila en común solapan
@@ -208,8 +208,8 @@ exige (400 `LEDGER_IMPORT_ACCOUNT_UNMAPPED`, 400 `LEDGER_IMPORT_YEAR_CODE_INVALI
 | --- | --- | --- | --- | --- |
 | 1 | `plan` | Plan de cuentas (Gestor de Exportación) o canónico de plan | `ledger_account_maps` (propuesta de las 7 reglas, §4.1) y las subcuentas `create` en `accounts` (por `prismaChartStore(tx).createAccounts`; nunca renombra ni borra; `nameDiffers` se avisa) | `chart_template = pgc_pymes_hotelero_v1` provisionado (`accounting:provision-chart`) |
 | 2 | `fiscal_years` | Diario del periodo «Apertura» del ejercicio (asiento de apertura, `NumeroPeriodo 0`) o canónico de diario con `periodo` 0 | `fiscal_years { code: <ejercicio>, propertyId: null, 01/01 → 31/12 }`, 12 `fiscal_periods` mensuales `open` (por `tx.fiscalYear` / `tx.fiscalPeriod.create` replicando las validaciones de `createFiscalYear`), y el asiento `opening` (`sage200_journal`, `entryKind opening`, exento de centro) | plan; `code` = año natural `YYYY` (400 `LEDGER_IMPORT_YEAR_CODE_INVALID`); Faranda: hoy 0 `fiscal_years`, sus 112 asientos llevan `fiscal_year_code '2026'` |
-| 3 | `journal` | Diario **por meses** (Excel con desglose analítico, CSV IME o canónico) | `journal_entries` / `journal_lines` (`sage200_journal`, un asiento por (asiento Sage, centro)), `cost_centers usali` por `(propertyId, code)`, `ledger_import_entries` | plan + `fiscal_years` + mapa analítico completo (§4.2); periodos abiertos en Anfitorio; el ejercicio **sin** lote `balances` vivo (409 `LEDGER_IMPORT_OVERLAP`, `replace` no lo levanta); si Sage numera por canal / delegación, `options.numberingDimension` (`canal` \| `delegacion`; CLI `--numbering`): el código entra en la clave y dos asientos nº N de delegaciones distintas no se funden |
-| 4 | `vat_books` | Libro Registro de IVA del periodo de liquidación (AEAT) o bloque IVA del CSV IME | `vat_book_entries` (`sourceType sage200`; `rebuildVatBooks` las conserva; los documentos propios de Anfitorio se omiten, §2.5), `ledger_third_parties` (NIF / nombre) | fila `vat_settings` de la organización (409 `LEDGER_IMPORT_VAT_SETTINGS_MISSING` si no existe: §9); ningún otro lote `vat_books` vivo con las mismas facturas (409 `LEDGER_IMPORT_OVERLAP`, o `replace`) |
+| 3 | `journal` | Diario **por meses** (Excel con desglose analítico, CSV IME o canónico) | `journal_entries` / `journal_lines` (`sage200_journal`, un asiento por (asiento Sage, centro)), `cost_centers usali` por `(propertyId, code)`, `ledger_import_entries` | plan + `fiscal_years` + mapa analítico completo (§4.2); periodos abiertos en ehotelOS; el ejercicio **sin** lote `balances` vivo (409 `LEDGER_IMPORT_OVERLAP`, `replace` no lo levanta); si Sage numera por canal / delegación, `options.numberingDimension` (`canal` \| `delegacion`; CLI `--numbering`): el código entra en la clave y dos asientos nº N de delegaciones distintas no se funden |
+| 4 | `vat_books` | Libro Registro de IVA del periodo de liquidación (AEAT) o bloque IVA del CSV IME | `vat_book_entries` (`sourceType sage200`; `rebuildVatBooks` las conserva; los documentos propios de ehotelOS se omiten, §2.5), `ledger_third_parties` (NIF / nombre) | fila `vat_settings` de la organización (409 `LEDGER_IMPORT_VAT_SETTINGS_MISSING` si no existe: §9); ningún otro lote `vat_books` vivo con las mismas facturas (409 `LEDGER_IMPORT_OVERLAP`, o `replace`) |
 | 5 | `third_parties` | Clientes y Proveedores (Gestor de Exportación) o canónico | `ledger_third_parties`; `Supplier` solo con `options.createSuppliers` (§9) | — (en cualquier momento; alimenta la descripción de las líneas colapsadas y el 347) |
 | 6 | `balances` | Sumas y saldos nivel 0 **por periodo** de los ejercicios **sin** diario (con «Comparativo periodo acumulado» y, si puede ser, la hoja por delegaciones) | `ledger_import_balances` + asiento `opening` del ejercicio + un asiento resumen `sage200_balance` por (ejercicio, periodo, centro) con Debe / Haber **brutos** por cuenta (un fichero entero por delegación con cada delegación cuadrada produce un asiento por centro sin reparto) + `regularization` / `closing` si el balance trae saldos de cierre (diseño §6) | plan + `fiscal_years` del ejercicio; **solo ejercicios sin diario**: si el ejercicio ya tiene asientos importados de diario o apertura (lote `journal` / `fiscal_years` vivo) o cualquier asiento `opening` vivo, 409 `LEDGER_IMPORT_OVERLAP { overlaps, fiscalYearCode }` y `replace` **no** lo levanta (revertir antes esos lotes) |
 | 7 | reconciliación | Sumas y saldos nivel 0 del mismo rango que el último `journal` (con hoja por delegaciones para comparar por centro) | `ledger_reconciliations` (nunca toca el diario) | `journal` del rango contabilizado; se lanza sola si el lote lleva `options.reconcile` y el balance adjunto, o con `--reconcile --balance` |
@@ -218,7 +218,7 @@ Secuencia recomendada para CELUISMA (según la necesidad 6 de §1.1): `plan` →
 2025 → `journal` 2025 mes a mes (incluidos los periodos de cierre de Sage: §5.4) → `vat_books`
 2025 por trimestre → `third_parties` → reconciliación 2025 → `fiscal_years` 2026 (la apertura
 que Sage generó al cerrar 2025) → `journal` 2026 enero-julio → `vat_books` 2026 → reconciliación
-por mes → cierre de periodos en Anfitorio (§5.3). Los ejercicios anteriores a 2025 solo con
+por mes → cierre de periodos en ehotelOS (§5.3). Los ejercicios anteriores a 2025 solo con
 `balances` (paso 6).
 
 ## 4 · Mapa de cuentas y mapa analítico
@@ -274,7 +274,7 @@ editan.
   entries }`), `office` (van a OC, como las tres etiquetas de oficina del coste de personal) o
   `property:<propertyId>`. Nunca `manual` + `societyLevel`: mezclaría lo importado con lo manual.
 - **Reparto por centro (R4).** Un asiento Sage cuyas líneas 6/7 llevan **un solo** centro → un
-  `JournalEntry` con ese `propertyId`. Líneas 6/7 de **varios** centros → **un asiento Anfitorio
+  `JournalEntry` con ese `propertyId`. Líneas 6/7 de **varios** centros → **un asiento ehotelOS
   por (asiento Sage, centro)** con las líneas 6/7 de ese centro y las líneas de balance (400 /
   410 / 4300 / 472 / 477 / 57x…) **repartidas** en proporción a Σ|6/7| del centro, céntimos
   residuales al centro de mayor peso, `taxBase` con la misma proporción, `sourceId` con sufijo
@@ -286,10 +286,10 @@ editan.
 
 ## 5 · Modo sombra contable (diseño §5)
 
-### 5.1 · Regla: el lote de Sage excluye los documentos nativos de Anfitorio
+### 5.1 · Regla: el lote de Sage excluye los documentos nativos de ehotelOS
 
-Durante el modo sombra Sage 200 registra **todo** (también las facturas que Anfitorio emite con
-VeriFactu, que Sage anota como «Emitida por otro software») y Anfitorio proyecta **sus**
+Durante el modo sombra Sage 200 registra **todo** (también las facturas que ehotelOS emite con
+VeriFactu, que Sage anota como «Emitida por otro software») y ehotelOS proyecta **sus**
 documentos (facturas, rectificativas, anulaciones, cobros, tickets). Importar el diario de Sage
 tal cual duplicaría exactamente esos asientos. Regla:
 
@@ -305,14 +305,14 @@ tal cual duplicaría exactamente esos asientos. Regla:
    por un único cobro propio de 100,00— y, a igualdad de importe y fecha, gana el asiento de
    Sage que cita la factura del cobro en su documento o concepto).
    Las claves nativas son desnudas (`sourceId` = `invoiceId` / `paymentId`): la preview enseña
-   el asiento Anfitorio con el que coincide (`sourceType`, `sourceId`, `invoiceNumber`).
+   el asiento ehotelOS con el que coincide (`sourceType`, `sourceId`, `invoiceNumber`).
    **Libros de IVA:** la misma regla vale para el lote `vat_books` (§2.5): las emitidas propias
-   (serie + número) y las recibidas ya contabilizadas en Anfitorio (NIF + número del proveedor)
+   (serie + número) y las recibidas ya contabilizadas en ehotelOS (NIF + número del proveedor)
    no entran como `sage200`; así `POST /fiscal/vat-books/rebuild`, que vuelve a derivar las filas
    nativas y conserva las `sage200`, nunca deja la misma factura dos veces en el libro.
-2. **Los asientos propios de Anfitorio se conservan tal cual**: ningún flag nuevo, ningún lector
+2. **Los asientos propios de ehotelOS se conservan tal cual**: ningún flag nuevo, ningún lector
    cambia, el replay sigue siendo válido.
-3. **Cobros sin factura Anfitorio identificable se importan**; si sobran, la reconciliación de
+3. **Cobros sin factura ehotelOS identificable se importan**; si sobran, la reconciliación de
    `4300` / `57x` los delata como `native_only`.
 4. **Faranda hoy**: 25 facturas de RA (sandbox, NIF emisores ficticios) con sus asientos, 48 de
    coste de personal 2026-01..08 y 2 de ingresos OPERA. Si Sage trae la nómina real de esos
@@ -322,25 +322,25 @@ tal cual duplicaría exactamente esos asientos. Regla:
 
 ### 5.2 · `native_only` y qué significa cada clasificación
 
-En la reconciliación (§6) las cuentas con movimiento solo en Anfitorio en el rango
+En la reconciliación (§6) las cuentas con movimiento solo en ehotelOS en el rango
 (`sourceType` nativo) se clasifican `native_only`: es lo **esperado** en `4300`, `705.x`,
-`477.x` y `57x` mientras Anfitorio emita en RA, y en `28x` / `68x` por el segundo escritor del
+`477.x` y `57x` mientras ehotelOS emita en RA, y en `28x` / `68x` por el segundo escritor del
 diario (`payables/ledger-port.ts`, inmovilizado). Cualquier otra cuenta `native_only` es un
 asiento manual o una proyección que Sage no tiene: revisar antes de cerrar el periodo.
 
 ### 5.3 · Cadencia mensual y cierre del periodo tras reconciliar
 
 Al cerrar el mes en Sage, administración exporta el Diario del mes, el Sumas y saldos nivel 0
-del mes (con la hoja por delegaciones) y, cada trimestre, el Libro de IVA del periodo. Anfitorio
+del mes (con la hoja por delegaciones) y, cada trimestre, el Libro de IVA del periodo. ehotelOS
 importa (`journal` + `vat_books`), reconcilia (§6) y, si `ok`, **cierra el periodo** en
 Contabilidad › Periodos (`POST /accounting/fiscal-periods/:id/close`): con el periodo cerrado,
 ni la proyección propia ni el replay ni un segundo lote pueden volver a escribir en ese mes (409
 `FISCAL_PERIOD_CLOSED`, rollback del lote entero). Cadencia diaria solo con login SQL de lectura
 o con la exportación XML programada en un buzón (fuera de L0-L6). Trimestral: cuadre del 303 de
-Anfitorio (libros importados + nativos) con el 303 presentado desde Sage antes de presentar;
+ehotelOS (libros importados + nativos) con el 303 presentado desde Sage antes de presentar;
 diferencia → `vat_diff`. Relevo: dos cierres mensuales consecutivos `ok` sin ajustes y un
-trimestre declarado con los libros de Anfitorio → Sage pasa a solo lectura, la última
-importación es la apertura del ejercicio siguiente y la emisión se hace ya solo en Anfitorio.
+trimestre declarado con los libros de ehotelOS → Sage pasa a solo lectura, la última
+importación es la apertura del ejercicio siguiente y la emisión se hace ya solo en ehotelOS.
 
 ### 5.4 · Cierre de ejercicio importado y regla «reabrir = revertir el lote»
 
@@ -385,7 +385,7 @@ abierta). En el front, la vista «Reconciliación» de la pestaña: el centro se
 consolidado de sociedad).
 
 **Criterio de lectura** (se guarda en `summary.criterion`): cada cuenta Sage pasa por el mapa
-(§4.1) y se agrupa por cuenta destino; Anfitorio se lee con `aggregateAccountBalances` con la
+(§4.1) y se agrupa por cuenta destino; ehotelOS se lee con `aggregateAccountBalances` con la
 **misma regla que los estados**: `status ≠ draft`, sin parejas de reversión (`reversed_by_id IS
 NULL AND reversal_of_id IS NULL`), **movimientos** del rango sin `regularization` / `closing` /
 `opening`, y **saldo a `to`** (`balance_at`, que sí incluye la apertura y deja fuera el cierre
@@ -397,15 +397,15 @@ tres ni doce saldos. Las cuentas de IVA por tipo (`map_by_rate` 472 / 477, regla
 comparan **por prefijo**: `4770000` de Sage frente a Σ `477.xx` del diario (una `477.21` con
 mapa propio no se pliega).
 
-| Comparación | Sage | Anfitorio | Tolerancia | Clasificación |
+| Comparación | Sage | ehotelOS | Tolerancia | Clasificación |
 | --- | --- | --- | --- | --- |
 | Debe / Haber del periodo por cuenta | columnas Debe / Haber (nivel 0, agrupadas por destino) | Σ `debit` / Σ `credit` del rango | **0,00** en el consolidado y en cuentas solo importadas; **0,01 × nº de asientos repartidos por centro** en cuentas de balance **por centro** (el reparto de §4.2 deja céntimos residuales) | `amount_diff` |
 | Saldo a `to`, grupos 1-5 | Saldo (Deudor / Acreedor) | `balance_at` | igual | `amount_diff` |
-| Cuentas con movimiento solo en Anfitorio | — | `sourceType` nativo en el rango | — | `native_only` (§5.2) |
+| Cuentas con movimiento solo en ehotelOS | — | `sourceType` nativo en el rango | — | `native_only` (§5.2) |
 | Asientos Sage no importados | filas `unmapped` / `error` / `skipped_native` del lote (`importId`) | — | — | `missing_in_ledger` (con `sourceEntryNumber`) |
 | IVA | Libro de IVA de Sage frente a `loadVatBookRows` y el cruce 472 / 477 del 303 | — | **0,01 por tipo impositivo** | `vat_diff` |
 
-**Por qué no cuadra con la pantalla «Sumas y saldos» de Anfitorio a fin de año.** `buildTrialBalance`
+**Por qué no cuadra con la pantalla «Sumas y saldos» de ehotelOS a fin de año.** `buildTrialBalance`
 (Contabilidad › Sumas y saldos) suma **todos** los asientos `posted` de la ventana, incluidos
 `regularization` / `closing` / `opening`, mientras que la reconciliación usa `movements` (que
 los excluye) y `balance_at`. Con los periodos de cierre importados, la pantalla de sumas y saldos
@@ -496,7 +496,7 @@ personal en el rango, avisos y `canPost`. Con `--json` sale el `LedgerImportPrev
 `LedgerImportCreateResult` (lote, entradas, `created`, `skipped`, `reconciliation`). Flags
 delicados: `--replace` reversa **enteros** los lotes que dupliquen o solapen (nunca sobre Faranda
 salvo para sustituir un mes completo); `--allow-closed --reason "…"` contabiliza en periodos
-cerrados de Anfitorio (`ignoreClosedPeriod`, auditado con el motivo; por HTTP `allowClosed` →
+cerrados de ehotelOS (`ignoreClosedPeriod`, auditado con el motivo; por HTTP `allowClosed` →
 400 `VALIDATION_ERROR`); `--entity` solo si la organización tuviera más de una sociedad.
 
 **Las mismas operaciones por API** (15 rutas del partial `accounting (ledger-import)`; claves
@@ -602,7 +602,7 @@ SELECT count(*) FROM journal_entries WHERE organization_id = '<orgId>' AND sourc
 ```
 
 Por API tras el reinicio de :3000: `GET /accounting/ledger-imports?kind=journal&status=posted`,
-`GET /accounting/ledger-imports/:id` (entradas con número Anfitorio y número Sage),
+`GET /accounting/ledger-imports/:id` (entradas con número ehotelOS y número Sage),
 `GET /accounting/reports/trial-balance?from=&to=` y `GET /accounting/annual-accounts/balance` /
 `…/pyg` con `comparative` (los asientos resumen de `balances` alimentan la columna comparativa),
 `GET /accounting/usali/pnl?from=&to=` por centro, `GET /fiscal/models/303?period=2026-Q3` con
@@ -717,7 +717,7 @@ front y el CLI muestran `LEDGER_IMPORT_ERROR_LABELS_ES`):
 | 2 | Dimensión de centro y política de apuntes 6/7 sin analítica | `delegacion` y `block` | `office` manda a OC lo no imputado (como el coste de personal) |
 | 3 | Reparto de líneas de balance por centro en asientos multi-hotel | Proporcional a Σ\|6/7\| | Alternativa: un solo asiento en el centro dominante (balance por centro más fiel al de Sage, PyG idéntico) |
 | 4 | Nómina real de Sage frente al lote de coste de personal 2026-01..08 | La preview avisa; nada se reversa solo | Reversar el lote entero (§18.5) o bloquear 640 / 642 / 465 / 476 en el mapa para ese rango |
-| 5 | Facturas de RA emitidas en Anfitorio durante la sombra | Se excluyen del lote de Sage (§5.1) | Si Sage debe mandar también en RA, cerrar los periodos en Anfitorio y no proyectar |
+| 5 | Facturas de RA emitidas en ehotelOS durante la sombra | Se excluyen del lote de Sage (§5.1) | Si Sage debe mandar también en RA, cerrar los periodos en ehotelOS y no proyectar |
 | 6 | Ejercicios antiguos: diario completo o solo saldos | Saldos (§3 paso 6) para lo anterior al primer ejercicio con diario | El diario completo antiguo cabe por tramos (XML / SQL), con más tiempo de carga |
 | 7 | Fecha de relevo y criterio de «reconciliado» | Dos cierres mensuales `ok` + un trimestre declarado | — |
 | 8 | Periodicidad y régimen de IVA (`vat_settings`, hoy sin fila) | El importador **no** decide: 409 hasta que exista la fila | Fija el `period` de los libros importados y el 303 |
@@ -747,6 +747,6 @@ Dataset sintético reproducible: `corepack pnpm --filter @hotelos/api exec node 
 
 **Orden ejecutado y resultado:** `plan` (3 subcuentas creadas: 622.1, 629.5, 705.5; el `.xlsx` da el mismo hash) → `fiscal_years` 2025 (apertura 232 apuntes, asiento 2025/1) → `journal` 2025-01…12 (2.543 asientos, nº 2 → 2544) → `journal` cierre 2025 (regularización 2545 y cierre 2546; ejercicio 2025 cerrado con 12 periodos) → `vat_books` 2025 Q1…Q4 (1.841 filas) → `third_parties` (26) → `balances` 2024 (11 asientos: apertura, 8 resúmenes por centro, regularización y cierre; 2024 cerrado) → reconciliación 2025 **ok** (56 cuentas, también por trimestre y por mes) → `fiscal_years` 2026 (asiento 2026/113 tras los 112 nativos) → `journal` 2026-01…07 (julio excluye la factura `FAC-2026-000001` por serie + número y su cobro por importe y fecha) → `vat_books` 2026 Q1, Q2 y Q3 parcial (la emitida nativa se omite) → reconciliación 2026 ene-jul **ok** (55 cuentas; también mes a mes) → reverso del lote de marzo (idempotente al repetirlo) y reimportación idéntica (claves `…#1`) → 303 2026-Q2 desde los libros (casilla 71 = 462.766,50 = liquidación del diario).
 
-**Dos correcciones de código con test que salieron de la demo:** (1) el índice de documentos nativos solo tomaba los cobros ligados a una factura (`invoiceId`), y el cobro de un folio se proyecta ANTES de facturar: ahora usa el mismo filtro que la proyección (`captured | refunded`, sin reverso, con o sin factura) y añade las devoluciones completadas (`ledger-import.native.ts`, test `ledger-import-native.test.mts`); (2) la reconciliación de un mes suelto clasificaba «falta en Anfitorio» las cuentas 6/7 sin movimiento en el mes pero con neto acumulado del ejercicio (la prima de seguros trimestral en febrero): `mergeLedgerRows` las incluye con Debe / Haber 0,00 y su saldo (`ledger-reconciliation.service.ts`).
+**Dos correcciones de código con test que salieron de la demo:** (1) el índice de documentos nativos solo tomaba los cobros ligados a una factura (`invoiceId`), y el cobro de un folio se proyecta ANTES de facturar: ahora usa el mismo filtro que la proyección (`captured | refunded`, sin reverso, con o sin factura) y añade las devoluciones completadas (`ledger-import.native.ts`, test `ledger-import-native.test.mts`); (2) la reconciliación de un mes suelto clasificaba «falta en ehotelOS» las cuentas 6/7 sin movimiento en el mes pero con neto acumulado del ejercicio (la prima de seguros trimestral en febrero): `mergeLedgerRows` las incluye con Debe / Haber 0,00 y su saldo (`ledger-reconciliation.service.ts`).
 
 **Límites vistos en la demo (no son errores del lote):** la reconciliación **por centro** (`--property RA`) solo es concluyente en las cuentas 6/7 y en los Debe / Haber de 1-5: la apertura y las liquidaciones de IVA son asientos de sociedad y el reparto proporcional de las filas sin delegación del lote `balances` no sigue la delegación de Sage, así que los saldos 1-5 por centro difieren por construcción (44 cuentas comparadas, 16 diferencias en 2025 para RA, todas de grupos 1-5); el cotejo diario↔libros del 303 (`fuentes.diario`) suma 0 en los trimestres cuya liquidación de IVA de Sage se ha importado como asiento normal (`sage200_journal` no es `vat_settlement` y el cotejo no la excluye), aunque el 303 desde libros es correcto; y con la nómina de 2026 de AS LT MC OC PG RA ya devengada por el lote de coste de personal, los devengos de Sage de esos centros se dejaron fuera del diario importable (`diario/no-importar/`) y el balance de Sage los incluye con las mismas cifras (§10.1-4).

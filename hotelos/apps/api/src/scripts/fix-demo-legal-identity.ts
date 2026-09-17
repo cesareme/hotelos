@@ -40,7 +40,7 @@ export const SYSTEM_USER_ID = "usr_system_demo_refresh";
 export type IdentityTarget = {
   organizationId: string;
   label: string;
-  organization: { legalName?: string; taxId: string };
+  organization: { name?: string; legalName?: string; taxId: string };
   property?: {
     propertyId: string;
     set: { legalName: string; address: string; postalCode: string; province: string; municipality: string; ineMunicipalityCode: string };
@@ -71,7 +71,10 @@ export const IDENTITY_TARGETS: readonly IdentityTarget[] = [
   {
     organizationId: "org_123",
     label: "org_123 (demo)",
-    organization: { taxId: "B12345674" }
+    // Rebrand 2026-09 (D3): nombres demo neutros; `demo:fix-identity --apply --confirm org_123`
+    // es la vía alternativa al SQL del lote de datos para la organización (la sociedad y
+    // los centros siguen necesitando el SQL).
+    organization: { name: "Grupo Hotelero Demo", legalName: "Grupo Hotelero Demo SL", taxId: "B12345674" }
   }
 ];
 
@@ -105,11 +108,14 @@ export type FieldChange = { entity: "organization" | "property"; id: string; fie
 /** Pure diff: which fields differ from the target (fill-if-empty fields only when empty). */
 export function diffIdentity(
   target: IdentityTarget,
-  current: { organization: { legalName: string | null; taxId: string | null } | null; property: Record<string, string | null> | null }
+  current: { organization: { name?: string | null; legalName: string | null; taxId: string | null } | null; property: Record<string, string | null> | null }
 ): FieldChange[] {
   const changes: FieldChange[] = [];
   if (!current.organization) return changes;
   const org = current.organization;
+  if (target.organization.name !== undefined && (org.name ?? null) !== target.organization.name) {
+    changes.push({ entity: "organization", id: target.organizationId, field: "name", before: org.name ?? null, after: target.organization.name });
+  }
   if (target.organization.legalName !== undefined && org.legalName !== target.organization.legalName) {
     changes.push({ entity: "organization", id: target.organizationId, field: "legalName", before: org.legalName, after: target.organization.legalName });
   }

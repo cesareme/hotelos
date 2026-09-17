@@ -29,6 +29,7 @@ import { describeSavedAt } from "./draft-store";
 import { formatDateTime, pluralize } from "./helpers";
 import { summarizeDraft } from "./rate-grid-utils";
 import type { RateGridStatusBarProps } from "./types";
+import { BRAND } from "../../config/brand";
 
 const DISCARD_CONFIRM_THRESHOLD = 20;
 
@@ -58,7 +59,7 @@ export function RateGridStatusBar(props: RateGridStatusBarProps) {
   const meta: string[] = [];
   const saved = formatDateTime(lastSavedAt);
   const published = formatDateTime(lastPublishedAt);
-  if (saved) meta.push(`Guardado en ehotelOS: ${saved}`);
+  if (saved) meta.push(`Guardado en ${BRAND.name}: ${saved}`);
   if (published) meta.push(`Última publicación: ${published}`);
 
   const handleDiscard = () => {
@@ -75,7 +76,7 @@ export function RateGridStatusBar(props: RateGridStatusBarProps) {
       ) : null}
       <span className="crg-bar__text">{text}</span>
       {hasPending && pendingPush ? (
-        <span className="crg-bar__pending" title="Guardadas en ehotelOS (ya vigentes en el PMS) pero los canales siguen con el valor anterior">
+        <span className="crg-bar__pending" title={`Guardadas en ${BRAND.name} (ya vigentes en el PMS) pero los canales siguen con el valor anterior`}>
           {pluralize(pendingPush.count, "celda guardada sin enviar a canales", "celdas guardadas sin enviar a canales")}
           {onSendPending ? (
             <CocoaButton variant="plain" size="small" tone="accent" onClick={onSendPending} disabled={saving || readOnly}>
@@ -146,7 +147,7 @@ export function RateGridStatusBar(props: RateGridStatusBarProps) {
           onClick: onSaveDraft,
           disabled: !has || saving || readOnly,
           loading: saving,
-          title: "Guarda los cambios en ehotelOS (el PMS vende el precio nuevo al momento) sin enviarlos a los canales"
+          title: `Guarda los cambios en ${BRAND.name} (el PMS vende el precio nuevo al momento) sin enviarlos a los canales`
         }}
         primary={{
           label: !has && hasPending ? "Enviar a canales" : "Revisar y publicar",

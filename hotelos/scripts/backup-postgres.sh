@@ -73,7 +73,7 @@ notify() {
     local emoji=":white_check_mark:"
     [ "$level" = "failure" ] && emoji=":rotating_light:"
     curl -fsS -X POST -H "Content-Type: application/json" \
-      -d "{\"text\":\"$emoji HotelOS backup [$CATEGORY]: $message\"}" \
+      -d "{\"text\":\"$emoji ehotelOS backup [$CATEGORY]: $message\"}" \
       "$BACKUP_NOTIFY_WEBHOOK" >/dev/null || true
   fi
 }

@@ -43,7 +43,7 @@ describe("pmsForecastMetricNote", () => {
   it("states both bases with the property's room count", () => {
     assert.equal(
       pmsForecastMetricNote(92),
-      "Previsión importada del PMS: ADR sobre habitaciones pagadas y ocupación sobre habitaciones disponibles (92 − OOO); los subtotales de Anfitorio usan 92"
+      "Previsión importada del PMS: ADR sobre habitaciones pagadas y ocupación sobre habitaciones disponibles (92 − OOO); los subtotales de ehotelOS usan 92"
     );
   });
 });

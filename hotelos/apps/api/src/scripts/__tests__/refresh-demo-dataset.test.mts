@@ -297,7 +297,7 @@ describe("fix-demo-legal-identity", () => {
   });
   it("is idempotent: a converged tenant yields no changes", () => {
     const demo = IDENTITY_TARGETS[1];
-    assert.deepEqual(diffIdentity(demo, { organization: { legalName: "HotelOS Demo SL", taxId: "B12345674" }, property: null }), []);
+    assert.deepEqual(diffIdentity(demo, { organization: { name: "Grupo Hotelero Demo", legalName: "Grupo Hotelero Demo SL", taxId: "B12345674" }, property: null }), []);
   });
 });
 

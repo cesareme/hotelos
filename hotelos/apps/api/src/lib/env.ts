@@ -458,7 +458,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     format: "string",
     maxLength: 120,
     tags: ["fiscal-real"],
-    doc: "NombreRazon del PRODUCTOR del software (titular de Anfitorio, no el hotel), según la declaración responsable (docs/compliance/verifactu-declaracion-responsable.md)."
+    doc: "NombreRazon del PRODUCTOR del software (titular de ehotelOS, no el hotel), según la declaración responsable (docs/compliance/verifactu-declaracion-responsable.md)."
   },
   VERIFACTU_SOFTWARE_NIF: {
     section: "VeriFactu",
@@ -471,9 +471,9 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     section: "VeriFactu",
     format: "string",
     maxLength: 30,
-    default: "Anfitorio",
-    example: "Anfitorio",
-    doc: "NombreSistemaInformatico (≤30)."
+    default: "ehotelOS",
+    example: "ehotelOS",
+    doc: "NombreSistemaInformatico (≤30). Valor declarado ante la AEAT: en producción se fija al nombre de la declaración responsable vigente hasta firmar la nueva (docs/compliance/verifactu-declaracion-responsable.md §4.7)."
   },
   VERIFACTU_SYSTEM_ID: {
     section: "VeriFactu",
@@ -488,7 +488,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     section: "VeriFactu",
     format: "string",
     maxLength: 50,
-    doc: "Versión declarada del sistema (≤50). Vacía = APP_VERSION y, en su defecto, 0.1.0."
+    doc: "Versión declarada del sistema (≤50). Vacía = APP_VERSION y, en su defecto, 1.0.0. Fijarla a un semver declarable (§4.7)."
   },
   VERIFACTU_INSTALL_NUMBER: {
     section: "VeriFactu",

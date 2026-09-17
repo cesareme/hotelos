@@ -110,7 +110,7 @@ test("signXmlXadesT with a real cert embeds <xades:SignatureTimeStamp> and <xade
     cert.serialNumber = "01";
     cert.validity.notBefore = new Date();
     cert.validity.notAfter = new Date(Date.now() + 86_400_000);
-    const attrs = [{ name: "commonName", value: "HotelOS Test" }];
+    const attrs = [{ name: "commonName", value: "ehotelOS Test" }];
     cert.setSubject(attrs);
     cert.setIssuer(attrs);
     cert.sign(keys.privateKey);

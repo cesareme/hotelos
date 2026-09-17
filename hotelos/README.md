@@ -1,6 +1,6 @@
-# HotelOS Mobile
+# ehotelOS
 
-HotelOS Mobile is a mobile-first operating system for hotel owners and staff. The first build targets iOS and Android with React Native, Expo Dev Client, TypeScript, a Node.js backend, PostgreSQL, Redis, object storage, workers, and a dedicated AI Gateway.
+ehotelOS is a mobile-first operating system for hotel owners and staff. The first build targets iOS and Android with React Native, Expo Dev Client, TypeScript, a Node.js backend, PostgreSQL, Redis, object storage, workers, and a dedicated AI Gateway.
 
 The core product rule is implemented from the beginning:
 

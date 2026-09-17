@@ -2,6 +2,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Bot, CalendarRange, Grid3X3, LayoutDashboard, ListChecks } from "lucide-react-native";
 import { hotelOSTokens } from "@hotelos/ui";
 import { colors } from "../theme/colors";
+import { BRAND } from "../config/brand";
 import type { MobileRouteKey } from "./ModuleRoutes";
 
 export type SuiteTabKey = "today" | "timeline" | "ai" | "operations" | "more";
@@ -19,7 +20,7 @@ export function HotelOSTabs(props: {
   onSelect: (screen: SuiteTabKey) => void;
 }) {
   return (
-    <View style={styles.nav} accessibilityLabel="HotelOS primary mobile navigation">
+    <View style={styles.nav} accessibilityLabel={`${BRAND.name} primary mobile navigation`}>
       {tabs.map((tab) => {
         const Icon = tab.icon;
         const active = props.current === tab.key;

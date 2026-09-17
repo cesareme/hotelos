@@ -20,7 +20,7 @@ const docs = readFileSync(new URL("../docs/front_ui_implementation_addendum.md",
 const figmaStructure = readFileSync(new URL("../figma/figma_file_structure.md", import.meta.url), "utf8");
 const checkInFlowData = readFileSync(new URL("checkInFlowData.ts", checkInFlowDir), "utf8");
 
-describe("HotelOS Aurora frontend UI layer", () => {
+describe("ehotelOS Aurora frontend UI layer", () => {
   it("adds code and Figma-ready design tokens", () => {
     for (const marker of ["HotelOS Aurora Design System", "nightBlue", "deepIndigo", "electricBlue", "violet", "motion", "breakpoints"]) {
       assert.match(tokensJson + tokensTs, new RegExp(marker));

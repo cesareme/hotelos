@@ -1,6 +1,6 @@
 # SES.HOSPEDAJES Official Schema Placeholder
 
-HotelOS does not hardcode unofficial SES.HOSPEDAJES XML, TXT or web-service payload schemas.
+ehotelOS does not hardcode unofficial SES.HOSPEDAJES XML, TXT or web-service payload schemas.
 
 Do not hardcode unofficial schemas in this folder or in adapters.
 

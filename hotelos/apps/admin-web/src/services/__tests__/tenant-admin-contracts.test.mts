@@ -25,8 +25,8 @@ const FARANDA: TenantSummaryDto = {
 
 const DEMO: TenantSummaryDto = {
   organizationId: "org_123",
-  name: "HotelOS Demo Group",
-  legalName: "HotelOS Demo SL",
+  name: "Grupo Hotelero Demo",
+  legalName: "Grupo Hotelero Demo SL",
   country: "ES",
   createdAt: "2026-07-12T02:28:16.755Z",
   status: "active",

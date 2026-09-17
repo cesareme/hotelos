@@ -298,7 +298,7 @@ export function CommandDock(props: {
         accessibilityLabel="AI command input"
         value={props.value}
         onChangeText={props.onChangeText}
-        placeholder="Ask HotelOS what to do next"
+        placeholder="Ask ehotelOS what to do next"
         placeholderTextColor="#c7d2fe"
         style={styles.commandInput}
         multiline

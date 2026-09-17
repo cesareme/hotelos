@@ -134,10 +134,10 @@ describe("assessLegalEntityPatchRisk (pure) · high-risk fields of the sociedad 
 
 describe("codes (pure, reuse of the L1 derivation)", () => {
   it("legal entity: initials of the razón social, unique in the organization, explicit code wins", () => {
-    assert.equal(planLegalEntityCode("HotelOS Demo SL", new Set()), "HD");
+    assert.equal(planLegalEntityCode("Grupo Hotelero Demo SL", new Set()), "HD");
     assert.equal(planLegalEntityCode("Faranda Hotels & Resorts", new Set()), "FAR");
-    assert.equal(planLegalEntityCode("HotelOS Demo SL", new Set(["HD"])), "HD2");
-    assert.equal(planLegalEntityCode("HotelOS Demo SL", new Set(), " cel "), "CEL");
+    assert.equal(planLegalEntityCode("Grupo Hotelero Demo SL", new Set(["HD"])), "HD2");
+    assert.equal(planLegalEntityCode("Grupo Hotelero Demo SL", new Set(), " cel "), "CEL");
   });
   it("property: brand tokens of the organization are dropped (Faranda Rías Altas → RA); collisions get a suffix", () => {
     const organization = { name: "Faranda Hotels & Resorts", legalName: "Faranda Hotels & Resorts" };

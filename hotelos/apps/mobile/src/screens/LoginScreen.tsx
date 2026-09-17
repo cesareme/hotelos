@@ -4,6 +4,7 @@ import { LogIn, ShieldCheck } from "lucide-react-native";
 import { IconButton } from "../components/IconButton";
 import { loginDemo } from "../services/api";
 import { colors } from "../theme/colors";
+import { BRAND } from "../config/brand";
 
 type LoginScreenProps = {
   onLogin: () => void;
@@ -24,7 +25,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
     <View style={styles.container}>
       <View style={styles.header}>
         <ShieldCheck color={colors.primary} size={34} />
-        <Text style={styles.title}>HotelOS</Text>
+        <Text style={styles.title}>{BRAND.name}</Text>
         <Text style={styles.subtitle}>Mobile operating system for hotel teams</Text>
       </View>
       <View style={styles.form}>

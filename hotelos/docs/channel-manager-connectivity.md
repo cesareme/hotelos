@@ -274,7 +274,7 @@ Comportamiento por adaptador tras el cierre 2026-09-15:
 
 1. Alta en https://staging.channex.io (self-service) → API key en Settings → API keys.
 2. Crear la propiedad, room types y rate plans en Channex; anotar sus ids.
-3. En Anfitorio: `POST /channel-manager/channels {providerCode:"channex", mode:"sandbox"}`,
+3. En ehotelOS: `POST /channel-manager/channels {providerCode:"channex", mode:"sandbox"}`,
    `PATCH …/credentials {apiKey, propertyId}`, mapear productos
    (`POST …/product-mappings` con los ids de Channex como `externalRoomCode` /
    `externalRateCode`; `pricingModel` `obp` si el rate plan es por ocupación).

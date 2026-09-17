@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Anfitorio · inventario de SOLO LECTURA de un VPS existente (Tanda 4).
+# ehotelOS · inventario de SOLO LECTURA de un VPS existente (Tanda 4).
 #
 # Imprime lo necesario para decidir cómo adoptar un servidor ya desplegado a
-# mano (p. ej. el demo 76.13.55.180 / demo.hotelos.es) sin cambiar nada:
+# mano (p. ej. el demo 76.13.55.180 / demo.ehotelos.com) sin cambiar nada:
 # usuario, unidades systemd, clon y commit, Node/pnpm, .env (solo NOMBRES de
 # variables y si tienen valor, nunca los valores), Postgres (tablas,
 # _prisma_migrations, tamaño, backups), Caddy, puertos, SSH y estado HTTP.
 #
 # Uso (en el VPS, como el usuario de despliegue; sudo solo si está disponible
 # sin contraseña — los bloques que lo necesiten se marcan como omitidos):
-#   bash deploy/scripts/vps-inventory.sh [--app-dir /opt/anfitorio] [--domain demo.hotelos.es]
+#   bash deploy/scripts/vps-inventory.sh [--app-dir /opt/anfitorio] [--domain demo.ehotelos.com]
 #        [--env-file /etc/anfitorio/api.env] [--web-root /srv/anfitorio/admin-web]
 #
 # No ejecuta nada que escriba: ni git pull, ni pnpm install, ni psql más allá
@@ -22,7 +22,7 @@
 set -uo pipefail
 
 APP_DIR="${APP_DIR:-/opt/anfitorio}"
-DOMAIN="${DOMAIN:-demo.hotelos.es}"
+DOMAIN="${DOMAIN:-demo.ehotelos.com}"
 ENV_FILE="${ENV_FILE:-/etc/anfitorio/api.env}"
 WEB_ROOT="${WEB_ROOT:-/srv/anfitorio/admin-web}"
 APP_USER="${APP_USER:-anfitorio}"
@@ -46,7 +46,7 @@ SUDO=""
 if [[ $EUID -ne 0 ]] && have sudo && sudo -n true 2>/dev/null; then SUDO="sudo -n"; fi
 maybe_root() { if [[ $EUID -eq 0 ]]; then "$@"; elif [[ -n "$SUDO" ]]; then $SUDO "$@"; else echo "(omitido: requiere root/sudo)"; return 1; fi; }
 
-printf '\033[1;34mAnfitorio · inventario solo lectura · %s · %s\033[0m\n' "$(hostname -f 2>/dev/null || hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '\033[1;34mehotelOS · inventario solo lectura · %s · %s\033[0m\n' "$(hostname -f 2>/dev/null || hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 section "Sistema y usuario"
 kv "OS" "$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || uname -sr)"

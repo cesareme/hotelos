@@ -6035,7 +6035,7 @@ export async function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput
         name: "AI drafted welcome message",
         channel: "email",
         language: "es",
-        subject: "Bienvenida a Anfitorio Madrid Centro",
+        subject: "Bienvenida a Hotel Demo Madrid Centro",
         body: "Hola {{guest_name}}, soy el asistente AI del hotel. Recepcion puede ayudarte en cualquier momento.",
         variablesJson: { guest_name: "Guest name" },
         active: false

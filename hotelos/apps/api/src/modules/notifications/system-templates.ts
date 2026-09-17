@@ -12,6 +12,7 @@
 // `NotificationTemplate` with the same code/channel: DB rows always win.
 
 import type { NotificationTemplateRecord } from "./templates.service.js";
+import { BRAND } from "../../lib/brand.js";
 import { listTemplateTokensForTemplate } from "./template-renderer.service.js";
 
 export const SYSTEM_TEMPLATE_ORGANIZATION_ID = "system";
@@ -31,11 +32,11 @@ export const SYSTEM_TEMPLATES: readonly SystemTemplate[] = [
     code: "user_invitation",
     channel: "email",
     language: "es",
-    subject: "Invitación a Anfitorio — {{organizationName}}",
+    subject: `Invitación a ${BRAND.name} — {{organizationName}}`,
     body: [
       "Hola,",
       "",
-      '{{ inviterName | default: "Un administrador" }} te ha invitado a unirte a {{organizationName}} en Anfitorio' +
+      `{{ inviterName | default: "Un administrador" }} te ha invitado a unirte a {{organizationName}} en ${BRAND.name}` +
         '{{ propertyNameSuffix | default: "" }}.',
       "",
       "Para activar tu cuenta y elegir tu contraseña, abre este enlace:",
@@ -47,7 +48,7 @@ export const SYSTEM_TEMPLATES: readonly SystemTemplate[] = [
       "",
       "Si no esperabas este correo, puedes ignorarlo.",
       "",
-      "— Anfitorio"
+      `— ${BRAND.name}`
     ].join("\n"),
     variables: ["inviteUrl", "inviterName", "organizationName", "propertyName", "propertyNameSuffix", "expiryHours"]
   },
@@ -55,11 +56,11 @@ export const SYSTEM_TEMPLATES: readonly SystemTemplate[] = [
     code: "password_reset",
     channel: "email",
     language: "es",
-    subject: "Restablecer tu contraseña — Anfitorio",
+    subject: `Restablecer tu contraseña — ${BRAND.name}`,
     body: [
       "Hola {{userName}},",
       "",
-      "Hemos recibido una solicitud para restablecer la contraseña de tu cuenta en Anfitorio.",
+      `Hemos recibido una solicitud para restablecer la contraseña de tu cuenta en ${BRAND.name}.`,
       "Abre este enlace para elegir una contraseña nueva:",
       "",
       "{{resetUrl}}",
@@ -69,7 +70,7 @@ export const SYSTEM_TEMPLATES: readonly SystemTemplate[] = [
       "Si no has solicitado este cambio, ignora este correo: tu contraseña actual",
       "seguirá siendo válida.",
       "",
-      "— Anfitorio"
+      `— ${BRAND.name}`
     ].join("\n"),
     variables: ["resetUrl", "userName", "expiryMinutes"]
   }

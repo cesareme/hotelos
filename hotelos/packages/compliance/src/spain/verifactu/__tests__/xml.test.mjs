@@ -16,7 +16,7 @@ import { assertVerifactuRecipient, buildVerifactuRegistroAlta, buildVerifactuReg
 const SOFTWARE = {
   nombreRazon: "Anfitorio Software SL",
   nif: "B12345674",
-  nombreSistema: "Anfitorio",
+  nombreSistema: "ehotelOS",
   idSistema: "01",
   version: "1.4.0",
   numeroInstalacion: "VPS-001",
@@ -144,7 +144,7 @@ test("RegistroAnterior carries the previous record's NIF snapshot, not the curre
 
 test("SistemaInformatico renders every field of the resolved block (multi-OT SaaS = S)", () => {
   const xml = buildVerifactuRegistroAlta(BASE);
-  assert.match(xml, /<sum1:SistemaInformatico>\s*<sum1:NombreRazon>Anfitorio Software SL<\/sum1:NombreRazon>\s*<sum1:NIF>B12345674<\/sum1:NIF>\s*<sum1:NombreSistemaInformatico>Anfitorio<\/sum1:NombreSistemaInformatico>\s*<sum1:IdSistemaInformatico>01<\/sum1:IdSistemaInformatico>\s*<sum1:Version>1\.4\.0<\/sum1:Version>\s*<sum1:NumeroInstalacion>VPS-001<\/sum1:NumeroInstalacion>\s*<sum1:TipoUsoPosibleSoloVerifactu>S<\/sum1:TipoUsoPosibleSoloVerifactu>\s*<sum1:TipoUsoPosibleMultiOT>S<\/sum1:TipoUsoPosibleMultiOT>\s*<sum1:IndicadorMultiplesOT>S<\/sum1:IndicadorMultiplesOT>\s*<\/sum1:SistemaInformatico>/);
+  assert.match(xml, /<sum1:SistemaInformatico>\s*<sum1:NombreRazon>Anfitorio Software SL<\/sum1:NombreRazon>\s*<sum1:NIF>B12345674<\/sum1:NIF>\s*<sum1:NombreSistemaInformatico>ehotelOS<\/sum1:NombreSistemaInformatico>\s*<sum1:IdSistemaInformatico>01<\/sum1:IdSistemaInformatico>\s*<sum1:Version>1\.4\.0<\/sum1:Version>\s*<sum1:NumeroInstalacion>VPS-001<\/sum1:NumeroInstalacion>\s*<sum1:TipoUsoPosibleSoloVerifactu>S<\/sum1:TipoUsoPosibleSoloVerifactu>\s*<sum1:TipoUsoPosibleMultiOT>S<\/sum1:TipoUsoPosibleMultiOT>\s*<sum1:IndicadorMultiplesOT>S<\/sum1:IndicadorMultiplesOT>\s*<\/sum1:SistemaInformatico>/);
   assert.ok(!xml.includes("<sum1:NIF></sum1:NIF>"), "no empty NIF ever");
 });
 

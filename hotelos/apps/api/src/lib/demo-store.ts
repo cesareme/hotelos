@@ -1752,15 +1752,15 @@ export type DemoStore = {
 export const demoStore: DemoStore = {
   organization: {
     id: "org_123",
-    name: "HotelOS Demo Group",
-    legalName: "HotelOS Demo SL",
+    name: "Grupo Hotelero Demo",
+    legalName: "Grupo Hotelero Demo SL",
     taxId: "B12345678"
   },
   property: {
     id: "prop_123",
     organizationId: "org_123",
-    name: "Anfitorio Madrid Centro",
-    legalName: "Anfitorio Madrid Centro SL",
+    name: "Hotel Demo Madrid Centro",
+    legalName: "Hotel Demo Madrid Centro SL",
     address: "Calle Demo 12",
     municipality: "Madrid",
     province: "Madrid",
@@ -1774,8 +1774,8 @@ export const demoStore: DemoStore = {
     {
       id: "prop_123",
       organizationId: "org_123",
-      name: "Anfitorio Madrid Centro",
-      legalName: "Anfitorio Madrid Centro SL",
+      name: "Hotel Demo Madrid Centro",
+      legalName: "Hotel Demo Madrid Centro SL",
       address: "Calle Demo 12",
       municipality: "Madrid",
       province: "Madrid",
@@ -1788,8 +1788,8 @@ export const demoStore: DemoStore = {
     {
       id: "prop_456",
       organizationId: "org_123",
-      name: "HotelOS Costa",
-      legalName: "HotelOS Costa SL",
+      name: "Hotel Demo Costa",
+      legalName: "Hotel Demo Costa SL",
       address: "Avenida Demo 20",
       municipality: "Malaga",
       province: "Malaga",
@@ -2244,7 +2244,7 @@ export const demoStore: DemoStore = {
       channel: "whatsapp",
       language: "es",
       subject: "Bienvenido",
-      body: "Bienvenido a Anfitorio Madrid Centro. Recepcion esta disponible si necesita ayuda.",
+      body: "Bienvenido a Hotel Demo Madrid Centro. Recepcion esta disponible si necesita ayuda.",
       variablesJson: { variables: ["guest_name", "room_number"] },
       active: true,
       updatedAt: "2026-05-14T08:00:00.000Z"
@@ -3428,7 +3428,7 @@ export const demoStore: DemoStore = {
     {
       id: "loyalty_demo",
       organizationId: "org_123",
-      name: "HotelOS Direct Club",
+      name: "Club de huéspedes",
       configurationJson: { pointsPerEuro: 1, tiers: ["member", "silver", "gold"] },
       active: true,
       createdAt: "2026-05-14T09:00:00.000Z"
@@ -3834,15 +3834,15 @@ export const demoStore: DemoStore = {
     {
       id: "llp_prop_123",
       propertyId: "prop_123",
-      legalName: "Anfitorio Madrid Centro SL",
+      legalName: "Hotel Demo Madrid Centro SL",
       taxId: "B12345678",
       municipality: "Madrid",
       province: "Madrid",
       phone: "+34910000000",
-      email: "compliance@hotelos.example",
-      website: "https://hotelos.example",
+      email: "compliance@ehotelos.example",
+      website: "https://ehotelos.example",
       establishmentType: "hotel",
-      establishmentName: "Anfitorio Madrid Centro",
+      establishmentName: "Hotel Demo Madrid Centro",
       fullAddress: "Calle Demo 12, Madrid",
       postalCode: "28013",
       locality: "Madrid",

@@ -30,6 +30,7 @@
 // value; see openItems of the lot report).
 
 import { Prisma } from "@prisma/client";
+import { BRAND } from "../../lib/brand.js";
 import { prisma } from "@hotelos/database";
 import { parseTaxBreakdown, VERIFACTU_EXCLUDED_BY_SII_MOTIVO } from "@hotelos/compliance";
 import type {
@@ -328,7 +329,7 @@ export function regimeAvisos(regimen: FiscalRegimeSummary, modelo: FiscalModelCo
     );
   }
   if (regimen.siiEnabled) {
-    avisos.push("Sociedad en SII: los Modelos 347 y 390 no se presentan y VeriFactu no aplica (RD 1007/2023 art. 3.3). El envío de los libros al SII no está construido en Anfitorio: se declara en la interfaz.");
+    avisos.push(`Sociedad en SII: los Modelos 347 y 390 no se presentan y VeriFactu no aplica (RD 1007/2023 art. 3.3). El envío de los libros al SII no está construido en ${BRAND.name}: se declara en la interfaz.`);
   }
   return avisos;
 }

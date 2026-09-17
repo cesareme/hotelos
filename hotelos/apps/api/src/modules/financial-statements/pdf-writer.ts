@@ -12,6 +12,8 @@
 // fonts below (digits, comma, dot and minus are exact; accented letters use
 // the base glyph width, which only affects left-aligned text truncation).
 
+import { BRAND } from "../../lib/brand.js";
+
 export type PdfFont = "regular" | "bold";
 
 type Run = { x: number; y: number; text: string; font: PdfFont; size: number };
@@ -103,7 +105,7 @@ export class PdfDocument {
   constructor(options: { title: string; author?: string; landscape?: boolean }) {
     this.width = options.landscape ? A4.height : A4.width;
     this.height = options.landscape ? A4.width : A4.height;
-    this.metadata = { title: options.title, author: options.author ?? "Anfitorio" };
+    this.metadata = { title: options.title, author: options.author ?? BRAND.name };
   }
 
   get pageCount(): number {
@@ -147,7 +149,7 @@ export class PdfDocument {
     const fontRegularId = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
     const fontBoldId = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
     const infoId = add(
-      `<< /Title ${pdfStringLiteral(this.metadata.title)} /Author ${pdfStringLiteral(this.metadata.author)} /Producer (Anfitorio financial-statements) /CreationDate (D:${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}Z) >>`
+      `<< /Title ${pdfStringLiteral(this.metadata.title)} /Author ${pdfStringLiteral(this.metadata.author)} /Producer (${BRAND.name} financial-statements) /CreationDate (D:${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}Z) >>`
     );
 
     const pageIds: number[] = [];
@@ -231,7 +233,7 @@ export function renderPdfReport(tables: PdfTable[], options: PdfReportOptions): 
     }
     doc.rule(page, margin, y, doc.width - margin, y, 0.8);
     y -= 14;
-    const footer = `${options.footer ?? "Generado por Anfitorio"} · página ${page + 1}`;
+    const footer = `${options.footer ?? `Generado por ${BRAND.name}`} · página ${page + 1}`;
     doc.text(page, margin, margin - 12, footer, "regular", 7);
   };
 

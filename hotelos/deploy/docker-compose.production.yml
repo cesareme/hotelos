@@ -1,4 +1,4 @@
-# HotelOS production stack · Hostinger VPS (or any Docker-capable host)
+# ehotelOS production stack · Hostinger VPS (or any Docker-capable host)
 #
 # Brings up Postgres, Redis, the Fastify API, the Vite-built admin SPA, and
 # Caddy in front for automatic HTTPS via Let's Encrypt. Designed to be
@@ -143,7 +143,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.admin-web
       args:
-        VITE_API_URL: ${PUBLIC_API_URL:-https://app.hotelos.app/api}
+        VITE_API_URL: ${PUBLIC_API_URL:-https://demo.ehotelos.com/api}
     restart: unless-stopped
     networks:
       - web
@@ -155,7 +155,7 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      DOMAIN: ${DOMAIN:-app.hotelos.app}
+      DOMAIN: ${DOMAIN:-demo.ehotelos.com}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data

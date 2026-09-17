@@ -1,4 +1,4 @@
-# Anfitorio API · systemd unit (native VPS deployment, no Docker)
+# ehotelOS API · systemd unit (native VPS deployment, no Docker)
 #
 # Installed by deploy/scripts/install-from-scratch.sh, which replaces the
 # APP_DIR / APP_USER defaults below with the values given on its command
@@ -19,7 +19,7 @@
 # second API replica only with RUN_SCHEDULERS=false in its environment.
 
 [Unit]
-Description=Anfitorio API (Fastify, tsx runtime)
+Description=ehotelOS API (Fastify, tsx runtime)
 Documentation=file:///opt/anfitorio/hotelos/deploy/README-INSTALL.md
 After=network-online.target postgresql.service
 Wants=network-online.target

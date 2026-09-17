@@ -258,7 +258,7 @@ function buildOpenApi(routes, permissionsIndex) {
     doc: {
       openapi: "3.1.0",
       info: {
-        title: "HotelOS API",
+        title: "ehotelOS API",
         version: "0.1.0",
         description: "Auto-generated OpenAPI specification derived from server.ts route definitions crossed with the route-permissions manifest."
       },

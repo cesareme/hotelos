@@ -486,7 +486,7 @@ export function getHistoryForecastReport(propertyId: string, query: HistoryForec
   const requestedGranularity = stringQuery(query, "granularity", "auto") as HistoryForecastGranularity;
   const businessDate = stringQuery(query, "businessDate", DEFAULT_HISTORY_FORECAST_BUSINESS_DATE);
   const filters = parseHistoryForecastFilters(query);
-  const propertyName = demoStore.properties.find((property) => property.id === propertyId)?.name ?? "HotelOS property";
+  const propertyName = demoStore.properties.find((property) => property.id === propertyId)?.name ?? "Hotel Demo";
   const aggregation = aggregateHistoryForecast({
     propertyId,
     fromDate,

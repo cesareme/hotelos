@@ -986,7 +986,7 @@ function showScreen(id) {
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.classList.toggle("active", button.dataset.screen === id);
   });
-  document.getElementById("screenTitle").textContent = titles[id] ?? "HotelOS";
+  document.getElementById("screenTitle").textContent = titles[id] ?? "ehotelOS";
 }
 
 function updateFlowStep(index) {

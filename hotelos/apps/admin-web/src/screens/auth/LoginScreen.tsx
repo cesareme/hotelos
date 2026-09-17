@@ -14,6 +14,7 @@ import { CocoaInput } from "../../components/cocoa/CocoaInput";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
 import { CocoaState } from "../../components/cocoa/CocoaState";
 import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
+import { AUTH_EYEBROW } from "../../auth/AuthShell";
 
 type LoginResponse = {
   token: string;
@@ -152,7 +153,7 @@ export function LoginScreen(props: LoginScreenProps) {
         aria-label="Inicio de sesión"
         style={{ width: "100%", maxWidth: 420, display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}
       >
-        <CocoaPageHeader eyebrow="ehotelOS · Back Office" title="Inicia sesión" subtitle="Introduce tu correo y tu contraseña para continuar." />
+        <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Inicia sesión" subtitle="Introduce tu correo y tu contraseña para continuar." />
 
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
           <CocoaField label="Correo electrónico" htmlFor="login-email" required>

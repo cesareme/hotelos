@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useGuestSession } from "../auth/GuestSessionContext";
+import { BRAND } from "../config/brand";
 
 type LayoutProps = {
   propertyName?: string;
@@ -23,7 +24,7 @@ export function Layout({ propertyName, reservationCode, eyebrow, title, subtitle
               <span aria-hidden>&larr;</span> {back.label}
             </button>
           ) : (
-            <span className="gp-wordmark">HotelOS</span>
+            <span className="gp-wordmark">{BRAND.name}</span>
           )}
           {session ? (
             <button type="button" className="gp-link" onClick={signOut}>

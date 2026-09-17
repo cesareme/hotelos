@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Anfitorio · orquestador de despliegue idempotente (Tanda 4 · instalabilidad).
+# ehotelOS · orquestador de despliegue idempotente (Tanda 4 · instalabilidad).
 #
 # Ejecuta, en orden, los pasos que actualizan una instalación existente sin
 # perder datos. Cada paso es re-ejecutable; un fallo aborta el resto.
@@ -187,7 +187,7 @@ if command -v flock >/dev/null 2>&1 && [[ $DRY_RUN -eq 0 ]]; then
 fi
 
 c_blue "═══════════════════════════════════════════════════════════"
-c_blue " Anfitorio · deploy · rol $ROLE · $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+c_blue " ehotelOS · deploy · rol $ROLE · $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 c_blue " raíz $ROOT · env $ENV_FILE$([[ $DRY_RUN -eq 1 ]] && echo ' · DRY-RUN')"
 c_blue "═══════════════════════════════════════════════════════════"
 
@@ -222,7 +222,7 @@ if should_run env; then
         APP_BASE_URL="${APP_BASE_URL:-https://$DOMAIN}"
         DATABASE_URL="${DATABASE_URL:-postgresql://${POSTGRES_USER:-hotelos}:${POSTGRES_PASSWORD:-}@localhost:5432/${POSTGRES_DB:-hotelos}}"
     fi
-    : "${APP_BASE_URL:?APP_BASE_URL no definido en $ENV_FILE (origen público, p. ej. https://demo.hotelos.es)}"
+    : "${APP_BASE_URL:?APP_BASE_URL no definido en $ENV_FILE (origen público, p. ej. https://demo.ehotelos.com)}"
     : "${DATABASE_URL:?DATABASE_URL no definido en $ENV_FILE}"
     APP_BASE_URL="${APP_BASE_URL%/}"
     export APP_BASE_URL DATABASE_URL

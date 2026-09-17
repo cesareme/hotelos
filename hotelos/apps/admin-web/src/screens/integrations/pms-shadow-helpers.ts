@@ -32,6 +32,7 @@ import type {
 } from "@hotelos/shared";
 import type { CocoaSelectOption, CocoaTone } from "../../components/cocoa";
 import { EMPTY, date, dateTime, number, plural, relativeTime } from "../../lib/format";
+import { BRAND } from "../../config/brand";
 
 // ---------------------------------------------------------------------------
 // Feeds
@@ -223,7 +224,7 @@ export function alertSeverityTone(severity: PmsShadowAlertSeverity | string): Co
 
 export const ALERT_CODE_LABELS: Readonly<Record<PmsShadowAlertCode, string>> = Object.freeze({
   OPERA_MISSING_IN_SNAPSHOT: "Reserva ausente del corte de OPERA",
-  OPERA_CONFLICT_LOCAL_RESERVATION: "Conflicto con una reserva creada en ehotelOS",
+  OPERA_CONFLICT_LOCAL_RESERVATION: `Conflicto con una reserva creada en ${BRAND.name}`,
   OPERA_CHECKIN_WITHOUT_ROOM: "Check-in en OPERA sin habitación válida",
   OPERA_TRX_CODE_UNMAPPED: "Transaction code sin mapear",
   OPERA_ROOM_TYPE_UNMAPPED: "Tipo de habitación de OPERA sin mapear",
@@ -376,7 +377,7 @@ export type DictionaryKey = keyof Pick<PmsShadowPropertyMapping, "roomTypes" | "
 export const DICTIONARY_KEYS: readonly DictionaryKey[] = ["roomTypes", "rateCodes", "marketCodes", "sourceCodes", "paymentTypes"];
 
 export const DICTIONARY_LABELS: Readonly<Record<DictionaryKey, { title: string; opera: string; anfitorio: string }>> = Object.freeze({
-  roomTypes: { title: "Tipos de habitación", opera: "Room type OPERA", anfitorio: "Tipo de ehotelOS" },
+  roomTypes: { title: "Tipos de habitación", opera: "Room type OPERA", anfitorio: `Tipo de ${BRAND.name}` },
   rateCodes: { title: "Rate codes", opera: "Rate code OPERA", anfitorio: "Plan de tarifas" },
   marketCodes: { title: "Segmentos de mercado", opera: "Market code OPERA", anfitorio: "Segmento" },
   sourceCodes: { title: "Fuentes y canales", opera: "Source code OPERA", anfitorio: "Canal" },

@@ -48,7 +48,7 @@ function snapshotOf(lines: Line[]) {
     totals: { total: totals.total, taxTotal: totals.taxTotal },
     breakdown: totals.breakdown,
     folioLineIds: ["fl_1"],
-    issuer: { taxId: "B12345674", legalName: "HotelOS Demo SL" },
+    issuer: { taxId: "B12345674", legalName: "Grupo Hotelero Demo SL" },
     customer: { type: "guest", taxId: null, name: "María Pérez" }
   });
 }

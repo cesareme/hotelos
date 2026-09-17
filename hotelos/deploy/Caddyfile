@@ -1,4 +1,4 @@
-# HotelOS · Caddyfile · automatic HTTPS via Let's Encrypt
+# ehotelOS · Caddyfile · automatic HTTPS via Let's Encrypt
 #
 # Caddy detects the DOMAIN env var, requests a certificate, renews it and
 # reverse-proxies frontend + backend. No manual cert / nginx config needed.
@@ -13,10 +13,10 @@
 
 {
 	# Use this contact for Let's Encrypt expiry notices.
-	email admin@{$DOMAIN:hotelos.app}
+	email admin@{$DOMAIN:ehotelos.com}
 }
 
-{$DOMAIN:hotelos.app} {
+{$DOMAIN:ehotelos.com} {
 	# Strong defaults: HSTS, no server fingerprint header.
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"

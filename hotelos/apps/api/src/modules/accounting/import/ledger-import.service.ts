@@ -81,6 +81,7 @@
 // `legalEntityId` sale de `resolveLedgerScope` (nunca de organization.taxId).
 
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../../lib/brand.js";
 import { Prisma } from "@prisma/client";
 import {
   LEDGER_ACCOUNT_MAP_ACTIONS,
@@ -1014,7 +1015,7 @@ async function analyseRows(input: AnalyseInput): Promise<Analysis> {
     const costCodes = config.costCentreDimension ? [...new Set(rows.map((row) => dimensionValueOf(row, config.costCentreDimension!)).filter((code): code is string => !!code))] : [];
     analysis.analytics = resolveEffectiveAnalytics({ sent: input.mapping?.analytics, persisted: persistedAnalytics, properties, centreCodes, costCentreCodes: costCodes, optionsPolicy: options.unassignedPolicy });
     const { index: nativeIndex, stats } = await buildNativeIndex(db, organizationId);
-    if (stats.invoices > 0) warnings.push(`Modo sombra: ${stats.invoices} factura(s) propia(s) de Anfitorio se cotejan por serie y número; sus asientos de Sage se omiten.`);
+    if (stats.invoices > 0) warnings.push(`Modo sombra: ${stats.invoices} factura(s) propia(s) de ${BRAND.name} se cotejan por serie y número; sus asientos de Sage se omiten.`);
     const numberingDimension = options.numberingDimension ?? null;
     if (numberingDimension !== null && !(LEDGER_NUMBERING_DIMENSIONS as readonly string[]).includes(numberingDimension)) extraBlockers.push({ status: 400, code: "VALIDATION_ERROR", message: `options.numberingDimension debe ser ${LEDGER_NUMBERING_DIMENSIONS.join(" o ")}.`, details: { field: "options.numberingDimension" } });
     if (numberingDimension) warnings.push(`Numeración por ${numberingDimension === "canal" ? "canal" : "delegación"}: el código forma parte de la clave de cada asiento (empresa:ejercicio:periodo:asiento:${numberingDimension === "canal" ? "canal" : "delegación"}).`);
@@ -1125,7 +1126,7 @@ async function analyseRows(input: AnalyseInput): Promise<Analysis> {
     analysis.payrollCostImportsPosted = await findPayrollCostImportsPosted(db, organizationId, analysis.periodFrom, analysis.periodTo);
     if (analysis.payrollCostImportsPosted.length > 0) warnings.push(`${analysis.payrollCostImportsPosted.length} lote(s) de coste de personal ya contabilizado(s) en el rango: si el diario de Sage trae la nómina real, revierte ese lote antes o bloquea 640/642/465/476 en el mapa.`);
     analysis.existingNativeEntries = await countNativeEntries(db, organizationId, analysis.fiscalYearCode);
-    if (analysis.existingNativeEntries > 0) warnings.push(`El ejercicio ${analysis.fiscalYearCode} ya tiene ${analysis.existingNativeEntries} asiento(s) propios: la numeración de Anfitorio quedará intercalada (el nº de Sage se conserva en la referencia).`);
+    if (analysis.existingNativeEntries > 0) warnings.push(`El ejercicio ${analysis.fiscalYearCode} ya tiene ${analysis.existingNativeEntries} asiento(s) propios: la numeración de ${BRAND.name} quedará intercalada (el nº de Sage se conserva en la referencia).`);
     analysis.existing = await findExistingEntries(db, organizationId, analysis.planned);
     if (analysis.existing.length > 0) warnings.push(`${analysis.existing.length} asiento(s) ya importados (misma clave de Sage viva en el diario): se omiten como «ya importado».`);
   }
@@ -1418,7 +1419,7 @@ function skippedNativeEntries(importId: string, organizationId: string, analysis
       credit: sage.lines.reduce((sum, line) => sum.plus(line.haber), ZERO).toFixed(2),
       sourceType: skipped.sourceType,
       sourceId: skipped.sourceId,
-      warningsJson: [`Documento propio de Anfitorio${skipped.invoiceNumber ? ` (${skipped.invoiceNumber})` : ""}: asiento ${skipped.sourceType}/${skipped.sourceId}.`]
+      warningsJson: [`Documento propio de ${BRAND.name}${skipped.invoiceNumber ? ` (${skipped.invoiceNumber})` : ""}: asiento ${skipped.sourceType}/${skipped.sourceId}.`]
     });
   }
   return out;
@@ -1445,7 +1446,7 @@ function skippedVatEntries(importId: string, organizationId: string, analysis: A
     credit: "0.00",
     sourceType: skipped.sourceType,
     sourceId: skipped.sourceId,
-    warningsJson: [`Documento propio de Anfitorio${skipped.invoiceNumber ? ` (${skipped.invoiceNumber})` : ""}: la fila del libro de Sage se omite (${skipped.sourceType}/${skipped.sourceId}).`]
+    warningsJson: [`Documento propio de ${BRAND.name}${skipped.invoiceNumber ? ` (${skipped.invoiceNumber})` : ""}: la fila del libro de Sage se omite (${skipped.sourceType}/${skipped.sourceId}).`]
   }));
 }
 
@@ -1615,7 +1616,7 @@ async function postPlannedEntriesInTx(tx: Prisma.TransactionClient, importRow: I
     if (!closingId) continue;
     const year = yearIds.get(code);
     if (!year) {
-      outcome.warnings.push(`El lote trae el cierre del ejercicio ${code} pero Anfitorio no tiene ese ejercicio: importa antes «ejercicios» para marcarlo cerrado.`);
+      outcome.warnings.push(`El lote trae el cierre del ejercicio ${code} pero ${BRAND.name} no tiene ese ejercicio: importa antes «ejercicios» para marcarlo cerrado.`);
       continue;
     }
     if (year.status === "closed") continue;

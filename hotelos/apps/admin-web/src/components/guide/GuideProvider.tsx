@@ -5,6 +5,7 @@ import { WELCOME_TOUR_ID, getTourById, tourStepsFor } from "./guideContent";
 import { GUIDE_EVENTS, getGuideState, setGuideState } from "./guideStore";
 import { useNavAudience } from "../../navigation/useEnabledModules";
 import { CocoaButton } from "../cocoa/CocoaButton";
+import { BRAND } from "../../config/brand";
 
 type WelcomeOffer = { tourId: string; title: string; body: string };
 
@@ -64,7 +65,7 @@ export function GuideProvider() {
         () =>
           setWelcome({
             tourId: WELCOME_TOUR_ID,
-            title: "Te damos la bienvenida a ehotelOS",
+            title: `Te damos la bienvenida a ${BRAND.name}`,
             body: "¿Hacemos un recorrido rápido de un minuto para empezar?"
           }),
         900

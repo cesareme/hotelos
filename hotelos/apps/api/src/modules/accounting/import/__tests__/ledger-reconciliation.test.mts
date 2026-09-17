@@ -156,7 +156,7 @@ describe("ledger-reconciliation · CSV", () => {
 });
 
 describe("ledger-reconciliation · mergeLedgerRows (integración L6: cuentas sin movimiento en el rango)", () => {
-  it("una cuenta 6/7 con neto acumulado del ejercicio pero sin movimiento en el mes entra con Debe / Haber 0,00 y su saldo (no «falta en Anfitorio»)", () => {
+  it("una cuenta 6/7 con neto acumulado del ejercicio pero sin movimiento en el mes entra con Debe / Haber 0,00 y su saldo (no «falta en ehotelOS»)", () => {
     const rows = mergeLedgerRows({
       movements: [{ accountCode: "628.1", accountName: "Electricidad", debit: money("100.00"), credit: money("0.00") }],
       balanceAt: [

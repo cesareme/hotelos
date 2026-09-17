@@ -178,7 +178,7 @@ export function LiveTimelineScreen() {
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.hero}>
-          <Text style={styles.kicker}>HotelOS Flow</Text>
+          <Text style={styles.kicker}>Hotel Flow</Text>
           <Text style={styles.title}>Live Timeline</Text>
           <Text style={styles.subtitle}>
             Rooms, parking, meeting rooms, coworking, spa, restaurant, events and other bookable inventory in one

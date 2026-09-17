@@ -19,7 +19,7 @@ const sharedComponents = readFileSync(new URL("../packages/ui/src/components/sha
 const demoHtml = readFileSync(new URL("../demo/public/index.html", import.meta.url), "utf8");
 const demoJs = readFileSync(new URL("../demo/public/app.js", import.meta.url), "utf8");
 
-describe("HotelOS Flow UI/UX shift", () => {
+describe("ehotelOS Flow UI/UX shift", () => {
   it("renames the mobile shell around timeline and operations workflows", () => {
     for (const label of ["Hoy", "Timeline", "IA", "Operaciones", "Mas"]) {
       assert.match(mobileTabs + mobileNavigation + demoHtml + demoJs, new RegExp(label));

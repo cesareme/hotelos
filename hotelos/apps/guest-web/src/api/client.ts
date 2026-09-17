@@ -1,6 +1,6 @@
 // Tiny fetch wrapper for the guest portal.
 //
-// The guest portal speaks to the HotelOS API on the same origin in
+// The guest portal speaks to the ehotelOS API on the same origin in
 // production. During local dev the user can override the base URL via
 // `VITE_GUEST_API_BASE`. When that env var is UNSET we fall back to typed
 // stubs so the UI keeps working offline for demos. When it IS set we call the
@@ -10,6 +10,8 @@
 //   GET  /guest-portal/reservation        (x-guest-token header)
 //   POST /guest-portal/pre-check-in       (x-guest-token header)
 //   POST /guest-portal/service-request    (x-guest-token header)
+
+import { BRAND } from "../config/brand";
 
 export type ReservationSummary = {
   id: string;
@@ -238,7 +240,7 @@ function stubReservation(id: string): ReservationSummary {
     id,
     reservationCode: "RES-2026-00042",
     propertyId: "prop_demo",
-    propertyName: "HotelOS Madrid Centro",
+    propertyName: "Hotel Demo Madrid Centro",
     guestName: "Maria Lopez Garcia",
     roomType: "Deluxe King with city view",
     roomNumber: "432",
@@ -290,7 +292,7 @@ export async function downloadInvoice(reservationId: string): Promise<void> {
   // No real endpoint yet. We generate a tiny client-side text "invoice"
   // and trigger a download so the UI demonstrates the flow.
   const content = [
-    "HotelOS — Provisional invoice",
+    `${BRAND.name} — Provisional invoice`,
     "================================",
     `Reservation: ${reservationId}`,
     `Issued:      ${new Date().toISOString().slice(0, 10)}`,

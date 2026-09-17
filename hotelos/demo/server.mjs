@@ -142,5 +142,5 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`HotelOS demo preview: http://${host}:${port}`);
+  console.log(`ehotelOS demo preview: http://${host}:${port}`);
 });

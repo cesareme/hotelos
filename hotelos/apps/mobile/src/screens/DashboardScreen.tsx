@@ -33,7 +33,7 @@ export function DashboardScreen() {
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.headerRow}>
         <View>
-          <Text style={styles.kicker}>HotelOS Madrid Centro</Text>
+          <Text style={styles.kicker}>Hotel Demo Madrid Centro</Text>
           <Text style={styles.title}>Today</Text>
         </View>
         <ShieldCheck color={colors.primary} size={28} />

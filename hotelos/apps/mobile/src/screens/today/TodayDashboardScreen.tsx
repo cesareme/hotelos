@@ -36,7 +36,7 @@ export function TodayDashboardScreen(props: { onNavigate?: (route: string) => vo
       <View style={styles.hero}>
         <View style={styles.heroTop}>
           <View>
-            <Text style={styles.kicker}>HotelOS Aurora</Text>
+            <Text style={styles.kicker}>Hotel Aurora</Text>
             <Text style={styles.title}>Today</Text>
           </View>
           <View style={styles.aiOrb}>

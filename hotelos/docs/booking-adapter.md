@@ -8,7 +8,7 @@ conectividad y de la decisión Channex en `docs/channel-manager-connectivity.md`
 
 Booking.com tiene **pausadas las altas de nuevos connectivity providers**
 (externo · portal Connectivity de Booking · consultado 2026-09-14; revalidar
-antes de contratar): Anfitorio no puede obtener `client_id`/`client_secret`
+antes de contratar): ehotelOS no puede obtener `client_id`/`client_secret`
 hoy. El adaptador está «contract-ready»: construye y parsea los mensajes OTA
 2003B v1.1 y se valida contra el simulador local (`sandbox/simulator.ts`),
 que hace una **validación estructural** (escáner por regex, sin XSD) y **no

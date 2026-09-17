@@ -12,7 +12,7 @@
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
     "files": 222,
-    "lines": 92339,
+    "lines": 92353,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
@@ -55,7 +55,7 @@
     "comercial": {
       "label": "Comercial",
       "files": 18,
-      "lines": 6871,
+      "lines": 6872,
       "debtPoints": 15,
       "sizes": {
         "S": 10,
@@ -72,7 +72,7 @@
     "compartido": {
       "label": "Compartido / sin entrada de menú",
       "files": 8,
-      "lines": 2011,
+      "lines": 2012,
       "debtPoints": 0,
       "sizes": {
         "S": 5,
@@ -90,7 +90,7 @@
     "configuracion": {
       "label": "Configuración",
       "files": 45,
-      "lines": 16991,
+      "lines": 16993,
       "debtPoints": 23,
       "sizes": {
         "S": 19,
@@ -147,7 +147,7 @@
     "finanzas": {
       "label": "Finanzas",
       "files": 34,
-      "lines": 19472,
+      "lines": 19473,
       "debtPoints": 36,
       "sizes": {
         "S": 9,
@@ -168,7 +168,7 @@
     "hoy": {
       "label": "Hoy",
       "files": 10,
-      "lines": 4601,
+      "lines": 4603,
       "debtPoints": 17,
       "sizes": {
         "S": 3,
@@ -222,7 +222,7 @@
     "publico": {
       "label": "Público",
       "files": 6,
-      "lines": 992,
+      "lines": 996,
       "debtPoints": 6,
       "sizes": {
         "S": 6,
@@ -238,7 +238,7 @@
     "recepcion": {
       "label": "Recepción",
       "files": 19,
-      "lines": 9996,
+      "lines": 9997,
       "debtPoints": 26,
       "sizes": {
         "S": 6,
@@ -258,7 +258,7 @@
     "revenue": {
       "label": "Revenue",
       "files": 15,
-      "lines": 6733,
+      "lines": 6735,
       "debtPoints": 7,
       "sizes": {
         "S": 5,
@@ -478,9 +478,9 @@
         "finanzas"
       ],
       "archetype": "asistente",
-      "lines": 1841,
+      "lines": 1842,
       "metrics": {
-        "lines": 1841,
+        "lines": 1842,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1197,9 +1197,9 @@
         "hoy"
       ],
       "archetype": "chat",
-      "lines": 254,
+      "lines": 255,
       "metrics": {
-        "lines": 254,
+        "lines": 255,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1269,9 +1269,9 @@
       "category": "publico",
       "categories": [],
       "archetype": "otro",
-      "lines": 228,
+      "lines": 229,
       "metrics": {
-        "lines": 228,
+        "lines": 229,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1303,9 +1303,9 @@
       "category": "publico",
       "categories": [],
       "archetype": "otro",
-      "lines": 198,
+      "lines": 199,
       "metrics": {
-        "lines": 198,
+        "lines": 199,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1375,9 +1375,9 @@
       "category": "publico",
       "categories": [],
       "archetype": "lista",
-      "lines": 222,
+      "lines": 223,
       "metrics": {
-        "lines": 222,
+        "lines": 223,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2393,9 +2393,9 @@
       "category": "publico",
       "categories": [],
       "archetype": "otro",
-      "lines": 50,
+      "lines": 51,
       "metrics": {
-        "lines": 50,
+        "lines": 51,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3331,9 +3331,9 @@
         "comercial"
       ],
       "archetype": "dashboard",
-      "lines": 291,
+      "lines": 292,
       "metrics": {
-        "lines": 291,
+        "lines": 292,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3521,9 +3521,9 @@
         "configuracion"
       ],
       "archetype": "dashboard",
-      "lines": 1287,
+      "lines": 1288,
       "metrics": {
-        "lines": 1287,
+        "lines": 1288,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4269,9 +4269,9 @@
         "hoy"
       ],
       "archetype": "dashboard",
-      "lines": 753,
+      "lines": 754,
       "metrics": {
-        "lines": 753,
+        "lines": 754,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6148,9 +6148,9 @@
         "recepcion"
       ],
       "archetype": "asistente",
-      "lines": 1132,
+      "lines": 1133,
       "metrics": {
-        "lines": 1132,
+        "lines": 1133,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6262,9 +6262,9 @@
         "revenue"
       ],
       "archetype": "calendario",
-      "lines": 2315,
+      "lines": 2316,
       "metrics": {
-        "lines": 2315,
+        "lines": 2316,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6300,9 +6300,9 @@
         "revenue"
       ],
       "archetype": "otro",
-      "lines": 368,
+      "lines": 369,
       "metrics": {
-        "lines": 368,
+        "lines": 369,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6783,9 +6783,9 @@
       "category": "compartido",
       "categories": [],
       "archetype": "dialogo",
-      "lines": 356,
+      "lines": 357,
       "metrics": {
-        "lines": 356,
+        "lines": 357,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6821,9 +6821,9 @@
         "configuracion"
       ],
       "archetype": "lista",
-      "lines": 306,
+      "lines": 307,
       "metrics": {
-        "lines": 306,
+        "lines": 307,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

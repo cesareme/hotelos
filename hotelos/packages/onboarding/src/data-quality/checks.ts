@@ -117,7 +117,7 @@ export function runOnboardingDataQualityChecks(input: OnboardingDataQualityInput
       code: "rooms_without_room_type",
       severity: "blocking",
       title: "Rooms without room type",
-      detail: "Every imported room must map to a HotelOS room type before reservations, rates or channels can be applied.",
+      detail: "Every imported room must map to an ehotelOS room type before reservations, rates or channels can be applied.",
       suggestedAction: "Map each source room to a reviewed room type.",
       affectedEntityType: "room",
       affectedCount: input.roomsWithoutRoomType

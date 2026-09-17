@@ -487,7 +487,7 @@ describe("buildReconciliationRows · §5.2", () => {
     { accountCode: "705.1", debit: "0.00", credit: "9000.00", sourceTypes: ["sage200_balance"] }
   ];
 
-  it("ok cuando cada cuenta destino coincide al céntimo (delta = Anfitorio − Sage)", () => {
+  it("ok cuando cada cuenta destino coincide al céntimo (delta = ehotelOS − Sage)", () => {
     const result = buildReconciliationRows(balanceRows2025, ledgerOk, { accountMap: balanceMap, accountNames: new Map([["572", "Bancos"]]) });
     assert.equal(result.status, "ok");
     assert.equal(result.differenceCount, 0);
@@ -543,7 +543,7 @@ describe("correcciones ronda 1 · libros de IVA (C1, C6)", () => {
     assert.equal(buildVatBookRows([vat[0]!], { periodicity: "quarterly", organizationId: "org_test" }).rows[0]!.sourceId, "1:2026:FAC-2026:000010");
   });
 
-  it("C1 · con el índice nativo, la emitida FAC-2026-000010 (factura propia) y la recibida F/778 (ya contabilizada en Anfitorio) van a skippedNative y no al libro", () => {
+  it("C1 · con el índice nativo, la emitida FAC-2026-000010 (factura propia) y la recibida F/778 (ya contabilizada en ehotelOS) van a skippedNative y no al libro", () => {
     const nativeIndex = {
       invoiceKeys: new Map([[nativeInvoiceKey("FAC-2026-000010")!, { invoiceId: "inv_10", invoiceNumber: "FAC-2026-000010", sourceType: "invoice", sourceId: "inv_10" }]]),
       supplierBillKeys: new Map([[`${NIF_SUMINISTROS}|:778`, { invoiceId: null, invoiceNumber: "778", sourceType: "supplier_bill", sourceId: "sb_1" }]])

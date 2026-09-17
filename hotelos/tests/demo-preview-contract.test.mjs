@@ -13,7 +13,7 @@ describe("Demo preview contract", () => {
     assert.equal(packageJson.scripts["preview:demo"], "node demo/server.mjs");
     assert.match(server, /createServer/);
     assert.match(server, /makeLobbyImage/);
-    assert.match(server, /HotelOS demo preview/);
+    assert.match(server, /ehotelOS demo preview/);
   });
 
   it("renders the flagship check-in journey", () => {
@@ -37,8 +37,8 @@ describe("Demo preview contract", () => {
 
   it("previews Back Office go-live and property mapping controls", () => {
     for (const marker of [
-      "HotelOS Aurora Back Office",
-      "Prepare HotelOS Madrid Centro for go-live",
+      "ehotelOS Aurora Back Office",
+      "Prepare Hotel Demo Madrid Centro for go-live",
       "Continue setup checklist",
       "Will create",
       "Will update",
@@ -55,7 +55,7 @@ describe("Demo preview contract", () => {
   it("previews Guest Portal self-service flows", () => {
     for (const marker of [
       "Open guest portal",
-      "HotelOS Guest Portal",
+      "ehotelOS Guest Portal",
       "Start online check-in",
       "GuestFolio",
       "MobileCheckout",

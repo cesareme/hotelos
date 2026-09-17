@@ -15,7 +15,7 @@
 //   - Right pane (flex): list of articles matching the current
 //     search + category. Each article row is expandable — clicking the
 //     title reveals the rendered markdown body underneath. When nothing
-//     matches, an empty state suggests writing to support@hotelos.app.
+//     matches, an empty state suggests writing to the support mailbox (BRAND.supportEmail).
 //   - Footer: link to the external help center for deeper topics.
 //
 // Markdown rendering is intentionally minimal and self-contained (no
@@ -56,6 +56,7 @@ import {
 import { createPortal } from "react-dom";
 
 import CocoaSearchInput from "../cocoa/CocoaSearchInput";
+import { BRAND } from "../../config/brand";
 
 export interface CocoaHelpArticle {
   id: string;
@@ -104,8 +105,8 @@ function getFocusableElements(root: HTMLElement | null): HTMLElement[] {
 }
 
 const ALL_CATEGORY_KEY = "__all__";
-const DEFAULT_SUPPORT_EMAIL = "support@hotelos.app";
-const DEFAULT_EXTERNAL_URL = "https://help.hotelos.app";
+const DEFAULT_SUPPORT_EMAIL = BRAND.supportEmail;
+const DEFAULT_EXTERNAL_URL = BRAND.helpUrl;
 
 // --- Tiny inline markdown renderer ---------------------------------------
 //

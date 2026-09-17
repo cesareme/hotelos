@@ -175,6 +175,7 @@ import {
   syncRowOutcomeTone,
   syncSummaryKpis
 } from "./reservation-import-sync";
+import { BRAND } from "../../config/brand";
 
 type PickedFile = { name: string; format: ReservationImportFormat; contentBase64: string; bytes: number };
 
@@ -923,7 +924,7 @@ export function ReservationImportScreen() {
                 ))}
               </ul>
             ) : (
-              <span>Sin reservas ausentes, conflictos con reservas locales ni check-ins sin habitación: el corte cuadra con ehotelOS.</span>
+              <span>Sin reservas ausentes, conflictos con reservas locales ni check-ins sin habitación: el corte cuadra con {BRAND.name}.</span>
             )}
           </CocoaCallout>
         ) : null}

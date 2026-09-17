@@ -86,7 +86,7 @@ const RIAS_ALTAS = {
 const COMPLETE_ENV: NodeJS.ProcessEnv = {
   VERIFACTU_SOFTWARE_NAME: "Anfitorio Software SL",
   VERIFACTU_SOFTWARE_NIF: "B12345674",
-  VERIFACTU_SYSTEM_NAME: "Anfitorio",
+  VERIFACTU_SYSTEM_NAME: "ehotelOS",
   VERIFACTU_SYSTEM_ID: "01",
   VERIFACTU_SYSTEM_VERSION: "1.4.0",
   VERIFACTU_INSTALL_NUMBER: "VPS-HOSTINGER-001",
@@ -544,7 +544,7 @@ describe("TicketBAI — NumSerieDispositivo from the declared installation", () 
       breakdowns: [{ ratePercent: 10, taxableBase: 100, taxAmount: 10 }],
       currentHash: "A".repeat(64),
       territory: "bizkaia" as const,
-      software: { nif: "B12345674", name: "Anfitorio", licenseKey: "TBAIBIZKAIA0001", developerName: "Anfitorio Software SL", softwareName: "Anfitorio", version: "1.4.0" }
+      software: { nif: "B12345674", name: "ehotelOS", licenseKey: "TBAIBIZKAIA0001", developerName: "Anfitorio Software SL", softwareName: "ehotelOS", version: "1.4.0" }
     };
     assert.match(buildTbaiXml({ ...base, software: { ...base.software, deviceSerial: "FAR-BI-0001" } }), /<NumSerieDispositivo>FAR-BI-0001<\/NumSerieDispositivo>/);
     assert.match(buildTbaiXml(base), /<NumSerieDispositivo>HOTELOS-DEV<\/NumSerieDispositivo>/);

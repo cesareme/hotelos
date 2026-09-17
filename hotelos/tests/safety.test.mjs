@@ -48,7 +48,7 @@ function readAllFiles(dir) {
   });
 }
 
-describe("HotelOS safety rules", () => {
+describe("ehotelOS safety rules", () => {
   it("rejects ID scan requests that store document images", () => {
     const result = enforceSpanishIdScanPolicy({
       documentImageStored: true,

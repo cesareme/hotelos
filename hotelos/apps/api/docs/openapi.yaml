@@ -1,6 +1,6 @@
 openapi: "3.1.0"
 info:
-  title: HotelOS API
+  title: ehotelOS API
   version: "0.1.0"
   description: "Auto-generated OpenAPI specification derived from server.ts route definitions crossed with the route-permissions manifest."
 servers:
@@ -155,6 +155,67 @@ paths:
     post:
       summary: "POST /auth/reset-password"
       operationId: "post-auth-reset-password"
+      tags:
+      - auth
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /auth/invitations/{token}:
+    get:
+      summary: "GET /auth/invitations/:token"
+      operationId: "get-auth-invitations-by-token"
+      tags:
+      - auth
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+  /auth/accept-invite:
+    post:
+      summary: "POST /auth/accept-invite"
+      operationId: "post-auth-accept-invite"
       tags:
       - auth
       x-permissions: []
@@ -446,6 +507,30 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /users/me:
+    get:
+      summary: GET /users/me
+      operationId: "get-users-me"
+      tags:
+      - users
+      x-permissions: []
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
   /users/me/properties:
     get:
       summary: GET /users/me/properties
@@ -494,6 +579,60 @@ paths:
           description: Too many requests
         500:
           description: Internal server error
+  /users/me/preferences:
+    get:
+      summary: GET /users/me/preferences
+      operationId: "get-users-me-preferences"
+      tags:
+      - users
+      x-permissions: []
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+    patch:
+      summary: PATCH /users/me/preferences
+      operationId: "patch-users-me-preferences"
+      tags:
+      - users
+      x-permissions: []
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
   /reservations/{id}/wallet-pass:
     post:
       summary: "POST /reservations/:id/wallet-pass"
@@ -674,7 +813,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - compliance.configure
+      - billing.compliance.view
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -705,7 +844,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - accounting.journal.post
+      - banking.reconcile
       x-risk-level: high
       x-manifest-entry: true
       responses:
@@ -743,7 +882,7 @@ paths:
       tags:
       - banking
       x-permissions:
-      - accounting.journal.post
+      - banking.reconcile
       x-risk-level: high
       x-manifest-entry: true
       responses:
@@ -1208,7 +1347,7 @@ paths:
       tags:
       - developer
       x-permissions:
-      - developer.manage_apps
+      - developer.manage_webhooks
       x-risk-level: high
       x-manifest-entry: true
       responses:
@@ -2610,9 +2749,10 @@ paths:
       operationId: "get-advanced-properties-by-propertyid-modules-by-modulecode-health"
       tags:
       - advanced
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - modules.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -2678,6 +2818,37 @@ paths:
       - revenue
       x-permissions:
       - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+  /revenue/properties/{propertyId}/history-forecast/board:
+    get:
+      summary: "GET /revenue/properties/:propertyId/history-forecast/board"
+      operationId: "get-revenue-properties-by-propertyid-history-forecast-board"
+      tags:
+      - revenue
+      x-permissions:
+      - revenue.history_forecast.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -2798,6 +2969,75 @@ paths:
     post:
       summary: "POST /revenue/properties/:propertyId/history-forecast/export"
       operationId: "post-revenue-properties-by-propertyid-history-forecast-export"
+      tags:
+      - revenue
+      x-permissions:
+      - revenue.history_forecast.export
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /revenue/properties/{propertyId}/export-center/catalog:
+    get:
+      summary: "GET /revenue/properties/:propertyId/export-center/catalog"
+      operationId: "get-revenue-properties-by-propertyid-export-center-catalog"
+      tags:
+      - revenue
+      x-permissions:
+      - revenue.history_forecast.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+  /revenue/properties/{propertyId}/export-center/generate:
+    post:
+      summary: "POST /revenue/properties/:propertyId/export-center/generate"
+      operationId: "post-revenue-properties-by-propertyid-export-center-generate"
       tags:
       - revenue
       x-permissions:
@@ -3107,9 +3347,10 @@ paths:
       operationId: "get-revenue-properties-by-propertyid-period-metrics"
       tags:
       - revenue
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -3547,9 +3788,10 @@ paths:
       operationId: "get-revenue-properties-by-propertyid-pricing-rules"
       tags:
       - revenue
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -3652,9 +3894,10 @@ paths:
       operationId: "get-revenue-properties-by-propertyid-bar-levels"
       tags:
       - revenue
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -3719,9 +3962,10 @@ paths:
       operationId: "get-revenue-properties-by-propertyid-budget"
       tags:
       - revenue
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -3786,9 +4030,10 @@ paths:
       operationId: "get-revenue-properties-by-propertyid-budget-variance"
       tags:
       - revenue
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -3816,9 +4061,10 @@ paths:
       operationId: "get-revenue-properties-by-propertyid-market-segments"
       tags:
       - revenue
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -3959,9 +4205,10 @@ paths:
       operationId: "get-revenue-properties-by-propertyid-meeting-pack"
       tags:
       - revenue
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - revenue.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -3989,9 +4236,10 @@ paths:
       operationId: "get-integrations-email-providers"
       tags:
       - integrations
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - integrations.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -4013,9 +4261,10 @@ paths:
       operationId: "get-properties-by-propertyid-email-connections"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - integrations.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -4111,9 +4360,10 @@ paths:
       operationId: "get-email-connections-by-id-authorize-url"
       tags:
       - email
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - integrations.connect
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -4142,8 +4392,8 @@ paths:
       tags:
       - integrations
       x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-risk-level: public
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -4241,9 +4491,10 @@ paths:
       operationId: "get-properties-by-propertyid-email-inbound"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -4372,199 +4623,15 @@ paths:
         required: true
         schema:
           type: string
-  /revenue/properties/{propertyId}/rate-grid:
+  /properties/{propertyId}/rate-plans:
     get:
-      summary: "GET /revenue/properties/:propertyId/rate-grid"
-      operationId: "get-revenue-properties-by-propertyid-rate-grid"
+      summary: "GET /properties/:propertyId/rate-plans"
+      operationId: "get-properties-by-propertyid-rate-plans"
       tags:
-      - revenue
+      - properties
       x-permissions:
       - revenue.read
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-  /revenue/properties/{propertyId}/rate-grid/rates:
-    patch:
-      summary: "PATCH /revenue/properties/:propertyId/rate-grid/rates"
-      operationId: "patch-revenue-properties-by-propertyid-rate-grid-rates"
-      tags:
-      - revenue
-      x-permissions:
-      - revenue.manage_rates
-      x-risk-level: critical
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /revenue/properties/{propertyId}/rate-grid/restrictions:
-    patch:
-      summary: "PATCH /revenue/properties/:propertyId/rate-grid/restrictions"
-      operationId: "patch-revenue-properties-by-propertyid-rate-grid-restrictions"
-      tags:
-      - revenue
-      x-permissions:
-      - revenue.manage_restrictions
-      x-risk-level: critical
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /revenue/properties/{propertyId}/rate-grid/inventory:
-    patch:
-      summary: "PATCH /revenue/properties/:propertyId/rate-grid/inventory"
-      operationId: "patch-revenue-properties-by-propertyid-rate-grid-inventory"
-      tags:
-      - revenue
-      x-permissions:
-      - revenue.manage_rates
-      x-risk-level: high
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /revenue/properties/{propertyId}/rate-grid/bulk-update:
-    post:
-      summary: "POST /revenue/properties/:propertyId/rate-grid/bulk-update"
-      operationId: "post-revenue-properties-by-propertyid-rate-grid-bulk-update"
-      tags:
-      - revenue
-      x-permissions:
-      - revenue.manage_rates
-      - revenue.manage_restrictions
-      x-risk-level: critical
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /revenue/properties/{propertyId}/demand-calendar:
-    get:
-      summary: "GET /revenue/properties/:propertyId/demand-calendar"
-      operationId: "get-revenue-properties-by-propertyid-demand-calendar"
-      tags:
-      - revenue
-      x-permissions:
-      - revenue.forecast.read
-      x-risk-level: medium
+      x-risk-level: low
       x-manifest-entry: true
       responses:
         200:
@@ -4588,12 +4655,12 @@ paths:
         schema:
           type: string
     post:
-      summary: "POST /revenue/properties/:propertyId/demand-calendar"
-      operationId: "post-revenue-properties-by-propertyid-demand-calendar"
+      summary: "POST /properties/:propertyId/rate-plans"
+      operationId: "post-properties-by-propertyid-rate-plans"
       tags:
-      - revenue
+      - properties
       x-permissions:
-      - revenue.recommend
+      - revenue.manage_rates
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -4624,14 +4691,14 @@ paths:
             schema:
               type: object
               additionalProperties: true
-  /revenue/demand-calendar/{eventId}:
+  /rate-plans/{id}:
     patch:
-      summary: "PATCH /revenue/demand-calendar/:eventId"
-      operationId: "patch-revenue-demand-calendar-by-eventid"
+      summary: "PATCH /rate-plans/:id"
+      operationId: "patch-rate-plans-by-id"
       tags:
-      - revenue
+      - "rate-plans"
       x-permissions:
-      - revenue.recommend
+      - revenue.manage_rates
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -4650,7 +4717,7 @@ paths:
         500:
           description: Internal server error
       parameters:
-      - name: eventId
+      - name: id
         in: path
         required: true
         schema:
@@ -4663,13 +4730,13 @@ paths:
               type: object
               additionalProperties: true
     delete:
-      summary: "DELETE /revenue/demand-calendar/:eventId"
-      operationId: "delete-revenue-demand-calendar-by-eventid"
+      summary: "DELETE /rate-plans/:id"
+      operationId: "delete-rate-plans-by-id"
       tags:
-      - revenue
+      - "rate-plans"
       x-permissions:
-      - revenue.recommend
-      x-risk-level: high
+      - revenue.manage_rates
+      x-risk-level: medium
       x-manifest-entry: true
       responses:
         200:
@@ -4687,7 +4754,7 @@ paths:
         500:
           description: Internal server error
       parameters:
-      - name: eventId
+      - name: id
         in: path
         required: true
         schema:
@@ -4974,112 +5041,6 @@ paths:
             schema:
               type: object
               additionalProperties: true
-  /channel-manager/properties/{propertyId}/channels:
-    get:
-      summary: "GET /channel-manager/properties/:propertyId/channels"
-      operationId: "get-channel-manager-properties-by-propertyid-channels"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.read
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-    post:
-      summary: "POST /channel-manager/properties/:propertyId/channels"
-      operationId: "post-channel-manager-properties-by-propertyid-channels"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.manage
-      x-risk-level: high
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /channel-manager/channels/{channelId}:
-    patch:
-      summary: "PATCH /channel-manager/channels/:channelId"
-      operationId: "patch-channel-manager-channels-by-channelid"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.manage
-      x-risk-level: high
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: channelId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
   /channel-manager/channels/{channelId}/room-mappings:
     get:
       summary: "GET /channel-manager/channels/:channelId/room-mappings"
@@ -5336,175 +5297,6 @@ paths:
           description: Internal server error
       parameters:
       - name: channelId
-        in: path
-        required: true
-        schema:
-          type: string
-  /channel-manager/channels/{channelId}/sync-jobs:
-    get:
-      summary: "GET /channel-manager/channels/:channelId/sync-jobs"
-      operationId: "get-channel-manager-channels-by-channelid-sync-jobs"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.read
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: channelId
-        in: path
-        required: true
-        schema:
-          type: string
-  /channel-manager/properties/{propertyId}/sync-health:
-    get:
-      summary: "GET /channel-manager/properties/:propertyId/sync-health"
-      operationId: "get-channel-manager-properties-by-propertyid-sync-health"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.read
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-  /channel-manager/channels/{channelId}/reservations/import:
-    post:
-      summary: "POST /channel-manager/channels/:channelId/reservations/import"
-      operationId: "post-channel-manager-channels-by-channelid-reservations-import"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.sync
-      x-risk-level: high
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: channelId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /channel-manager/channels/{channelId}/webhook:
-    post:
-      summary: "POST /channel-manager/channels/:channelId/webhook"
-      operationId: "post-channel-manager-channels-by-channelid-webhook"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.sync
-      x-risk-level: high
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: channelId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /channel-manager/properties/{propertyId}/external-reservations:
-    get:
-      summary: "GET /channel-manager/properties/:propertyId/external-reservations"
-      operationId: "get-channel-manager-properties-by-propertyid-external-reservations"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.read
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
         in: path
         required: true
         schema:
@@ -6235,9 +6027,10 @@ paths:
       operationId: "get-groups-properties-by-propertyid"
       tags:
       - groups
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - groups.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -6402,6 +6195,151 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /groups/{id}/room-blocks/bulk:
+    post:
+      summary: "POST /groups/:id/room-blocks/bulk"
+      operationId: "post-groups-by-id-room-blocks-bulk"
+      tags:
+      - groups
+      x-permissions:
+      - groups.manage
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /groups/{id}/events:
+    post:
+      summary: "POST /groups/:id/events"
+      operationId: "post-groups-by-id-events"
+      tags:
+      - groups
+      x-permissions:
+      - events.manage
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /groups/{id}/rooming-list/import:
+    post:
+      summary: "POST /groups/:id/rooming-list/import"
+      operationId: "post-groups-by-id-rooming-list-import"
+      tags:
+      - groups
+      x-permissions:
+      - groups.manage
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /properties/{propertyId}/event-spaces:
+    get:
+      summary: "GET /properties/:propertyId/event-spaces"
+      operationId: "get-properties-by-propertyid-event-spaces"
+      tags:
+      - properties
+      x-permissions:
+      - events.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
   /groups/{id}/release-unsold:
     post:
       summary: "POST /groups/:id/release-unsold"
@@ -6429,6 +6367,113 @@ paths:
           description: Internal server error
       parameters:
       - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /groups/{id}/master-folio:
+    post:
+      summary: "POST /groups/:id/master-folio"
+      operationId: "post-groups-by-id-master-folio"
+      tags:
+      - groups
+      x-permissions:
+      - groups.manage
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /properties/{propertyId}/groups/pickup-summary:
+    get:
+      summary: "GET /properties/:propertyId/groups/pickup-summary"
+      operationId: "get-properties-by-propertyid-groups-pickup-summary"
+      tags:
+      - properties
+      x-permissions:
+      - groups.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+  /properties/{propertyId}/groups/release-expired:
+    post:
+      summary: "POST /properties/:propertyId/groups/release-expired"
+      operationId: "post-properties-by-propertyid-groups-release-expired"
+      tags:
+      - properties
+      x-permissions:
+      - groups.manage
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
         in: path
         required: true
         schema:
@@ -6484,9 +6529,10 @@ paths:
       operationId: "get-events-properties-by-propertyid-calendar"
       tags:
       - events
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - events.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -6666,9 +6712,10 @@ paths:
       operationId: "get-workforce-properties-by-propertyid-schedule"
       tags:
       - workforce
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - workforce.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -6836,9 +6883,10 @@ paths:
       operationId: "get-workforce-properties-by-propertyid-time-clock"
       tags:
       - workforce
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - workforce.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -6936,9 +6984,10 @@ paths:
       operationId: "get-workforce-properties-by-propertyid-labor-forecast"
       tags:
       - workforce
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - workforce.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -6966,9 +7015,10 @@ paths:
       operationId: "get-workforce-properties-by-propertyid-labor-costs"
       tags:
       - workforce
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - workforce.labor_cost.view
+      x-risk-level: high
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -6996,9 +7046,10 @@ paths:
       operationId: "get-procurement-suppliers"
       tags:
       - procurement
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - procurement.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -7051,9 +7102,10 @@ paths:
       operationId: "get-inventory-properties-by-propertyid-items"
       tags:
       - inventory
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -7118,9 +7170,10 @@ paths:
       operationId: "get-inventory-properties-by-propertyid-stock"
       tags:
       - inventory
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -7224,9 +7277,10 @@ paths:
       operationId: "get-procurement-properties-by-propertyid-purchase-orders"
       tags:
       - procurement
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - procurement.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -7800,9 +7854,10 @@ paths:
       operationId: "get-guest-self-service-properties-by-propertyid-settings"
       tags:
       - "guest-self-service"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - guest_self_service.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -7867,9 +7922,10 @@ paths:
       operationId: "get-reputation-properties-by-propertyid-dashboard"
       tags:
       - reputation
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - reputation.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -7897,9 +7953,10 @@ paths:
       operationId: "get-reputation-properties-by-propertyid-reviews"
       tags:
       - reputation
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - reputation.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8003,9 +8060,10 @@ paths:
       operationId: "get-quality-properties-by-propertyid-cases"
       tags:
       - quality
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - quality_cases.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8108,9 +8166,10 @@ paths:
       operationId: "get-surveys-properties-by-propertyid"
       tags:
       - surveys
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - surveys.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8213,9 +8272,10 @@ paths:
       operationId: "get-energy-properties-by-propertyid-dashboard"
       tags:
       - energy
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - energy.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8243,9 +8303,10 @@ paths:
       operationId: "get-energy-properties-by-propertyid-meters"
       tags:
       - energy
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - energy.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8348,9 +8409,10 @@ paths:
       operationId: "get-sustainability-properties-by-propertyid-dashboard"
       tags:
       - sustainability
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - sustainability.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8416,9 +8478,10 @@ paths:
       operationId: "get-sustainability-properties-by-propertyid-report"
       tags:
       - sustainability
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - sustainability.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8446,9 +8509,10 @@ paths:
       operationId: "get-safety-properties-by-propertyid-incidents"
       tags:
       - safety
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - incidents.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8589,9 +8653,10 @@ paths:
       operationId: "get-safety-properties-by-propertyid-checks"
       tags:
       - safety
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - safety_checks.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8694,9 +8759,10 @@ paths:
       operationId: "get-analytics-properties-by-propertyid-dashboard"
       tags:
       - analytics
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - analytics.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8724,9 +8790,10 @@ paths:
       operationId: "get-analytics-properties-by-propertyid-metrics"
       tags:
       - analytics
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - analytics.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8786,9 +8853,10 @@ paths:
       operationId: "get-analytics-properties-by-propertyid-anomalies"
       tags:
       - analytics
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - analytics.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8854,9 +8922,10 @@ paths:
       operationId: "get-analytics-properties-by-propertyid-reports"
       tags:
       - analytics
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - analytics.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8953,9 +9022,10 @@ paths:
       operationId: "get-developer-apps-by-id-usage"
       tags:
       - developer
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - developer.manage_apps
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -8983,9 +9053,10 @@ paths:
       operationId: "get-developer-webhooks"
       tags:
       - developer
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -9114,9 +9185,10 @@ paths:
       operationId: "get-developer-webhooks-by-id-deliveries"
       tags:
       - developer
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -9168,9 +9240,10 @@ paths:
       operationId: "get-ai-governance-policies"
       tags:
       - "ai-governance"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - ai_governance.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -9261,9 +9334,10 @@ paths:
       operationId: "get-ai-governance-tools"
       tags:
       - "ai-governance"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - ai_governance.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -9323,9 +9397,10 @@ paths:
       operationId: "get-ai-governance-prompts"
       tags:
       - "ai-governance"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - ai_governance.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -9416,9 +9491,10 @@ paths:
       operationId: "get-ai-governance-evaluations"
       tags:
       - "ai-governance"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - ai_governance.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -9478,9 +9554,10 @@ paths:
       operationId: "get-ai-governance-incidents"
       tags:
       - "ai-governance"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - ai_incidents.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -9571,9 +9648,10 @@ paths:
       operationId: "get-ai-governance-human-review"
       tags:
       - "ai-governance"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - ai_governance.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -12815,6 +12893,117 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /backoffice/properties/{propertyId}/roles:
+    get:
+      summary: "GET /backoffice/properties/:propertyId/roles"
+      operationId: "get-backoffice-properties-by-propertyid-roles"
+      tags:
+      - backoffice
+      x-permissions:
+      - users.invite
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "POST /backoffice/properties/:propertyId/roles"
+      operationId: "post-backoffice-properties-by-propertyid-roles"
+      tags:
+      - backoffice
+      x-permissions:
+      - roles.manage
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /backoffice/properties/{propertyId}/users/{userId}/reissue-invite:
+    post:
+      summary: "POST /backoffice/properties/:propertyId/users/:userId/reissue-invite"
+      operationId: "post-backoffice-properties-by-propertyid-users-by-userid-reissue-invite"
+      tags:
+      - backoffice
+      x-permissions:
+      - users.invite
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
   /backoffice/properties/{propertyId}/users/{userId}/disable:
     post:
       summary: "POST /backoffice/properties/:propertyId/users/:userId/disable"
@@ -13090,6 +13279,75 @@ paths:
       x-permissions:
       - billing.configure
       x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /backoffice/properties/{propertyId}/taxes:
+    get:
+      summary: "GET /backoffice/properties/:propertyId/taxes"
+      operationId: "get-backoffice-properties-by-propertyid-taxes"
+      tags:
+      - backoffice
+      x-permissions:
+      - compliance.configure
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+  /backoffice/properties/{propertyId}/taxes/provision:
+    post:
+      summary: "POST /backoffice/properties/:propertyId/taxes/provision"
+      operationId: "post-backoffice-properties-by-propertyid-taxes-provision"
+      tags:
+      - backoffice
+      x-permissions:
+      - compliance.configure
+      x-risk-level: high
       x-manifest-entry: true
       responses:
         200:
@@ -14436,6 +14694,68 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /reservations/{id}/audit-events:
+    get:
+      summary: "GET /reservations/:id/audit-events"
+      operationId: "get-reservations-by-id-audit-events"
+      tags:
+      - reservations
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /reservations/{id}/documents:
+    get:
+      summary: "GET /reservations/:id/documents"
+      operationId: "get-reservations-by-id-documents"
+      tags:
+      - reservations
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
   /reservations/{id}/assign-room:
     post:
       summary: "POST /reservations/:id/assign-room"
@@ -14964,7 +15284,7 @@ paths:
       tags:
       - folios
       x-permissions:
-      - folio.charge.post
+      - folio.read
       x-risk-level: low
       x-manifest-entry: true
       responses:
@@ -15148,7 +15468,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - invoice.issue
+      - invoice.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -15247,7 +15567,7 @@ paths:
       tags:
       - invoices
       x-permissions:
-      - invoice.issue
+      - invoice.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -15302,6 +15622,38 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /invoices/drafts:
+    post:
+      summary: POST /invoices/drafts
+      operationId: "post-invoices-drafts"
+      tags:
+      - invoices
+      x-permissions:
+      - invoice.issue
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
       requestBody:
         required: false
         content:
@@ -15430,7 +15782,7 @@ paths:
       tags:
       - invoices
       x-permissions:
-      - analytics.read
+      - invoice.read
       x-risk-level: low
       x-manifest-entry: true
       responses:
@@ -15454,6 +15806,158 @@ paths:
         required: true
         schema:
           type: string
+  /folios/{id}/split:
+    post:
+      summary: "POST /folios/:id/split"
+      operationId: "post-folios-by-id-split"
+      tags:
+      - folios
+      x-permissions:
+      - folio.charge.post
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /folios/{sourceId}/move-charges:
+    post:
+      summary: "POST /folios/:sourceId/move-charges"
+      operationId: "post-folios-by-sourceid-move-charges"
+      tags:
+      - folios
+      x-permissions:
+      - folio.charge.post
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: sourceId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /invoices/{id}/mark-paid:
+    post:
+      summary: "POST /invoices/:id/mark-paid"
+      operationId: "post-invoices-by-id-mark-paid"
+      tags:
+      - invoices
+      x-permissions:
+      - payment.capture
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /invoices/{id}/send-email:
+    post:
+      summary: "POST /invoices/:id/send-email"
+      operationId: "post-invoices-by-id-send-email"
+      tags:
+      - invoices
+      x-permissions:
+      - invoice.issue
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
   /reports/properties/{propertyId}/catalog:
     get:
       summary: "GET /reports/properties/:propertyId/catalog"
@@ -15788,8 +16292,8 @@ paths:
       tags:
       - banking
       x-permissions:
-      - analytics.read
-      x-risk-level: low
+      - banking.read
+      x-risk-level: medium
       x-manifest-entry: true
       responses:
         200:
@@ -15844,8 +16348,8 @@ paths:
       tags:
       - banking
       x-permissions:
-      - analytics.read
-      x-risk-level: low
+      - banking.read
+      x-risk-level: medium
       x-manifest-entry: true
       responses:
         200:
@@ -15875,8 +16379,8 @@ paths:
       tags:
       - banking
       x-permissions:
-      - analytics.read
-      x-risk-level: low
+      - banking.read
+      x-risk-level: medium
       x-manifest-entry: true
       responses:
         200:
@@ -15944,8 +16448,8 @@ paths:
       tags:
       - banking
       x-permissions:
-      - analytics.read
-      x-risk-level: low
+      - banking.read
+      x-risk-level: medium
       x-manifest-entry: true
       responses:
         200:
@@ -16081,8 +16585,8 @@ paths:
       tags:
       - banking
       x-permissions:
-      - analytics.read
-      x-risk-level: low
+      - banking.read
+      x-risk-level: medium
       x-manifest-entry: true
       responses:
         200:
@@ -16643,9 +17147,10 @@ paths:
       operationId: "get-compliance-properties-by-propertyid-center"
       tags:
       - compliance
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - compliance.configure
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -16754,9 +17259,10 @@ paths:
       operationId: "get-compliance-properties-by-propertyid-tasks"
       tags:
       - compliance
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - compliance.configure
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -16889,9 +17395,10 @@ paths:
       operationId: "get-compliance-properties-by-propertyid-documents"
       tags:
       - compliance
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - compliance.configure
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -16987,9 +17494,10 @@ paths:
       operationId: "get-compliance-properties-by-propertyid-alerts"
       tags:
       - compliance
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - compliance.configure
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -17017,9 +17525,10 @@ paths:
       operationId: "get-compliance-properties-by-propertyid-inspection-folder"
       tags:
       - compliance
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - compliance.configure
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -17047,9 +17556,10 @@ paths:
       operationId: "get-compliance-properties-by-propertyid-assistant"
       tags:
       - compliance
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - compliance.configure
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -17780,6 +18290,37 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /properties/{propertyId}/allotments/pickup-summary:
+    get:
+      summary: "GET /properties/:propertyId/allotments/pickup-summary"
+      operationId: "get-properties-by-propertyid-allotments-pickup-summary"
+      tags:
+      - properties
+      x-permissions:
+      - channel_manager.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
   /reservations/{id}/folios:
     get:
       summary: "GET /reservations/:id/folios"
@@ -17787,7 +18328,7 @@ paths:
       tags:
       - reservations
       x-permissions:
-      - folio.charge.post
+      - folio.read
       x-risk-level: low
       x-manifest-entry: true
       responses:
@@ -17855,7 +18396,7 @@ paths:
       tags:
       - reservations
       x-permissions:
-      - folio.charge.post
+      - folio.read
       x-risk-level: low
       x-manifest-entry: true
       responses:
@@ -18028,9 +18569,10 @@ paths:
       operationId: "get-properties-by-propertyid-stock-locations"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -18095,9 +18637,10 @@ paths:
       operationId: "get-properties-by-propertyid-inventory-items"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -18200,9 +18743,10 @@ paths:
       operationId: "get-properties-by-propertyid-stock-balances"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -18230,9 +18774,10 @@ paths:
       operationId: "get-properties-by-propertyid-stock-balances-low-stock"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -18260,9 +18805,10 @@ paths:
       operationId: "get-properties-by-propertyid-menu-items"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -18327,9 +18873,10 @@ paths:
       operationId: "get-menu-items-by-id"
       tags:
       - "menu-items"
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - inventory.read
+      x-risk-level: low
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -18420,174 +18967,6 @@ paths:
         required: true
         schema:
           type: string
-  /properties/{propertyId}/pos/outlets:
-    get:
-      summary: "GET /properties/:propertyId/pos/outlets"
-      operationId: "get-properties-by-propertyid-pos-outlets"
-      tags:
-      - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-  /properties/{propertyId}/pos/tickets:
-    get:
-      summary: "GET /properties/:propertyId/pos/tickets"
-      operationId: "get-properties-by-propertyid-pos-tickets"
-      tags:
-      - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-  /pos/tickets:
-    post:
-      summary: POST /pos/tickets
-      operationId: "post-pos-tickets"
-      tags:
-      - pos
-      x-permissions:
-      - folio.charge.post
-      x-risk-level: low
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /pos/tickets/{id}/lines:
-    post:
-      summary: "POST /pos/tickets/:id/lines"
-      operationId: "post-pos-tickets-by-id-lines"
-      tags:
-      - pos
-      x-permissions:
-      - folio.charge.post
-      x-risk-level: low
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /pos/tickets/{id}/close:
-    post:
-      summary: "POST /pos/tickets/:id/close"
-      operationId: "post-pos-tickets-by-id-close"
-      tags:
-      - pos
-      x-permissions:
-      - folio.charge.post
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
   /properties/{propertyId}/capex:
     get:
       summary: "GET /properties/:propertyId/capex"
@@ -19135,7 +19514,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - compliance.ses.submit
+      - guest_register.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -19166,7 +19545,7 @@ paths:
       tags:
       - compliance
       x-permissions:
-      - guest_register.configure
+      - guest_register.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -19969,7 +20348,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - compliance.ses.submit
+      - guest_register.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -20114,7 +20493,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - compliance.ses.submit
+      - guest_register.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -20447,6 +20826,253 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /admin/tenants:
+    get:
+      summary: GET /admin/tenants
+      operationId: "get-admin-tenants"
+      tags:
+      - admin
+      x-permissions:
+      - admin.tenants.manage
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+    post:
+      summary: POST /admin/tenants
+      operationId: "post-admin-tenants"
+      tags:
+      - admin
+      x-permissions:
+      - admin.tenants.manage
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /admin/tenants/{orgId}:
+    get:
+      summary: "GET /admin/tenants/:orgId"
+      operationId: "get-admin-tenants-by-orgid"
+      tags:
+      - admin
+      x-permissions:
+      - admin.tenants.manage
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: orgId
+        in: path
+        required: true
+        schema:
+          type: string
+  /admin/tenants/{orgId}/users/{userId}/reset-password:
+    post:
+      summary: "POST /admin/tenants/:orgId/users/:userId/reset-password"
+      operationId: "post-admin-tenants-by-orgid-users-by-userid-reset-password"
+      tags:
+      - admin
+      x-permissions:
+      - admin.tenants.manage
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: orgId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /admin/tenants/{orgId}/users/{userId}/reissue-invite:
+    post:
+      summary: "POST /admin/tenants/:orgId/users/:userId/reissue-invite"
+      operationId: "post-admin-tenants-by-orgid-users-by-userid-reissue-invite"
+      tags:
+      - admin
+      x-permissions:
+      - admin.tenants.manage
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: orgId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /admin/tenants/{orgId}/modules/{moduleCode}:
+    patch:
+      summary: "PATCH /admin/tenants/:orgId/modules/:moduleCode"
+      operationId: "patch-admin-tenants-by-orgid-modules-by-modulecode"
+      tags:
+      - admin
+      x-permissions:
+      - admin.tenants.manage
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: orgId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: moduleCode
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /admin/tenants/{orgId}/audit-log:
+    get:
+      summary: "GET /admin/tenants/:orgId/audit-log"
+      operationId: "get-admin-tenants-by-orgid-audit-log"
+      tags:
+      - admin
+      x-permissions:
+      - admin.tenants.manage
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: orgId
+        in: path
+        required: true
+        schema:
+          type: string
   /ai/commands/check-in-from-scan:
     post:
       summary: "POST /ai/commands/check-in-from-scan"
@@ -20583,146 +21209,16 @@ paths:
             schema:
               type: object
               additionalProperties: true
-  /properties/{propertyId}/night-audit/business-date:
-    get:
-      summary: "GET /properties/:propertyId/night-audit/business-date"
-      operationId: "get-properties-by-propertyid-night-audit-business-date"
-      tags:
-      - properties
-      x-permissions:
-      - analytics.read
-      x-risk-level: low
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-  /properties/{propertyId}/night-audit/runs:
-    get:
-      summary: "GET /properties/:propertyId/night-audit/runs"
-      operationId: "get-properties-by-propertyid-night-audit-runs"
-      tags:
-      - properties
-      x-permissions:
-      - analytics.read
-      x-risk-level: low
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-  /properties/{propertyId}/night-audit/run:
-    post:
-      summary: "POST /properties/:propertyId/night-audit/run"
-      operationId: "post-properties-by-propertyid-night-audit-run"
-      tags:
-      - properties
-      x-permissions:
-      - accounting.journal.post
-      x-risk-level: high
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /properties/{propertyId}/night-audit/preflight:
-    get:
-      summary: "GET /properties/:propertyId/night-audit/preflight"
-      operationId: "get-properties-by-propertyid-night-audit-preflight"
-      tags:
-      - properties
-      x-permissions:
-      - analytics.read
-      x-risk-level: low
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
   /accounting/journal-entries/recent:
     get:
       summary: "GET /accounting/journal-entries/recent"
       operationId: "get-accounting-journal-entries-recent"
       tags:
       - accounting
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - accounting.journal.post
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -20744,9 +21240,10 @@ paths:
       operationId: "get-accounting-fiscal-periods"
       tags:
       - accounting
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - accounting.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -20877,7 +21374,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.read
       x-risk-level: low
       x-manifest-entry: true
       responses:
@@ -20933,7 +21430,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21042,7 +21539,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.reports.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21067,7 +21564,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.reports.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21092,7 +21589,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.reports.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21117,7 +21614,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.reports.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21142,7 +21639,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - compliance.ses.submit
+      - billing.compliance.view
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21173,7 +21670,7 @@ paths:
       tags:
       - invoices
       x-permissions:
-      - compliance.ses.submit
+      - billing.compliance.view
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21204,7 +21701,7 @@ paths:
       tags:
       - properties
       x-permissions:
-      - compliance.ses.submit
+      - billing.compliance.view
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21234,9 +21731,78 @@ paths:
       operationId: "get-properties-by-propertyid-ses-submissions"
       tags:
       - properties
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - guest_register.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "POST /properties/:propertyId/ses/submissions"
+      operationId: "post-properties-by-propertyid-ses-submissions"
+      tags:
+      - properties
+      x-permissions:
+      - compliance.ses.submit
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /properties/{propertyId}/ses/establishment:
+    get:
+      summary: "GET /properties/:propertyId/ses/establishment"
+      operationId: "get-properties-by-propertyid-ses-establishment"
+      tags:
+      - properties
+      x-permissions:
+      - guest_register.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -21265,7 +21831,7 @@ paths:
       tags:
       - verifactu
       x-permissions:
-      - compliance.ses.submit
+      - billing.compliance.view
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21296,7 +21862,7 @@ paths:
       tags:
       - tbai
       x-permissions:
-      - compliance.ses.submit
+      - billing.compliance.view
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21327,7 +21893,7 @@ paths:
       tags:
       - igic
       x-permissions:
-      - compliance.ses.submit
+      - billing.compliance.view
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21358,7 +21924,7 @@ paths:
       tags:
       - ses
       x-permissions:
-      - compliance.ses.submit
+      - guest_register.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21540,9 +22106,10 @@ paths:
       operationId: "get-accounting-reports-modelo-303"
       tags:
       - accounting
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -21565,7 +22132,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.reports.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21590,7 +22157,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.reports.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21615,7 +22182,7 @@ paths:
       tags:
       - accounting
       x-permissions:
-      - analytics.read
+      - accounting.reports.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21639,9 +22206,10 @@ paths:
       operationId: "get-accounting-reports-modelo-390"
       tags:
       - accounting
-      x-permissions: []
-      x-risk-level: unknown
-      x-manifest-entry: false
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
       responses:
         200:
           description: Successful response
@@ -21664,7 +22232,7 @@ paths:
       tags:
       - commissions
       x-permissions:
-      - analytics.read
+      - commissions.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21758,7 +22326,7 @@ paths:
       tags:
       - commissions
       x-permissions:
-      - analytics.read
+      - commissions.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21783,7 +22351,7 @@ paths:
       tags:
       - commissions
       x-permissions:
-      - analytics.read
+      - commissions.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21808,7 +22376,7 @@ paths:
       tags:
       - payroll
       x-permissions:
-      - analytics.read
+      - payroll.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21902,7 +22470,7 @@ paths:
       tags:
       - payroll
       x-permissions:
-      - analytics.read
+      - payroll.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -21996,7 +22564,7 @@ paths:
       tags:
       - payroll
       x-permissions:
-      - analytics.read
+      - payroll.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -22027,7 +22595,7 @@ paths:
       tags:
       - payroll
       x-permissions:
-      - analytics.read
+      - payroll.read
       x-risk-level: medium
       x-manifest-entry: true
       responses:
@@ -22058,7 +22626,7 @@ paths:
       tags:
       - finance
       x-permissions:
-      - analytics.read
+      - accounting.read
       x-risk-level: low
       x-manifest-entry: true
       responses:
@@ -22288,6 +22856,31 @@ paths:
       operationId: "get-dashboards-general-manager"
       tags:
       - dashboards
+      x-permissions:
+      - analytics.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+  /general-manager/pace:
+    get:
+      summary: "GET /general-manager/pace"
+      operationId: "get-general-manager-pace"
+      tags:
+      - "general-manager"
       x-permissions:
       - analytics.read
       x-risk-level: low
@@ -22636,6 +23229,112 @@ paths:
           description: Too many requests
         500:
           description: Internal server error
+  /properties/{propertyId}/upsell-offers:
+    get:
+      summary: "GET /properties/:propertyId/upsell-offers"
+      operationId: "get-properties-by-propertyid-upsell-offers"
+      tags:
+      - properties
+      x-permissions:
+      - guest_self_service.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "POST /properties/:propertyId/upsell-offers"
+      operationId: "post-properties-by-propertyid-upsell-offers"
+      tags:
+      - properties
+      x-permissions:
+      - guest_self_service.manage
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /upsell-offers/{id}:
+    patch:
+      summary: "PATCH /upsell-offers/:id"
+      operationId: "patch-upsell-offers-by-id"
+      tags:
+      - "upsell-offers"
+      x-permissions:
+      - guest_self_service.manage
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
   /dashboards/surveys:
     get:
       summary: GET /dashboards/surveys
@@ -22861,75 +23560,6 @@ paths:
           description: Too many requests
         500:
           description: Internal server error
-    post:
-      summary: "POST /channel-manager/channels"
-      operationId: "post-channel-manager-channels"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.manage
-      x-risk-level: high
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /channel-manager/channels/{channelId}/test:
-    post:
-      summary: "POST /channel-manager/channels/:channelId/test"
-      operationId: "post-channel-manager-channels-by-channelid-test"
-      tags:
-      - "channel-manager"
-      x-permissions:
-      - channel_manager.sync
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: channelId
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
   /channel-manager/channels/{channelId}/ingest:
     post:
       summary: "POST /channel-manager/channels/:channelId/ingest"
@@ -23205,43 +23835,6 @@ paths:
           description: Internal server error
       parameters:
       - name: id
-        in: path
-        required: true
-        schema:
-          type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /channel-manager/_sandbox/{provider}:
-    post:
-      summary: "POST /channel-manager/_sandbox/:provider"
-      operationId: "post-channel-manager-sandbox-by-provider"
-      tags:
-      - "channel-manager"
-      x-permissions: []
-      x-risk-level: public
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: provider
         in: path
         required: true
         schema:
@@ -23615,6 +24208,31 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /notifications/email-status:
+    get:
+      summary: "GET /notifications/email-status"
+      operationId: "get-notifications-email-status"
+      tags:
+      - notifications
+      x-permissions:
+      - users.invite
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
   /notifications/template-stats:
     get:
       summary: "GET /notifications/template-stats"
@@ -24512,6 +25130,31 @@ paths:
     get:
       summary: "GET /audit-events"
       operationId: "get-audit-events"
+      tags:
+      - "audit-events"
+      x-permissions:
+      - ai.high_risk.confirm
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+  /audit-events/facets:
+    get:
+      summary: "GET /audit-events/facets"
+      operationId: "get-audit-events-facets"
       tags:
       - "audit-events"
       x-permissions:

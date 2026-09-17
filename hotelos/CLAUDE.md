@@ -8,7 +8,7 @@ sesión de Claude tenga contexto completo sin que el usuario lo explique.
 
 ## Identidad del usuario
 
-César (cesareme en GitHub · yakutatsa@gmail.com). Empresa: HotelOS.
+César (cesareme en GitHub · yakutatsa@gmail.com). Empresa: ehotelOS.
 Trabaja en español. Prefiere tono directo, profesional sin emojis
 excesivos. Mac Pro como ÚNICA máquina (casa y viaje — el MacBook Neo se
 retiró). VPS Hostinger como entorno dev remoto: el código, la BD y los
@@ -17,7 +17,7 @@ perder trabajo.
 
 ## Producto
 
-HotelOS · monorepo PMS+ERP nativo español con IA. Compite con Mews,
+ehotelOS · monorepo PMS+ERP nativo español con IA. Compite con Mews,
 Cloudbeds, Stayntouch — pero con compliance ES profundo de fábrica
 (VeriFactu, SES Hospedajes, TBAI multi-foral, IGIC, ESRS) y agentes IA
 integrados.
@@ -26,24 +26,55 @@ NOTA estructura: el código real vive bajo `/hotelos/` (subdirectorio
 extra heredado del primer commit · pendiente de aplanar). Si escribes
 paths para CI o referencias, recuerda el prefijo.
 
-## Marca y despliegue (decisión 2026-06-21)
+## Marca y despliegue (rebrand 2026-09)
 
-- **Nombre de marca elegido: `Anfitorio`** (raíz clásica de *anfitrión* /
-  Amphitryon = el anfitrión; neutro, no nacionalista español). Dominios
-  `anfitorio.com` (✅ libre, RDAP) + `anfitorio.es` (probable libre). El
-  rebrand *HotelOS → Anfitorio* en código/UI está **HECHO** (Fase 0): 81 strings
-  de admin-web + index.html + nombres demo. Fuente única en
-  `apps/admin-web/src/config/brand.ts`. Preservados a propósito los identificadores
-  `HotelOSTokens`/`HotelOSFlowTokens` y el header `X-HotelOS-Idempotency`. El
-  paquete sigue siendo `@hotelos` (no visible).
-- **Demo en producción · PENDIENTE de DNS**: el plan es servir
-  `https://demo.anfitorio.es` desde el VPS con **Caddy** (HTTPS Let's Encrypt)
-  sirviendo el build de admin-web + reverse-proxy de la API en el mismo origen
-  (VITE_API_URL al mismo dominio → sin problema de `localhost`/CORS). Pasos:
-  registrar dominios en Hostinger → registro DNS `A demo → 72.61.194.216` →
-  montar Caddy + build + abrir 80/443 + probar. Hoy la app corre en modo dev
-  (vite :5173 + API :3000) y solo es accesible por túnel SSH.
-- **VPS** (72.61.194.216): acceso por **clave SSH** ya autorizado para `root`
+- **Nombre de marca: `ehotelOS`** (grafía exacta e+hotel+OS, también a
+  principio de frase; nunca con la e ni la h en mayúscula). Dominio
+  `ehotelos.com`; demo `demo.ehotelos.com`. Historial de nombres: `hotelos`
+  → `anfitorio` (2026-06) → ehotelOS (2026-09); las dos grafías anteriores
+  solo sobreviven en identificadores técnicos. Buzones y hosts (D2, los crea
+  César): `soporte@ehotelos.com`, `https://ayuda.ehotelos.com`,
+  `huesped.ehotelos.com` (portal del huésped) y `admin@ehotelos.com` (contacto
+  ACME de Caddy). Fuente única en `apps/admin-web/src/config/brand.ts`
+  (copias mínimas en guest-web, mobile y api; `tests/brand-contract.test.mjs`
+  las fija y barre el inventario visible). Preservados a propósito los
+  identificadores `HotelOSTokens`/`HotelOSFlowTokens`, los headers
+  `X-HotelOS-Idempotency`, `X-Anfitorio-Webhook-Secret` y
+  `X-Anfitorio-Signature` (protocolo, D7), el paquete `@hotelos` (no
+  visible), las unidades `anfitorio-api`/`anfitorio-worker`, las rutas
+  `/opt|/etc|/srv|/var/backups/anfitorio` y el usuario/BD/rol `anfitorio`.
+  El SIF VeriFactu NO sigue a la marca: en producción `/etc/anfitorio/api.env`
+  lleva `VERIFACTU_SYSTEM_NAME=Anfitorio` y `VERIFACTU_SYSTEM_VERSION=0.1.0`
+  (añadir si faltan: nombre y versión de la declaración responsable vigente,
+  los de los registros ya remitidos; los valores por defecto nuevos del código
+  son `ehotelOS` / `1.0.0`) hasta la nueva declaración responsable (D4;
+  `deploy/README-INSTALL.md` §9 paso 4 y
+  `docs/compliance/verifactu-declaracion-responsable.md` §4.7).
+- **Demo pública `https://demo.ehotelos.com`** (VPS demo **76.13.55.180**;
+  no confundir con el VPS de desarrollo): Caddy (HTTPS Let's Encrypt) sirve
+  el build de admin-web y hace reverse-proxy de la API en el mismo origen
+  (VITE_API_URL al mismo dominio → sin problema de `localhost`/CORS). Corte
+  de dominio (D5), en este orden: 1) registro DNS `A demo.ehotelos.com →
+  76.13.55.180` y `dig +short demo.ehotelos.com` ANTES de recargar Caddy (si
+  el nombre no resuelve, ACME falla para ese host; los bloques del Caddyfile
+  van separados para que el dominio anterior siga sirviendo); 2) el buzón
+  `admin@ehotelos.com` debe existir (avisos ACME); 3) `deploy.sh` NO
+  regenera `/etc/caddy/Caddyfile` en el rol `production-native`: `sudo cp
+  deploy/caddy/Caddyfile.native /etc/caddy/Caddyfile` (conserva el bloque de
+  transición 301 del dominio anterior; `install-from-scratch.sh` solo lo
+  elimina en instalaciones nuevas), `sudo caddy validate --config
+  /etc/caddy/Caddyfile` y `sudo systemctl reload caddy` (verbo ya permitido
+  en `/etc/sudoers.d/anfitorio-deploy`); 4) `/etc/anfitorio/api.env`:
+  `APP_BASE_URL=https://demo.ehotelos.com`, `API_PUBLIC_URL` y
+  `CORS_ALLOWED_ORIGINS` con el origen nuevo (y el antiguo durante la
+  transición), reinicio de las unidades y rebuild del front con
+  `VITE_API_URL=https://demo.ehotelos.com/api`; 5) en GitHub cambiar el
+  VALOR de `vars.PUBLIC_DOMAIN` a `demo.ehotelos.com` (el nombre no cambia);
+  6) el dominio anterior queda como redirect 301 hasta que caduque la
+  transición. Infraestructura intacta: unidades, rutas, usuario/BD/rol
+  `anfitorio` y sudoers `anfitorio-deploy`. Checklist completo:
+  `deploy/README-INSTALL.md` §9.
+- **VPS dev** (72.61.194.216): acceso por **clave SSH** ya autorizado para `root`
   y `cesareme` (alias `hotelos-dev`). App en tmux sesión `dev`. Credenciales
   demo: `reception@example.com` / `hotelos-demo`.
 

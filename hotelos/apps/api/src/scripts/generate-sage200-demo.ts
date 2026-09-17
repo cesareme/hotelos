@@ -36,6 +36,7 @@
 //     --out ../../../pilots/faranda-celuisma/sage200-demo [--organization <orgId>] [--seed 20260917] [--json]
 
 import { mkdirSync, writeFileSync } from "node:fs";
+import { BRAND } from "../lib/brand.js";
 import { join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Prisma } from "@prisma/client";
@@ -895,7 +896,7 @@ export function simulate(seed: number, native: NativeMirror | null): SimulationR
           debe: line.debit,
           haber: line.credit,
           // El cobro no cita la factura: se excluye por importe y fecha (± 3 días) contra el cobro nativo (heurística SD-04).
-          concepto: isInvoice ? `Factura ${number} (emitida por Anfitorio)` : `Cobro TPV ${ddmmyyyy(doc.entryDate)}`,
+          concepto: isInvoice ? `Factura ${number} (emitida por ${BRAND.name})` : `Cobro TPV ${ddmmyyyy(doc.entryDate)}`,
           documento: isInvoice ? number || null : null,
           delegacion: doc.property,
           departamento: line.account.startsWith("705") ? "HAB" : null,
@@ -1325,7 +1326,7 @@ function readme(sim: SimulationResult, organization: string | null): string {
     "",
     "Variantes del mismo contenido para probar los otros formatos: `diario/diario-2026-01.xlsx` («Enviar a Excel», mismo hash que el CSV de enero → 409 LEDGER_IMPORT_DUPLICATE tras cargar el CSV), `diario/diario-2026-02-ime.csv` (CSV IME de 60 columnas, mismo hash que el CSV de febrero), `sumas-y-saldos/sumas-y-saldos-2025.xlsx` (columnas «Sumas anteriores» = acumulado hasta el periodo previo, semántica Sage [S]) y `sumas-y-saldos/sumas-y-saldos-2025-RA.csv` (hoja de una sola delegación, para `--reconcile --property RA`).",
     "",
-    "`diario/no-importar/nominas-2026-anfitorio.csv` contiene los devengos de nómina de AS LT MC OC PG RA (2026-01..07) con las cifras EXACTAS del lote de coste de personal de Anfitorio: Sage los tiene (y el balance de Sage los incluye), Anfitorio ya los devengó, así que NO se cargan (diseño §10.1-4). FN y LL no estaban en aquel lote y su nómina de Sage sí se importa.",
+    "`diario/no-importar/nominas-2026-anfitorio.csv` contiene los devengos de nómina de AS LT MC OC PG RA (2026-01..07) con las cifras EXACTAS del lote de coste de personal de " + BRAND.name + ": Sage los tiene (y el balance de Sage los incluye), " + BRAND.name + " ya los devengó, así que NO se cargan (diseño §10.1-4). FN y LL no estaban en aquel lote y su nómina de Sage sí se importa.",
     "",
     "## Cifras esperadas (resumen.json)",
     "",

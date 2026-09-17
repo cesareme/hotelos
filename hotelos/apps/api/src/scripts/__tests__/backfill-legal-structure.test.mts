@@ -72,11 +72,11 @@ function farandaSnapshot(): OrgSnapshot {
 
 function org123Snapshot(): OrgSnapshot {
   return {
-    organization: { id: "org_123", name: "HotelOS Demo Group", legalName: "HotelOS Demo SL", taxId: "B12345674" },
+    organization: { id: "org_123", name: "Grupo Hotelero Demo", legalName: "Grupo Hotelero Demo SL", taxId: "B12345674" },
     legalEntity: null,
     properties: [
-      { id: "prop_123", name: "Anfitorio Madrid Centro", legalName: "Anfitorio Madrid Centro SL", kind: "hotel", code: null, tradeName: null, legalEntityId: null, createdAt: new Date("2025-05-01T00:00:00Z") },
-      { id: "prop_canary", name: "Anfitorio Tenerife Sur", legalName: "Anfitorio Tenerife Sur SL", kind: "hotel", code: null, tradeName: null, legalEntityId: null, createdAt: new Date("2025-05-02T00:00:00Z") }
+      { id: "prop_123", name: "Hotel Demo Madrid Centro", legalName: "Hotel Demo Madrid Centro SL", kind: "hotel", code: null, tradeName: null, legalEntityId: null, createdAt: new Date("2025-05-01T00:00:00Z") },
+      { id: "prop_canary", name: "Hotel Demo Tenerife Sur", legalName: "Hotel Demo Tenerife Sur SL", kind: "hotel", code: null, tradeName: null, legalEntityId: null, createdAt: new Date("2025-05-02T00:00:00Z") }
     ],
     installations: [],
     sequences: [
@@ -155,16 +155,16 @@ describe("code derivation (Property.code / LegalEntity.code)", () => {
     assert.deepEqual(codeTokens("Hotel Faranda Rías Altas by Ascend Collection", brand), ["Rías", "Altas"]);
     assert.deepEqual(codeTokens("Faranda Los Tilos, Ascend Hotel Collection", brand), ["Los", "Tilos"]);
   });
-  it("derives the codes the design expects: RA, LT, AMC, ATS", () => {
+  it("derives the codes the design expects: RA, LT, MC, TS (rebrand: the demo brand tokens drop out)", () => {
     assert.equal(deriveCode("Hotel Faranda Rías Altas by Ascend Collection", brand), "RA");
     assert.equal(deriveCode("Faranda Los Tilos, Ascend Hotel Collection", brand), "LT");
-    const demoBrand = brandTokensOf({ name: "HotelOS Demo Group", legalName: "HotelOS Demo SL" });
-    assert.equal(deriveCode("Anfitorio Madrid Centro", demoBrand), "AMC");
-    assert.equal(deriveCode("Anfitorio Tenerife Sur", demoBrand), "ATS");
+    const demoBrand = brandTokensOf({ name: "Grupo Hotelero Demo", legalName: "Grupo Hotelero Demo SL" });
+    assert.equal(deriveCode("Hotel Demo Madrid Centro", demoBrand), "MC");
+    assert.equal(deriveCode("Hotel Demo Tenerife Sur", demoBrand), "TS");
   });
   it("a single meaningful token yields its first three letters; a legal name drops the legal form", () => {
     assert.equal(deriveCode("Faranda Hotels & Resorts"), "FAR");
-    assert.equal(deriveCode("HotelOS Demo SL"), "HD");
+    assert.equal(deriveCode("Grupo Hotelero Demo SL"), "HD");
     assert.equal(deriveCode("Hotel Sol"), "SOL");
   });
   it("never yields fewer than 2 or more than CODE_MAX_LENGTH characters", () => {
@@ -310,12 +310,12 @@ describe("planOrganization", () => {
     // 1 entity + 2 properties + 1 installation + 25 chained invoices + 33 submissions + 4 sequences + 25 invoices + 0 banks
     assert.equal(plan.writes, 1 + 2 + 1 + 25 + 33 + 4 + 25);
   });
-  it("org_123: AMC/ATS codes, suffixed installation, and the two duplicate reports that defer the unique indexes", () => {
+  it("org_123: MC/TS codes (neutral demo names, rebrand 2026-09), suffixed installation, and the two duplicate reports that defer the unique indexes", () => {
     const plan = planOrganization(org123Snapshot(), { declaredInstallNumber: null, claimedTaxIds: new Set() });
     assert.equal(plan.legalEntity.code, "HD");
     assert.equal(plan.legalEntity.taxId, "B12345674");
-    assert.deepEqual(plan.properties.map((p) => p.code), ["AMC", "ATS"]);
-    assert.deepEqual(plan.installations.map((i) => i.numeroInstalacion), ["DEV-001", "DEV-001-ATS"]);
+    assert.deepEqual(plan.properties.map((p) => p.code), ["MC", "TS"]);
+    assert.deepEqual(plan.installations.map((i) => i.numeroInstalacion), ["DEV-001", "DEV-001-TS"]);
     assert.deepEqual(plan.warnings.map((w) => w.code).sort(), ["INSTALLATION_NUMBER_SUFFIXED", "INVOICE_NUMBER_DUPLICATE", "SERIES_PREFIX_CLASH"]);
     assert.equal(plan.writes, 1 + 2 + 2 + 8 + 8 + 4 + 8);
   });
@@ -367,7 +367,7 @@ describe("printHuman", () => {
     const summary: BackfillSummary = {
       dryRun: true,
       installNumberSource: "none",
-      organizations: [{ organizationId: "org_123", label: "HotelOS Demo Group", confirmed: false, plan, applied: false, counts: null, verification: null }],
+      organizations: [{ organizationId: "org_123", label: "Grupo Hotelero Demo", confirmed: false, plan, applied: false, counts: null, verification: null }],
       durationMs: 5
     };
     const lines: string[] = [];
@@ -382,8 +382,8 @@ describe("printHuman", () => {
     }
     const output = lines.join("\n");
     assert.match(output, /DRY-RUN/);
-    assert.match(output, /sociedad: CREAR HD «HotelOS Demo SL» NIF B12345674/);
-    assert.match(output, /centro AMC · hotel/);
+    assert.match(output, /sociedad: CREAR HD «Grupo Hotelero Demo SL» NIF B12345674/);
+    assert.match(output, /centro MC · hotel/);
     assert.match(output, /AVISO SERIES_PREFIX_CLASH/);
     assert.match(output, /AVISO INVOICE_NUMBER_DUPLICATE/);
     assert.match(output, /Nada escrito/);

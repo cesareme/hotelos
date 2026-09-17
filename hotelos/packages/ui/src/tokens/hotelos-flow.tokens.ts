@@ -3,7 +3,7 @@ import { hotelOSTokens } from "./index.js";
 export const hotelOSFlowTokens = {
   ...hotelOSTokens,
   product: {
-    name: "HotelOS Flow Design System",
+    name: "ehotelOS Flow Design System",
     principles: [
       "timeline-first",
       "ai-native-command",

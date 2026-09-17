@@ -36,7 +36,7 @@ Fuentes de trabajo: `packages/shared/src/permissions.ts` (catálogo 3-232, plant
 
 ## §2 · Funciones por departamento y puesto (investigación)
 
-Marco: áreas funcionales y grupos profesionales del ALEH VI (BOE-A-2023-6344, arts. 12, 14 y 17: Grupo 1 mando «con propia iniciativa», Grupo 2 «ejecución autónoma», Grupo 3 «bajo dependencia y supervisión»), departamentos USALI (Rooms, F&B, A&G, S&M, POM, Non-operating), tareas de OPERA Cloud (Bookings, Financials, Inventory, Reports) y permisos de Mews, SOP de rebates/income audit y controles de Lund/HFTP [V fuentes de la investigación «departamentos» y «rbac-pms»]. Filas = puestos objetivo de Anfitorio; el mapeo a plantillas es [S].
+Marco: áreas funcionales y grupos profesionales del ALEH VI (BOE-A-2023-6344, arts. 12, 14 y 17: Grupo 1 mando «con propia iniciativa», Grupo 2 «ejecución autónoma», Grupo 3 «bajo dependencia y supervisión»), departamentos USALI (Rooms, F&B, A&G, S&M, POM, Non-operating), tareas de OPERA Cloud (Bookings, Financials, Inventory, Reports) y permisos de Mews, SOP de rebates/income audit y controles de Lund/HFTP [V fuentes de la investigación «departamentos» y «rbac-pms»]. Filas = puestos objetivo de ehotelOS; el mapeo a plantillas es [S].
 
 | Departamento · puesto (ALEH grupo) | Ve | Hace | No puede |
 |---|---|---|---|
@@ -66,7 +66,7 @@ Marco: áreas funcionales y grupos profesionales del ALEH VI (BOE-A-2023-6344, a
 
 ---
 
-## §3 · Estado actual del RBAC de Anfitorio
+## §3 · Estado actual del RBAC de ehotelOS
 
 ### 3.1 Catálogo, plantillas y ámbito
 

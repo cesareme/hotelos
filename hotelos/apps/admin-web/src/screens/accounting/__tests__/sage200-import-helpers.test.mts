@@ -610,16 +610,16 @@ describe("Sage 200 · reconciliación", () => {
     assert.equal(reconciliationStatusTone("ok"), "success");
     assert.equal(reconciliationStatusTone("differences"), "warning");
     assert.equal(reconciliationClassificationLabel(null), "Cuadra");
-    assert.equal(reconciliationClassificationLabel("native_only"), "Solo en Anfitorio");
+    assert.equal(reconciliationClassificationLabel("native_only"), "Solo en ehotelOS");
   });
 
   it("reconciliationSummary and reconciliationKpis count by classification", () => {
     const rows = [reconRow(), reconRow({ accountCode: "4300", ok: false, classification: "native_only" }), reconRow({ accountCode: "572", ok: false, classification: "amount_diff" })];
-    assert.equal(reconciliationSummary(rows), "1 cuenta cuadra · 1 con importe distinto · 1 solo en Anfitorio · 0 faltan en Anfitorio · 0 de IVA");
+    assert.equal(reconciliationSummary(rows), "1 cuenta cuadra · 1 con importe distinto · 1 solo en ehotelOS · 0 faltan en ehotelOS · 0 de IVA");
     const kpis = reconciliationKpis(recon(rows));
     assert.deepEqual(
       kpis.map((kpi) => kpi.label),
-      ["Cuentas comparadas", "Diferencias", "Solo en Anfitorio", "Faltan en Anfitorio", "Diferencias de IVA"]
+      ["Cuentas comparadas", "Diferencias", "Solo en ehotelOS", "Faltan en ehotelOS", "Diferencias de IVA"]
     );
     assert.equal(kpis[0].value, "3");
     assert.equal(kpis[1].tone, "danger");
@@ -633,7 +633,7 @@ describe("Sage 200 · reconciliación", () => {
     assert.equal(lines[0], RECONCILIATION_CSV_HEADER.join(";"));
     assert.match(lines[1], /^477\.21;IVA repercutido 21 %;4770021;2026-09-01;2026-09-30;/);
     assert.match(lines[1], /;cuadra;$/);
-    assert.match(lines[2], /;Solo en Anfitorio;"'=cmd"$/);
+    assert.match(lines[2], /;Solo en ehotelOS;"'=cmd"$/);
     assert.equal(reconciliationFileName({ id: "lr_1" }), "reconciliacion-sage200-lr_1.csv");
   });
 });
@@ -649,7 +649,7 @@ describe("Sage 200 · informe CSV", () => {
     assert.equal(csvCell(null), "");
   });
 
-  it("buildImportReportCsv writes one line per entry with the Sage key, the Anfitorio number, the status and the collision", () => {
+  it("buildImportReportCsv writes one line per entry with the Sage key, the ehotelOS number, the status and the collision", () => {
     const csv = buildImportReportCsv([entry(), entry({ id: "lie_2", sourceEntryNumber: "1502", status: "skipped_native", entryNumber: null, journalEntryId: null, sourceType: "invoice", sourceId: "inv_1", warnings: ["Coincide con FAC-2026-000012"] })]);
     assert.ok(csv.startsWith("\uFEFF"));
     assert.ok(csv.endsWith("\r\n"));

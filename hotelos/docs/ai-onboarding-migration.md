@@ -125,7 +125,7 @@ The delta import is dry-run only until go-live approval and manager confirmation
 
 ## Demo Project
 
-The local seed exposes `HotelOS Demo Onboarding Project` with:
+The local seed exposes `Proyecto de onboarding de demo` with:
 
 - Room list
 - Rate sheet

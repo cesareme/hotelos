@@ -1,4 +1,4 @@
-# Anfitorio admin-web · production image (Vite static build behind nginx)
+# ehotelOS admin-web · production image (Vite static build behind nginx)
 #
 # The API origin is BAKED into the bundle at build time through VITE_API_URL
 # (apps/admin-web/src/services/api-client.ts falls back to http://localhost:3000
@@ -9,7 +9,7 @@
 #
 # Build context = the pnpm root (hotelos/):
 #   docker build -f deploy/Dockerfile.admin-web \
-#     --build-arg VITE_API_URL=https://demo.hotelos.es/api -t anfitorio-admin-web .
+#     --build-arg VITE_API_URL=https://demo.ehotelos.com/api -t anfitorio-admin-web .
 
 # ---- stage 1: builder --------------------------------------------------------
 FROM node:22-bookworm-slim AS builder
@@ -23,7 +23,7 @@ ARG VITE_API_URL
 ARG VITE_SENTRY_DSN=
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
-RUN test -n "$VITE_API_URL" || { echo "VITE_API_URL build-arg is required (e.g. https://demo.hotelos.es/api)"; exit 1; }
+RUN test -n "$VITE_API_URL" || { echo "VITE_API_URL build-arg is required (e.g. https://demo.ehotelos.com/api)"; exit 1; }
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY apps/admin-web/package.json ./apps/admin-web/

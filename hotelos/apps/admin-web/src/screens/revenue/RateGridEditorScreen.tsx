@@ -166,6 +166,7 @@ import {
 } from "../../components/cocoa-rate-grid/types";
 import { useRateJournal, type RateJournalRevertInfo } from "./RateJournalScreen";
 import { DEFAULT_CURRENCY } from "../../lib/format";
+import { BRAND } from "../../config/brand";
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -626,8 +627,8 @@ function NoChannelsPanel(props: { compact?: boolean }) {
       }
     >
       {props.compact
-        ? "Los cambios se guardan en ehotelOS pero no se publican en ninguna OTA."
-        : "Los cambios se guardan en ehotelOS pero no llegan a ninguna OTA hasta que conectes un canal. Puedes empezar en modo simulado o de pruebas (sin credenciales reales): las entregas se registran y se simulan; nada sale a Internet hasta que actives el modo real con credenciales."}
+        ? `Los cambios se guardan en ${BRAND.name} pero no se publican en ninguna OTA.`
+        : `Los cambios se guardan en ${BRAND.name} pero no llegan a ninguna OTA hasta que conectes un canal. Puedes empezar en modo simulado o de pruebas (sin credenciales reales): las entregas se registran y se simulan; nada sale a Internet hasta que actives el modo real con credenciales.`}
     </InlineNotice>
   );
 }
@@ -1456,14 +1457,14 @@ export function RateGridEditorScreen() {
           // every type/plan, so earlier unsent cells inside that window are
           // sent too; anything outside stays pending.
           if (scope) setPendingPush((prev) => (prev && (prev.from < scope.from || prev.to > scope.to) ? prev : null));
-          showToast(`Guardado en ehotelOS: ${pluralize(res.updated, "celda", "celdas")}${derivedNote}. Publicación en cola.`, { variant: "success" });
+          showToast(`Guardado en ${BRAND.name}: ${pluralize(res.updated, "celda", "celdas")}${derivedNote}. Publicación en cola.`, { variant: "success" });
           startPolling(channelIds);
         } else {
           // No "done" here: that phase belongs to a publish (the drawer would
           // open on "Publicación enviada" for the NEXT draft otherwise).
           setPublishState({ phase: "idle", byChannel: [] });
           if (scope) setPendingPush((prev) => mergePendingPush(prev, scope));
-          showToast(`Guardado en ehotelOS sin enviar a canales: ${pluralize(res.updated, "celda", "celdas")}${derivedNote}. El PMS ya vende el valor nuevo; usa «Enviar a canales» cuando quieras actualizarlos.`, { variant: "success" });
+          showToast(`Guardado en ${BRAND.name} sin enviar a canales: ${pluralize(res.updated, "celda", "celdas")}${derivedNote}. El PMS ya vende el valor nuevo; usa «Enviar a canales» cuando quieras actualizarlos.`, { variant: "success" });
           setReviewOpen(false);
         }
         setReason("");
@@ -1703,7 +1704,7 @@ export function RateGridEditorScreen() {
       } catch (err) {
         // The revert itself succeeded; without the item list we still know the count.
         const info2 = classifyRateGridError(err);
-        pushNotice({ tone: "warning", title: "Cambio revertido en ehotelOS", text: `No se pudo leer el detalle de la reversión (${info2.message}). Los canales conservan el valor anterior: publica de nuevo el rango afectado para actualizarlos.` });
+        pushNotice({ tone: "warning", title: `Cambio revertido en ${BRAND.name}`, text: `No se pudo leer el detalle de la reversión (${info2.message}). Los canales conservan el valor anterior: publica de nuevo el rango afectado para actualizarlos.` });
       }
     },
     [propertyId, loadGrid, pushNotice, refreshSync]
@@ -2017,7 +2018,7 @@ export function RateGridEditorScreen() {
       {pendingPush && pendingPush.source === "revert" && pendingPush.count > 0 ? (
         <InlineNotice
           tone="warning"
-          title="Cambio revertido en ehotelOS · los canales conservan el valor anterior"
+          title={`Cambio revertido en ${BRAND.name} · los canales conservan el valor anterior`}
           action={
             <CocoaButton variant="tinted" size="small" tone="accent" onClick={openReview} disabled={readOnly || saving}>
               Enviar a canales
@@ -2275,7 +2276,7 @@ export function RateGridEditorScreen() {
         onClose={journal.cancelRevert}
         tone="destructive"
         title="Revertir este cambio"
-        description="Se crea una entrada nueva que restaura en ehotelOS los valores anteriores de todas las celdas de este cambio. Los canales no se tocan: al terminar podrás enviarles las celdas revertidas desde el aviso «Enviar a canales»."
+        description={`Se crea una entrada nueva que restaura en ${BRAND.name} los valores anteriores de todas las celdas de este cambio. Los canales no se tocan: al terminar podrás enviarles las celdas revertidas desde el aviso «Enviar a canales».`}
         confirmLabel={journal.reverting ? "Revirtiendo…" : ACTIONS.revert}
         cancelLabel={ACTIONS.cancel}
         busy={journal.reverting}
@@ -2302,7 +2303,7 @@ export function RateGridEditorScreen() {
         }}
         tone="destructive"
         title="Tienes cambios sin guardar"
-        description={`Hay ${pluralize(draftChangeCount(draft), "celda editada", "celdas editadas")} sin guardar. Se conservarán en esta pestaña para que puedas recuperarlas al volver, pero no se guardarán en ehotelOS.`}
+        description={`Hay ${pluralize(draftChangeCount(draft), "celda editada", "celdas editadas")} sin guardar. Se conservarán en esta pestaña para que puedas recuperarlas al volver, pero no se guardarán en ${BRAND.name}.`}
         confirmLabel="Salir igualmente"
         cancelLabel="Seguir editando"
         onConfirm={confirmLeave}

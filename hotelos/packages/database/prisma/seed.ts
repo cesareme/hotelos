@@ -171,11 +171,13 @@ async function provisionTaxes(organizationId: string, region: TaxRegion): Promis
 async function main() {
   await prisma.organization.upsert({
     where: { id: "org_123" },
-    update: {},
+    // Rebrand 2026-09 (D3, nombres demo neutros): converge name/legalName on re-seed
+    // (prisma db seed in CI and on installations already populated).
+    update: { name: "Grupo Hotelero Demo", legalName: "Grupo Hotelero Demo SL" },
     create: {
       id: "org_123",
-      name: "HotelOS Demo Group",
-      legalName: "HotelOS Demo SL",
+      name: "Grupo Hotelero Demo",
+      legalName: "Grupo Hotelero Demo SL",
       // Valid CIF checksum (Tanda 4 · FISC-10): VERIFACTU_MODE=production
       // refuses to issue for an issuer whose NIF fails the checksum.
       taxId: "B12345674",
@@ -186,12 +188,12 @@ async function main() {
   await prisma.property.upsert({
     where: { id: "prop_123" },
     // Canonical tax region (Tanda 3): converge the legacy "Madrid" value on re-seed.
-    update: { taxRegion: "ES_PENINSULA_BALEARES", fiscalTerritory: "common" },
+    update: { name: "Hotel Demo Madrid Centro", legalName: "Hotel Demo Madrid Centro SL", taxRegion: "ES_PENINSULA_BALEARES", fiscalTerritory: "common" },
     create: {
       id: "prop_123",
       organizationId: "org_123",
-      name: "Anfitorio Madrid Centro",
-      legalName: "Anfitorio Madrid Centro SL",
+      name: "Hotel Demo Madrid Centro",
+      legalName: "Hotel Demo Madrid Centro SL",
       country: "ES",
       province: "Madrid",
       taxRegion: "ES_PENINSULA_BALEARES",
@@ -275,12 +277,12 @@ async function main() {
   await prisma.property.upsert({
     where: { id: "prop_canary" },
     // Canonical tax region (Tanda 3): converge the legacy "canary" value on re-seed.
-    update: { taxRegion: "ES_CANARIAS", fiscalTerritory: "common" },
+    update: { name: "Hotel Demo Tenerife Sur", legalName: "Hotel Demo Tenerife Sur SL", taxRegion: "ES_CANARIAS", fiscalTerritory: "common" },
     create: {
       id: "prop_canary",
       organizationId: "org_123",
-      name: "Anfitorio Tenerife Sur",
-      legalName: "Anfitorio Tenerife Sur SL",
+      name: "Hotel Demo Tenerife Sur",
+      legalName: "Hotel Demo Tenerife Sur SL",
       country: "ES",
       province: "Santa Cruz de Tenerife",
       taxRegion: "ES_CANARIAS",

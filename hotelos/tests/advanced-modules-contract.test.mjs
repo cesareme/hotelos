@@ -38,7 +38,7 @@ const advancedModules = [
   "ai_governance"
 ];
 
-describe("Advanced HotelOS modules foundation", () => {
+describe("Advanced ehotelOS modules foundation", () => {
   it("registers advanced modules through the existing product registry", () => {
     assert.match(moduleCodes, /AdvancedHotelModuleCode/);
     assert.match(moduleManifest, /ADVANCED_HOTEL_MODULES/);
@@ -166,7 +166,7 @@ describe("Advanced HotelOS modules foundation", () => {
     assert.match(sidebar, /Webhooks|Aplicaciones|Plataforma de desarrollador|Desarrollador y sistema/);
     assert.match(mobileNavigation, /RevenueDashboard/);
     assert.match(mobileNavigation, /AIGovernanceSettings/);
-    assert.match(preview, /Advanced HotelOS modules/);
+    assert.match(preview, /Advanced ehotelOS modules/);
     assert.match(docs, /incremental extension/);
   });
 

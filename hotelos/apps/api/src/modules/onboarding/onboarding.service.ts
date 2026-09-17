@@ -1,4 +1,5 @@
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
+import { BRAND } from "../../lib/brand.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
@@ -146,7 +147,7 @@ const demoProjects: DemoOnboardingProject[] = [
     id: demoProjectId,
     organizationId: "org_123",
     propertyId: "prop_123",
-    name: "HotelOS Demo Onboarding Project",
+    name: "Proyecto de onboarding de demo",
     sourceSystem: "generic_csv",
     status: "review_required",
     targetGoLiveDate: "2026-06-01",
@@ -253,7 +254,7 @@ const demoMappingSuggestions: DemoMappingSuggestion[] = [
     },
     confidence: 0.93,
     riskLevel: "low",
-    reasonJson: ["Room number and room type matched existing HotelOS naming rules.", "Floor and zone were explicit in source file."],
+    reasonJson: [`Room number and room type matched existing ${BRAND.name} naming rules.`, "Floor and zone were explicit in source file."],
     warningsJson: [],
     missingDataJson: [],
     status: "pending",
@@ -1227,7 +1228,7 @@ async function materialiseOnboardingProject(
   // (fix t6b#7): an existing organization keeps its own sociedad and NIF.
   const structure = await materialiseOnboardingStructure({
     organizationId,
-    organizationName: String(targetProperty.organizationName ?? "HotelOS Group"),
+    organizationName: String(targetProperty.organizationName ?? "Grupo Hotelero Demo"),
     organizationLegalName: targetProperty.organizationLegalName ? String(targetProperty.organizationLegalName).trim() : null,
     organizationTaxId,
     propertyId,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Anfitorio · envoltorio de compatibilidad para el piloto Docker (Tanda 4).
+# ehotelOS · envoltorio de compatibilidad para el piloto Docker (Tanda 4).
 #
 # El compose piloto de infra/docker (Dockerfiles con npm, nunca funcionales)
 # se eliminó. Este script conserva los subcomandos de siempre sobre

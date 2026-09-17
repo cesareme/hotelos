@@ -2,11 +2,11 @@ export const LOCAL_DEMO_USER = {
   email: "admin@hotelos.local",
   password: "admin123",
   role: "Local Super Admin",
-  fullName: "HotelOS Local Super Admin"
+  fullName: "Administrador Local Demo"
 };
 
 export const LOCAL_DEMO_PROPERTY = {
-  name: "HotelOS Demo Hotel",
+  name: "Hotel Demo",
   code: "HOTELOS_DEMO",
   businessDate: "2026-05-17"
 };
@@ -232,7 +232,7 @@ export const LOCAL_DEMO_MARKETPLACE = {
 };
 
 export const LOCAL_DEMO_ONBOARDING_PROJECT = {
-  name: "HotelOS Demo Onboarding Project",
+  name: "Proyecto de onboarding de demo",
   sourceSystem: "generic_csv",
   status: "review_required",
   targetGoLiveDate: "2026-06-01",

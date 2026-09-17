@@ -42,7 +42,7 @@ export class SendGridEmailAdapter implements MessagingAdapter {
           subject: intent.subject ?? "Mensaje del hotel"
         }
       ],
-      from: { email: c.fromEmail, name: c.fromName ?? "HotelOS" },
+      from: { email: c.fromEmail, name: c.fromName ?? "ehotelOS" },
       content: [
         { type: "text/plain", value: intent.body },
         ...(intent.htmlBody ? [{ type: "text/html", value: intent.htmlBody }] : [])

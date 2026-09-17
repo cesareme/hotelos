@@ -318,7 +318,7 @@ before(async () => {
   await prisma.property.create({ data: { id: HB, organizationId: ORG, legalEntityId: ENTITY, kind: "hotel", code: "HB", name: "Hotel Beta", createdAt: new Date("2026-01-02T00:00:00Z") } });
   await prisma.property.create({ data: { id: OC, organizationId: ORG, legalEntityId: ENTITY, kind: "office", code: "OC", name: "Oficina central LI", createdAt: new Date("2026-01-03T00:00:00Z") } });
   await provisionOrganizationChart(ORG);
-  // Factura propia de Anfitorio en HA (modo sombra): Sage también la registra (asiento 1502) y el lote debe excluirla.
+  // Factura propia de ehotelOS en HA (modo sombra): Sage también la registra (asiento 1502) y el lote debe excluirla.
   const invoice = await prisma.invoice.create({ data: { propertyId: HA, invoiceNumber: "FAC-2026-000015", seriesCode: "FAC-2026", invoiceType: "F1", customerType: "company", customerTaxId: NIF_VIAJES, customerName: "Viajes Cantábrico SL", status: "issued", issuedAt: new Date("2026-09-04T10:00:00Z"), total: "1100.00", taxTotal: "100.00" } });
   nativeInvoiceId = invoice.id;
   const native = await accounting.postJournalEntry({

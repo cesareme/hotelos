@@ -24,7 +24,7 @@ import { buildVerifactuRegistroAlta } from "../../xml.ts";
 
 const BASE_INPUT = {
   emitterTaxId: "B12345678",
-  emitterName: "HotelOS Demo SL",
+  emitterName: "Grupo Hotelero Demo SL",
   invoiceNumber: "RECT-2026-0001",
   issuedAt: "2026-05-18T10:00:00.000Z",
   invoiceType: "R1",
@@ -35,9 +35,9 @@ const BASE_INPUT = {
   previousHash: null,
   currentHash: "DEADBEEF",
   software: {
-    nombreRazon: "HotelOS SL",
+    nombreRazon: "Anfitorio Software SL",
     nif: "B12345674",
-    nombreSistema: "HotelOS",
+    nombreSistema: "ehotelOS",
     idSistema: "01",
     version: "0.1.0",
     numeroInstalacion: "DEV-001",

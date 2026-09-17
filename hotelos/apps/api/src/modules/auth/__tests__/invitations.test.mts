@@ -319,8 +319,8 @@ describe("notification templates — system fallback", () => {
         expiryHours: 72
       }
     });
-    assert.equal(rendered.subject, "Invitación a Anfitorio — Hotel Faranda");
-    assert.match(rendered.body, /Un administrador te ha invitado a unirte a Hotel Faranda en Anfitorio \(Faranda Rías Altas\)\./);
+    assert.equal(rendered.subject, "Invitación a ehotelOS — Hotel Faranda");
+    assert.match(rendered.body, /Un administrador te ha invitado a unirte a Hotel Faranda en ehotelOS \(Faranda Rías Altas\)\./);
     assert.match(rendered.body, /http:\/\/localhost:5173\/accept-invite\?token=abc/);
     assert.match(rendered.body, /caduca en 72 horas/);
     assert.equal(rendered.body.includes("{{"), false);

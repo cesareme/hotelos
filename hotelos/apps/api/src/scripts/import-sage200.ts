@@ -39,6 +39,7 @@
 //     [--dry-run | --apply --confirm <orgId>] [--replace] [--allow-closed --reason "…"] [--reconcile --balance <fichero>] [--json]
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { BRAND } from "../lib/brand.js";
 import { basename, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prisma } from "@hotelos/database";
@@ -144,7 +145,7 @@ export const USAGE = [
   `  --type <tipo>          tipo de lote: ${CLI_TYPES.map((kind) => `${kind} (${LEDGER_IMPORT_KIND_LABELS_ES[kind]})`).join(", ")};`,
   "                         orden recomendado de carga: plan → fiscal_years → journal → vat_books → third_parties → balances",
   "  --file <ruta>          exportación de Sage 200: Excel / CSV de un listado («Enviar a Excel»), CSV de asientos IME (60 columnas),",
-  "                         XML «Datos contables» (ZIP o XML) o CSV / JSON canónico de Anfitorio (plantilla: --template)",
+  `                         XML «Datos contables» (ZIP o XML) o CSV / JSON canónico de ${BRAND.name} (plantilla: --template)`,
   "  --organization <id>    organización destino (obligatorio salvo --reverse y --template)",
   "  --entity <id>          sociedad (legalEntityId) del lote; por defecto la sociedad de la organización (resolveLedgerScope)",
   "  --format <formato>     fuerza el formato; sin él se detecta por extensión, firma y cabecera (400 LEDGER_IMPORT_FORMAT_UNKNOWN si no)",
@@ -161,7 +162,7 @@ export const USAGE = [
   "  --confirm <id>         id exacto de la organización (guarda contra aplicar en otra BD)",
   "  --replace              sustituye los lotes vivos con el mismo hash o con asientos (empresa, ejercicio, periodo, asiento) ya contabilizados:",
   "                         los revierte ENTEROS y crea el lote nuevo en la misma transacción (reimporta siempre el mes completo)",
-  "  --allow-closed         (solo con --apply) contabiliza en periodos cerrados de Anfitorio; exige --reason y se audita con el motivo",
+  `  --allow-closed         (solo con --apply) contabiliza en periodos cerrados de ${BRAND.name}; exige --reason y se audita con el motivo`,
   "  --reason <texto>       motivo del reverso (--reverse) o de --allow-closed",
   "  --reconcile            con --type journal: adjunta --balance <sumas-y-saldos de Sage del mismo rango> y reconcilia tras contabilizar;",
   "                         suelto (sin --type): --balance --from --to [--property <código>] → escribe solo ledger_reconciliations",
@@ -406,7 +407,7 @@ export function formatDryRun(header: DryRunHeader, preview: LedgerImportPreview,
   for (const entry of preview.centreRequired.slice(0, 50)) lines.push(`    · asiento ${entry.sourceEntryNumber} (periodo ${entry.sourcePeriod}): ${entry.accounts.join(", ")}`);
   lines.push(`  Descuadrados: ${preview.unbalanced.length === 0 ? "ninguno" : preview.unbalanced.length}`);
   for (const entry of preview.unbalanced.slice(0, 50)) lines.push(`    · asiento ${entry.sourceEntryNumber} (periodo ${entry.sourcePeriod}): Debe ${formatEs(entry.debit)} ≠ Haber ${formatEs(entry.credit)}`);
-  lines.push(`  Nativos excluidos (documentos propios de Anfitorio, §5.1): ${preview.nativeSkipped.length === 0 ? "ninguno" : preview.nativeSkipped.length}`);
+  lines.push(`  Nativos excluidos (documentos propios de ${BRAND.name}, §5.1): ${preview.nativeSkipped.length === 0 ? "ninguno" : preview.nativeSkipped.length}`);
   for (const entry of preview.nativeSkipped.slice(0, 50)) lines.push(`    · asiento ${entry.sourceEntryNumber} (periodo ${entry.sourcePeriod}) · ${entry.invoiceNumber ?? `${entry.series ?? ""}/${entry.number ?? ""}`} · ${entry.sourceType}/${entry.sourceId}`);
   lines.push(`  Ya existentes (importados antes): ${preview.existing.length === 0 ? "ninguno" : preview.existing.length}`);
   for (const entry of preview.existing.slice(0, 50)) lines.push(`    · asiento ${entry.sourceEntryNumber} (periodo ${entry.sourcePeriod}) → ${entry.fiscalYearCode ?? "—"}/${entry.entryNumber ?? "—"}`);
@@ -432,10 +433,10 @@ export function formatDryRun(header: DryRunHeader, preview: LedgerImportPreview,
 export function formatReconciliation(dto: LedgerReconciliationDto, indent = "  "): string[] {
   const lines: string[] = [];
   lines.push(`${indent}Reconciliación ${dto.id} · ${dto.periodFrom} → ${dto.periodTo} · centro ${dto.propertyCode} · estado ${dto.status} · ${dto.accountsCompared} cuentas comparadas · ${dto.differenceCount} diferencia(s)`);
-  lines.push(`${indent}  Resumen: importe distinto ${dto.summary.amountDiff} · solo Anfitorio ${dto.summary.nativeOnly} · faltan en Anfitorio ${dto.summary.missingInLedger} · IVA ${dto.summary.vatDiff} · tolerancia ${formatEs(dto.summary.tolerance)}`);
+  lines.push(`${indent}  Resumen: importe distinto ${dto.summary.amountDiff} · solo ${BRAND.name} ${dto.summary.nativeOnly} · faltan en ${BRAND.name} ${dto.summary.missingInLedger} · IVA ${dto.summary.vatDiff} · tolerancia ${formatEs(dto.summary.tolerance)}`);
   const differences = dto.rows.filter((row) => !row.ok);
   for (const row of differences.slice(0, 50)) {
-    lines.push(`${indent}  · ${row.accountCode}${row.accountName ? ` «${row.accountName}»` : ""} (${row.sourceAccounts.join(", ") || "—"}): Sage D ${formatEs(row.sourceDebit)} / H ${formatEs(row.sourceCredit)} · Anfitorio D ${formatEs(row.ledgerDebit)} / H ${formatEs(row.ledgerCredit)} · dif. saldo ${formatEs(row.diffBalance)} · ${row.classification ? LEDGER_RECONCILIATION_CLASSIFICATION_LABELS_ES[row.classification] : "—"}${row.note ? ` · ${row.note}` : ""}`);
+    lines.push(`${indent}  · ${row.accountCode}${row.accountName ? ` «${row.accountName}»` : ""} (${row.sourceAccounts.join(", ") || "—"}): Sage D ${formatEs(row.sourceDebit)} / H ${formatEs(row.sourceCredit)} · ${BRAND.name} D ${formatEs(row.ledgerDebit)} / H ${formatEs(row.ledgerCredit)} · dif. saldo ${formatEs(row.diffBalance)} · ${row.classification ? LEDGER_RECONCILIATION_CLASSIFICATION_LABELS_ES[row.classification] : "—"}${row.note ? ` · ${row.note}` : ""}`);
   }
   if (differences.length > 50) lines.push(`${indent}  … y ${differences.length - 50} diferencia(s) más (CSV: GET /accounting/ledger-imports/reconciliation/${dto.id}/csv).`);
   for (const entry of dto.missingEntries.slice(0, 20)) lines.push(`${indent}  · asiento Sage ${entry.sourceEntryNumber} (periodo ${entry.sourcePeriod}) no llegó al diario: ${entry.status}`);

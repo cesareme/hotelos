@@ -30,7 +30,7 @@ function makeEvent(payloadOverrides: Record<string, unknown> = {}): EventEnvelop
       recipientEmail: "maria@example.com",
       email: "maria@example.com",
       reservationCode: "RES-18392",
-      propertyName: "HotelOS Madrid Centro",
+      propertyName: "Hotel Demo Madrid Centro",
       token: TOKEN,
       ...payloadOverrides
     },
@@ -54,7 +54,7 @@ function fakeDelivery(input: DispatchInput): NotificationDeliveryRecord {
     recipient: input.recipient,
     status: "sent",
     providerMessageId: "eml_test",
-    subject: "Tu acceso al portal de huésped — HotelOS Madrid Centro",
+    subject: "Tu acceso al portal de huésped — Hotel Demo Madrid Centro",
     bodyRendered: "rendered body",
     payloadJson: { variables: input.variables },
     attempts: 1,
@@ -101,7 +101,7 @@ describe("guest magic-link notification handler", () => {
     assert.ok(magicLinkUrl.includes(TOKEN), "magicLinkUrl must contain the raw token");
     assert.equal(magicLinkUrl, `http://localhost:5174/?token=${TOKEN}`);
     assert.equal(call.variables.reservationCode, "RES-18392");
-    assert.equal(call.variables.propertyName, "HotelOS Madrid Centro");
+    assert.equal(call.variables.propertyName, "Hotel Demo Madrid Centro");
     assert.equal(call.variables.expiryHours, 24);
   });
 

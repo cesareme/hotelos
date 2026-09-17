@@ -219,6 +219,7 @@ import {
   type MonthRow,
   type PropertyRow
 } from "./sage200-import-helpers";
+import { BRAND } from "../../config/brand";
 
 type PickedFile = { name: string; format: LedgerImportFormat | null; contentBase64: string; bytes: number };
 
@@ -947,7 +948,7 @@ export function Sage200ImportScreen() {
     { key: "lineCount", label: "Apuntes", fit: true, align: "right", hideOnNarrow: true, render: (row) => (row.lineCount > 0 ? number(row.lineCount) : EMPTY) },
     {
       key: "target",
-      label: "Destino en Anfitorio",
+      label: `Destino en ${BRAND.name}`,
       render: (row) =>
         row.dimension === centreDimension ? (
           <CocoaSelect size="small" aria-label={`Centro de trabajo del código ${row.sourceCode}`} value={row.dto.propertyId ?? ""} onChange={(value) => changeAnalyticsRow(row, { propertyId: value || null })} options={centreOptions} disabled={previewing || importing || savingMap !== null} />
@@ -990,9 +991,9 @@ export function Sage200ImportScreen() {
     { key: "period", label: "Periodo", nowrap: true, showFrom: "laptop", render: () => dateRange(current.periodFrom, current.periodTo) },
     { key: "sourceAccounts", label: "Cuentas Sage", truncate: 160, showFrom: "desktop", render: (row) => (row.sourceAccounts.length > 0 ? row.sourceAccounts.join(", ") : EMPTY) },
     { key: "sourceDebit", label: "Debe Sage", align: "right", hideOnNarrow: true, render: (row) => money(row.sourceDebit) },
-    { key: "ledgerDebit", label: "Debe Anfitorio", align: "right", hideOnNarrow: true, render: (row) => money(row.ledgerDebit) },
+    { key: "ledgerDebit", label: `Debe ${BRAND.name}`, align: "right", hideOnNarrow: true, render: (row) => money(row.ledgerDebit) },
     { key: "sourceCredit", label: "Haber Sage", align: "right", showFrom: "laptop", render: (row) => money(row.sourceCredit) },
-    { key: "ledgerCredit", label: "Haber Anfitorio", align: "right", showFrom: "laptop", render: (row) => money(row.ledgerCredit) },
+    { key: "ledgerCredit", label: `Haber ${BRAND.name}`, align: "right", showFrom: "laptop", render: (row) => money(row.ledgerCredit) },
     { key: "diffBalance", label: "Diferencia", align: "right", render: (row) => money(row.diffBalance) },
     {
       key: "classification",
@@ -1271,7 +1272,7 @@ export function Sage200ImportScreen() {
         {preview.nativeSkipped.length > 0 ? (
           <CocoaSection title="Documentos propios excluidos" meta={plural(preview.nativeSkipped.length, "asiento de Sage", "asientos de Sage")}>
             <div className="cocoa-stack" data-gap="2">
-              <p className="cocoa-note">Facturas emitidas por Anfitorio (y sus cobros) que Sage también registró: se omiten del lote para no contabilizarlas dos veces; el asiento propio se conserva.</p>
+              <p className="cocoa-note">Facturas emitidas por {BRAND.name} (y sus cobros) que Sage también registró: se omiten del lote para no contabilizarlas dos veces; el asiento propio se conserva.</p>
               <ul className="c22-section__list">
                 {preview.nativeSkipped.slice(0, 50).map((row) => (
                   <li key={`${row.sourcePeriod}-${row.sourceEntryNumber}`}>
@@ -1336,7 +1337,7 @@ export function Sage200ImportScreen() {
                 </span>
               ) : null}
               {vatSettingsWarning ? <span>La organización no tiene configuración de IVA (periodicidad y régimen): los libros importados esperan a esa decisión en Ajustes contables.</span> : null}
-              {preview.existingNativeEntries > 0 ? <span>El ejercicio ya tiene {plural(preview.existingNativeEntries, "asiento propio", "asientos propios")}: la numeración de Anfitorio quedará intercalada; el número de Sage se conserva en la referencia de cada asiento.</span> : null}
+              {preview.existingNativeEntries > 0 ? <span>El ejercicio ya tiene {plural(preview.existingNativeEntries, "asiento propio", "asientos propios")}: la numeración de {BRAND.name} quedará intercalada; el número de Sage se conserva en la referencia de cada asiento.</span> : null}
               {preview.duplicateOf || preview.overlaps.length > 0 ? <CocoaSwitch checked={replace} onChange={changeReplace} label="Sustituir los lotes anteriores (reverso + lote nuevo)" size="small" disabled={previewing || importing} /> : null}
             </div>
           </CocoaCallout>
@@ -1575,7 +1576,7 @@ export function Sage200ImportScreen() {
       <div className="cocoa-stack" data-gap="4">
         <CocoaSection title="Reconciliar con el balance de Sage" meta={`Centro comparado: ${finance.scope.label}`}>
           <div className="cocoa-stack" data-gap="3">
-            <p className="cocoa-note">Exporta en Sage el Sumas y saldos del rango (nivel 0, Debe / Haber / Saldo; con «Hoja adicional canales/delegaciones» si comparas un centro). Cada cuenta de Sage pasa por el mapa de cuentas y se compara con el diario de Anfitorio por cuenta destino: Debe y Haber del rango y saldo a la fecha final en los grupos 1 a 5. El centro comparado es el del selector de ámbito de la cabecera; con «toda la sociedad» se compara el consolidado.</p>
+            <p className="cocoa-note">Exporta en Sage el Sumas y saldos del rango (nivel 0, Debe / Haber / Saldo; con «Hoja adicional canales/delegaciones» si comparas un centro). Cada cuenta de Sage pasa por el mapa de cuentas y se compara con el diario de {BRAND.name} por cuenta destino: Debe y Haber del rango y saldo a la fecha final en los grupos 1 a 5. El centro comparado es el del selector de ámbito de la cabecera; con «toda la sociedad» se compara el consolidado.</p>
             <div className="cocoa-row" data-gap="2" data-align="end">
               <CocoaField label="Desde">
                 <CocoaInput type="date" size="small" value={reconFrom} onChange={setReconFrom} aria-label="Fecha desde de la reconciliación" disabled={reconciling} />
@@ -1750,7 +1751,7 @@ export function Sage200ImportScreen() {
     <CocoaPage
       eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle="Trae el plan, los ejercicios, el diario, los libros de IVA, los terceros y los saldos de Sage 200 a Anfitorio con un mapa de cuentas y otro analítico; reconcilia con el balance de Sage y revierte lotes enteros."
+      subtitle={`Trae el plan, los ejercicios, el diario, los libros de IVA, los terceros y los saldos de Sage 200 a ${BRAND.name} con un mapa de cuentas y otro analítico; reconcilia con el balance de Sage y revierte lotes enteros.`}
       actions={<FinanceScopeSelector scope={finance} />}
       commands={[
         { id: "sage200-import-new", label: "Nueva importación desde Sage 200", run: resetAll },

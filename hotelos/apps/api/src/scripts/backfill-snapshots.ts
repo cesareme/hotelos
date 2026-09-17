@@ -30,6 +30,7 @@
 // 2 unknown flag / invalid argument.
 
 import { fileURLToPath } from "node:url";
+import { BRAND } from "../lib/brand.js";
 import { resolve as resolvePath } from "node:path";
 import { prisma } from "@hotelos/database";
 import { addDays, dayUtc, isoDate, MS_DAY, TOP_LEVEL_SNAPSHOT_WHERE } from "../modules/revenue/actuals.js";
@@ -192,7 +193,7 @@ function printHuman(summary: BackfillSummary): void {
   for (const p of summary.properties) {
     lines.push(`  ${p.propertyId} (${p.propertyName}): +${p.created} / ~${p.updated} / skip ${p.skippedProtected.length} protected / skip ${p.skippedNoReservations} no-reservations / fail ${p.failed.length}`);
     if (p.skippedNoReservations > 0) {
-      lines.push(`    sin reservas en Anfitorio: ${p.skippedNoReservations} días no derivados (no hay cierre que escribir; la historia importada se conserva)`);
+      lines.push(`    sin reservas en ${BRAND.name}: ${p.skippedNoReservations} días no derivados (no hay cierre que escribir; la historia importada se conserva)`);
     }
     if (p.skippedProtected.length > 0) {
       const sources = [...new Set(p.skippedProtected.map((s) => s.dataSource))].join(", ");

@@ -364,7 +364,7 @@ describe("resolveTemplateKeyForRoleName", () => {
     });
   }
 
-  it("isPlatformRoleName recognises the HotelOS staff role names only", () => {
+  it("isPlatformRoleName recognises the ehotelOS staff role names only", () => {
     assert.equal(isPlatformRoleName("Local Super Admin"), true);
     assert.equal(isPlatformRoleName("SUPER-ADMIN"), true);
     assert.equal(isPlatformRoleName("Platform admin"), true);

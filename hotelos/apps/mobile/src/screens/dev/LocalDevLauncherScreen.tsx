@@ -66,7 +66,7 @@ export function LocalDevLauncherScreen(props: { onNavigate: (route: string) => v
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.hero}>
         <StatusChip label="Local Demo" tone="ai" />
-        <Text style={styles.title}>HotelOS Local Demo</Text>
+        <Text style={styles.title}>ehotelOS Local Demo</Text>
         <Text style={styles.body}>Choose where to go. Critical setup and revenue tools stay visible in local/dev mode.</Text>
       </View>
       {destinations.map((destination) => (

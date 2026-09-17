@@ -13,6 +13,7 @@
 //         labels it "PDF (imprimir)".
 
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../lib/brand.js";
 import type { Prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
@@ -220,7 +221,7 @@ function printableHtml(opts: { title: string; hotel: string; stamp: string; rang
     `<header class="doc"><div><h1>${xmlEscape(opts.title)}</h1><div>${xmlEscape(opts.hotel)}</div></div>`,
     `<div class="meta">Generado ${xmlEscape(opts.stamp)} (OTB, Europe/Madrid)${opts.range ? `<br>Rango: ${xmlEscape(opts.range)}` : ""}</div></header>`,
     opts.body,
-    `<footer class="doc">Anfitorio · Revenue — documento imprimible A4 (usa Imprimir → Guardar como PDF).</footer>`,
+    `<footer class="doc">${BRAND.name} · Revenue — documento imprimible A4 (usa Imprimir → Guardar como PDF).</footer>`,
     `</body></html>`
   ].join("\n");
 }
@@ -260,7 +261,7 @@ const CONVENTIONS = [
   "Fechas ISO (YYYY-MM-DD) en los datos",
   "Importes EUR sin símbolo",
   "Cabecera con hora OTB (Europe/Madrid)",
-  "Nombre: anfitorio_{hotel}_{informe}_{fecha}"
+  "Nombre: ehotelos_{hotel}_{informe}_{fecha}"
 ];
 
 const EXPORT_DEFS: ExportDef[] = [
@@ -1081,7 +1082,7 @@ export async function generateExport(input: {
     id: createId("rexp"),
     code: def.code,
     format,
-    filename: `anfitorio_${slugify(property.name)}_${def.code}_${isoDate(today)}.${EXTENSIONS[format]}`,
+    filename: `ehotelos_${slugify(property.name)}_${def.code}_${isoDate(today)}.${EXTENSIONS[format]}`,
     contentType: CONTENT_TYPES[format],
     generatedAt: new Date().toISOString(),
     sizeBytes: Buffer.byteLength(content, "utf8")

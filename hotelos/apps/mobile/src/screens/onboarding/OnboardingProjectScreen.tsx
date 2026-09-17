@@ -15,7 +15,7 @@ export function OnboardingProjectScreen(props: { onNavigate?: (route: string) =>
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.header}>
         <StatusChip label="review required" tone="warning" />
-        <Text style={styles.title}>HotelOS Demo Onboarding Project</Text>
+        <Text style={styles.title}>Proyecto de onboarding de demo</Text>
         <Text style={styles.body}>Source: Generic PMS exports. Target go-live: 1 Jun 2026. AI has generated a proposed blueprint, mappings and dry-run preview, but human review is still mandatory.</Text>
       </View>
       <View style={styles.metricRow}>

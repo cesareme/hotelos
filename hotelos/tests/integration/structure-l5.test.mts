@@ -676,7 +676,7 @@ describe("C7 · permisos por centro (accounting.entity.read)", () => {
     if (!demoHeaders.authorization) return t.skip("demo login unavailable");
     const m303 = await getJson<Report>("/fiscal/models/303?period=2026-Q3", demoHeaders);
     assert.equal(m303.status, 200, m303.text.slice(0, 200));
-    assert.deepEqual([m303.body.sociedad.code, m303.body.sociedad.source, m303.body.declarante.nif, m303.body.declarante.nombre], ["HD", "legal_entity", "B12345674", "HotelOS Demo SL"]);
+    assert.deepEqual([m303.body.sociedad.code, m303.body.sociedad.source, m303.body.declarante.nif, m303.body.declarante.nombre], ["HD", "legal_entity", "B12345674", "Grupo Hotelero Demo SL"]);
     const regime = await getJson<{ sociedad: { code: string }; propuesta: { regimen: string; cambia: boolean }; umbralGranEmpresa: number }>("/fiscal/regime?year=2026", demoHeaders);
     assert.equal(regime.status, 200, regime.text.slice(0, 200));
     assert.deepEqual([regime.body.sociedad.code, regime.body.propuesta.regimen, regime.body.propuesta.cambia, regime.body.umbralGranEmpresa], ["HD", "general", false, 6010121.04]);
@@ -830,7 +830,7 @@ describe("C9 · equivalencia (solo lectura): Faranda y org_123 tras L1-L5", () =
     const before = await counts();
     const m303org123 = await buildModelo303({ context: org123Ctx, period: "2026-Q3" });
     const after = await counts();
-    assert.deepEqual(m303org123.declarante, { nif: "B12345674", nombre: "HotelOS Demo SL" });
+    assert.deepEqual(m303org123.declarante, { nif: "B12345674", nombre: "Grupo Hotelero Demo SL" });
     assert.deepEqual([m303org123.sociedad.code, m303org123.sociedad.source], ["HD", "legal_entity"]);
     if (JSON.stringify(before) !== JSON.stringify(QUIET) || JSON.stringify(after) !== JSON.stringify(QUIET)) {
       t.skip(`org_123 no está en reposo (antes ${JSON.stringify(before)} · después ${JSON.stringify(after)} · reposo ${JSON.stringify(QUIET)}): la equivalencia numérica se comprueba ejecutando el fichero solo`);

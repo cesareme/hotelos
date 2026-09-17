@@ -27,7 +27,7 @@ export function AISetupWizardScreen(props: { onNavigate?: (route: string) => voi
       <View style={styles.hero}>
         <StatusChip label="AI Onboarding & Migration" tone="ai" />
         <Text style={styles.title}>AI Setup Wizard</Text>
-        <Text style={styles.heroBody}>Upload what you have. HotelOS AI classifies, extracts and maps it, then asks for approval before anything goes live.</Text>
+        <Text style={styles.heroBody}>Upload what you have. ehotelOS AI classifies, extracts and maps it, then asks for approval before anything goes live.</Text>
       </View>
       <View style={styles.actions}>
         <Pressable accessibilityRole="button" accessibilityLabel="Upload hotel data" onPress={() => props.onNavigate?.("UploadHotelData")} style={styles.primaryButton}>

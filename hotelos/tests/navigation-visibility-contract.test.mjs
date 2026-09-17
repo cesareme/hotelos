@@ -54,7 +54,7 @@ describe("Back Office and Revenue visible navigation", () => {
     assert.equal(existsSync(new URL("../apps/mobile/src/screens/settings/BackOfficePreviewScreen.tsx", import.meta.url)), true);
     expectMarkers(mobileApp + localDevLauncher + moreScreen + commercialTools, [
       "SHOW_DEV_LAUNCHER",
-      "HotelOS Local Demo",
+      "ehotelOS Local Demo",
       "Back Office / Configuración",
       "Revenue Management",
       "Owner Dashboard",
@@ -140,7 +140,7 @@ describe("Back Office and Revenue visible navigation", () => {
       "admin@hotelos.local",
       "admin123",
       "Local Super Admin",
-      "HotelOS Demo Hotel",
+      'name: "Hotel Demo",',
       "revenue_profit_engine",
       "channel_manager",
       "revenue.history_forecast.read",
@@ -157,7 +157,7 @@ describe("Back Office and Revenue visible navigation", () => {
 
   it("makes the browser simulator expose the same visible entry points", () => {
     expectMarkers(demoHtml, [
-      "HotelOS Local Demo",
+      "ehotelOS Local Demo",
       "Back Office / Configuración",
       "Revenue Management",
       "Owner Dashboard",

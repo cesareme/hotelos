@@ -45,6 +45,7 @@ import { ROLE_TOKEN_LABELS, ROLE_TOKEN_PRIORITY, type RoleToken } from "./role-t
 import { useNavGate } from "./useEnabledModules";
 import { setViewAs } from "./view-as";
 import { useIsMobileViewport } from "./viewport";
+import { BRAND } from "../config/brand";
 
 export type SidebarProps = {
   activeScreen: string;
@@ -137,7 +138,7 @@ export function Sidebar(props: SidebarProps) {
             </svg>
           </span>
           <div>
-            <strong>ehotelOS</strong>
+            <strong>{BRAND.name}</strong>
             <small>Back Office</small>
           </div>
         </div>

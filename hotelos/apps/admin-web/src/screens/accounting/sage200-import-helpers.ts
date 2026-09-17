@@ -42,6 +42,7 @@ import type {
 import type { CocoaSelectOption, CocoaTone } from "../../components/cocoa";
 import { EMPTY, date, money, number, plural } from "../../lib/format";
 import { actorLabel, type ActorSession } from "./actor-label";
+import { BRAND } from "../../config/brand";
 
 // ---------------------------------------------------------------------------
 // Views of the screen (Importar · Reconciliación · Lotes)
@@ -66,7 +67,7 @@ export function isImportView(value: string): value is ImportView {
 export type ImportKindOption = {
   value: LedgerImportKind;
   label: string;
-  /** What the lot writes in Anfitorio. */
+  /** What the lot writes in ehotelOS. */
   description: string;
   /** Which listing to export in Sage 200 and how (design §2.2). */
   sageExport: string;
@@ -155,7 +156,7 @@ export const IMPORT_STEPS: readonly ImportStep[] = [
   { key: "accounts", label: "Cuentas", description: "Resuelve cada cuenta de Sage sin mapear: cuenta existente, subcuenta nueva, agrupar el tercero o bloquear; guarda el mapa para los lotes siguientes." },
   { key: "analytics", label: "Analítica", description: "Elige qué dimensión de Sage identifica el hotel y cuál el departamento USALI, asigna cada código a un centro y decide qué hacer con los apuntes sin analítica." },
   { key: "review", label: "Revisión", description: "Comprueba asientos, apuntes, Debe y Haber por mes y centro, los documentos propios excluidos, los ya importados y los avisos antes de contabilizar." },
-  { key: "result", label: "Resultado", description: "Asientos creados con su número de Anfitorio y de Sage, omitidos, errores, la reconciliación si adjuntaste el balance e informe descargable." }
+  { key: "result", label: "Resultado", description: `Asientos creados con su número de ${BRAND.name} y de Sage, omitidos, errores, la reconciliación si adjuntaste el balance e informe descargable.` }
 ];
 
 /**
@@ -551,8 +552,8 @@ export function reconciliationStatusTone(status: LedgerReconciliationStatus | st
 
 export const RECON_CLASSIFICATION_LABELS: Readonly<Record<LedgerReconciliationClassification, string>> = Object.freeze({
   amount_diff: "Importe distinto",
-  native_only: "Solo en Anfitorio",
-  missing_in_ledger: "Falta en Anfitorio",
+  native_only: `Solo en ${BRAND.name}`,
+  missing_in_ledger: `Falta en ${BRAND.name}`,
   vat_diff: "Diferencia de IVA"
 });
 
@@ -567,28 +568,28 @@ export function reconciliationRowTone(row: Pick<LedgerReconciliationRow, "ok" | 
   return row.classification === "native_only" ? "warning" : "danger";
 }
 
-/** «12 cuentas cuadran · 2 con importe distinto · 1 solo en Anfitorio · 0 faltan en Anfitorio · 0 de IVA» for the section meta. */
+/** «12 cuentas cuadran · 2 con importe distinto · 1 solo en ehotelOS · 0 faltan en ehotelOS · 0 de IVA» for the section meta. */
 export function reconciliationSummary(rows: readonly Pick<LedgerReconciliationRow, "ok" | "classification">[]): string {
   const ok = rows.filter((row) => row.ok || !row.classification).length;
   const count = (classification: LedgerReconciliationClassification) => rows.filter((row) => !row.ok && row.classification === classification).length;
   return [
     `${plural(ok, "cuenta cuadra", "cuentas cuadran")}`,
     `${number(count("amount_diff"))} con importe distinto`,
-    `${number(count("native_only"))} solo en Anfitorio`,
-    `${number(count("missing_in_ledger"))} faltan en Anfitorio`,
+    `${number(count("native_only"))} solo en ${BRAND.name}`,
+    `${number(count("missing_in_ledger"))} faltan en ${BRAND.name}`,
     `${number(count("vat_diff"))} de IVA`
   ].join(" · ");
 }
 
 export type Kpi = { key: string; label: string; value: string; tone?: CocoaTone; caption?: string };
 
-/** The five KPIs of «Reconciliación»: comparadas · diferencias · solo Anfitorio · faltan · IVA. */
+/** The five KPIs of «Reconciliación»: comparadas · diferencias · solo ehotelOS · faltan · IVA. */
 export function reconciliationKpis(recon: Pick<LedgerReconciliationDto, "accountsCompared" | "differenceCount" | "summary">): Kpi[] {
   return [
     { key: "compared", label: "Cuentas comparadas", value: number(recon.accountsCompared) },
     { key: "differences", label: "Diferencias", value: number(recon.differenceCount), tone: recon.differenceCount > 0 ? "danger" : "success", caption: recon.differenceCount > 0 ? "Fuera de tolerancia" : "Todo dentro de tolerancia" },
-    { key: "nativeOnly", label: "Solo en Anfitorio", value: number(recon.summary.nativeOnly), tone: recon.summary.nativeOnly > 0 ? "warning" : undefined, caption: "Documentos propios" },
-    { key: "missing", label: "Faltan en Anfitorio", value: number(recon.summary.missingInLedger), tone: recon.summary.missingInLedger > 0 ? "danger" : undefined },
+    { key: "nativeOnly", label: `Solo en ${BRAND.name}`, value: number(recon.summary.nativeOnly), tone: recon.summary.nativeOnly > 0 ? "warning" : undefined, caption: "Documentos propios" },
+    { key: "missing", label: `Faltan en ${BRAND.name}`, value: number(recon.summary.missingInLedger), tone: recon.summary.missingInLedger > 0 ? "danger" : undefined },
     { key: "vat", label: "Diferencias de IVA", value: number(recon.summary.vatDiff), tone: recon.summary.vatDiff > 0 ? "danger" : undefined }
   ];
 }
@@ -605,7 +606,7 @@ export function previewKpis(preview: LedgerImportPreview): Kpi[] {
     { key: "lines", label: "Apuntes", value: number(preview.lineCount) },
     { key: "debit", label: "Debe", value: money(preview.totalDebit), tone: balanced ? undefined : "danger" },
     { key: "credit", label: "Haber", value: money(preview.totalCredit), tone: balanced ? undefined : "danger", caption: balanced ? "Cuadra con el Debe" : "No cuadra con el Debe" },
-    { key: "native", label: "Excluidos (propios)", value: number(preview.nativeSkipped.length), tone: preview.nativeSkipped.length > 0 ? "info" : undefined, caption: "Documentos emitidos por Anfitorio" },
+    { key: "native", label: "Excluidos (propios)", value: number(preview.nativeSkipped.length), tone: preview.nativeSkipped.length > 0 ? "info" : undefined, caption: `Documentos emitidos por ${BRAND.name}` },
     { key: "existing", label: "Ya importados", value: number(preview.existing.length), caption: "Se omiten" },
     { key: "warnings", label: "Avisos", value: number(preview.warnings.length), tone: preview.warnings.length > 0 ? "warning" : undefined }
   ];
@@ -726,7 +727,7 @@ export function closingDetectedLine(row: { sourceEntryNumber: string; sourcePeri
 // Result: entry line, title, tone, report CSV
 // ---------------------------------------------------------------------------
 
-/** «2026/110 · RA · 03/09/2026 · Sage 2026/1501 · 302,50 €» (an entry created by the lot); without Anfitorio number when it was not posted. */
+/** «2026/110 · RA · 03/09/2026 · Sage 2026/1501 · 302,50 €» (an entry created by the lot); without ehotelOS number when it was not posted. */
 export function entryLine(entry: Pick<LedgerImportEntryDto, "fiscalYearCode" | "entryNumber" | "propertyCode" | "entryDate" | "sourceFiscalYear" | "sourceEntryNumber" | "debit">): string {
   const anfitorio = entry.entryNumber !== null ? `${entry.fiscalYearCode ?? entry.sourceFiscalYear}/${number(entry.entryNumber)}` : null;
   const parts = [anfitorio, entry.propertyCode, date(entry.entryDate), `Sage ${entry.sourceFiscalYear}/${entry.sourceEntryNumber}`, money(entry.debit)];
@@ -803,7 +804,7 @@ export function csvCell(value: string | number | null | undefined): string {
   return /[";\r\n]/.test(text) || text !== value ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-/** Report of a lot: BOM UTF-8, «;», CRLF, one line per entry (Sage key, date, centre, Anfitorio number, status, totals, collision, warnings). */
+/** Report of a lot: BOM UTF-8, «;», CRLF, one line per entry (Sage key, date, centre, ehotelOS number, status, totals, collision, warnings). */
 export function buildImportReportCsv(entries: readonly LedgerImportEntryDto[]): string {
   const lines: string[] = [IMPORT_REPORT_HEADER.join(";")];
   for (const entry of entries) {

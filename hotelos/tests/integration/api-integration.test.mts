@@ -666,7 +666,7 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
   const PROD_ENV = {
     NODE_ENV: "production",
     HOTELOS_ALLOW_DEMO_AUTH: "false",
-    CORS_ALLOWED_ORIGINS: "https://demo.anfitorio.es,https://app.cliente.com",
+    CORS_ALLOWED_ORIGINS: "https://demo.ehotelos.com,https://app.cliente.com",
     PILOT_PUBLIC_ORIGIN: undefined
   } as const;
 
@@ -722,14 +722,14 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
 
   it("production: only CORS_ALLOWED_ORIGINS (case-insensitive) is allowed; localhost and the LAN are closed", async () => {
     await withEnv({ ...PROD_ENV }, async () => {
-      for (const origin of ["https://demo.anfitorio.es", "https://app.cliente.com", "https://Demo.Anfitorio.es"]) {
+      for (const origin of ["https://demo.ehotelos.com", "https://app.cliente.com", "https://Demo.Ehotelos.com"]) {
         const res = await health({ origin });
         assert.equal(res.statusCode, 200, `/health must stay public in production: ${res.body}`);
         // The allow-list match is case-insensitive; the header echoes the Origin exactly as sent (what browsers compare).
         assert.equal(acao(res), origin, `listed origin ${origin}: ${JSON.stringify(res.headers)}`);
         assert.equal(res.headers["access-control-allow-credentials"], undefined);
       }
-      for (const origin of ["http://localhost:5173", "http://127.0.0.1:3000", "http://192.168.1.50:9999", "https://evil.example.com", "https://demo.anfitorio.es.evil.com"]) {
+      for (const origin of ["http://localhost:5173", "http://127.0.0.1:3000", "http://192.168.1.50:9999", "https://evil.example.com", "https://demo.ehotelos.com.evil.com"]) {
         const res = await health({ origin });
         assert.equal(res.statusCode, 200);
         assert.equal(acao(res), undefined, `${origin} must be refused in production: ${JSON.stringify(res.headers)}`);
@@ -745,7 +745,7 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
     await withEnv({ ...PROD_ENV, CORS_ALLOWED_ORIGINS: undefined, PILOT_PUBLIC_ORIGIN: "https://legacy.example.com" }, async () => {
       const allowed = await health({ origin: "https://legacy.example.com" });
       assert.equal(acao(allowed), "https://legacy.example.com");
-      const refused = await health({ origin: "https://demo.anfitorio.es" });
+      const refused = await health({ origin: "https://demo.ehotelos.com" });
       assert.equal(acao(refused), undefined, "an origin only present in the previous env value must not leak through a stale policy");
     });
   });

@@ -8,6 +8,8 @@
 // points (1 pt = 1/72 in); they are converted to PDF's bottom-left origin at
 // render time. A4 = 595.28 × 841.89 pt.
 
+import { BRAND } from "../../../lib/brand.js";
+
 export const A4 = { width: 595.28, height: 841.89 } as const;
 
 export type PdfFont = "regular" | "bold";
@@ -205,7 +207,7 @@ export class PdfDocument {
       info.title ? `/Title (${encodePdfString(info.title).toString("latin1")})` : "",
       info.author ? `/Author (${encodePdfString(info.author).toString("latin1")})` : "",
       info.subject ? `/Subject (${encodePdfString(info.subject).toString("latin1")})` : "",
-      `/Producer (${encodePdfString(info.producer ?? "Anfitorio").toString("latin1")})`,
+      `/Producer (${encodePdfString(info.producer ?? BRAND.name).toString("latin1")})`,
       `/CreationDate (${pdfDate})`
     ].filter(Boolean);
     const infoId = add(`<< ${infoEntries.join(" ")} >>`);

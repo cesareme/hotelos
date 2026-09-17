@@ -1,6 +1,6 @@
 # VeriFactu · Declaración responsable del sistema informático de facturación
 
-Referencia de producto para Anfitorio (Tanda 3 · «cumplimiento sin atrezzo»;
+Referencia de producto para ehotelOS (Tanda 3 · «cumplimiento sin atrezzo»;
 Tanda 6b · estructura societaria, 2026-09-16). Explica qué obliga el art. 13
 del RD 1007/2023 al **productor** del software, cómo se corresponde con el
 bloque `SistemaInformatico` que viaja en cada registro de facturación (Orden
@@ -15,10 +15,10 @@ asesoramiento jurídico del productor.
 El RD 1007/2023 (Reglamento de los sistemas informáticos de facturación, SIF)
 impone dos obligaciones distintas a dos sujetos distintos:
 
-| Sujeto | Obligación | Dónde vive en Anfitorio |
+| Sujeto | Obligación | Dónde vive en ehotelOS |
 |---|---|---|
 | **Obligado tributario** (la **sociedad** que explota el hotel o los hoteles) | Usar un SIF conforme y remitir los registros a AEAT (modalidad VERI*FACTU). Su NIF es `IDEmisorFactura` / `ObligadoEmision/NIF`; su razón social, `ObligadoEmision/NombreRazon` y `NombreRazonEmisor`. | `LegalEntity.taxId` / `legalName` → `resolveLegalIdentity()` (`apps/api/src/lib/finance-scope.ts`, lector único) → `resolveIssuerIdentity()` (`issuer-identity.service.ts`) → snapshot `Invoice.issuerTaxId` / `issuerLegalName` (inmutable por trigger). El hotel (`Property`) es el **establecimiento** de la factura (art. 6.1.e RD 1619/2012): código, nombre comercial y dirección en el PDF; **nunca** aporta NIF ni razón social. |
-| **Productor / comercializador del SIF** (la empresa titular de Anfitorio) | Certificar mediante **declaración responsable** (art. 13) que el sistema cumple los requisitos del art. 8 (integridad, conservación, accesibilidad, legibilidad, trazabilidad e inalterabilidad de los registros) y hacerla visible a sus usuarios. Sus datos son el bloque `SistemaInformatico`. | `resolveVerifactuSoftware(env, { installation })` (`packages/compliance/src/spain/verifactu/software.ts`) alimentado por `VERIFACTU_*` y por la instalación declarada del centro (`verifactu_installations`). |
+| **Productor / comercializador del SIF** (la empresa titular de ehotelOS) | Certificar mediante **declaración responsable** (art. 13) que el sistema cumple los requisitos del art. 8 (integridad, conservación, accesibilidad, legibilidad, trazabilidad e inalterabilidad de los registros) y hacerla visible a sus usuarios. Sus datos son el bloque `SistemaInformatico`. | `resolveVerifactuSoftware(env, { installation })` (`packages/compliance/src/spain/verifactu/software.ts`) alimentado por `VERIFACTU_*` y por la instalación declarada del centro (`verifactu_installations`). |
 
 Confusiones que este documento corrige: `VERIFACTU_SOFTWARE_NIF` **no es el
 NIF del hotel**; es el del productor. `NumeroInstalacion` **no lo asigna
@@ -51,7 +51,7 @@ emitido **por cada versión** del sistema. Debe contener, como mínimo:
    y, dentro de un mismo obligado, a varios centros de facturación.
 
 Además debe estar **visible en el propio sistema** y a disposición de los
-usuarios (los hoteles) de forma que quede constancia; Anfitorio la enlaza
+usuarios (los hoteles) de forma que quede constancia; ehotelOS la enlaza
 desde el artículo de ayuda «Cumplimiento español» y desde la pantalla de
 readiness fiscal (pendiente del lote readiness).
 
@@ -61,11 +61,11 @@ readiness fiscal (pendiente del lote readiness).
 |---|---|---|---|---|
 | Razón social del productor | `NombreRazon` | ≤ 120 | `VERIFACTU_SOFTWARE_NAME` | — (obligatorio) |
 | NIF del productor | `NIF` | NIF válido | `VERIFACTU_SOFTWARE_NIF` (checksum validado) | — (obligatorio) |
-| Nombre del sistema | `NombreSistemaInformatico` | ≤ 30 | `VERIFACTU_SYSTEM_NAME` | `Anfitorio` |
+| Nombre del sistema | `NombreSistemaInformatico` | ≤ 30 | `VERIFACTU_SYSTEM_NAME` | `ehotelOS` (valor declarado: ver §4, punto 7) |
 | Código identificador del sistema | `IdSistemaInformatico` | exactamente 2 | `VERIFACTU_SYSTEM_ID` | `01` |
-| Versión declarada | `Version` | ≤ 50 | `VERIFACTU_SYSTEM_VERSION` → `APP_VERSION` | `0.1.0` |
+| Versión declarada | `Version` | ≤ 50 | `VERIFACTU_SYSTEM_VERSION` → `APP_VERSION` | `1.0.0` |
 | Identificador de la instalación (registro del productor) | `NumeroInstalacion` | ≤ 100 | **`verifactu_installations.numero_instalacion`** de la instalación del centro (o de la sociedad, según la política de cadena). `VERIFACTU_INSTALL_NUMBER` es solo el **fallback en `sandbox`** para un centro sin instalación declarada y el valor que `server.ts` comprueba al arrancar fuera de sandbox. | — (obligatorio: instalación declarada en modos reales) |
-| Solo VERI*FACTU (sin modalidad no verificable) | `TipoUsoPosibleSoloVerifactu` | S/N | fijo `S` (Anfitorio no opera sin remisión) | `S` |
+| Solo VERI*FACTU (sin modalidad no verificable) | `TipoUsoPosibleSoloVerifactu` | S/N | fijo `S` (ehotelOS no opera sin remisión) | `S` |
 | Multi-obligado (SaaS) | `TipoUsoPosibleMultiOT` | S/N | `VERIFACTU_MULTI_OT` | `S` |
 | Esta instalación sirve a varios obligados | `IndicadorMultiplesOT` | S/N | `VERIFACTU_MULTI_OT` | `S` |
 
@@ -126,6 +126,70 @@ de que la nueva versión emita registros.
    `SistemaInformatico` no entra en la huella).
 6. Un cambio de versión **no** cambia ni reinicia ninguna instalación: el
    `NumeroInstalacion` es un identificador de la instalación, no de la versión.
+7. **Cambio de `NombreSistemaInformatico` por rebrand (2026-09).** El valor
+   por defecto en código pasó de la marca anterior a `ehotelOS`
+   (`VERIFACTU_SOFTWARE_DEFAULTS.nombreSistema` en
+   `packages/compliance/src/spain/verifactu/software.ts` y el contrato de
+   entorno `VERIFACTU_SYSTEM_NAME` en `apps/api/src/lib/env.ts`). El nombre
+   del sistema es un dato **declarado** ante la AEAT, no un texto de marca:
+   la marca visible (`BRAND.name`) y el SIF se gobiernan por separado a
+   propósito, y este punto fija la secuencia para que el cambio de nombre
+   entre en vigor solo con una declaración firmada.
+   1. *Inmutabilidad.* Los registros ya remitidos conservan su `xml_payload`
+      y su `software_json` exactamente como se enviaron (los escribe el
+      envío en `apps/api/src/modules/invoicing/verifactu-submission.service.ts`
+      y la vista de auditoría de la fila los reproduce): **nunca** se hace
+      backfill de un nombre nuevo sobre filas remitidas. El bloque
+      `SistemaInformatico` no entra en la huella (`hash.ts`: solo
+      `IDEmisorFactura`, `NumSerieFactura`, `FechaExpedicionFactura`,
+      `TipoFactura`, `CuotaTotal`, `ImporteTotal`, huella anterior y
+      `FechaHoraHusoGenRegistro`) ni en `RegistroAnterior` (`xml.ts`,
+      `renderEncadenamiento`): el encadenamiento no se rompe por cambiar el
+      nombre.
+   2. *Cola pendiente.* Las filas `pending` / `retrying` se reconstruyen en
+      cada intento con el bloque vigente (`resolveSoftwareForSend` en
+      `verifactu-submission.service.ts`), así que un despliegue con el nombre
+      nuevo las remitiría ya con `ehotelOS`. Antes del cambio: drenar la
+      cola (ninguna fila en `pending` / `retrying`) o asumir por escrito el
+      punto 4 de esta lista para esas filas.
+   3. *Versionado y declaración.* Mantener `VERIFACTU_SYSTEM_ID=01` y los
+      `NumeroInstalacion` de `verifactu_installations` (un cambio de nombre
+      no es un cambio de instalación). Fijar `VERIFACTU_SYSTEM_VERSION` a un
+      semver declarable (`1.0.0`, el valor por defecto desde 2026-09; el
+      fallback `APP_VERSION` vale `dev` en un despliegue sin versión y no es
+      declarable). Firmar la NUEVA declaración responsable con
+      `NombreSistemaInformatico = ehotelOS` **antes** del primer registro
+      que lo lleve; después comprobar `GET /compliance/health` →
+      `verifactu.software.ok` y un envío en `preproduction` con
+      `<sum1:NombreSistemaInformatico>ehotelOS</sum1:NombreSistemaInformatico>`
+      (`xml.ts`, `renderSistemaInformatico`).
+   4. *TicketBAI.* `resolveTbaiSoftware` (`tbai-submission.service.ts`) copia
+      `nombreSistema` en `<Software><Nombre>` (`tbai/tbai.ts`): misma
+      secuencia ante la diputación foral, y no cambiar el nombre en
+      `TBAI_MODE=production` sin confirmar con la diputación que
+      `TBAI_LICENSE_KEY` no está ligada al nombre anterior.
+   5. *Operación hasta la firma.* En producción se fijan en
+      `/etc/anfitorio/api.env` (añadir las líneas si faltan) el nombre y la
+      versión que constan en la declaración responsable vigente, los mismos
+      que llevan `software_json` y `xml_payload` de los registros ya
+      remitidos, de modo que los valores por defecto nuevos del código
+      (`ehotelOS` / `1.0.0`, `software.ts` y `env.ts`) no entren en vigor por
+      accidente al desplegar:
+
+      ```
+      VERIFACTU_SYSTEM_NAME=Anfitorio
+      VERIFACTU_SYSTEM_VERSION=0.1.0
+      ```
+
+      `Version` se declara por cada versión (§4) y su valor por defecto en
+      código pasó de `0.1.0` a `1.0.0` en el mismo despliegue que el nombre:
+      sin el segundo pin, cualquier instalación sin `VERIFACTU_SYSTEM_VERSION`
+      (ni `APP_VERSION`) emitiría `<sum1:Version>1.0.0</sum1:Version>` sin
+      declaración firmada. El paso a paso del VPS está en
+      `deploy/README-INSTALL.md` §9 (paso 4). Los dos pines se retiran
+      juntos tras la firma de la nueva declaración (`ehotelOS` / `1.0.0`),
+      con la cola drenada (punto 2), y se comprueba después con
+      `GET /compliance/health` → `verifactu.software`.
 
 Checklist rápida antes de `VERIFACTU_MODE=preproduction`:
 
@@ -155,7 +219,7 @@ Lo que está implementado en `packages/compliance/src/spain/verifactu/submitter.
   mTLS con PKCS#12 o PEM, timeout de 30 s.
 - El cuerpo remitido es el registro **sin firmar** (`transportXml`): en la
   modalidad VERI*FACTU el registro no lleva firma electrónica (art. 12
-  RD 1007/2023); la firma XAdES que Anfitorio genera se conserva solo en
+  RD 1007/2023); la firma XAdES que ehotelOS genera se conserva solo en
   `xml_payload` como pista de auditoría (`VERIFACTU_SIGN_PEM`).
 - Parseo de la respuesta (`EstadoEnvio`, `CSV`, `EstadoRegistro`,
   `CodigoErrorRegistro`, `DescripcionErrorRegistro`, `Fault`) sin depender
@@ -180,7 +244,7 @@ oficiales `SuministroLR.xsd`, `SuministroInformacion.xsd` y
 
 ## 6. Arquitectura SaaS multi-facturación (Tanda 6b · estructura societaria)
 
-Anfitorio es un SIF **multi-obligado** (`TipoUsoPosibleMultiOT = S`,
+ehotelOS es un SIF **multi-obligado** (`TipoUsoPosibleMultiOT = S`,
 `IndicadorMultiplesOT = S`): una sola instalación de software sirve a varias
 sociedades (tenants) y, dentro de una sociedad, a varios centros de
 facturación (hoteles). El modelo es Grupo (`Organization`) → **Sociedad**

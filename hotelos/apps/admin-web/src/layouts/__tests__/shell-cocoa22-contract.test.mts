@@ -159,7 +159,7 @@ describe("§3.8 auth screens · Cocoa primitives, no raw controls", () => {
     assert.match(login, /fetch\(`\$\{apiBase\(\)\}\/auth\/login`/);
     assert.match(login, /Cuenta bloqueada temporalmente/);
     assert.match(login, /<CocoaCard\s+variant="elevated"/);
-    assert.match(login, /<CocoaPageHeader eyebrow="ehotelOS · Back Office" title="Inicia sesión"/);
+    assert.match(login, /<CocoaPageHeader eyebrow=\{AUTH_EYEBROW\} title="Inicia sesión"/);
     assert.match(login, /<CocoaState kind="error" inline role="alert"/);
   });
 });

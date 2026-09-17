@@ -164,7 +164,7 @@ export const PMS_SHADOW_ALERT_SEVERITY: Readonly<Record<PmsShadowAlertCode, PmsS
 
 export const PMS_SHADOW_ALERT_LABELS_ES: Readonly<Record<PmsShadowAlertCode, string>> = Object.freeze({
   OPERA_MISSING_IN_SNAPSHOT: "Reserva ausente del corte de OPERA",
-  OPERA_CONFLICT_LOCAL_RESERVATION: "Conflicto con una reserva creada en Anfitorio",
+  OPERA_CONFLICT_LOCAL_RESERVATION: "Conflicto con una reserva creada en ehotelOS",
   OPERA_CHECKIN_WITHOUT_ROOM: "Check-in en OPERA sin habitación válida",
   OPERA_TRX_CODE_UNMAPPED: "Transaction code sin mapear",
   OPERA_ROOM_TYPE_UNMAPPED: "Tipo de habitación de OPERA sin mapear",

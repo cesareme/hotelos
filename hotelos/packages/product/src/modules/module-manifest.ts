@@ -654,7 +654,7 @@ export const HOTEL_MODULES: HotelModuleManifest[] = [...CORE_HOTEL_MODULES, ...A
 export function getHotelModuleManifest(code: HotelModuleCode): HotelModuleManifest {
   const manifest = HOTEL_MODULES.find((module) => module.code === code);
   if (!manifest) {
-    throw new Error(`Unknown HotelOS module: ${code}`);
+    throw new Error(`Unknown ehotelOS module: ${code}`);
   }
 
   return manifest;

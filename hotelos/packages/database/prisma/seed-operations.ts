@@ -89,7 +89,7 @@ async function main() {
     profileIdByKey.set(s.key, profileId);
     await prisma.user.upsert({
       where: { id: userId },
-      create: { id: userId, organizationId: ORG, email: `${s.key}@hotelos.demo`, fullName: s.name, status: "active" },
+      create: { id: userId, organizationId: ORG, email: `${s.key}@ehotelos.demo`, fullName: s.name, status: "active" },
       update: { fullName: s.name, status: "active" }
     });
     await prisma.staffProfile.upsert({

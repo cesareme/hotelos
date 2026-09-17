@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Anfitorio · post-deploy smoke test (HTTP real: health, auth, lecturas, front).
+# ehotelOS · post-deploy smoke test (HTTP real: health, auth, lecturas, front).
 #
 # Uso:
 #   bash deploy/scripts/smoke.sh [opciones]
 #
 # Opciones (o variables de entorno equivalentes):
-#   --base-url URL        API pública, p. ej. https://demo.hotelos.es/api   (BASE_URL)
-#   --web-url URL         origen del front, p. ej. https://demo.hotelos.es  (WEB_URL)
+#   --base-url URL        API pública, p. ej. https://demo.ehotelos.com/api   (BASE_URL)
+#   --web-url URL         origen del front, p. ej. https://demo.ehotelos.com  (WEB_URL)
 #   --email / --password  credenciales del usuario de smoke                  (SMOKE_EMAIL / SMOKE_PASSWORD)
 #   --property-id ID      propiedad a leer (por defecto prop_123)            (SMOKE_PROPERTY_ID)
 #                         (alias admitido: --property; deploy.sh la pasa vía SMOKE_PROPERTY_ID)
@@ -69,7 +69,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$BASE_URL" ]]; then
-    echo "Falta --base-url (o BASE_URL), p. ej. https://demo.hotelos.es/api" >&2
+    echo "Falta --base-url (o BASE_URL), p. ej. https://demo.ehotelos.com/api" >&2
     exit 2
 fi
 BASE_URL="${BASE_URL%/}"
@@ -129,7 +129,7 @@ json_get() {
       });' "$1"
 }
 
-[[ $JSON -eq 1 ]] || printf '\n\033[1;34m▶ Smoke Anfitorio · API %s · web %s\033[0m\n' "$BASE_URL" "${WEB_URL:-(omitido)}"
+[[ $JSON -eq 1 ]] || printf '\n\033[1;34m▶ Smoke ehotelOS · API %s · web %s\033[0m\n' "$BASE_URL" "${WEB_URL:-(omitido)}"
 
 # 1. /health
 if http GET "$BASE_URL/health"; then

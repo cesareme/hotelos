@@ -23,6 +23,7 @@
 //     sintética del perfil (`feeds.<feed>.headerless`).
 
 import { Prisma } from "@prisma/client";
+import { BRAND } from "../../lib/brand.js";
 import type {
   IsoDate,
   PermissionKey,
@@ -263,7 +264,7 @@ export function buildAlertsFromSyncResult(sync: ReservationImportSyncResult | un
     out.push(
       alert(
         "OPERA_CONFLICT_LOCAL_RESERVATION",
-        `El nº de confirmación ${conflict.confirmationNo} coincide con la reserva ${conflict.reservationCode} creada en Anfitorio por otra vía (fila ${conflict.rowNumber}): fila omitida.`,
+        `El nº de confirmación ${conflict.confirmationNo} coincide con la reserva ${conflict.reservationCode} creada en ${BRAND.name} por otra vía (fila ${conflict.rowNumber}): fila omitida.`,
         { confirmationNo: conflict.confirmationNo, details: { reservationCode: conflict.reservationCode, rowNumber: conflict.rowNumber, feed: run.feed, businessDate } }
       )
     );
@@ -637,7 +638,7 @@ export function reconciliationMismatches(rows: readonly PmsShadowReconciliationR
 
 /** Mensaje en español de una alerta de reconciliación (sin datos personales: métricas e importes). */
 export function reconciliationAlertMessage(code: "OPERA_RECON_COUNT_MISMATCH" | "OPERA_RECON_REVENUE_MISMATCH", businessDate: IsoDate, rows: readonly PmsShadowReconciliationRow[]): string {
-  const detail = rows.map((row) => `${row.metric}: OPERA ${row.opera ?? "—"} · Anfitorio ${row.anfitorio} (Δ ${row.delta ?? "—"})`).join("; ");
+  const detail = rows.map((row) => `${row.metric}: OPERA ${row.opera ?? "—"} · ${BRAND.name} ${row.anfitorio} (Δ ${row.delta ?? "—"})`).join("; ");
   return `${PMS_SHADOW_ALERT_LABELS_ES[code]} (${businessDate}): ${detail}.`;
 }
 

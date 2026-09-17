@@ -25,6 +25,7 @@ import { useTabHost } from "../tabs/TabHost";
 import { StructureActions, StructureSplit, structurePageProps, useWizardState } from "./StructureScreen";
 import { useStructureModel } from "./structure-model";
 import { CHAIN_SCOPE_LABELS, invoiceTypeLabel, propertyKindLabel, structureErrorMessage } from "./structure-ui";
+import { BRAND } from "../../config/brand";
 
 type Loaded<T> = { status: "idle" | "loading" | "ready" | "error"; data: T | null; message: string | null };
 
@@ -245,7 +246,7 @@ export function StructureSeriesTab() {
               meta={installations.status === "ready" ? plural(installations.data?.installations.length ?? 0, "instalación", "instalaciones") : undefined}
               padding={installations.status === "ready" && (installations.data?.installations.length ?? 0) > 0 ? "none" : "md"}
               style={{ overflow: "clip" }}
-              footer={`${CHAIN_SCOPE_LABELS[chainScope]} · fijada por ehotelOS desde la consola de plataforma; cambiarla nunca re-encadena: se retira la instalación y se abre otra con número nuevo.`}
+              footer={`${CHAIN_SCOPE_LABELS[chainScope]} · fijada por ${BRAND.name} desde la consola de plataforma; cambiarla nunca re-encadena: se retira la instalación y se abre otra con número nuevo.`}
             >
               {!canSeeInstallations ? (
                 <CocoaState kind="empty" inline title={model.redacted ? "Las instalaciones solo las ve quien tiene «Finanzas de toda la sociedad»." : "Hace falta el permiso de configuración contable para ver las instalaciones."} />

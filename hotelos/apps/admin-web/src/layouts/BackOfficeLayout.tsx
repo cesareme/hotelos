@@ -39,6 +39,7 @@ import { useCocoaNotifications } from "../providers/CocoaGlobalProvider";
 import { openHelpCenter } from "../components/guide/guideStore";
 import { fetchPropertyReadiness, type PropertyReadiness } from "../services/billingApi";
 import { PROPERTY_KIND_LABELS, type StructuredPropertyRow } from "../services/financeScope";
+import { BRAND } from "../config/brand";
 
 /** Screen the «Nueva reserva» quick action opens (pilots/tanda5-nav-tree.md §11 #5: one click from anywhere). */
 export const NEW_RESERVATION_SCREEN = "ReservationCreate";
@@ -1083,7 +1084,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
       ) : (
       <CocoaToolbar
         showTrafficLights
-        title="ehotelOS"
+        title={BRAND.name}
         leftSlot={<PropertySwitcher />}
         rightSlot={
           <>

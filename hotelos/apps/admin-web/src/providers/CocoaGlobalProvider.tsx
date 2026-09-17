@@ -62,6 +62,7 @@ import { getToken, onAuthChange } from "../services/auth-storage";
 import { listNotifications, markNotificationRead, type NotificationRecord } from "../services/notificationsApi";
 import { navigateTo } from "../lib/navigate";
 import { openHelpCenter } from "../components/guide/guideStore";
+import { BRAND } from "../config/brand";
 
 // ---------------------------------------------------------------------------
 // Preference shape — shared with CocoaPreferencesSheet through
@@ -241,7 +242,7 @@ function buildDefaultCommands(bindings: DefaultCommandBindings): CocoaCommandPal
     { id: "global.help", label: "Centro de ayuda", category: "Sistema", onSelect: () => openHelpCenter() },
     { id: "global.shortcuts", label: "Atajos de teclado", category: "Sistema", shortcut: "⌘/", onSelect: bindings.openShortcuts },
     { id: "global.preferences", label: "Preferencias", category: "Sistema", shortcut: "⌘,", onSelect: bindings.openPreferences },
-    { id: "global.about", label: "Acerca de ehotelOS", category: "Sistema", onSelect: bindings.openAbout },
+    { id: "global.about", label: `Acerca de ${BRAND.name}`, category: "Sistema", onSelect: bindings.openAbout },
   ];
 }
 

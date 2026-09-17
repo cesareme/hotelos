@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# HotelOS · bootstrap a fresh Hostinger VPS into a remote DEV environment.
+# ehotelOS · bootstrap a fresh Hostinger VPS into a remote DEV environment.
 #
 # Use this on a VPS where you'll edit code via VS Code Remote-SSH from the
 # Mac Pro. Different from `bootstrap-vps.sh` (which is production):
@@ -140,7 +140,7 @@ sudo -u "$DEV_USER" bash -lc 'npm install -g @anthropic-ai/claude-code 2>&1 | ta
 
 log "13/13 · Pre-create tmux config for $DEV_USER"
 cat > "/home/$DEV_USER/.tmux.conf" <<'TMUX'
-# HotelOS dev box · sensible tmux defaults
+# ehotelOS dev box · sensible tmux defaults
 set -g mouse on
 set -g history-limit 100000
 set -g default-terminal "screen-256color"

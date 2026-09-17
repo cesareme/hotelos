@@ -1,4 +1,4 @@
-# Runbook · Actualización del VPS demo `demo.hotelos.es` (76.13.55.180) · 2026-09-17
+# Runbook · Actualización del VPS demo `demo.ehotelos.com` (76.13.55.180) · 2026-09-17
 
 **Quién:** César, por SSH como usuario `anfitorio` (el Mac no tiene la clave autorizada
 en ese VPS; ver §14). **Qué:** llevar la demo pública del build del 11-jul-2026 al
@@ -7,7 +7,18 @@ en ese VPS; ver §14). **Qué:** llevar la demo pública del build del 11-jul-20
 adoptada, las 10 migraciones posteriores aplicadas,
 las CLI de datos ejecutadas en el orden validado, el modo demo sin token retirado, las
 unidades systemd y el Caddyfile versionados, el front horneado con
-`VITE_API_URL=https://demo.hotelos.es/api` y el `smoke.sh` en verde.
+`VITE_API_URL=https://demo.ehotelos.com/api` y el `smoke.sh` en verde.
+
+**Rebrand ehotelOS (2026-09, D5/D16).** Este runbook se escribió antes del cambio de marca; el
+dominio y los nombres de los datos demo están sustituidos en el texto: `demo.ehotelos.com` (mismo
+VPS 76.13.55.180; el dominio anterior de la demo responde 301 desde el bloque de transición de
+`deploy/caddy/Caddyfile.native`) y los nombres neutros de D3 («Grupo Hotelero Demo», «Grupo
+Hotelero Demo SL», «Hotel Demo Madrid Centro», «Hotel Demo Tenerife Sur»), que en una BD que aún
+lleve los antiguos los pone `scripts/sql/rebrand-ehotelos-demo.sql` (lote 7) antes de comparar
+las salidas «esperadas». No cambian rutas (`/opt|/etc|/srv|/var/backups/anfitorio`), unidades
+`anfitorio-api`/`anfitorio-worker`, usuario y BD `anfitorio`, `HOTELOS_*` ni la contraseña demo.
+El SIF VeriFactu NO sigue a la marca: `api.env` lleva el pin de la tabla de claves de §4 hasta la
+nueva declaración responsable (D4).
 
 **Fuente:** reconocimiento de `deploy/`, del contrato de entorno y del VPS por HTTP
 (17-sep-2026) y **ensayo local completo** del mismo día sobre una BD de ensayo
@@ -60,7 +71,7 @@ máquina al estado del backup de §3 en ≈ 10 min.
 
 Lo que va a cambiar de comportamiento para quien use la demo:
 
-- `GET https://demo.hotelos.es/api/properties` sin token pasa de **200 a 401**: el modo
+- `GET https://demo.ehotelos.com/api/properties` sin token pasa de **200 a 401**: el modo
   demo sin token (`HOTELOS_ALLOW_DEMO_AUTH=true`, activo hoy) se retira; el front hace
   login con `reception@example.com` / `hotelos-demo` (ya funciona hoy).
 - `/api/admin/tenants` pasa de **500 a 200** (verificado en el ensayo con el build nuevo).
@@ -83,7 +94,7 @@ export ENVF=/etc/anfitorio/api.env
 export WEB_ROOT=/srv/anfitorio/admin-web # AJUSTAR tras §2: «dist servido» del inventario
 export BK=/var/backups/anfitorio
 export STAMP=20260917
-export DOMAIN=demo.hotelos.es
+export DOMAIN=demo.ehotelos.com
 mkdir -p ~/pre-$STAMP && chmod 700 ~/pre-$STAMP
 ```
 
@@ -229,8 +240,9 @@ generador de 4.2 hace esto, sin imprimir valores:
 | Grupo | Claves | Qué se hace |
 | --- | --- | --- |
 | **Se reutilizan** | `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET` (si ≥ 32 chars y no `change-me`), `ENCRYPTION_KEY` (**solo** si base64 decodifica a 32 bytes) | copiadas tal cual. Cambiar `JWT_SECRET` cierra todas las sesiones; cambiar `ENCRYPTION_KEY` deja ilegible la PII cifrada con la anterior (el ensayo, con clave nueva, arrancó y pasó el smoke con 2 avisos `[crypto-fields] Guest.email could not be decrypted`: no rompe nada, el campo se devuelve `null`). El placeholder de julio `change-me-32-bytes` NO es válido (13 bytes): se genera una nueva. |
-| **Nuevas obligatorias (production-native)** | `NODE_ENV=production`, `HOST=127.0.0.1`, `PORT=3000`, `TRUST_PROXY=1`, `RUN_SCHEDULERS=true`, `RBAC_STRICT=true`, `APP_BASE_URL=https://demo.hotelos.es`, `API_PUBLIC_URL=https://demo.hotelos.es/api`, `VITE_API_URL=https://demo.hotelos.es/api`, `CORS_ALLOWED_ORIGINS=https://demo.hotelos.es` | valores fijos. Sin `APP_BASE_URL` y sin `ENCRYPTION_KEY` válida el API **no arranca** en producción (`apps/api/src/lib/env.ts`, `assertEnv`). |
+| **Nuevas obligatorias (production-native)** | `NODE_ENV=production`, `HOST=127.0.0.1`, `PORT=3000`, `TRUST_PROXY=1`, `RUN_SCHEDULERS=true`, `RBAC_STRICT=true`, `APP_BASE_URL=https://demo.ehotelos.com`, `API_PUBLIC_URL=https://demo.ehotelos.com/api`, `VITE_API_URL=https://demo.ehotelos.com/api`, `CORS_ALLOWED_ORIGINS=https://demo.ehotelos.com` | valores fijos. Sin `APP_BASE_URL` y sin `ENCRYPTION_KEY` válida el API **no arranca** en producción (`apps/api/src/lib/env.ts`, `assertEnv`). |
 | **Nuevas de política** | `HOTELOS_ALLOW_DEMO_AUTH=false`, `AUTH_EXPOSE_RESET_TOKEN=false`, `ADMIN_EXPOSE_TEMP_PASSWORD=false`, `STRUCTURE_ENABLED=true`, `VERIFACTU_MODE=sandbox`, `SES_HOSPEDAJES_MODE=sandbox`, `TBAI_MODE=sandbox`, `IGIC_MODE=sandbox` | `HOTELOS_ALLOW_DEMO_AUTH=true` con `NODE_ENV=production` **impide arrancar** salvo `HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true` (y entonces `smoke.sh` falla en el 401 por diseño). Recomendación: fuera (§14). |
+| **SIF VeriFactu (pin hasta la nueva declaración responsable, D4)** | `VERIFACTU_SYSTEM_NAME=Anfitorio`, `VERIFACTU_SYSTEM_VERSION=0.1.0` (añadir si faltan) | nombre y versión que constan en la declaración responsable vigente, los mismos que llevan `software_json`/`xml_payload` de los registros ya remitidos; sin ellos, los valores por defecto nuevos del código (`ehotelOS` / `1.0.0`, `software.ts` y `env.ts`) entrarían en `NombreSistemaInformatico`/`Version` sin declaración firmada. Se retiran juntos tras la firma, con la cola drenada (`deploy/README-INSTALL.md` §9 paso 4; `docs/compliance/verifactu-declaracion-responsable.md` §4.7.5). |
 | **Smoke** | `SMOKE_EMAIL=reception@example.com`, `SMOKE_PASSWORD=hotelos-demo`, `SMOKE_PROPERTY_ID=prop_123` | las lee `deploy.sh`; `validate-env` avisa «no está en el contrato» (3 avisos, no error). |
 | **Se conservan si tenían valor real** | `SENTRY_DSN`, `VITE_SENTRY_DSN`, `AI_PROVIDER`, `AI_PROVIDER_API_KEY`, `OCR_PROVIDER_API_KEY`, `SPEECH_PROVIDER_API_KEY`, `EMAIL_PROVIDER`, `EMAIL_PROVIDER_KEY`, `EMAIL_FROM`, `SES_HOSPEDAJES_CLIENT_ID/SECRET`, `VERIFACTU_CERT_PATH/PASSPHRASE`, `VERIFACTU_SOFTWARE_NIF`, `VERIFACTU_INSTALL_NUMBER` | los `change-me` se descartan (validate-env los ignora igualmente). |
 | **Retiradas (no se copian)** | `OBJECT_STORAGE_BUCKET/REGION/ACCESS_KEY/SECRET_KEY`, `PAYMENT_PROVIDER_SECRET`, `APP_PUBLIC_API_URL` (→ `API_PUBLIC_URL`/`VITE_API_URL`), `PILOT_PUBLIC_ORIGIN` (→ `CORS_ALLOWED_ORIGINS`), `WHATSAPP_PROVIDER_TOKEN` (→ `WHATSAPP_TOKEN`), `BOOTSTRAP_TOKEN` (demo: vacío) | ningún código las lee ya (aviso «retirada en la Tanda 4»). |
@@ -263,9 +275,10 @@ umask 077
   printf "DATABASE_URL='%s'\n" "$DB"
   [[ -n "$REDIS" ]] && printf "REDIS_URL='%s'\n" "$REDIS"
   printf "JWT_SECRET='%s'\nENCRYPTION_KEY='%s'\n" "$JWT" "$ENC"
-  printf '%s\n' "APP_BASE_URL=https://demo.hotelos.es" "API_PUBLIC_URL=https://demo.hotelos.es/api" "VITE_API_URL=https://demo.hotelos.es/api" "CORS_ALLOWED_ORIGINS=https://demo.hotelos.es"
+  printf '%s\n' "APP_BASE_URL=https://demo.ehotelos.com" "API_PUBLIC_URL=https://demo.ehotelos.com/api" "VITE_API_URL=https://demo.ehotelos.com/api" "CORS_ALLOWED_ORIGINS=https://demo.ehotelos.com"
   printf '%s\n' "HOTELOS_ALLOW_DEMO_AUTH=false" "AUTH_EXPOSE_RESET_TOKEN=false" "ADMIN_EXPOSE_TEMP_PASSWORD=false"
   printf '%s\n' "VERIFACTU_MODE=sandbox" "SES_HOSPEDAJES_MODE=sandbox" "TBAI_MODE=sandbox" "IGIC_MODE=sandbox"
+  printf '%s\n' "VERIFACTU_SYSTEM_NAME=Anfitorio" "VERIFACTU_SYSTEM_VERSION=0.1.0"   # pin del SIF hasta la nueva declaración responsable (D4)
   printf '%s\n' "SMOKE_EMAIL=reception@example.com" "SMOKE_PASSWORD=hotelos-demo" "SMOKE_PROPERTY_ID=prop_123"
   for k in SENTRY_DSN VITE_SENTRY_DSN AI_PROVIDER AI_PROVIDER_API_KEY OCR_PROVIDER_API_KEY SPEECH_PROVIDER_API_KEY EMAIL_PROVIDER EMAIL_PROVIDER_KEY EMAIL_FROM SES_HOSPEDAJES_CLIENT_ID SES_HOSPEDAJES_CLIENT_SECRET VERIFACTU_CERT_PATH VERIFACTU_CERT_PASSPHRASE VERIFACTU_SOFTWARE_NIF VERIFACTU_INSTALL_NUMBER; do
     v=$(get "$k"); is_placeholder "$v" && continue; case "$v" in *"'"*) echo "  OMITIDA $k: contiene una comilla simple, añádela a mano" >&2; continue;; esac; printf "%s='%s'\n" "$k" "$v"; echo "  conservada: $k" >&2
@@ -300,7 +313,7 @@ con el código nuevo.
 ```bash
 sudo systemctl stop anfitorio-api; sudo systemctl stop anfitorio-worker 2>/dev/null || true     # [root]
 systemctl is-active anfitorio-api                                            # inactive
-curl -s -o /dev/null -w '%{http_code}\n' https://demo.hotelos.es/api/health  # 502 (Caddy sin backend): esperado
+curl -s -o /dev/null -w '%{http_code}\n' https://demo.ehotelos.com/api/health  # 502 (Caddy sin backend): esperado
 ```
 
 Si el API viejo no corre bajo `anfitorio-api` (inventario §2.2: tmux, `pnpm dev`, otro
@@ -500,7 +513,7 @@ psql "$DATABASE_URL" -XtA \
 ```
 
 Esperado: `No difference detected.` · `exit=0` · `276` · `32` · `11` · la lista de
-organizaciones (org_123 «HotelOS Demo Group» B12345678 y, si existe, Faranda
+organizaciones (org_123 «Grupo Hotelero Demo» B12345678 y, si existe, Faranda
 `cmrhw9jy30002fyvb6tsdiugt`). Drift ≠ 0 → **para**, pega la salida en §13 (no se toca
 nada más; el backup de §3 sigue siendo válido).
 
@@ -638,8 +651,8 @@ de Faranda y **exit 1**, pero org_123 sí se aplica (esperado; compruébalo:
 (cd apps/api && node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --dry-run) 2>&1 | grep -E 'convergida|escrituras previstas'
 ```
 
-Esperado (ensayo): dry-run `HotelOS Demo Group (org_123): 25 escrituras previstas` ·
-`sociedad: CREAR HD «HotelOS Demo SL» NIF B12345674` · centros `AMC` (prop_123) y `ATS`
+Esperado (ensayo): dry-run `Grupo Hotelero Demo (org_123): 25 escrituras previstas` ·
+`sociedad: CREAR HD «Grupo Hotelero Demo SL» NIF B12345674` · centros `AMC` (prop_123) y `ATS`
 (prop_canary) · `instalación VeriFactu CREAR «DEV-001»` (+ `«DEV-001-ATS»`) y, con
 Faranda, `81 escrituras previstas` · `CREAR FAR «Faranda Hotels & Resorts» NIF
 B99999997` · centro `RA`. Avisos normales: `INSTALLATION_NUMBER_SANDBOX_DEFAULT` (sin
@@ -695,9 +708,9 @@ dry-run).
 
 ### 8.1 Qué queda en la BD pública tras §6-§7
 
-- `org_123` «HotelOS Demo Group» / sociedad HD «HotelOS Demo SL» B12345674 (ficticio
-  con checksum válido), `prop_123` «Anfitorio Madrid Centro» (47 habitaciones, 4 tipos,
-  33 módulos; código de centro `AMC`), `prop_canary` «Anfitorio Tenerife Sur» (`ATS`),
+- `org_123` «Grupo Hotelero Demo» / sociedad HD «Grupo Hotelero Demo SL» B12345674 (ficticio
+  con checksum válido), `prop_123` «Hotel Demo Madrid Centro» (47 habitaciones, 4 tipos,
+  33 módulos; código de centro `AMC`), `prop_canary` «Hotel Demo Tenerife Sur» (`ATS`),
   `usr_123` `reception@example.com` / `hotelos-demo` (Local Super Admin de plataforma:
   tras el arranque recibe el catálogo completo, 223 claves), sus reservas de mayo-junio
   (salidas), 1 huésped, facturas de prueba en sandbox, plan de cuentas de 249 cuentas.
@@ -821,7 +834,7 @@ journal (ensayo): `[audit] hydrated chain tips …`, `[rbac] permission catalog 
 created=N updated=0 stale=4`, `[rbac] platform roles topped up: 1 of 1 … Local Super Admin
 (org_123) ← full catalog: +N`, `[tenants] mirrors hydrated: properties=P organizations=O
 modules=M`, `[env] N aviso(s) de configuración (production)`, `[cors] política cargada
-allowed=["https://demo.hotelos.es"]`, `Server listening at http://127.0.0.1:3000`,
+allowed=["https://demo.ehotelos.com"]`, `Server listening at http://127.0.0.1:3000`,
 `[schedulers] this instance is the scheduler leader`. El aviso `[verifactu] bloque
 SistemaInformatico incompleto (solo aviso en sandbox)` es normal.
 
@@ -835,9 +848,9 @@ en 10 min, §12.
 
 ```bash
 sudo systemctl reload caddy && systemctl is-active caddy                  # [root]
-curl -sS -o /dev/null -w '%{http_code}\n' https://demo.hotelos.es/api/health         # 200
-curl -sS -o /dev/null -w '%{http_code}\n' https://demo.hotelos.es/api/properties     # 401 (antes 200: modo demo retirado)
-curl -sS https://demo.hotelos.es/health | head -c 120; echo                            # JSON del API (ruta nueva)
+curl -sS -o /dev/null -w '%{http_code}\n' https://demo.ehotelos.com/api/health         # 200
+curl -sS -o /dev/null -w '%{http_code}\n' https://demo.ehotelos.com/api/properties     # 401 (antes 200: modo demo retirado)
+curl -sS https://demo.ehotelos.com/health | head -c 120; echo                            # JSON del API (ruta nueva)
 ```
 
 ---
@@ -847,13 +860,13 @@ curl -sS https://demo.hotelos.es/health | head -c 120; echo                     
 ```bash
 cd "$APP"
 sudo cp -a "$WEB_ROOT" "$WEB_ROOT.pre-$STAMP" 2>/dev/null || true                   # [root] copia del dist actual (además del tgz de §3.2)
-VITE_API_URL='https://demo.hotelos.es/api' corepack pnpm --filter @hotelos/admin-web build 2>&1 | tail -6
-grep -rlF 'https://demo.hotelos.es/api' apps/admin-web/dist/assets --include='*.js' | wc -l   # ≥ 1
+VITE_API_URL='https://demo.ehotelos.com/api' corepack pnpm --filter @hotelos/admin-web build 2>&1 | tail -6
+grep -rlF 'https://demo.ehotelos.com/api' apps/admin-web/dist/assets --include='*.js' | wc -l   # ≥ 1
 grep -rlF 'http://localhost:3000'       apps/admin-web/dist/assets --include='*.js' | wc -l   # 0
 sudo mkdir -p "$WEB_ROOT" && sudo chown -R "$VPS_USER:$VPS_USER" "$WEB_ROOT"          # [root] (deploy.sh hará el rsync como anfitorio)
 rsync -a --delete apps/admin-web/dist/ "$WEB_ROOT/"
 ls -la "$WEB_ROOT"; du -sh "$WEB_ROOT"
-curl -sSI https://demo.hotelos.es/ | grep -iE '^(HTTP|cache-control|last-modified)'
+curl -sSI https://demo.ehotelos.com/ | grep -iE '^(HTTP|cache-control|last-modified)'
 ```
 
 Esperado: `✓ built in N s` (2,5 s en el Mac; 30-120 s en el VPS), `1` y `0`, un
@@ -870,8 +883,8 @@ comando, o añade swap.
 
 ```bash
 cd "$APP"
-bash deploy/scripts/smoke.sh --base-url https://demo.hotelos.es/api --web-url https://demo.hotelos.es \
-  --web-dist "$WEB_ROOT" --expect-api-url https://demo.hotelos.es/api \
+bash deploy/scripts/smoke.sh --base-url https://demo.ehotelos.com/api --web-url https://demo.ehotelos.com \
+  --web-dist "$WEB_ROOT" --expect-api-url https://demo.ehotelos.com/api \
   --email reception@example.com --password hotelos-demo --property prop_123 2>&1 | tee ~/pre-$STAMP/smoke.txt
 ```
 
@@ -879,43 +892,43 @@ Esperado (el ensayo dio 7 de 7 sin Caddy; en el VPS son 10: `smoke.sh` cuenta `i
 las dos rutas profundas como comprobaciones propias):
 
 ```
-▶ Smoke Anfitorio · API https://demo.hotelos.es/api · web https://demo.hotelos.es
+▶ Smoke ehotelOS · API https://demo.ehotelos.com/api · web https://demo.ehotelos.com
   ✓ GET /health                                200 ok=true db=ok (healthy · schedulers: leader (RUN_SCHEDULERS))
   ✓ GET /properties sin token                  401 (modo demo desactivado)
   ✓ POST /auth/login                           200 token recibido (reception@example.com)
   ✓ GET /properties (token)                    200 · N propiedades
   ✓ GET /properties/prop_123/dashboard         200
   ✓ GET /backoffice/properties/prop_123/readiness 200
-  ✓ GET https://demo.hotelos.es/ (index.html)  200 id="root" · cache-control: no-store, must-revalidate
+  ✓ GET https://demo.ehotelos.com/ (index.html)  200 id="root" · cache-control: no-store, must-revalidate
   ✓ GET /accept-invite (SPA fallback)          200
   ✓ GET /reset-password (SPA fallback)         200
-  ✓ VITE_API_URL horneada                      https://demo.hotelos.es/api presente en /srv/anfitorio/admin-web/assets
+  ✓ VITE_API_URL horneada                      https://demo.ehotelos.com/api presente en /srv/anfitorio/admin-web/assets
 ✅ Smoke OK · 10 comprobaciones
 ```
 
 ### 11.2 `/admin/tenants` (hoy 500) y estructura de org_123 por API
 
 ```bash
-TOKEN=$(curl -fsS -X POST https://demo.hotelos.es/api/auth/login -H 'content-type: application/json' -d '{"email":"reception@example.com","password":"hotelos-demo"}' | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).token')
-curl -sS -o /dev/null -w 'admin/tenants sin token: %{http_code}\n' https://demo.hotelos.es/api/admin/tenants                     # 401
-curl -fsS https://demo.hotelos.es/api/admin/tenants -H "Authorization: Bearer $TOKEN" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).map(t=>`${t.organizationId} ${t.name} · props=${t.counts.properties} users=${t.counts.users}`).join("\n")'
-curl -fsS https://demo.hotelos.es/api/organizations/me/structure -H "Authorization: Bearer $TOKEN" | node -pe 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); `${j.legalEntity.code} «${j.legalEntity.legalName}» ${j.legalEntity.taxId} · mode=${j.mode} · centros=${j.legalEntity.properties.map(p=>p.code+":"+p.name+"/"+(p.installation?p.installation.numeroInstalacion:"-")).join(", ")} · warnings=${j.warnings.length}`'
+TOKEN=$(curl -fsS -X POST https://demo.ehotelos.com/api/auth/login -H 'content-type: application/json' -d '{"email":"reception@example.com","password":"hotelos-demo"}' | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).token')
+curl -sS -o /dev/null -w 'admin/tenants sin token: %{http_code}\n' https://demo.ehotelos.com/api/admin/tenants                     # 401
+curl -fsS https://demo.ehotelos.com/api/admin/tenants -H "Authorization: Bearer $TOKEN" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).map(t=>`${t.organizationId} ${t.name} · props=${t.counts.properties} users=${t.counts.users}`).join("\n")'
+curl -fsS https://demo.ehotelos.com/api/organizations/me/structure -H "Authorization: Bearer $TOKEN" | node -pe 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); `${j.legalEntity.code} «${j.legalEntity.legalName}» ${j.legalEntity.taxId} · mode=${j.mode} · centros=${j.legalEntity.properties.map(p=>p.code+":"+p.name+"/"+(p.installation?p.installation.numeroInstalacion:"-")).join(", ")} · warnings=${j.warnings.length}`'
 ```
 
-Esperado (ensayo): `401`; `org_123 HotelOS Demo Group · props=2 users=1` (+ Faranda si
-existe); `HD «HotelOS Demo SL» B12345674 · mode=multi_center · centros=AMC:Anfitorio
-Madrid Centro/DEV-001, ATS:Anfitorio Tenerife Sur/DEV-001-ATS · warnings=0`.
+Esperado (ensayo): `401`; `org_123 Grupo Hotelero Demo · props=2 users=1` (+ Faranda si
+existe); `HD «Grupo Hotelero Demo SL» B12345674 · mode=multi_center · centros=AMC:Hotel Demo
+Madrid Centro/DEV-001, ATS:Hotel Demo Tenerife Sur/DEV-001-ATS · warnings=0`.
 
 ### 11.3 Navegador como `reception@example.com` / `hotelos-demo` (recarga con Cmd+Shift+R la primera vez)
 
 | URL | Qué ver |
 | --- | --- |
-| `https://demo.hotelos.es/` | pantalla de **login** (ya no entra sin sesión); tras login, el shell nuevo (Cocoa 22, sidebar por dominios) |
-| `https://demo.hotelos.es/configuracion/estructura-societaria` | Configuración › **Estructura societaria**: pestañas Datos fiscales (sociedad HD «HotelOS Demo SL», NIF B12345674 válido), Centros (AMC Anfitorio Madrid Centro, ATS Anfitorio Tenerife Sur), Series y VeriFactu (FAC-2026-, instalaciones DEV-001 / DEV-001-ATS), IVA y ejercicio, Reparto |
-| `https://demo.hotelos.es/recepcion/reservas/importar` | Recepción › Reservas › **Importar**: asistente CSV/XLSX con plantilla descargable, previsualización y «Importar»; también desde el botón «Importar reservas» de la lista y ⌘K |
-| `https://demo.hotelos.es/finanzas/nominas` | Finanzas › Nóminas: pestaña **Coste de personal** (lote de coste de personal importado, vacía; botón de importación); «Contratos y periodos» sin datos |
-| `https://demo.hotelos.es/recepcion/reservas` | lista de reservas de prop_123 (mayo-junio, salidas) sin errores 500 |
-| `https://demo.hotelos.es/accept-invite` | sirve la SPA (no 404 de Caddy) |
+| `https://demo.ehotelos.com/` | pantalla de **login** (ya no entra sin sesión); tras login, el shell nuevo (Cocoa 22, sidebar por dominios) |
+| `https://demo.ehotelos.com/configuracion/estructura-societaria` | Configuración › **Estructura societaria**: pestañas Datos fiscales (sociedad HD «Grupo Hotelero Demo SL», NIF B12345674 válido), Centros (AMC Hotel Demo Madrid Centro, ATS Hotel Demo Tenerife Sur), Series y VeriFactu (FAC-2026-, instalaciones DEV-001 / DEV-001-ATS), IVA y ejercicio, Reparto |
+| `https://demo.ehotelos.com/recepcion/reservas/importar` | Recepción › Reservas › **Importar**: asistente CSV/XLSX con plantilla descargable, previsualización y «Importar»; también desde el botón «Importar reservas» de la lista y ⌘K |
+| `https://demo.ehotelos.com/finanzas/nominas` | Finanzas › Nóminas: pestaña **Coste de personal** (lote de coste de personal importado, vacía; botón de importación); «Contratos y periodos» sin datos |
+| `https://demo.ehotelos.com/recepcion/reservas` | lista de reservas de prop_123 (mayo-junio, salidas) sin errores 500 |
+| `https://demo.ehotelos.com/accept-invite` | sirve la SPA (no 404 de Caddy) |
 
 Consola del navegador sin `401`/`500` en `/api/*` (salvo lo que la propia pantalla
 marque como «sin datos»).
@@ -931,17 +944,17 @@ y abre el enlace.
 ### 11.5 Faranda ficticia — solo si 7.0 dio `0`
 
 ```bash
-curl -fsS -X POST https://demo.hotelos.es/api/admin/tenants -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+curl -fsS -X POST https://demo.ehotelos.com/api/admin/tenants -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   --data-binary "@$HOME/pre-$STAMP/faranda-ficticia.json" | tee ~/pre-$STAMP/faranda-ficticia.response.json | node -pe 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); `org=${j.organizationId} legalEntity=${j.legalEntityId} property=${j.propertyId} owner=${j.ownerUserId} perms=${j.ownerPermissionsGranted} delivery=${j.invitation.delivery.status}\ninviteLink=${j.inviteLink}`'
 ```
 
 Esperado (probado el 17-sep contra una copia de la BD de ensayo con este mismo JSON):
 `HTTP 200`, ids nuevos (cuid), `perms=222` (plantilla Owner completa), 10 roles plantilla,
 `taxProvisioning {"ok":true,"taxRegion":"ES_PENINSULA_BALEARES",…}`, `delivery=disabled`
-(sin EMAIL_*) e `inviteLink=https://demo.hotelos.es/accept-invite?token=…`; en BD: 1
+(sin EMAIL_*) e `inviteLink=https://demo.ehotelos.com/accept-invite?token=…`; en BD: 1
 `legal_entities` (FAR, B99999997, `is_default`), 1 `properties` (RA, hotel, Perillo
 (Oleiros) 15172), 15 `property_modules`. Comprobar el enlace sin abrirlo:
-`curl -sS -o /dev/null -w '%{http_code}\n' "https://demo.hotelos.es/api/auth/invitations/<token del inviteLink>"`
+`curl -sS -o /dev/null -w '%{http_code}\n' "https://demo.ehotelos.com/api/auth/invitations/<token del inviteLink>"`
 → `200`. Errores: `409` «Ya existe un usuario con el email» → cambia el email del JSON;
 `400 TAX_ID_INVALID` / `409 TAX_ID_IN_USE` → el NIF ficticio ya lo usa otra sociedad
 (Faranda sí existía: vuelve a 11.4).
@@ -958,7 +971,7 @@ sudo systemctl stop anfitorio-api                                               
 corepack pnpm --filter @hotelos/api accounting:provision-chart -- --org "$NEWORG" --dry-run 2>&1 | grep -E '^- |crear'
 corepack pnpm --filter @hotelos/api accounting:provision-chart -- --org "$NEWORG" --apply --confirm "$NEWORG" 2>&1 | grep -E 'aplicado|Error'   # aplicado: creadas 239 · enlazadas 232 · … · total 239
 (cd apps/api && node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --dry-run --org "$NEWORG") 2>&1 | grep -E 'convergida|escrituras'   # convergida (0 escrituras): createTenant ya creó la sociedad
-sudo systemctl start anfitorio-api && sleep 5 && curl -fsS -o /dev/null -w '%{http_code}\n' https://demo.hotelos.es/api/health   # [root] 200
+sudo systemctl start anfitorio-api && sleep 5 && curl -fsS -o /dev/null -w '%{http_code}\n' https://demo.ehotelos.com/api/health   # [root] 200
 ```
 
 ### 11.6 Estado final para §13
@@ -999,8 +1012,8 @@ sudo rm -rf "$WEB_ROOT" && sudo tar xzf "$BK/admin-web-dist-pre-$STAMP.tgz" -C "
 sed -n '/^\[Unit\]/,$p' ~/pre-$STAMP/anfitorio-api.service.pre | sudo tee /etc/systemd/system/anfitorio-api.service >/dev/null   # [root] (systemctl cat antepone "# /etc/systemd/system/…"; si el .pre tiene MÁS de un encabezado "# /etc/…" hay drop-ins: pega solo el primer bloque)
 sudo cp ~/pre-$STAMP/Caddyfile.pre /etc/caddy/Caddyfile && sudo caddy validate --config /etc/caddy/Caddyfile     # [root]
 sudo systemctl daemon-reload && sudo systemctl restart anfitorio-api && sudo systemctl reload caddy              # [root]
-sleep 5; curl -sS https://demo.hotelos.es/api/health | head -c 200; echo
-curl -sS -o /dev/null -w '%{http_code}\n' https://demo.hotelos.es/api/properties      # 200 = el modo demo de julio ha vuelto
+sleep 5; curl -sS https://demo.ehotelos.com/api/health | head -c 200; echo
+curl -sS -o /dev/null -w '%{http_code}\n' https://demo.ehotelos.com/api/properties      # 200 = el modo demo de julio ha vuelto
 ```
 
 `/etc/anfitorio/api.env`, `/etc/sudoers.d/anfitorio-deploy` y `/var/backups/anfitorio`
@@ -1057,7 +1070,7 @@ para activar `deploy.yml` (secrets `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`) o qué
    `HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true`. Si César quiere mantenerlo, añade las
    dos claves a `api.env` y acepta que `smoke.sh` falle en la comprobación 2 por diseño.
 3. **Faranda ficticia vs nada.** Si el inventario da 1 organización, la demo queda solo con
-   org_123 (Anfitorio Madrid Centro / Tenerife Sur). §8.2/§11.5 crean una Faranda ficticia
+   org_123 (Hotel Demo Madrid Centro / Tenerife Sur). §8.2/§11.5 crean una Faranda ficticia
    (nombre comercial real de la cadena prospecto, NIF ficticio B99999997, email
    `carmen@faranda.example`, hotel sin habitaciones). Alternativas: no crearla, cambiar la
    identidad (otro nombre/email), o además provisionar Los Tilos desde el spec (datos

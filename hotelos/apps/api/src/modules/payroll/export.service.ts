@@ -1,4 +1,5 @@
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../lib/brand.js";
 import type { Prisma } from "@prisma/client";
 import type { UserContext } from "../../lib/demo-store.js";
 import { resolveLegalIdentity, type LegalIdentity } from "../../lib/finance-scope.js";
@@ -216,7 +217,7 @@ export async function buildPayrollExport(periodId: string, format: PayrollExport
   if (period.status === "open") throw new ConflictError(`El periodo ${period.periodCode} todavía no está calculado.`, { code: "PAYROLL_PERIOD_NOT_CALCULATED" });
   const [{ slips, employees }, employer] = await Promise.all([gatherSlips(period.id), resolvePayrollEmployer(period.organizationId, period.propertyId ?? null)]);
   const warnings: string[] = ["Formato compatible, no el diseño de registro oficial: validar con la gestoría.", ...employerWarnings(employer)];
-  warnings.push("El NIF del empleado no se almacena en HotelOS: la columna lleva el código de empleado.");
+  warnings.push(`El NIF del empleado no se almacena en ${BRAND.name}: la columna lleva el código de empleado.`);
 
   let irpfPctBySlip: Map<string, string> | undefined;
   if (format === "csv" && slips.length) {

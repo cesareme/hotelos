@@ -298,7 +298,7 @@ describe("compareReconciliation — tolerancias de §5.4 y filas del panel", () 
     assert.deepEqual(groups.revenue.map((row) => row.metric), ["revenue_total"]);
     assert.equal(groups.count[0]?.delta, "1");
     const message = reconciliationAlertMessage("OPERA_RECON_COUNT_MISMATCH", "2026-09-17", groups.count);
-    assert.match(message, /\(2026-09-17\): arrivals: OPERA 12 · Anfitorio 13 \(Δ 1\)/);
+    assert.match(message, /\(2026-09-17\): arrivals: OPERA 12 · ehotelOS 13 \(Δ 1\)/);
   });
 
   it("tolerancias personalizadas", () => {

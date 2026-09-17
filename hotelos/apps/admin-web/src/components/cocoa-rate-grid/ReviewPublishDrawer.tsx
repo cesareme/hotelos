@@ -34,6 +34,7 @@ import { RESTRICTION_LABELS, channelModeLabel, formatDateRange, formatDateTime, 
 import { countDraftCellsByChannel, diffDraft, groupDiffByTypeAndPlan, resolveReviewDrawerMode, summarizeDraft } from "./rate-grid-utils";
 import { RateGridSidePanel } from "./shared-ui";
 import type { ChannelPublishProgress, ReviewPublishDrawerProps } from "./types";
+import { BRAND } from "../../config/brand";
 
 function fieldLabel(field: string): string {
   if (field === "price") return "Precio";
@@ -195,7 +196,7 @@ export function ReviewPublishDrawer(props: ReviewPublishDrawerProps) {
         ) : (
           <>
             {onSaveDraftOnly ? (
-              <span title="Guarda los cambios en ehotelOS (vigentes en el PMS al momento) sin enviarlos a los canales" style={{ display: "inline-flex" }}>
+              <span title={`Guarda los cambios en ${BRAND.name} (vigentes en el PMS al momento) sin enviarlos a los canales`} style={{ display: "inline-flex" }}>
                 <CocoaButton variant="plain" size="small" tone="neutral" onClick={onSaveDraftOnly} disabled={publishing || summary.cells === 0}>
                   Guardar sin enviar a canales
                 </CocoaButton>
@@ -250,7 +251,7 @@ export function ReviewPublishDrawer(props: ReviewPublishDrawerProps) {
       {idle && pushMode && pendingPush ? (
         <section className="crg-section">
           <div className="crg-callout crg-callout--warn">
-            {pendingPush.source === "revert" ? "Cambio revertido en ehotelOS" : "Guardado en ehotelOS"} {formatDateTime(pendingPush.at) ? `el ${formatDateTime(pendingPush.at)}` : ""}:{" "}
+            {pendingPush.source === "revert" ? `Cambio revertido en ${BRAND.name}` : `Guardado en ${BRAND.name}`} {formatDateTime(pendingPush.at) ? `el ${formatDateTime(pendingPush.at)}` : ""}:{" "}
             {pluralize(pendingPush.count, "celda", "celdas")} del {formatDateRange(pendingPush.from, pendingPush.to)} ya {pendingPush.count === 1 ? "se vende" : "se venden"} con el valor nuevo en el PMS, pero los canales
             siguen con el valor anterior hasta que las envíes.
           </div>
@@ -320,7 +321,7 @@ export function ReviewPublishDrawer(props: ReviewPublishDrawerProps) {
               {sandboxSelected ? " Algunos canales están en modo de pruebas: nada llega al canal real." : ""}
             </div>
           ) : summary.cells > 0 ? (
-            <div className="crg-callout crg-callout--warn">Sin canales seleccionados: los cambios se guardan en ehotelOS pero no se envían a ningún canal.</div>
+            <div className="crg-callout crg-callout--warn">Sin canales seleccionados: los cambios se guardan en {BRAND.name} pero no se envían a ningún canal.</div>
           ) : null}
         </>
       ) : null}

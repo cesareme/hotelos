@@ -13,6 +13,7 @@ import { PmsScreen } from "./src/screens/PmsScreen";
 import { PropertySelectorScreen } from "./src/screens/PropertySelectorScreen";
 import { SettingsScreen } from "./src/screens/SettingsScreen";
 import { HotelOSTabs } from "./src/navigation/HotelOSTabs";
+import { BRAND } from "./src/config/brand";
 import type { MobileRouteKey } from "./src/navigation/ModuleRoutes";
 import { TodayDashboardScreen } from "./src/screens/today/TodayDashboardScreen";
 import { MobilePlanningScreen } from "./src/screens/rooms/MobilePlanningScreen";
@@ -143,7 +144,7 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" />
       <View style={styles.appBar}>
-        <Text style={styles.brand}>HotelOS</Text>
+        <Text style={styles.brand}>{BRAND.name}</Text>
         <Text style={styles.property}>Madrid Centro</Text>
       </View>
       <View style={styles.body}>

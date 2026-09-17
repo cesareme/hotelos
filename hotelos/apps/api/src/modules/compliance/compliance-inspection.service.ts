@@ -4,6 +4,7 @@
 // responsible, the documents that justify each one, open alerts and pending
 // corrective tasks. The HTML is a real artifact, not a placeholder link.
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../lib/brand.js";
 import {
   getComplianceCenter,
   getComplianceAlerts,
@@ -164,7 +165,7 @@ export function buildInspectionFolderHtml(data: Awaited<ReturnType<typeof getIns
     ${data.documents.length ? data.documents.map((d) => `<tr><td><strong>${esc(d.title)}</strong>${d.documentType ? ` <span class="muted">(${esc(d.documentType)})</span>` : ""}</td><td class="mono">${esc(d.requirementCode || "—")}</td><td>${esc(fmtDate(d.issueDate))}</td><td>${esc(fmtDate(d.expiryDate))}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">No hay documentos registrados.</td></tr>'}
   </tbody></table>
 
-  <div class="foot">HotelOS · Centro de cumplimiento · Documento generado automáticamente a partir de los datos registrados en el sistema. Verifique siempre los originales antes de una inspección.</div>
+  <div class="foot">${BRAND.name} · Centro de cumplimiento · Documento generado automáticamente a partir de los datos registrados en el sistema. Verifique siempre los originales antes de una inspección.</div>
 </body></html>`;
 }
 

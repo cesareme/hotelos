@@ -29,7 +29,7 @@ function referenceAutoVersion(text: string, level: "L" | "M"): number {
 }
 
 const VERIFACTU_URL = "https://prewww2.aeat.es/wlpl/TIKE-CONT/ValidarQR?nif=B99999997&numserie=FAC-2026-000016&fecha=15-09-2026&importe=215.50";
-const PAYLOADS = ["HOLA", "Anfitorio - factura FAC-2026-000001 (ASCII only: the reference encodes charCodeAt)", VERIFACTU_URL, "x".repeat(300), "https://www2.agenciatributaria.gob.es/wlpl/TIKE-CONT/ValidarQR?nif=B12345674&numserie=SIM-2026-000123&fecha=01-01-2027&importe=9.10"];
+const PAYLOADS = ["HOLA", "ehotelOS - factura FAC-2026-000001 (ASCII only: the reference encodes charCodeAt)", VERIFACTU_URL, "x".repeat(300), "https://www2.agenciatributaria.gob.es/wlpl/TIKE-CONT/ValidarQR?nif=B12345674&numserie=SIM-2026-000123&fecha=01-01-2027&importe=9.10"];
 
 describe("format / version information (BCH)", () => {
   it("M · mask 0 → 0x5412 (all-zero data XOR mask), L · mask 0 → 0x77C4", () => {

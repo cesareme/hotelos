@@ -1,4 +1,4 @@
-# Anfitorio · deploy al VPS (nativo: systemd + Caddy) · Tanda 4
+# ehotelOS · deploy al VPS (nativo: systemd + Caddy) · Tanda 4
 #
 # Manual (workflow_dispatch) o automático tras un CI verde en main cuando la
 # variable de repositorio AUTO_DEPLOY vale "true" (hasta que el VPS demo esté

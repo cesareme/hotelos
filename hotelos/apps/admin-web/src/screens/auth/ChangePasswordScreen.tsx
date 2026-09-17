@@ -29,6 +29,7 @@ import { AUTH_EYEBROW, AuthAlert, AuthShell, HiddenUsername, PasswordChecklist, 
 import { CocoaButton, CocoaPageHeader } from "../../components/cocoa";
 import { ACTIONS } from "../../content/actions";
 import { logBreadcrumb } from "../../lib/breadcrumb";
+import { BRAND } from "../../config/brand";
 
 export type ChangePasswordScreenProps = {
   /** true when the API demands the rotation (temp password); false for a voluntary change. */
@@ -139,7 +140,7 @@ export function ChangePasswordScreen({ required = true }: ChangePasswordScreenPr
         title={title}
         subtitle={
           required
-            ? "Tu cuenta se creó con una contraseña temporal. Debes elegir una definitiva antes de seguir usando ehotelOS."
+            ? `Tu cuenta se creó con una contraseña temporal. Debes elegir una definitiva antes de seguir usando ${BRAND.name}.`
             : "Elige una contraseña nueva. Al guardarla se cerrarán todas tus sesiones."
         }
       />

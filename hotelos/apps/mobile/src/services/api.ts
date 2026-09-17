@@ -648,7 +648,7 @@ export async function loginDemo(): Promise<{ token: string; property: MobileProp
       token: "demo.jwt.token",
       property: {
         id: "prop_123",
-        name: "HotelOS Madrid Centro",
+        name: "Hotel Demo Madrid Centro",
         timezone: "Europe/Madrid",
         taxRegion: "Madrid",
         sesHospedajesEnabled: true,
@@ -684,7 +684,7 @@ export async function getAppShellSnapshot(): Promise<{
       properties: [
         {
           id: "prop_123",
-          name: "HotelOS Madrid Centro",
+          name: "Hotel Demo Madrid Centro",
           timezone: "Europe/Madrid",
           taxRegion: "Madrid",
           sesHospedajesEnabled: true,
@@ -692,7 +692,7 @@ export async function getAppShellSnapshot(): Promise<{
         },
         {
           id: "prop_456",
-          name: "HotelOS Costa",
+          name: "Hotel Demo Costa",
           timezone: "Europe/Madrid",
           taxRegion: "Andalucia",
           sesHospedajesEnabled: true,

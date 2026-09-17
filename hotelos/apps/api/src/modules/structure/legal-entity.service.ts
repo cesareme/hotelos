@@ -45,6 +45,7 @@
 // Runbook: docs/runbooks/finanzas-contabilidad.md §17.
 
 import { prisma } from "@hotelos/database";
+import { BRAND } from "../../lib/brand.js";
 import type { Prisma } from "@hotelos/database";
 import { isValidSpanishTaxId, normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
 import type { PermissionKey } from "@hotelos/shared";
@@ -261,7 +262,7 @@ export async function assertTaxIdUsable(raw: string, options: { excludeLegalEnti
   }
   const owner = await options.reader.findOwner(normalized);
   if (owner && owner.id !== options.excludeLegalEntityId) {
-    throw new ConflictError("Ese NIF ya está asignado a otra sociedad de Anfitorio: cada sujeto pasivo tiene una sola sociedad.", {
+    throw new ConflictError(`Ese NIF ya está asignado a otra sociedad de ${BRAND.name}: cada sujeto pasivo tiene una sola sociedad.`, {
       code: "TAX_ID_IN_USE" satisfies StructureErrorCode,
       taxId: normalized
     });

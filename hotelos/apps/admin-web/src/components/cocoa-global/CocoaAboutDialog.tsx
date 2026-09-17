@@ -40,6 +40,7 @@ import { createPortal } from "react-dom";
 
 import { CocoaButton } from "../cocoa/CocoaButton";
 import { DEFAULT_VERSION } from "./CocoaKeyboardShortcutsHelp";
+import { BRAND } from "../../config/brand";
 
 export interface CocoaAboutDialogProps {
   open: boolean;
@@ -384,7 +385,7 @@ export function CocoaAboutDialog({ open, onClose, onOpenHelp, onOpenShortcuts }:
         <div style={appIconStyle} aria-hidden="true" />
 
         <h1 id={titleId} style={titleStyle}>
-          ehotelOS
+          {BRAND.name}
         </h1>
 
         <p style={subtitleStyle}>Gestión hotelera con IA</p>
@@ -421,7 +422,7 @@ export function CocoaAboutDialog({ open, onClose, onOpenHelp, onOpenShortcuts }:
           ))}
         </div>
 
-        <p style={footnoteStyle}>© 2026 ehotelOS. Todos los derechos reservados.</p>
+        <p style={footnoteStyle}>© 2026 {BRAND.name}. Todos los derechos reservados.</p>
 
         <div style={actionsRowStyle}>
           <CocoaButton

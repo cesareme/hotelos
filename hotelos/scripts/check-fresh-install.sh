@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fresh-install check (Tanda 4 · DATA-01): proves that the versioned migration
-# chain installs a WORKING Anfitorio schema on an empty PostgreSQL database.
+# chain installs a WORKING ehotelOS schema on an empty PostgreSQL database.
 #
 # It only ever touches a TEMPORARY database (default: hotelos_install_test) that
 # it creates on the same server as DATABASE_URL and drops on exit; the source

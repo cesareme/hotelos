@@ -611,7 +611,7 @@ Rutas que el editor no usa pero el API expone:
   4 …» conforme el rango acumula entregas—, porque el API no filtra por
   `journalId` (deuda en §5). La rama `bulk-update` + `publish` queda
   pendiente de verificar en navegador (motivo: allí el toast es «Guardado en
-  Anfitorio: 1 celda. Publicación en cola.», no emite la frase de entregas,
+  ehotelOS: 1 celda. Publicación en cola.», no emite la frase de entregas,
   y los recuentos por asiento dependen del filtro `journalId`). Con un envío
   en curso el drawer conserva el flujo que lo lanzó
   (`rate-grid-utils.ts#resolveReviewDrawerMode`, sin mezclar la cabecera del
@@ -913,7 +913,7 @@ Reproducir: `GET /properties/:id/rate-grid?from=2026-01-01&to=2027-06-30`
   cubrió (§2.2: ramas «Fijar otro precio»/«Aceptar con ajuste» del popover,
   recuentos de `bulk-update` + `publish`, línea «Efectivo» con un canal
   activo). Observaciones menores de ese recorrido, sin regresión: el aviso
-  «Cambio revertido en Anfitorio · los canales conservan el valor anterior»
+  «Cambio revertido en ehotelOS · los canales conservan el valor anterior»
   cerrado con ✕ reaparece tras una publicación posterior mientras el
   `pendingPush` siga vivo (la barra ya lo indica: posible doble
   recordatorio); el reenvío manual de un `pendingPush` de 2 celdas encoló 21

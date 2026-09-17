@@ -72,11 +72,11 @@ describe("renderFiscalReportPdf", () => {
       organizationId: "org_t",
       propertyId: null,
       periodo: parseFiscalPeriod("2026-Q2"),
-      declarante: { nif: "B12345674", nombre: "HotelOS Demo SL" },
+      declarante: { nif: "B12345674", nombre: "Grupo Hotelero Demo SL" },
       sociedad: {
         legalEntityId: "le_t",
         code: "HD",
-        legalName: "HotelOS Demo SL",
+        legalName: "Grupo Hotelero Demo SL",
         taxId: "B12345674",
         taxIdValid: true,
         source: "legal_entity",
