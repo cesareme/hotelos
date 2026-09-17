@@ -48,7 +48,7 @@ export const SPANISH_COMPLIANCE_ARTICLES: readonly CocoaHelpArticle[] = [
 - **Entrada en vigor** (tras el RDL 15/2025, que aplazo el calendario): **1 enero 2027** para sociedades y **1 julio 2027** para autonomos y demas obligados. Durante **2026 el uso es voluntario**.
 - Los SIF deben estar **certificados** y su fabricante declarar conformidad mediante **declaración responsable** (RD 1007/2023) — obligación vigente para los fabricantes desde el **29 de julio de 2025**.
 
-## Que hace Anfitorio
+## Que hace ehotelOS
 
 - Genera el hash encadenado y firma cada factura emitida desde Billing.
 - Envia en tiempo real a la AEAT cuando el establecimiento esta en modo VeriFactu.
@@ -98,7 +98,7 @@ Para cada viajero mayor de 14 anos:
 - Máximo **24 horas** desde el check-in.
 - Conservacion en BBDD del establecimiento: **3 anos** desde el check-out.
 
-## Como funciona el envio en Anfitorio
+## Como funciona el envio en ehotelOS
 
 1. En el check-in, Front Desk captura los datos exigidos via scanner DNI/pasaporte o entrada manual.
 2. Se valida formato (NIF, MRZ pasaporte) en tiempo real.
@@ -172,7 +172,7 @@ Para cada viajero mayor de 14 anos:
 - **Encadenamiento por hash** con la factura anterior.
 - Código TBAI y QR impresos en la factura.
 
-## Que hace Anfitorio
+## Que hace ehotelOS
 
 - Detecta la **jurisdiccion** a partir del CIF y la dirección fiscal del establecimiento.
 - Aplica el esquema XML y la plataforma de envio correspondientes.
@@ -236,7 +236,7 @@ El Régimen Económico y Fiscal de Canarias incluye otros mecanismos a tener en 
 - **ZEC** (Zona Especial Canaria) con IS reducido al 4%.
 - **DIC** (Deducción por Inversiones en Canarias).
 
-## Que hace Anfitorio
+## Que hace ehotelOS
 
 - Detecta el **código postal** y la provincia del establecimiento (35 Las Palmas, 38 Santa Cruz de Tenerife) y conmuta automáticamente a IGIC.
 - Aplica el tipo correcto por concepto (alojamiento, F&B, parking, etc.).
@@ -271,7 +271,7 @@ El Régimen Económico y Fiscal de Canarias incluye otros mecanismos a tener en 
     ],
     bodyMd: `# Protección de datos: qué datos personales se protegen
 
-El **RGPD** (Reglamento UE 2016/679) y la **LOPDGDD** (Ley Orgánica 3/2018) exigen medidas técnicas y organizativas para proteger los datos personales de los huéspedes. En Anfitorio el acceso a esos datos depende del permiso de cada rol y cada consulta de un dato sensible queda en el registro de auditoría (Configuración › Sistema).
+El **RGPD** (Reglamento UE 2016/679) y la **LOPDGDD** (Ley Orgánica 3/2018) exigen medidas técnicas y organizativas para proteger los datos personales de los huéspedes. En ehotelOS el acceso a esos datos depende del permiso de cada rol y cada consulta de un dato sensible queda en el registro de auditoría (Configuración › Sistema).
 
 ## Qué datos personales se tratan
 
@@ -279,7 +279,7 @@ Datos de identificación y contacto:
 
 - Número de documento (DNI, NIE, pasaporte), nacionalidad y fecha de nacimiento (parte de viajeros).
 - Dirección, teléfono y correo electrónico.
-- IBAN o tarjeta, siempre tokenizados por el proveedor de pagos: Anfitorio no guarda el número completo.
+- IBAN o tarjeta, siempre tokenizados por el proveedor de pagos: ehotelOS no guarda el número completo.
 - Notas privadas sobre el huésped y datos de menores (protección reforzada).
 
 Solo con consentimiento expreso:
@@ -317,7 +317,7 @@ Los huéspedes pueden ejercer:
 - **A**cceso, **R**ectificacion, **S**upresion (derecho al olvido).
 - **L**imitacion, **P**ortabilidad, **O**posición.
 
-Anfitorio automatiza estos flujos desde Compliance > Solicitudes RGPD. El plazo de respuesta es de **1 mes** prorrogable a 3.
+ehotelOS automatiza estos flujos desde Compliance > Solicitudes RGPD. El plazo de respuesta es de **1 mes** prorrogable a 3.
 
 ## Sanciones AEPD
 
@@ -380,7 +380,7 @@ Para cubrir reembolsos y repatriaciones en caso de insolvencia:
 - Cuantia mínima: tipicamente entre 100.000 EUR y el 5% del volumen de negocio del ejercicio anterior, según CCAA.
 - Renovacion anual con prueba documental.
 
-## Que hace Anfitorio
+## Que hace ehotelOS
 
 - Detecta cuando una reserva contiene **dos o mas servicios** (alojamiento + traslado, alojamiento + experiencia) y la marca como **viaje combinado**.
 - Aplica las cláusulas obligatorias del RD-ley 23/2018 (información precontractual, formulario de información normalizado).

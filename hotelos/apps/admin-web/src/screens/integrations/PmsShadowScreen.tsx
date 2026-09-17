@@ -15,7 +15,7 @@
 //   Cortes        listPmsShadowRuns with feed / status filters; «Ver lote» deep-links
 //                 the reservation import lot (?lote=<id> of the wizard).
 //   Reconciliación GET …/reconciliation?businessDate= (CocoaInput type="date"):
-//                 métrica · OPERA · Anfitorio · diferencia · estado.
+//                 métrica · OPERA · ehotelOS · diferencia · estado.
 //   Alertas       open by default, code filter, «Resolver» → CocoaDialog with a
 //                 mandatory note (audited) → resolvePmsShadowAlert + toast.
 //   Perfil        CocoaDrawer «Perfil de mapeo»: OPERA hotel code, estado, master
@@ -262,7 +262,7 @@ const RUN_COLUMNS: CocoaTableColumn<PmsShadowRunRecord>[] = [
 const RECON_COLUMNS: CocoaTableColumn<PmsShadowReconciliationRow>[] = [
   { key: "metric", label: "Métrica", render: (row) => reconciliationMetricLabel(row.metric) },
   { key: "opera", label: "OPERA", fit: true, align: "right", render: (row) => row.opera ?? EMPTY },
-  { key: "anfitorio", label: "Anfitorio", fit: true, align: "right", render: (row) => row.anfitorio },
+  { key: "anfitorio", label: "ehotelOS", fit: true, align: "right", render: (row) => row.anfitorio },
   { key: "delta", label: "Diferencia", fit: true, align: "right", render: (row) => row.delta ?? EMPTY },
   {
     key: "status",
@@ -708,7 +708,7 @@ export function PmsShadowScreen() {
     {
       key: "value",
       label: DICTIONARY_LABELS[key].anfitorio,
-      render: (row) => <CocoaInput size="small" value={row.value} onChange={(value) => patchDictionaryRow(key, row.id, { value })} placeholder="Código de Anfitorio" aria-label={`${DICTIONARY_LABELS[key].anfitorio} de la fila`} disabled={saving} maxLength={80} />
+      render: (row) => <CocoaInput size="small" value={row.value} onChange={(value) => patchDictionaryRow(key, row.id, { value })} placeholder="Código de ehotelOS" aria-label={`${DICTIONARY_LABELS[key].anfitorio} de la fila`} disabled={saving} maxLength={80} />
     },
     {
       key: "state",
@@ -940,7 +940,7 @@ export function PmsShadowScreen() {
               {recon.sources.statsRunId ? "Cifras declaradas por el corte de estadísticas del día" : "OPERA todavía no ha declarado las cifras del día (corte de estadísticas pendiente)"}
               {recon.sources.revenueImportId ? ` · ingresos ${revenueStatusLabel(recon.sources.revenueStatus ?? "draft").toLowerCase()}` : " · sin lote de ingresos del día"}.
             </CocoaCallout>
-            <CocoaTable columns={RECON_COLUMNS} rows={recon.rows} rowKey="metric" density="compact" rowTone={(row) => (row.status === "mismatch" ? "danger" : undefined)} emptyState="Sin métricas para ese día." caption="Reconciliación del día" aria-label="Reconciliación del día: OPERA frente a Anfitorio" />
+            <CocoaTable columns={RECON_COLUMNS} rows={recon.rows} rowKey="metric" density="compact" rowTone={(row) => (row.status === "mismatch" ? "danger" : undefined)} emptyState="Sin métricas para ese día." caption="Reconciliación del día" aria-label="Reconciliación del día: OPERA frente a ehotelOS" />
           </div>
         ) : (
           <CocoaState kind={reconLoading ? "loading" : "empty"} inline title={reconLoading ? STATUS_LABELS.loading : "Elige una fecha de negocio y pulsa Consultar."} />
@@ -1195,7 +1195,7 @@ export function PmsShadowScreen() {
                 }
                 emptyState={`Sin ${DICTIONARY_LABELS[key].title.toLowerCase()} mapeados: sin entrada, la fila usa el valor plegado o el valor por defecto con aviso.`}
                 caption={DICTIONARY_LABELS[key].title}
-                aria-label={`${DICTIONARY_LABELS[key].title}: código OPERA a código de Anfitorio`}
+                aria-label={`${DICTIONARY_LABELS[key].title}: código OPERA a código de ehotelOS`}
               />
             </CocoaSection>
           ))}

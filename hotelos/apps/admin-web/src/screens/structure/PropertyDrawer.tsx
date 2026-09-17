@@ -245,7 +245,7 @@ export function PropertyDrawer({ property, legalEntity, canEdit, redacted, singl
             </CocoaCallout>
           ) : null}
 
-          <CocoaFormSection title="Datos censales" description="Datos para la gestoría (036, IAE, registro turístico, SES, Seguridad Social): Anfitorio los guarda, no los liquida. Solo se envían los campos que rellenes.">
+          <CocoaFormSection title="Datos censales" description="Datos para la gestoría (036, IAE, registro turístico, SES, Seguridad Social): ehotelOS los guarda, no los liquida. Solo se envían los campos que rellenes.">
             <CocoaFormRow columns={2}>
               <CocoaField label="Referencia catastral">
                 <CocoaInput value={draft.cadastralReference} onChange={(value) => set("cadastralReference", value.toUpperCase())} maxLength={20} disabled={!canEdit} />

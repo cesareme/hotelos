@@ -747,7 +747,7 @@ export type JournalStatusTone = "muted" | "ok" | "warn" | "danger" | "accent";
 /**
  * One badge per journal entry. A save without publish and a revert both
  * leave the PMS updated but the channels untouched: they read "guardado sin
- * enviar", never "borrador" (the values are already live in Anfitorio).
+ * enviar", never "borrador" (the values are already live in ehotelOS).
  */
 export function journalStatusLabel(e: Pick<RateChangeJournalEntry, "status" | "pushStatus">): { label: string; tone: JournalStatusTone } {
   if (e.status === "reverted") return { label: "revertido", tone: "muted" };

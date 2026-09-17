@@ -1,7 +1,7 @@
 // TenantAdminConsoleScreen — Configuración › Sistema › Organizaciones
 // (/configuracion/sistema/organizaciones): the platform console.
 //
-// Home for Anfitorio staff / cross-tenant operators: provision new customer
+// Home for ehotelOS staff / cross-tenant operators: provision new customer
 // organizations, read cross-tenant activity and see the platform totals. It
 // is the front-end peer of the backend `tenant-admin` module and consumes
 // `services/tenantAdminApi.ts`.

@@ -107,7 +107,7 @@ type TierForm = {
 };
 
 const DEFAULT_CONFIG: LoyaltyConfig = {
-  programName: "Anfitorio Stays Club",
+  programName: "Club de huéspedes",
   pointsPerEur: 10,
   pointValueEur: 0.01,
   pointsExpiryMonths: 24,

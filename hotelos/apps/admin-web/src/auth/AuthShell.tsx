@@ -18,7 +18,7 @@ import { CheckCircleIcon, ExclamationCircleIcon, InfoCircleIcon, XCircleIcon, ty
 import { ACTIONS, FIELD_LABELS } from "../content/actions";
 
 /** Eyebrow of every public auth screen (same as the login). */
-export const AUTH_EYEBROW = "Anfitorio · Back Office";
+export const AUTH_EYEBROW = "ehotelOS · Back Office";
 
 const noop = () => {
   /* read-only / hidden controls have nothing to update */

@@ -1,4 +1,4 @@
-// CocoaFirstRunWelcome — First login welcome modal for Anfitorio.
+// CocoaFirstRunWelcome — First login welcome modal for ehotelOS.
 //
 // A 560x420 modal shown on a user's first sign-in. It introduces the
 // product, the user (by name and role), and three orientation cards:
@@ -8,7 +8,7 @@
 //
 // Layout, top-to-bottom:
 //   - Brand mark (48x48 rounded square with accent → success gradient)
-//   - 'Bienvenido a Anfitorio {userName}' large title
+//   - 'Bienvenido a ehotelOS {userName}' large title
 //   - Role subtitle (italic, secondary)
 //   - 3-card grid (one row, three columns), each with title + helper text
 //   - Filled accent CocoaButton 'Tour guiado 3min'
@@ -398,8 +398,8 @@ export function CocoaFirstRunWelcome({
   if (typeof document === "undefined") return null;
 
   const greeting = userName
-    ? `Bienvenido a Anfitorio ${userName}`
-    : "Bienvenido a Anfitorio";
+    ? `Bienvenido a ehotelOS ${userName}`
+    : "Bienvenido a ehotelOS";
 
   const node = (
     <div

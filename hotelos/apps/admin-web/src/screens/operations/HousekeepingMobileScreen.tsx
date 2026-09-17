@@ -2,8 +2,8 @@
 // turno», /operaciones/pisos/mi-turno; hosted inside PisosTabs, standalone the
 // page paints eyebrow + H1 itself).
 //
-// Directriz Anfitorio (Nov 2026):
-//   "Housekeeping debe ser tiempo real, no módulo secundario. Anfitorio debe
+// Directriz ehotelOS (Nov 2026):
+//   "Housekeeping debe ser tiempo real, no módulo secundario. ehotelOS debe
 //    eliminar WhatsApp, llamadas y Excel como herramientas de coordinación.
 //    Mobile-first para operación."
 //

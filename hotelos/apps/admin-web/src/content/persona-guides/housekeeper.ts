@@ -3,7 +3,7 @@ import type { PersonaGuide } from "./types";
 export const HOUSEKEEPER_GUIDE: PersonaGuide = {
   id: "pisos",
   roleTokens: ["pisos"],
-  title: "Pisos: tu turno en Anfitorio",
+  title: "Pisos: tu turno en ehotelOS",
   summary: "Tareas por planta, estado de cada habitación y averías que encuentras al limpiar.",
   dailyFlow: [
     "Al empezar el turno abre Operaciones › Pisos › Mi turno (en el móvil es tu pantalla de inicio): verás tus habitaciones ordenadas por prioridad.",

@@ -240,7 +240,7 @@ function buildDefaultCommands(bindings: DefaultCommandBindings): CocoaCommandPal
     { id: "global.help", label: "Centro de ayuda", category: "Sistema", onSelect: () => openHelpCenter() },
     { id: "global.shortcuts", label: "Atajos de teclado", category: "Sistema", shortcut: "⌘/", onSelect: bindings.openShortcuts },
     { id: "global.preferences", label: "Preferencias", category: "Sistema", shortcut: "⌘,", onSelect: bindings.openPreferences },
-    { id: "global.about", label: "Acerca de Anfitorio", category: "Sistema", onSelect: bindings.openAbout },
+    { id: "global.about", label: "Acerca de ehotelOS", category: "Sistema", onSelect: bindings.openAbout },
   ];
 }
 

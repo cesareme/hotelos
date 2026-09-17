@@ -152,7 +152,7 @@ export function LoginScreen(props: LoginScreenProps) {
         aria-label="Inicio de sesión"
         style={{ width: "100%", maxWidth: 420, display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}
       >
-        <CocoaPageHeader eyebrow="Anfitorio · Back Office" title="Inicia sesión" subtitle="Introduce tu correo y tu contraseña para continuar." />
+        <CocoaPageHeader eyebrow="ehotelOS · Back Office" title="Inicia sesión" subtitle="Introduce tu correo y tu contraseña para continuar." />
 
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
           <CocoaField label="Correo electrónico" htmlFor="login-email" required>

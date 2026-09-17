@@ -1,9 +1,9 @@
-// CocoaAboutDialog — NSApplicationAboutWindow-style modal for Anfitorio.
+// CocoaAboutDialog — NSApplicationAboutWindow-style modal for ehotelOS.
 //
 // Renders a small, centered modal (width 380px) that surfaces brand,
 // version, edition, and quick legal links. Layout, top-to-bottom:
 //   - Large app icon (64x64 rounded square with accent → success gradient)
-//   - 'Anfitorio' large-title heading
+//   - 'ehotelOS' large-title heading
 //   - 'Gestión hotelera con IA' italic subtitle
 //   - 'Versión <app version>' caption
 //   - one-line description
@@ -384,7 +384,7 @@ export function CocoaAboutDialog({ open, onClose, onOpenHelp, onOpenShortcuts }:
         <div style={appIconStyle} aria-hidden="true" />
 
         <h1 id={titleId} style={titleStyle}>
-          Anfitorio
+          ehotelOS
         </h1>
 
         <p style={subtitleStyle}>Gestión hotelera con IA</p>
@@ -421,7 +421,7 @@ export function CocoaAboutDialog({ open, onClose, onOpenHelp, onOpenShortcuts }:
           ))}
         </div>
 
-        <p style={footnoteStyle}>© 2026 Anfitorio. Todos los derechos reservados.</p>
+        <p style={footnoteStyle}>© 2026 ehotelOS. Todos los derechos reservados.</p>
 
         <div style={actionsRowStyle}>
           <CocoaButton

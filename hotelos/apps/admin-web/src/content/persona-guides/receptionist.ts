@@ -3,7 +3,7 @@ import type { PersonaGuide } from "./types";
 export const RECEPTIONIST_GUIDE: PersonaGuide = {
   id: "recepcion",
   roleTokens: ["recepcion"],
-  title: "Recepción: tu día en Anfitorio",
+  title: "Recepción: tu día en ehotelOS",
   summary: "Llegadas, salidas, cobros y partes de viajeros sin salir de «Mi día».",
   dailyFlow: [
     "Empieza en Hoy › Mi día: llegadas y salidas de hoy, huéspedes alojados y la cola de acciones del turno.",

@@ -43,7 +43,7 @@ export type AcceptInviteScreenProps = {
 };
 
 const INVALID_COPY =
-  "Esta invitación no es válida, ya se ha utilizado o ha caducado. Pide a la persona que te invitó que la reenvíe desde Anfitorio.";
+  "Esta invitación no es válida, ya se ha utilizado o ha caducado. Pide a la persona que te invitó que la reenvíe desde ehotelOS.";
 
 // A long email must not push the row wider than the card (the list paints
 // values nowrap): clip it and keep the full value in the tooltip.
@@ -157,7 +157,7 @@ export function AcceptInviteScreen({ token }: AcceptInviteScreenProps) {
     return (
       <AuthShell label="Cuenta activada">
         <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Cuenta activada" />
-        <AuthAlert tone="success">Tu cuenta está lista. Entrando en Anfitorio…</AuthAlert>
+        <AuthAlert tone="success">Tu cuenta está lista. Entrando en ehotelOS…</AuthAlert>
       </AuthShell>
     );
   }
@@ -167,7 +167,7 @@ export function AcceptInviteScreen({ token }: AcceptInviteScreenProps) {
   // desktop and a long name would be clipped there.
   const greeting = invitation?.fullName ? `Hola, ${invitation.fullName}. ` : "";
   const role = invitation?.roleName ? ` con el rol ${invitation.roleName}` : "";
-  const subtitle = `${greeting}Te han invitado a ${scope || "Anfitorio"}${role}. Elige una contraseña para activar tu cuenta.`;
+  const subtitle = `${greeting}Te han invitado a ${scope || "ehotelOS"}${role}. Elige una contraseña para activar tu cuenta.`;
 
   return (
     <AuthShell

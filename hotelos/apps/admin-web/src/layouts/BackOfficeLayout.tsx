@@ -1083,7 +1083,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
       ) : (
       <CocoaToolbar
         showTrafficLights
-        title="Anfitorio"
+        title="ehotelOS"
         leftSlot={<PropertySwitcher />}
         rightSlot={
           <>

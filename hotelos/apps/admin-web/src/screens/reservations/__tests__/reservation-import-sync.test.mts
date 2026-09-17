@@ -198,7 +198,7 @@ describe("reservation-import-sync · result", () => {
     const lines = syncResultLines(sync);
     assert.equal(lines.length, 3);
     assert.match(lines[0], /^2 reservas ausentes del corte \(alerta, no se cancelan; hasta 2 cortes seguidos\): IMP-RA-2026-101, IMP-RA-2026-102\.$/);
-    assert.match(lines[1], /^1 conflicto con una reserva creada en Anfitorio \(filas omitidas\): fila 7 · RES-00081\.$/);
+    assert.match(lines[1], /^1 conflicto con una reserva creada en ehotelOS \(filas omitidas\): fila 7 · RES-00081\.$/);
     assert.match(lines[2], /^1 check-in en OPERA sin habitación válida \(permanecen confirmadas\): IMP-RA-2026-103\.$/);
     for (const line of lines) assert.doesNotMatch(line, /12345678|99999999/, "confirmation numbers stay out of the lines (codes only)");
     assert.deepEqual(syncResultLines({ missing: [], conflicts: [], checkInWithoutRoom: [] }), []);

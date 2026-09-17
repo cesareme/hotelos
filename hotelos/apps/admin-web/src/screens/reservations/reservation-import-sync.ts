@@ -254,7 +254,7 @@ export function syncResultLines(sync: Pick<ReservationImportSyncResult, "missing
     lines.push(`${plural(sync.missing.length, "reserva ausente del corte", "reservas ausentes del corte")} (alerta, no se cancelan; hasta ${number(streak)} ${streak === 1 ? "corte seguido" : "cortes seguidos"}): ${codesLabel(sync.missing.map((entry) => entry.reservationCode))}.`);
   }
   if (sync.conflicts.length > 0) {
-    lines.push(`${plural(sync.conflicts.length, "conflicto con una reserva creada en Anfitorio", "conflictos con reservas creadas en Anfitorio")} (filas omitidas): ${codesLabel(sync.conflicts.map((entry) => `fila ${number(entry.rowNumber)} · ${entry.reservationCode}`))}.`);
+    lines.push(`${plural(sync.conflicts.length, "conflicto con una reserva creada en ehotelOS", "conflictos con reservas creadas en ehotelOS")} (filas omitidas): ${codesLabel(sync.conflicts.map((entry) => `fila ${number(entry.rowNumber)} · ${entry.reservationCode}`))}.`);
   }
   if (sync.checkInWithoutRoom.length > 0) {
     lines.push(`${plural(sync.checkInWithoutRoom.length, "check-in en OPERA sin habitación válida", "check-ins en OPERA sin habitación válida")} (permanecen confirmadas): ${codesLabel(sync.checkInWithoutRoom.map((entry) => entry.reservationCode))}.`);

@@ -479,7 +479,7 @@ function writeStorage(key: string, value: string | null): void {
 export function readActiveCentre(): ActiveCentre & { organizationId: string } {
   return {
     propertyId: readStorage(ACTIVE_PROPERTY_KEY) ?? "prop_123",
-    propertyName: readStorage(ACTIVE_PROPERTY_NAME_KEY) ?? "Anfitorio Madrid Centro",
+    propertyName: readStorage(ACTIVE_PROPERTY_NAME_KEY) ?? "Hotel Demo Madrid Centro",
     organizationId: readStorage(ACTIVE_ORG_KEY) ?? "org_123"
   };
 }

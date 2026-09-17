@@ -1,4 +1,4 @@
-// CocoaSearchableHelpModal — Embedded help center modal for Anfitorio.
+// CocoaSearchableHelpModal — Embedded help center modal for ehotelOS.
 //
 // An 800x600 modal that surfaces a searchable knowledge base directly in
 // the product. Designed to keep operators in flow: rather than send them

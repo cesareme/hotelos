@@ -1,7 +1,7 @@
 # Cocoa Rate Grid v2 · `components/cocoa-rate-grid`
 
 Editor de tarifas estilo hoja de cálculo (nivel revenue management) para
-Anfitorio. Este directorio contiene **solo componentes y lógica pura**; la
+ehotelOS. Este directorio contiene **solo componentes y lógica pura**; la
 pantalla que los orquesta (`screens/revenue/RateGridEditorScreen.tsx`) es del
 lote *front-screen* y se cablea contra el **contrato de props** de `types.ts`.
 

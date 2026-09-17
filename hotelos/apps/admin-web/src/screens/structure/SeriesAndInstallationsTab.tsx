@@ -11,7 +11,7 @@
 // selection alone with a hint —, centro, envíos, última factura, estado) from
 // GET /legal-entities/:id/verifactu/installations (accounting.configure), and
 // the chain policy as INFORMATIVE text — «Cadena por centro · fijada por
-// Anfitorio» — never as a control (R7: the platform console decides).
+// ehotelOS» — never as a control (R7: the platform console decides).
 
 import { useEffect, useMemo, useState } from "react";
 import { CocoaBadge, CocoaButton, CocoaCallout, CocoaDialog, CocoaKbd, CocoaPage, CocoaSection, CocoaState, CocoaTable, type CocoaTableColumn } from "../../components/cocoa";
@@ -245,7 +245,7 @@ export function StructureSeriesTab() {
               meta={installations.status === "ready" ? plural(installations.data?.installations.length ?? 0, "instalación", "instalaciones") : undefined}
               padding={installations.status === "ready" && (installations.data?.installations.length ?? 0) > 0 ? "none" : "md"}
               style={{ overflow: "clip" }}
-              footer={`${CHAIN_SCOPE_LABELS[chainScope]} · fijada por Anfitorio desde la consola de plataforma; cambiarla nunca re-encadena: se retira la instalación y se abre otra con número nuevo.`}
+              footer={`${CHAIN_SCOPE_LABELS[chainScope]} · fijada por ehotelOS desde la consola de plataforma; cambiarla nunca re-encadena: se retira la instalación y se abre otra con número nuevo.`}
             >
               {!canSeeInstallations ? (
                 <CocoaState kind="empty" inline title={model.redacted ? "Las instalaciones solo las ve quien tiene «Finanzas de toda la sociedad»." : "Hace falta el permiso de configuración contable para ver las instalaciones."} />

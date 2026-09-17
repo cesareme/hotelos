@@ -130,9 +130,9 @@ export function Sidebar(props: SidebarProps) {
       </button>
       <button type="button" className="c22-brand-home" onClick={goHome} title="Ir a mi página de inicio" aria-label="Ir a mi página de inicio">
         <div className="c22-brand">
-          <span>A</span>
+          <span>e</span>
           <div>
-            <strong>Anfitorio</strong>
+            <strong>ehotelOS</strong>
             <small>Back Office</small>
           </div>
         </div>

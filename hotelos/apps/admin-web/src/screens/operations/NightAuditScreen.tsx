@@ -1,7 +1,7 @@
 // Night Audit Screen — checklist guiada para el cierre del día («Cierre del
 // día», /hoy/cierre-del-dia, standalone).
 //
-// Directriz Anfitorio (Nov 2026):
+// Directriz ehotelOS (Nov 2026):
 //   "La auditoría nocturna debe ser una checklist inteligente. El sistema debe
 //    decir: 'No puedes cerrar todavía porque hay 3 folios con saldo pendiente
 //    y 2 llegadas sin resolver.'"

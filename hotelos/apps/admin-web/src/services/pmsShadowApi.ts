@@ -256,7 +256,7 @@ export function resolvePmsShadowAlert(alertId: string, note: string, propertyId:
   return apiRequest<PmsShadowAlertRecord>(`${pmsShadowPath(propertyId)}/alerts/${enc(alertId)}/resolve`, { method: "POST", body: { note } });
 }
 
-/** Reconciliation of one business date: declared by OPERA vs computed by Anfitorio, row per metric. */
+/** Reconciliation of one business date: declared by OPERA vs computed by ehotelOS, row per metric. */
 export function fetchPmsShadowReconciliation(businessDate: IsoDate, propertyId: string = getActivePropertyId()): Promise<PmsShadowReconciliation> {
   return apiRequest<PmsShadowReconciliation>(`${pmsShadowPath(propertyId)}/reconciliation`, { query: { businessDate } });
 }

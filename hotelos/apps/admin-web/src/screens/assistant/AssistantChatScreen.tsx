@@ -1,4 +1,4 @@
-// AI Assistant conversacional sobre datos del PMS — «Asistente Anfitorio»,
+// AI Assistant conversacional sobre datos del PMS — «Asistente ehotelOS»,
 // /asistente (standalone).
 //
 // El usuario pregunta en lenguaje natural (en español) y el assistant invoca
@@ -123,7 +123,7 @@ export function AssistantChatScreen() {
   return (
     <CocoaPage
       eyebrow="Hoy"
-      title="Asistente Anfitorio"
+      title="Asistente ehotelOS"
       subtitle="Pregunta en lenguaje natural sobre tu hotel: las respuestas salen de tus datos y citan la fuente. El asistente nunca ejecuta cambios sin tu confirmación."
       actions={
         <CocoaBadge tone={mode === "llm" ? "ai" : "neutral"} title={mode === "llm" ? "Responde con un modelo de lenguaje" : "Sin modelo de lenguaje configurado: responde con reglas sobre tus datos"}>
@@ -167,7 +167,7 @@ export function AssistantChatScreen() {
                     </CocoaCard>
                     <CocoaCard variant="bordered" padding="sm" style={bubbleStyle} role="group" aria-label="Respuesta del asistente">
                       <div className="cocoa-row" data-gap="2">
-                        <p style={metaStyle}>Asistente Anfitorio</p>
+                        <p style={metaStyle}>Asistente ehotelOS</p>
                         <CocoaBadge tone="ai" size="small">
                           {modeLabel(turn.mode)}
                         </CocoaBadge>

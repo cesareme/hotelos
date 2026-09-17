@@ -2,7 +2,7 @@
 //
 // Written for the receptionist or the manager, not for an engineer: no
 // browser consoles, request ids, on-call rotations or internal chat channels.
-// Each article ends with when to contact Anfitorio support.
+// Each article ends with when to contact ehotelOS support.
 import type { CocoaHelpArticle } from "../../components/cocoa-guidance/CocoaSearchableHelpModal";
 
 export const TROUBLESHOOTING_CATEGORY = "Qué hago si…";

@@ -29,7 +29,7 @@ function openCommandPalette(): void {
 export function CocoaNotFoundScreen() {
   return (
     <CocoaPage
-      eyebrow="Anfitorio · Error 404"
+      eyebrow="ehotelOS · Error 404"
       title="Página no encontrada"
       aria-label="Página no encontrada"
       state="error"

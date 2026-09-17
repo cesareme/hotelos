@@ -1,6 +1,6 @@
 // Cronología del huésped — Recepción › Huéspedes › Cronología (/recepcion/huespedes/:id/cronologia).
 //
-// Directriz Anfitorio (Nov 2026):
+// Directriz ehotelOS (Nov 2026):
 //   "Cada huésped debe tener una vista tipo timeline, no una ficha fragmentada.
 //    Cualquier recepcionista debe entender al huésped en menos de 10 segundos."
 //

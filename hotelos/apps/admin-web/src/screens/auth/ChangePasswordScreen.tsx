@@ -139,7 +139,7 @@ export function ChangePasswordScreen({ required = true }: ChangePasswordScreenPr
         title={title}
         subtitle={
           required
-            ? "Tu cuenta se creó con una contraseña temporal. Debes elegir una definitiva antes de seguir usando Anfitorio."
+            ? "Tu cuenta se creó con una contraseña temporal. Debes elegir una definitiva antes de seguir usando ehotelOS."
             : "Elige una contraseña nueva. Al guardarla se cerrarán todas tus sesiones."
         }
       />

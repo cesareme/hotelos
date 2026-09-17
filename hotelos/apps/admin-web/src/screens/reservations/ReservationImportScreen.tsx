@@ -923,7 +923,7 @@ export function ReservationImportScreen() {
                 ))}
               </ul>
             ) : (
-              <span>Sin reservas ausentes, conflictos con reservas locales ni check-ins sin habitación: el corte cuadra con Anfitorio.</span>
+              <span>Sin reservas ausentes, conflictos con reservas locales ni check-ins sin habitación: el corte cuadra con ehotelOS.</span>
             )}
           </CocoaCallout>
         ) : null}

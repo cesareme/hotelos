@@ -1,5 +1,5 @@
 /* ============================================================
-   Anfitorio service worker — installability + app-shell offline
+   ehotelOS service worker — installability + app-shell offline
    + instant repeat loads.
 
    SAFETY: /api is NEVER cached. This is a VeriFactu financial product;
@@ -8,7 +8,7 @@
    stale across deploys; the HTML document is network-first so a new build
    shows immediately when online.
    ============================================================ */
-const CACHE = "anfitorio-shell-v1";
+const CACHE = "ehotelos-shell-v1";
 
 self.addEventListener("install", () => {
   self.skipWaiting();

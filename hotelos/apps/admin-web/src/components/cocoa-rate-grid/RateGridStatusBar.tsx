@@ -58,7 +58,7 @@ export function RateGridStatusBar(props: RateGridStatusBarProps) {
   const meta: string[] = [];
   const saved = formatDateTime(lastSavedAt);
   const published = formatDateTime(lastPublishedAt);
-  if (saved) meta.push(`Guardado en Anfitorio: ${saved}`);
+  if (saved) meta.push(`Guardado en ehotelOS: ${saved}`);
   if (published) meta.push(`Última publicación: ${published}`);
 
   const handleDiscard = () => {
@@ -75,7 +75,7 @@ export function RateGridStatusBar(props: RateGridStatusBarProps) {
       ) : null}
       <span className="crg-bar__text">{text}</span>
       {hasPending && pendingPush ? (
-        <span className="crg-bar__pending" title="Guardadas en Anfitorio (ya vigentes en el PMS) pero los canales siguen con el valor anterior">
+        <span className="crg-bar__pending" title="Guardadas en ehotelOS (ya vigentes en el PMS) pero los canales siguen con el valor anterior">
           {pluralize(pendingPush.count, "celda guardada sin enviar a canales", "celdas guardadas sin enviar a canales")}
           {onSendPending ? (
             <CocoaButton variant="plain" size="small" tone="accent" onClick={onSendPending} disabled={saving || readOnly}>
@@ -146,7 +146,7 @@ export function RateGridStatusBar(props: RateGridStatusBarProps) {
           onClick: onSaveDraft,
           disabled: !has || saving || readOnly,
           loading: saving,
-          title: "Guarda los cambios en Anfitorio (el PMS vende el precio nuevo al momento) sin enviarlos a los canales"
+          title: "Guarda los cambios en ehotelOS (el PMS vende el precio nuevo al momento) sin enviarlos a los canales"
         }}
         primary={{
           label: !has && hasPending ? "Enviar a canales" : "Revisar y publicar",

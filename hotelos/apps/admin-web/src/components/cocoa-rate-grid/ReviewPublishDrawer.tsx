@@ -195,7 +195,7 @@ export function ReviewPublishDrawer(props: ReviewPublishDrawerProps) {
         ) : (
           <>
             {onSaveDraftOnly ? (
-              <span title="Guarda los cambios en Anfitorio (vigentes en el PMS al momento) sin enviarlos a los canales" style={{ display: "inline-flex" }}>
+              <span title="Guarda los cambios en ehotelOS (vigentes en el PMS al momento) sin enviarlos a los canales" style={{ display: "inline-flex" }}>
                 <CocoaButton variant="plain" size="small" tone="neutral" onClick={onSaveDraftOnly} disabled={publishing || summary.cells === 0}>
                   Guardar sin enviar a canales
                 </CocoaButton>
@@ -250,7 +250,7 @@ export function ReviewPublishDrawer(props: ReviewPublishDrawerProps) {
       {idle && pushMode && pendingPush ? (
         <section className="crg-section">
           <div className="crg-callout crg-callout--warn">
-            {pendingPush.source === "revert" ? "Cambio revertido en Anfitorio" : "Guardado en Anfitorio"} {formatDateTime(pendingPush.at) ? `el ${formatDateTime(pendingPush.at)}` : ""}:{" "}
+            {pendingPush.source === "revert" ? "Cambio revertido en ehotelOS" : "Guardado en ehotelOS"} {formatDateTime(pendingPush.at) ? `el ${formatDateTime(pendingPush.at)}` : ""}:{" "}
             {pluralize(pendingPush.count, "celda", "celdas")} del {formatDateRange(pendingPush.from, pendingPush.to)} ya {pendingPush.count === 1 ? "se vende" : "se venden"} con el valor nuevo en el PMS, pero los canales
             siguen con el valor anterior hasta que las envíes.
           </div>
@@ -320,7 +320,7 @@ export function ReviewPublishDrawer(props: ReviewPublishDrawerProps) {
               {sandboxSelected ? " Algunos canales están en modo de pruebas: nada llega al canal real." : ""}
             </div>
           ) : summary.cells > 0 ? (
-            <div className="crg-callout crg-callout--warn">Sin canales seleccionados: los cambios se guardan en Anfitorio pero no se envían a ningún canal.</div>
+            <div className="crg-callout crg-callout--warn">Sin canales seleccionados: los cambios se guardan en ehotelOS pero no se envían a ningún canal.</div>
           ) : null}
         </>
       ) : null}

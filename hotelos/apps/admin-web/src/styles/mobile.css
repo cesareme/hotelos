@@ -1,5 +1,5 @@
 /* ============================================================
-   Anfitorio Cocoa 22 — Mobile / touch / iOS Safari layer (§5.1)
+   ehotelOS Cocoa 22 — Mobile / touch / iOS Safari layer (§5.1)
    Imported LAST and UNLAYERED so it wins over every other Cocoa 22 sheet
    by source order. Additive: scoped to touch (pointer: coarse) or to the
    phone/tablet breakpoints; the desktop experience is untouched.

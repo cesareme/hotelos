@@ -401,7 +401,7 @@ export interface PublishState {
 }
 
 /**
- * Cells already persisted in Anfitorio but never sent to the channels: a
+ * Cells already persisted in ehotelOS but never sent to the channels: a
  * «Guardar sin enviar» or a revert leaves the PMS selling the new value while
  * every channel keeps the old one. The status bar and the sync panel expose
  * this so there is a path to POST /rate-grid/push without re-editing.

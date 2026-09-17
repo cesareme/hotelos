@@ -79,7 +79,7 @@
         },
         {
           "screenKey": "AssistantChat",
-          "label": "Asistente Anfitorio",
+          "label": "Asistente ehotelOS",
           "url": "/asistente",
           "baseTab": null,
           "roles": [

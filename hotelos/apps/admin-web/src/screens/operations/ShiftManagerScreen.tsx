@@ -1,6 +1,6 @@
 // Shift Manager Screen — vista del Jefe de Recepción («Turno», /hoy/turno).
 //
-// Directriz Anfitorio (Nov 2026):
+// Directriz ehotelOS (Nov 2026):
 //   "Jefe de recepción: turno, productividad, incidencias críticas, caja,
 //    no-shows, upgrades, conflictos."
 //

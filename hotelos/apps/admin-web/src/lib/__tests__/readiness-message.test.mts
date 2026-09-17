@@ -20,7 +20,7 @@ const API_TEMPLATES = [
   "La ruta del certificado de SES.HOSPEDAJES no existe.",
   "SES.HOSPEDAJES en modo de producción con certificado configurado.",
   "Datos del establecimiento para SES.HOSPEDAJES completos (registro H-CO-000123, INE 15030).",
-  "Declaración del sistema informático de VeriFactu completa (Anfitorio SL · NIF B12345674 · Anfitorio 0.1.0).",
+  "Declaración del sistema informático de VeriFactu completa (ehotelOS SL · NIF B12345674 · ehotelOS 0.1.0).",
   "Declaración del sistema informático de VeriFactu incompleta (Falta la razón social del productor del software.; Falta el NIF del productor del software (no el del hotel emisor).; Falta el número de instalación asignado por el productor a este despliegue.). En pruebas se envía con valores provisionales. Nota: activo por uso: 5 facturas emitidas; VeriFactu está desactivado en los ajustes del establecimiento.",
   "Declaración del sistema informático de VeriFactu incompleta (El NIF del productor del software no es válido: formato incorrecto; El identificador del sistema debe tener exactamente 2 caracteres (valor actual: «001»).). Bloquea el envío real a la AEAT.",
   "El certificado configurado (VeriFactu / SES.HOSPEDAJES) es de la plataforma, no del hotel: cada obligado tributario debe firmar con su propio certificado antes de emitir en producción.",

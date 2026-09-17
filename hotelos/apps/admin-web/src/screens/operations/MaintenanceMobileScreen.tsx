@@ -2,7 +2,7 @@
 // («Mis averías», /operaciones/mantenimiento/mis-averias; hosted inside
 // MantenimientoTabs, standalone the page paints eyebrow + H1 itself).
 //
-// Directriz Anfitorio (Nov 2026):
+// Directriz ehotelOS (Nov 2026):
 //   "Mantenimiento mobile-first. Vista del técnico que carga tablet/móvil.
 //    Averías, habitaciones bloqueadas, SLA, prioridad, fotos, estado."
 //
