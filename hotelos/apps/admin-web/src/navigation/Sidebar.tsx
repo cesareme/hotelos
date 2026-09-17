@@ -130,7 +130,12 @@ export function Sidebar(props: SidebarProps) {
       </button>
       <button type="button" className="c22-brand-home" onClick={goHome} title="Ir a mi página de inicio" aria-label="Ir a mi página de inicio">
         <div className="c22-brand">
-          <span>e</span>
+          <span aria-hidden="true">
+            <svg viewBox="0 0 512 512" width="22" height="22" focusable="false">
+              <path d="M394 262 V212 A104 104 0 0 0 290 108 H222 A104 104 0 0 0 118 212 V318 A104 104 0 0 0 222 422 H290 A104 104 0 0 0 366 389" fill="none" stroke="currentColor" strokeWidth="54" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M118 262 H394" fill="none" stroke="currentColor" strokeWidth="54" strokeLinecap="round" />
+            </svg>
+          </span>
           <div>
             <strong>ehotelOS</strong>
             <small>Back Office</small>

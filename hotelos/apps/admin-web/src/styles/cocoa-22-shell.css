@@ -44,7 +44,8 @@
 /* ---- marca (botón de inicio) ---- */
 .c22-sidebar .c22-brand-home { display: flex; width: 100%; padding: 0; border: none; border-radius: var(--cocoa-radius-md); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .c22-sidebar .c22-brand { display: flex; align-items: center; gap: var(--cocoa-space-3); margin-bottom: var(--cocoa-space-5); padding: 0 var(--cocoa-space-3); }
-.c22-sidebar .c22-brand span { display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--cocoa-radius-md); background: var(--cocoa-accent); color: var(--cocoa-accent-contrast); font-size: var(--cocoa-fs-title-2); font-weight: var(--cocoa-fw-bold); box-shadow: var(--cocoa-shadow-control); }
+.c22-sidebar .c22-brand span { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border-radius: var(--cocoa-radius-md); background: var(--cocoa-accent); color: var(--cocoa-accent-contrast); font-size: var(--cocoa-fs-title-2); font-weight: var(--cocoa-fw-bold); box-shadow: var(--cocoa-shadow-control); }
+.c22-sidebar .c22-brand span svg { display: block; width: 22px; height: 22px; }
 .c22-sidebar .c22-brand strong { display: block; color: var(--cocoa-label); font-size: var(--cocoa-fs-title-3); font-weight: var(--cocoa-fw-bold); letter-spacing: var(--cocoa-tracking-tight); }
 .c22-sidebar .c22-brand small { display: block; color: var(--cocoa-label-secondary); font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-medium); }
 

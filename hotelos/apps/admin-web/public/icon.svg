@@ -1,12 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="ehotelOS">
   <defs>
-    <linearGradient id="anf-g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0d8a5f"/>
-      <stop offset="1" stop-color="#086b48"/>
+    <linearGradient id="eh-g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14a878"/>
+      <stop offset="1" stop-color="#0a6a49"/>
     </linearGradient>
+    <radialGradient id="eh-h" cx="30%" cy="18%" r="70%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
   </defs>
-  <rect width="512" height="512" fill="url(#anf-g)"/>
-  <path d="M170 256 H342 A86 86 0 1 0 317 317"
-        fill="none" stroke="#ffffff" stroke-width="46"
-        stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="512" height="512" rx="116" fill="url(#eh-g)"/>
+  <rect width="512" height="512" rx="116" fill="url(#eh-h)"/>
+  <!-- Logomark: «e» de trazo continuo con arco de puerta (ehotelOS). -->
+  <path d="M394 262 V212 A104 104 0 0 0 290 108 H222 A104 104 0 0 0 118 212 V318 A104 104 0 0 0 222 422 H290 A104 104 0 0 0 366 389"
+        fill="none" stroke="#ffffff" stroke-width="54" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M118 262 H394" fill="none" stroke="#ffffff" stroke-width="54" stroke-linecap="round"/>
 </svg>
