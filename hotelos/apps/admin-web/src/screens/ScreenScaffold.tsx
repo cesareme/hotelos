@@ -1,13 +1,21 @@
+// Body of the dev-only onboarding screens (onboarding/OnboardingScreens.tsx is
+// its only importer): an honest "under construction" callout plus a grid of
+// cards with a status badge, a body and navigable actions. The page head
+// (eyebrow · h1 · subtitle · next steps) is painted by the CocoaPage that
+// hosts it, so this sub-view is exempt from the header rule of the contract.
+// Cocoa 22 · ola 11: no legacy `.bo-*` classes, no raw buttons, no inline
+// colours.
+
+import { CocoaBadge, CocoaButton, CocoaCallout, CocoaGrid, CocoaSection, CocoaSpan, type CocoaTone } from "../components/cocoa";
+import { navigateTo, type ScreenKey } from "../lib/navigate";
+
 export type ScreenScaffoldAction = string | { label: string; screen?: string; href?: string };
 
 // Canonical semantic tones. Legacy screens may still pass a free-form string,
-// which is rendered verbatim (no invented translation).
+// which is rendered verbatim (no invented translation) on a neutral badge.
 export type ScreenScaffoldStatus = "ok" | "warn" | "error" | "info";
 
 export type ScreenScaffoldProps = {
-  title: string;
-  eyebrow: string;
-  summary: string;
   /**
    * Honest "under construction" notice. When set, the scaffold renders a
    * visible banner so nobody mistakes static copy for property data. Pass
@@ -16,7 +24,6 @@ export type ScreenScaffoldProps = {
   pendingNote?: string | boolean;
   cards: Array<{
     title: string;
-    metric?: string;
     // Status is rendered as a Spanish tag; only the 4 canonical tones get a
     // label mapping, anything else is shown as-is (legacy free-form labels).
     status?: ScreenScaffoldStatus | string;
@@ -35,12 +42,23 @@ const STATUS_LABELS: Record<ScreenScaffoldStatus, string> = {
   info: "Info"
 };
 
+const STATUS_TONES: Record<ScreenScaffoldStatus, CocoaTone> = {
+  ok: "success",
+  warn: "warning",
+  error: "danger",
+  info: "info"
+};
+
 function isCanonicalStatus(status: string): status is ScreenScaffoldStatus {
   return status in STATUS_LABELS;
 }
 
 function statusLabel(status: string): string {
   return isCanonicalStatus(status) ? STATUS_LABELS[status] : status;
+}
+
+function statusTone(status: string): CocoaTone {
+  return isCanonicalStatus(status) ? STATUS_TONES[status] : "neutral";
 }
 
 function actionToLabel(action: ScreenScaffoldAction): string {
@@ -58,7 +76,8 @@ function actionToHref(action: ScreenScaffoldAction): string | undefined {
 function handleAction(action: ScreenScaffoldAction) {
   const screen = actionToScreen(action);
   if (screen) {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
+    // Screen keys arrive as plain strings from the card definitions; the registry is the source of truth.
+    navigateTo(screen as ScreenKey);
     return;
   }
   const href = actionToHref(action);
@@ -68,64 +87,53 @@ function handleAction(action: ScreenScaffoldAction) {
 export function ScreenScaffold(props: ScreenScaffoldProps) {
   const pendingNote = props.pendingNote === true ? PENDING_SCREEN_NOTE : props.pendingNote || null;
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">{props.eyebrow}</p>
-          <h2>{props.title}</h2>
-        </div>
-      </div>
+    <>
       {pendingNote ? (
-        <p
-          role="note"
-          className="bo-muted"
-          style={{
-            margin: "0 0 var(--space-4)",
-            padding: "var(--space-3) var(--space-4)",
-            borderLeft: "3px solid var(--warn-ink)",
-            background: "var(--warn-bg)",
-            color: "var(--warn-ink)",
-            borderRadius: "var(--radius-md)",
-            textTransform: "none",
-            fontSize: 13
-          }}
-        >
+        <CocoaCallout tone="warning" role="note">
           {pendingNote}
-        </p>
+        </CocoaCallout>
       ) : null}
-      <p>{props.summary}</p>
-      <div className="bo-grid two">
+      <CocoaGrid gap={3} align="start">
         {props.cards.map((card) => (
-          <article className="bo-card" key={card.title}>
-            <div className="bo-card-head">
-              <h3>{card.title}</h3>
-              {card.status ? <span className={`bo-status ${card.status}`}>{statusLabel(card.status)}</span> : null}
-            </div>
-            {card.metric ? <div className="bo-metric">{card.metric}</div> : null}
-            <p>{card.body}</p>
-            {card.actions?.length ? (
-              <div className="bo-actions">
-                {card.actions.map((action) => {
-                  const label = actionToLabel(action);
-                  const navigable = Boolean(actionToScreen(action) || actionToHref(action));
-                  return (
-                    <button
-                      key={label}
-                      type="button"
-                      onClick={navigable ? () => handleAction(action) : undefined}
-                      disabled={!navigable}
-                      title={navigable ? undefined : "Acción no disponible en esta pantalla"}
-                      style={!navigable ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
+          <CocoaSpan key={card.title} cols={6} min={320}>
+            <CocoaSection
+              title={card.title}
+              action={
+                card.status ? (
+                  <CocoaBadge tone={statusTone(card.status)} variant="tinted" size="small">
+                    {statusLabel(card.status)}
+                  </CocoaBadge>
+                ) : undefined
+              }
+            >
+              <div className="cocoa-stack" data-gap="3">
+                <p className="cocoa-note">{card.body}</p>
+                {card.actions?.length ? (
+                  <div className="cocoa-row" data-gap="2">
+                    {card.actions.map((action) => {
+                      const label = actionToLabel(action);
+                      const navigable = Boolean(actionToScreen(action) || actionToHref(action));
+                      return (
+                        <CocoaButton
+                          key={label}
+                          variant="bordered"
+                          tone="neutral"
+                          size="small"
+                          onClick={navigable ? () => handleAction(action) : undefined}
+                          disabled={!navigable}
+                          title={navigable ? undefined : "Acción no disponible en esta pantalla"}
+                        >
+                          {label}
+                        </CocoaButton>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-          </article>
+            </CocoaSection>
+          </CocoaSpan>
         ))}
-      </div>
-    </section>
+      </CocoaGrid>
+    </>
   );
 }

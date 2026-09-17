@@ -14,7 +14,7 @@ import type { Prisma } from "@hotelos/database";
 import type { UserContext } from "../../../lib/demo-store.js";
 import { requirePermissions } from "../../auth/auth.service.js";
 import { recordAuditEvent } from "../../audit/audit.service.js";
-import { BadRequestError, ConflictError } from "../../../lib/http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../../lib/http-error.js";
 import { parseReservationRequest } from "../../pms/reservation-agent.service.js";
 import { createReservation } from "../../pms/pms.service.js";
 import { enqueueReview, approveReview, rejectReview } from "../../ai-operations/human-review.service.js";
@@ -388,12 +388,30 @@ export async function createConnection(input: { context: UserContext; propertyId
   recordAuditEvent({ organizationId: input.context.organizationId, propertyId: input.propertyId, actorUserId: input.context.userId, actorType: "user", action: "EMAIL_CONNECTION_CREATED", entityType: "email_connection", entityId: row.id, afterJson: { provider, status: row.status }, correlationId: input.correlationId });
   return { ...mapConnection(row), needsOAuth: isOAuth, authorizeAvailable: isOAuth && !!oauthConfig(provider) };
 }
+/**
+ * Pure (Cocoa 22 · ola 11): what «Desconectar» does with a row. A connection that
+ * was never authorised (`pending_auth` without a refresh token — the Gmail row an
+ * operator added and abandoned) is deleted, so the list does not keep a
+ * «Gmail · desconectado» ghost forever; anything that ever held credentials is
+ * kept as `disconnected` (audit trail, inbound emails keep their connection).
+ */
+export function disconnectOutcome(row: { status: string; oauthRefreshToken: string | null | undefined }): "delete" | "disconnect" {
+  return row.status === "pending_auth" && !row.oauthRefreshToken ? "delete" : "disconnect";
+}
+
 export async function disconnectConnection(input: { context: UserContext; connectionId: string; correlationId: string }) {
   requirePermissions(input.context, ["integrations.disconnect"]);
-  const row = await prisma.emailConnection.update({ where: { id: input.connectionId }, data: { status: "disconnected", oauthRefreshToken: null, imapPassword: null } });
+  const current = await prisma.emailConnection.findUnique({ where: { id: input.connectionId } });
+  if (!current) throw new NotFoundError("Conexión de correo no encontrada.");
   tokenCache.delete(input.connectionId);
+  if (disconnectOutcome(current) === "delete") {
+    await prisma.emailConnection.delete({ where: { id: current.id } });
+    recordAuditEvent({ organizationId: input.context.organizationId, propertyId: current.propertyId, actorUserId: input.context.userId, actorType: "user", action: "EMAIL_CONNECTION_DELETED", entityType: "email_connection", entityId: current.id, beforeJson: { provider: current.provider, status: current.status }, afterJson: null, correlationId: input.correlationId });
+    return { ...mapConnection({ ...current, status: "deleted" }), deleted: true };
+  }
+  const row = await prisma.emailConnection.update({ where: { id: input.connectionId }, data: { status: "disconnected", oauthRefreshToken: null, imapPassword: null } });
   recordAuditEvent({ organizationId: input.context.organizationId, propertyId: row.propertyId, actorUserId: input.context.userId, actorType: "user", action: "EMAIL_CONNECTION_DISCONNECTED", entityType: "email_connection", entityId: row.id, afterJson: { status: "disconnected" }, correlationId: input.correlationId });
-  return mapConnection(row);
+  return { ...mapConnection(row), deleted: false };
 }
 
 export async function listInbound(propertyId: string, status?: string) {

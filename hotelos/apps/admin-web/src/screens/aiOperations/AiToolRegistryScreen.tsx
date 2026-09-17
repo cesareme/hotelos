@@ -360,9 +360,9 @@ function ToolDetailDrawer(props: { toolName: string | null; onClose: () => void;
 
 // ---- screen ----------------------------------------------------------------
 
-export function AiToolRegistryScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
-  const hosted = useTabHost() !== null || embedded;
+export function AiToolRegistryScreen() {
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1.
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const [moduleFilter, setModuleFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");

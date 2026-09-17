@@ -20,12 +20,12 @@ import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
 import { useRouteParam } from "../tab-helpers";
 
-type CategoryScreen = ComponentType<{ categoryCode?: string; embedded?: boolean }>;
+type CategoryScreen = ComponentType<{ categoryCode?: string }>;
 
 /** Detail sub-URL: the category code travels in the URL (`:codigo`) and is re-read on every navigation. */
 function CategoryParam({ Screen, screenKey }: { Screen: CategoryScreen; screenKey: string }) {
   const codigo = useRouteParam(urlForScreen(screenKey) ?? "", "codigo");
-  return <Screen key={codigo ?? ""} categoryCode={codigo ?? undefined} embedded />;
+  return <Screen key={codigo ?? ""} categoryCode={codigo ?? undefined} />;
 }
 
 function withCategoryParam(Screen: CategoryScreen, screenKey: string): { default: ComponentType<Record<string, never>> } {

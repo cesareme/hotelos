@@ -1,11 +1,16 @@
 /* Cocoa base styles — global element defaults + layout utilities (§8).
-   Unlayered on purpose: wins over the legacy Aurora sheet (@layer cocoa-legacy). */
+   Unlayered like every Cocoa 22 sheet (the legacy Aurora sheet and the
+   migration bridge retired in ola 11). The element defaults below use
+   `:where()` (specificity 0): every primitive, `.cocoa-*` utility and screen
+   rule wins over them by specificity alone. */
 * {
+  box-sizing: border-box;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 body {
+  margin: 0;
   font-family: var(--cocoa-font);
   font-size: var(--cocoa-fs-body);
   line-height: var(--cocoa-leading-body);
@@ -13,6 +18,74 @@ body {
   background: var(--cocoa-background-window);
   font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1, 'ss01' 1;
   letter-spacing: -0.01em;
+}
+
+/* ============================================================
+   Element defaults — ported in Cocoa 22 · ola 11 from the legacy Aurora
+   reset (styles.css) and the typography of the migration bridge, with
+   --cocoa-* tokens and specificity 0. They only reach RAW elements: a
+   CocoaPageHeader, CocoaSection title, CocoaButton, CocoaTable or CocoaLink
+   carries its own metrics and always wins.
+   ============================================================ */
+:where(h1, h2, h3, h4, h5, h6) {
+  margin: 0;
+  color: var(--cocoa-label);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  line-height: var(--cocoa-leading-title);
+}
+:where(p) { margin: 0; }
+:where(a) { color: var(--cocoa-tone-accent-text); text-decoration: none; }
+:where(a:hover) { text-decoration: underline; }
+:where(button) { font: inherit; font-family: inherit; }
+/* `separate` + 0 spacing (not `collapse`): the raw grid tables
+   (`data-cocoa-grid-table`, timeline lanes) set `borderSpacing: 0` inline and
+   sit under a sticky first column, whose borders vanish with `collapse`. */
+:where(table) {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Raw headings inside the content area (the h1-h4 of screens and of
+   components/cocoa that are not a CocoaPageHeader / CocoaSection title):
+   large-title 26 · title-1 22 · title-2 17 · title-3 15, the type of the canon. */
+:where(.cocoa-content h1) {
+  margin: 0;
+  color: var(--cocoa-label);
+  font-family: var(--cocoa-font-display);
+  font-size: var(--cocoa-fs-large-title);
+  font-weight: var(--cocoa-fw-bold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  line-height: var(--cocoa-leading-title);
+}
+:where(.cocoa-content h2) {
+  color: var(--cocoa-label);
+  font-size: var(--cocoa-fs-title-1);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  line-height: var(--cocoa-leading-title);
+}
+:where(.cocoa-content h3) {
+  color: var(--cocoa-label);
+  font-size: var(--cocoa-fs-title-2);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  line-height: var(--cocoa-leading-title);
+}
+:where(.cocoa-content h4) {
+  color: var(--cocoa-label);
+  font-size: var(--cocoa-fs-title-3);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  line-height: var(--cocoa-leading-title);
+}
+
+/* Touch (§5.1): a raw <button> reaches the tap target on phones and tablets
+   (the legacy 900 px rule); CocoaButton grows on its own (useCoarsePointer). */
+@media (max-width: 899px) {
+  :where(button) { min-height: var(--cocoa-touch-target); }
 }
 
 .cocoa-tabular {

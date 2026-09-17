@@ -7,6 +7,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --import ./src/spain/verifactu/__tests__/register-ts-loader.mjs --test 'src/**/__tests__/*.test.mjs'",
     "lint": "eslint ."
   },
   "dependencies": {

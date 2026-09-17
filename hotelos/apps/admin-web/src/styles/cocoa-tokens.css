@@ -15,11 +15,10 @@
    styles.css :root and are consumed here by reference.
    ============================================================ */
 
-/* Cascade architecture (see styles.css): the legacy Aurora sheet is wrapped
-   in @layer cocoa-legacy and the migration bridge in @layer cocoa-bridge, so
-   unlayered Cocoa 22 rules always win. Declaring the order here (first
-   imported sheet) pins it regardless of how the bundler inlines @import. */
-@layer cocoa-legacy, cocoa-bridge;
+/* Cascade architecture (see styles.css): every sheet is unlayered and wins by
+   source order and specificity alone — the legacy Aurora sheet, the migration
+   bridge and their cascade-layer declaration retired with Cocoa 22 · ola 11.
+   The Aurora :root tokens this file references live in styles.css. */
 
 :root {
   color-scheme: light;
@@ -38,7 +37,8 @@
 
   /* Backgrounds. Window = Aurora canvas (#f6f5f1 / #14130e) — the body was
      already painting --canvas; the old #ECECEC double token is gone.
-     Sidebar = Aurora surface (#fff / #1d1b15), as measured on #bo-sidebar. */
+     Sidebar = Aurora surface (#fff / #1d1b15), as measured on the <aside>
+     of the shell (#c22-sidebar). */
   --cocoa-background-window:    var(--canvas);
   --cocoa-background-content:   #FFFFFF;
   --cocoa-background-sidebar:   var(--surface);

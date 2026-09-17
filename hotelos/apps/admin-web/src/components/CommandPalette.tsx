@@ -7,6 +7,13 @@ import { openPropertySwitcher } from "../services/activeProperty";
 import { openHelpCenter } from "./guide/guideStore";
 import { OPEN_NOTIFICATIONS_EVENT } from "../providers/CocoaGlobalProvider";
 import { useSidebarRecent } from "../hooks/useSidebarRecent";
+import { CocoaBadge } from "./cocoa/CocoaBadge";
+import type { CocoaTone } from "./cocoa/cocoa-tones";
+
+// Skin: styles/cocoa-22-guide.css (`c22-cmdk-*`); the selected row is keyed on
+// aria-selected and the entity badge is a CocoaBadge. This palette (screen
+// index + live /search hits) is NOT the CocoaCommandPalette of the global
+// provider (register/unregister model) — both coexist on purpose.
 
 type CommandPaletteProps = {
   open: boolean;
@@ -36,12 +43,13 @@ type CommandItem = {
   run?: () => void;
 };
 
-const KIND_BADGE_COLOR: Record<string, string> = {
+// Tone of the entity badge by search kind (the legacy pill tones ok/warn/info → success/warning/info).
+const KIND_BADGE_TONE: Record<string, CocoaTone> = {
   reservation: "info",
-  guest: "ok",
+  guest: "success",
   room: "info",
-  folio: "warn",
-  invoice: "ok",
+  folio: "warning",
+  invoice: "success",
   property: "info",
   rate_plan: "info"
 };
@@ -231,26 +239,26 @@ export function CommandPalette(props: CommandPaletteProps) {
   const groupOrder = Array.from(new Set(filtered.map((it) => it.group)));
 
   return (
-    <div className="bo-cmdk-overlay" role="dialog" aria-modal="true" aria-label="Buscar en la aplicación" onClick={props.onClose}>
-      <div className="bo-cmdk" onClick={(e) => e.stopPropagation()}>
+    <div className="c22-cmdk-overlay" role="dialog" aria-modal="true" aria-label="Buscar en la aplicación" onClick={props.onClose}>
+      <div className="c22-cmdk" onClick={(e) => e.stopPropagation()}>
         <input
           ref={inputRef}
           type="search"
-          className="bo-cmdk-input"
+          className="c22-cmdk-input"
           placeholder="Buscar reserva, huésped, habitación, factura, pantalla…"
           aria-label="Buscar (escribe al menos 2 caracteres)"
           value={query}
           onChange={(e) => { setQuery(e.target.value); setActiveIdx(0); }}
         />
-        <div className="bo-cmdk-list" role="listbox" aria-label="Resultados de búsqueda">
+        <div className="c22-cmdk-list" role="listbox" aria-label="Resultados de búsqueda">
           {liveLoading && filtered.length === 0 ? (
-            <div role="status" aria-live="polite" style={{ padding: 16, textAlign: "center", color: "var(--ink-muted)", fontSize: 13 }}>Buscando…</div>
+            <div role="status" aria-live="polite" className="c22-cmdk-status">Buscando…</div>
           ) : null}
           {liveError ? (
-            <div role="alert" style={{ padding: 12, color: "var(--warn-ink, #f59e0b)", fontSize: 12 }}>{liveError}</div>
+            <div role="alert" className="c22-cmdk-error">{liveError}</div>
           ) : null}
           {!liveLoading && filtered.length === 0 ? (
-            <div style={{ padding: 24, textAlign: "center", color: "var(--ink-muted)", fontSize: 14 }}>
+            <div className="c22-cmdk-empty">
               {query.trim() ? `Sin resultados para "${query}"` : "Empieza a escribir para buscar"}
             </div>
           ) : (
@@ -259,29 +267,27 @@ export function CommandPalette(props: CommandPaletteProps) {
               if (!items || items.length === 0) return null;
               return (
                 <div key={group}>
-                  <div className="bo-cmdk-section">{group}</div>
+                  <div className="c22-cmdk-section">{group}</div>
                   {items.map((item) => {
                     const globalIdx = filtered.indexOf(item);
-                    const badgeCls = item.hit ? (KIND_BADGE_COLOR[item.hit.kind] ?? "info") : "";
+                    const badgeTone: CocoaTone = item.hit ? (KIND_BADGE_TONE[item.hit.kind] ?? "info") : "neutral";
                     return (
                       <div
                         key={`${group}-${item.source}-${item.screen}-${item.hit?.id ?? item.label}`}
                         role="option"
                         aria-selected={globalIdx === activeIdx}
-                        className={`bo-cmdk-item${globalIdx === activeIdx ? " selected" : ""}`}
+                        className="c22-cmdk-item"
                         onMouseEnter={() => setActiveIdx(globalIdx)}
                         onClick={() => commit(item)}
                       >
-                        <span style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: "1 1 0%" }}>
-                          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-                            {item.badge ? <span className={`bo-status ${badgeCls}`} style={{ fontSize: 10 }}>{item.badge}</span> : null}
+                        <span className="c22-cmdk-item-text">
+                          <span className="c22-cmdk-item-title">
+                            <span className="c22-cmdk-item-label">{item.label}</span>
+                            {item.badge ? <CocoaBadge tone={badgeTone} size="small">{item.badge}</CocoaBadge> : null}
                           </span>
-                          {item.subtitle ? (
-                            <span style={{ fontSize: 11, color: "var(--ink-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.subtitle}</span>
-                          ) : null}
+                          {item.subtitle ? <span className="c22-cmdk-item-subtitle">{item.subtitle}</span> : null}
                         </span>
-                        <span className="bo-cmdk-item-meta">{item.source === "recent" ? "Reciente" : item.group}</span>
+                        <span className="c22-cmdk-item-meta">{item.source === "recent" ? "Reciente" : item.group}</span>
                       </div>
                     );
                   })}

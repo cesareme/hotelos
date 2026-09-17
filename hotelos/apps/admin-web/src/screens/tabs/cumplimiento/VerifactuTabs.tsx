@@ -6,17 +6,14 @@
 //
 // L1b registers: screenKey FiscalDashboard · url /cumplimiento/verifactu · tab /cumplimiento/verifactu/ticketbai.
 //
-// Cocoa 22 · ola 8 · lote 8-B: both screens are Cocoa 22 (FiscalDashboard on
-// pageHead(embedded) + Cocoa body, TbaiForalScreen on CocoaPage). FiscalDashboard
-// keeps the `embed()` bridge (EMBED_BRIDGE of cumplimiento-tabs.test.mts and
-// TabHost.tsx) until the integrator retires it; the host context already decides.
+// Cocoa 22 · ola 11: both screens are CocoaPage on the host context (direct
+// loaders; FiscalDashboard navigates through the typed `navigateTo`).
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
-import { embed, shellNavigate } from "../tab-helpers";
 
 export const loaders: TabLoaders = {
-  FiscalDashboard: () => import("../../fiscal/FiscalDashboard").then((m) => embed(m.FiscalDashboard, { onNavigate: shellNavigate })),
+  FiscalDashboard: () => import("../../fiscal/FiscalDashboard").then((m) => ({ default: m.FiscalDashboard })),
   TbaiForal: () => import("../../fiscal/TbaiForalScreen").then((m) => ({ default: m.TbaiForalScreen }))
 };
 

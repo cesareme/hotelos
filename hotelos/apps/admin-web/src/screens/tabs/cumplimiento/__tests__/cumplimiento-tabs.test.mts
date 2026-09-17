@@ -12,21 +12,16 @@ const CONTAINERS: Record<string, string> = {
   SustainabilityDashboard: "SostenibilidadTabs.tsx"
 };
 
-// Screens merged here that still take the `embedded` prop (bridge of L1c, see TabHost.tsx):
-// PropertyTaxesScreen, AuthorityRoutingSettingsScreen and GuestRegisterRetentionSettingsScreen
-// are built on `pageHead(embedded)` (already on the host context); the rest branch on the
-// prop by hand and keep `embed()` in their loader (EMBED_BRIDGE). The five Modelo*Screen
-// left the bridge in Cocoa 22 · lote 8-B (they read useTabHost() through CocoaPage).
-const EMBEDDED_SCREENS = [
+// Screens merged here that left the L1c bridge in Cocoa 22 · ola 11: every one is a
+// `<CocoaPage>` on the host context (no `embedded` prop, no `pageHead(embedded)` head) and
+// registers its ⌘K commands through the page. The Modelo*Screen left it in lote 8-B.
+const HOST_CONTEXT_SCREENS = [
   "fiscal/FiscalDashboard.tsx",
   "compliance/PropertyTaxesScreen.tsx",
   "compliance/AuthorityRoutingSettingsScreen.tsx",
   "compliance/GuestRegisterRetentionSettingsScreen.tsx",
   "operations/SustainabilityDashboard.tsx"
 ];
-
-/** Loader export names that must still go through `embed()` (they read `embedded` by hand, not `useTabHost()`). */
-const EMBED_BRIDGE = new Set(["FiscalDashboard", "SustainabilityDashboard"]);
 
 const noop = () => Promise.reject(new Error("loader not meant to run in tests"));
 const loadersFor = (item: { screenKey: string; tabs: readonly { screenKey: string }[] }): TabLoaders =>
@@ -43,14 +38,12 @@ describe("tabs-c · Cumplimiento · containers wire every screen of the tree", (
       for (const key of [item.screenKey, ...item.tabs.map((tab) => tab.screenKey)]) {
         assert.match(source, new RegExp(`^\\s+${key}:\\s*\\(\\)\\s*=>\\s*import\\(`, "m"), `${file}: loader ${key} missing`);
       }
-      // ONE convention (L1c): direct loaders (`{ default: m.X }`, the screen reads
-      // useTabHost()); `embed()` survives only for the screens of EMBED_BRIDGE.
+      // ONE convention (L1c, bridge retired in ola 11): every loader is direct (`{ default: m.X }`;
+      // the screen reads useTabHost(), directly or through CocoaPage). No `embed()` wrapper left.
       const loaderCount = (source.match(/=>\s*import\(/g) ?? []).length;
       const direct = [...source.matchAll(/\(\{ default: m\.([A-Za-z0-9_]+) \}\)/g)].map((m) => m[1]);
-      const embedded = [...source.matchAll(/embed\(m\.([A-Za-z0-9_]+)/g)].map((m) => m[1]);
-      assert.equal(direct.length + embedded.length, loaderCount, `${file}: every loader is direct or embed() (bridge)`);
-      for (const name of embedded) assert.ok(EMBED_BRIDGE.has(name), `${file}: ${name} no longer needs embed()`);
-      for (const name of direct) assert.ok(!EMBED_BRIDGE.has(name), `${file}: ${name} still reads the embedded prop by hand and needs embed()`);
+      assert.equal(direct.length, loaderCount, `${file}: every loader is direct`);
+      assert.doesNotMatch(source, /embed\(m\./, `${file}: the embed() bridge is gone`);
       assert.deepEqual(missingLoaders(item, loadersFor(item)), []);
     });
   }
@@ -126,11 +119,20 @@ describe("tabs-c · Cumplimiento · registration and hosted screens", () => {
     }
   });
 
-  it("every merged screen with a page header still accepts `embedded` (bridge) and hides its own H1 inside a container", () => {
-    for (const file of EMBEDDED_SCREENS) {
+  it("the five merged screens read the host context (useTabHost / CocoaPage) and take no `embedded` prop (Cocoa 22 · ola 11)", () => {
+    for (const file of HOST_CONTEXT_SCREENS) {
       const source = read(`../../../${file}`);
-      assert.match(source, /embedded\?: boolean/, `${file}: embedded prop missing`);
-      assert.match(source, /pageHead\(embedded\)|\{embedded \? null : <h1 /, `${file}: header not demoted when embedded`);
+      assert.match(source, /useTabHost\(\)|<CocoaPage\b/, `${file}: must read the tab host context (directly or through CocoaPage)`);
+      assert.doesNotMatch(source, /embedded\?: boolean/, `${file}: the embedded bridge prop must be gone`);
+    }
+  });
+
+  it("every merged screen with a page header is a CocoaPage with ⌘K commands, without the pageHead(embedded) bridge", () => {
+    for (const file of HOST_CONTEXT_SCREENS) {
+      const source = read(`../../../${file}`);
+      assert.doesNotMatch(source, /embedded\?: boolean|pageHead\(/, `${file}: L1c bridge left`);
+      assert.match(source, /<CocoaPage\b/, `${file}: the frame must be CocoaPage`);
+      assert.match(source, /commands=\{/, `${file}: ⌘K commands go through CocoaPage`);
     }
   });
 

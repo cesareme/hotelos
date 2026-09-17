@@ -19,10 +19,9 @@ import { openTabPath } from "../../../components/cocoa/CocoaRouteTabs";
 import { DEV_MODE_STORAGE_KEY, NAV_TREE, isDevModeEnabled } from "../../../navigation/nav-tree";
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
-import { embed } from "../tab-helpers";
 
 export const loaders: TabLoaders = {
-  SetupCenterScreen: () => import("../../backoffice/SetupCenterScreen").then((m) => embed(m.SetupCenterScreen)),
+  SetupCenterScreen: () => import("../../backoffice/SetupCenterScreen").then((m) => ({ default: m.SetupCenterScreen })),
   GoLiveChecklist: () => import("../../GoLiveChecklist").then((m) => ({ default: m.GoLiveChecklist })),
   PropertyMapper: () => import("../../PropertyMapper").then((m) => ({ default: m.PropertyMapper }))
 };

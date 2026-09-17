@@ -19,7 +19,6 @@
       "@hotelos/product": ["packages/product/src/index.ts"],
       "@hotelos/revenue": ["packages/revenue/src/index.ts"],
       "@hotelos/ui": ["packages/ui/src/index.ts"],
-      "@hotelos/ui/timeline": ["packages/ui/src/components/timeline/index.ts"],
       "@hotelos/ui/panels": ["packages/ui/src/components/panels/index.ts"],
       "@hotelos/config": ["packages/config/src/index.ts"]
     }

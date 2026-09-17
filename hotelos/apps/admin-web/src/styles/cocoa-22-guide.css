@@ -1,0 +1,752 @@
+/* ============================================================
+   Cocoa 22 — guía intrínseca (tour guiado, centro de ayuda, tarjeta de
+   bienvenida) y paleta ⌘K del shell. Compañera de cocoa-22.css.
+
+   ORIGEN (ola 11 · lote A2): las reglas legacy de styles.css de la paleta
+   de comandos y de la guía en la app (con sus tres keyframes de fundido,
+   entrada y elevación), portadas a clases c22-* y a tokens --cocoa-*
+   ÚNICAMENTE (color, tipografía, radios, espaciado, sombras, z-index,
+   movimiento). Sin capas de cascada (hoja unlayered como el resto de
+   cocoa-22-*), sin literales
+   de color (components/cocoa/__tests__/cocoa-tokens-only.test.mts lee
+   esta hoja; aquí NO se definen tokens nuevos: todos salen de
+   cocoa-tokens.css).
+
+   CONSUMIDORES: components/CommandPalette.tsx y components/guide/
+   {GuideProvider,GuidedTour,HelpCenter,HelpMarkdown}.tsx. Los botones
+   de acción son CocoaButton, los atajos CocoaKbd y las etiquetas de
+   tipo de resultado CocoaBadge: aquí solo quedan las superficies y los
+   botones-fila que ninguna primitiva cubre (cabecera de acordeón, fila
+   de recorrido, CTA con icono, botón «×» cuadrado). Desde la ola 11
+   también la guía de estilo dev (screens/dev/StyleGuideScreen.tsx,
+   /desarrollo/guia-estilo): la muestra de color .c22-guide-swatch.
+
+   VARIANTES por atributo, no por clase modificadora (canon §8):
+     .c22-guide-clickguard[data-dim="true"]   · .c22-guide-dot[data-active="true"]
+     .c22-guide-help-item[data-open="true"]   · .c22-guide-callout[data-mode="center|spotlight|narrate"]
+     .c22-cmdk-item[aria-selected="true"]     · .c22-guide-help-heading[data-level="1|2|3"]
+
+   CAPAS (tokens --cocoa-z-* existentes): ⌘K y tour → --cocoa-z-modal;
+   centro de ayuda (hoja lateral) → --cocoa-z-sheet; tarjeta de
+   bienvenida (esquina, no bloqueante) → --cocoa-z-popover. Dentro del
+   tour, guarda/foco/globo se apilan por orden del DOM (el root crea el
+   contexto de apilamiento).
+
+   CLASES
+   Paleta ⌘K:
+     c22-cmdk-overlay · c22-cmdk · c22-cmdk-input · c22-cmdk-list ·
+     c22-cmdk-status · c22-cmdk-error · c22-cmdk-empty · c22-cmdk-section ·
+     c22-cmdk-item · c22-cmdk-item-text · c22-cmdk-item-title ·
+     c22-cmdk-item-label · c22-cmdk-item-subtitle · c22-cmdk-item-meta
+   Tour guiado:
+     c22-guide-tour-root · c22-guide-clickguard · c22-guide-spotlight ·
+     c22-guide-callout · c22-guide-callout-head · c22-guide-callout-step ·
+     c22-guide-callout-tour · c22-guide-callout-title · c22-guide-callout-body ·
+     c22-guide-callout-foot · c22-guide-dots · c22-guide-dot ·
+     c22-guide-callout-actions
+   Centro de ayuda:
+     c22-guide-help-root · c22-guide-help-scrim · c22-guide-help-panel ·
+     c22-guide-help-head · c22-guide-help-eyebrow · c22-guide-help-close ·
+     c22-guide-help-body · c22-guide-help-empty · c22-guide-help-tour-cta ·
+     c22-guide-help-tour-icon · c22-guide-help-tour-text ·
+     c22-guide-help-section-title · c22-guide-help-list · c22-guide-help-item ·
+     c22-guide-help-item-head · c22-guide-help-item-text · c22-guide-help-chevron ·
+     c22-guide-help-item-body · c22-guide-steps · c22-guide-step-num ·
+     c22-guide-help-shortcuts · c22-guide-tour-row · c22-guide-tour-row-text ·
+     c22-guide-tour-badge · c22-guide-tour-row-meta · c22-guide-tour-steps
+   Artículo markdown (HelpMarkdown):
+     c22-guide-help-article · c22-guide-help-heading · c22-guide-help-p ·
+     c22-guide-help-table-wrap
+   Bienvenida:
+     c22-guide-welcome · c22-guide-welcome-icon · c22-guide-welcome-text ·
+     c22-guide-welcome-actions
+   Guía de estilo (dev):
+     c22-guide-swatch (color por la custom property --c22-guide-swatch)
+   Keyframes: c22-guide-fade · c22-guide-slide-in · c22-guide-rise
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   Paleta ⌘K (components/CommandPalette.tsx)
+   ------------------------------------------------------------ */
+.c22-cmdk-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--cocoa-z-modal);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh var(--cocoa-space-4) 0;
+  background: var(--cocoa-scrim);
+  -webkit-backdrop-filter: var(--cocoa-scrim-blur);
+  backdrop-filter: var(--cocoa-scrim-blur);
+}
+
+.c22-cmdk {
+  width: 100%;
+  max-width: 640px;
+  overflow: hidden;
+  background: var(--cocoa-background-content);
+  color: var(--cocoa-label);
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-xl);
+  box-shadow: var(--cocoa-shadow-modal);
+}
+
+.c22-cmdk-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--cocoa-space-4) var(--cocoa-space-5);
+  border: none;
+  border-bottom: 1px solid var(--cocoa-separator);
+  border-radius: 0;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  color: var(--cocoa-label);
+  font-family: var(--cocoa-font);
+  font-size: var(--cocoa-fs-title-2);
+  line-height: var(--cocoa-lh-title-2);
+}
+.c22-cmdk-input::placeholder { color: var(--cocoa-label-tertiary); }
+
+.c22-cmdk-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: var(--cocoa-space-2);
+}
+
+/* Estados de la lista (antes style={} en el TSX). */
+.c22-cmdk-status,
+.c22-cmdk-empty {
+  padding: var(--cocoa-space-5) var(--cocoa-space-4);
+  text-align: center;
+  color: var(--cocoa-label-secondary);
+  font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-lh-body);
+}
+.c22-cmdk-status { padding-block: var(--cocoa-space-4); }
+.c22-cmdk-error {
+  padding: var(--cocoa-space-3);
+  color: var(--cocoa-tone-warning-text);
+  font-size: var(--cocoa-fs-callout);
+  line-height: var(--cocoa-lh-callout);
+}
+
+.c22-cmdk-section {
+  padding: var(--cocoa-space-3) var(--cocoa-space-3) var(--cocoa-space-1);
+  font-size: var(--cocoa-fs-subheadline);
+  line-height: var(--cocoa-lh-subheadline);
+  font-weight: var(--cocoa-fw-bold);
+  letter-spacing: var(--cocoa-tracking-wide);
+  text-transform: uppercase;
+  color: var(--cocoa-label-secondary);
+}
+
+.c22-cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: var(--cocoa-space-3);
+  padding: var(--cocoa-space-3);
+  border-radius: var(--cocoa-radius-md);
+  cursor: pointer;
+  font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-lh-body);
+  font-weight: var(--cocoa-fw-medium);
+  color: var(--cocoa-label);
+  transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-standard), color var(--cocoa-duration-fast) var(--cocoa-ease-standard);
+}
+.c22-cmdk-item:hover,
+.c22-cmdk-item[aria-selected="true"] {
+  background: var(--cocoa-accent-bg);
+  color: var(--cocoa-tone-accent-text);
+}
+
+.c22-cmdk-item-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-width: 0;
+}
+.c22-cmdk-item-title {
+  display: flex;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  min-width: 0;
+}
+.c22-cmdk-item-label,
+.c22-cmdk-item-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c22-cmdk-item-subtitle {
+  font-size: var(--cocoa-fs-subheadline);
+  line-height: var(--cocoa-lh-subheadline);
+  font-weight: var(--cocoa-fw-regular);
+  color: var(--cocoa-label-secondary);
+}
+.c22-cmdk-item-meta {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: var(--cocoa-fs-subheadline);
+  line-height: var(--cocoa-lh-subheadline);
+  font-weight: var(--cocoa-fw-regular);
+  color: var(--cocoa-label-secondary);
+}
+
+/* ------------------------------------------------------------
+   Tour guiado con foco (components/guide/GuidedTour.tsx)
+   ------------------------------------------------------------ */
+.c22-guide-tour-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--cocoa-z-modal);
+}
+.c22-guide-clickguard {
+  position: fixed;
+  inset: 0;
+}
+.c22-guide-clickguard[data-dim="true"] {
+  background: var(--cocoa-scrim);
+  -webkit-backdrop-filter: var(--cocoa-scrim-blur);
+  backdrop-filter: var(--cocoa-scrim-blur);
+}
+.c22-guide-spotlight {
+  position: fixed;
+  pointer-events: none;
+  border: 2px solid var(--cocoa-accent);
+  border-radius: var(--cocoa-radius-md);
+  /* El anillo de 9999 px oscurece todo lo que no está en el foco. */
+  box-shadow: 0 0 0 9999px var(--cocoa-scrim), 0 0 0 4px var(--cocoa-accent-border);
+  transition:
+    top var(--cocoa-duration-base) var(--cocoa-ease-out),
+    left var(--cocoa-duration-base) var(--cocoa-ease-out),
+    width var(--cocoa-duration-base) var(--cocoa-ease-out),
+    height var(--cocoa-duration-base) var(--cocoa-ease-out);
+}
+.c22-guide-callout {
+  position: fixed;
+  box-sizing: border-box;
+  max-width: calc(100vw - var(--cocoa-space-6));
+  padding: var(--cocoa-space-4);
+  background: var(--cocoa-background-elevated);
+  color: var(--cocoa-label);
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-lg);
+  box-shadow: var(--cocoa-shadow-popover);
+}
+/* Modo «narrar» (sin oscurecer la pantalla): sombra más fuerte para que el globo se despegue. */
+.c22-guide-callout[data-mode="narrate"] { box-shadow: var(--cocoa-shadow-modal); }
+.c22-guide-callout-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cocoa-space-2);
+  margin-bottom: var(--cocoa-space-2);
+}
+.c22-guide-callout-step {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: var(--cocoa-fs-callout);
+  line-height: var(--cocoa-lh-callout);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-wide);
+  text-transform: uppercase;
+  color: var(--cocoa-tone-accent-text);
+}
+.c22-guide-callout-tour {
+  font-size: var(--cocoa-fs-caption);
+  line-height: var(--cocoa-lh-caption);
+  font-weight: var(--cocoa-fw-bold);
+  letter-spacing: var(--cocoa-tracking-wide);
+  color: var(--cocoa-label-secondary);
+}
+.c22-guide-callout-title {
+  margin: 0 0 var(--cocoa-space-1);
+  font-size: var(--cocoa-fs-title-3);
+  line-height: var(--cocoa-lh-title-3);
+  font-weight: var(--cocoa-fw-semibold);
+  color: var(--cocoa-label);
+}
+.c22-guide-callout-body {
+  margin: 0 0 var(--cocoa-space-3);
+  font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-leading-body);
+  color: var(--cocoa-label-secondary);
+}
+.c22-guide-callout-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cocoa-space-3);
+}
+.c22-guide-dots { display: flex; gap: var(--cocoa-space-1); }
+.c22-guide-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--cocoa-radius-full);
+  background: var(--cocoa-separator-opaque);
+  transition: background-color var(--cocoa-duration-base) var(--cocoa-ease-out), width var(--cocoa-duration-base) var(--cocoa-ease-out);
+}
+.c22-guide-dot[data-active="true"] {
+  width: 18px;
+  background: var(--cocoa-accent);
+}
+.c22-guide-callout-actions { display: flex; gap: var(--cocoa-space-2); }
+
+/* ------------------------------------------------------------
+   Centro de ayuda — hoja lateral «?» (components/guide/HelpCenter.tsx)
+   ------------------------------------------------------------ */
+.c22-guide-help-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--cocoa-z-sheet);
+}
+.c22-guide-help-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--cocoa-scrim);
+  -webkit-backdrop-filter: var(--cocoa-scrim-blur);
+  backdrop-filter: var(--cocoa-scrim-blur);
+  animation: c22-guide-fade var(--cocoa-duration-base) var(--cocoa-ease-out);
+}
+.c22-guide-help-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--cocoa-background-content);
+  color: var(--cocoa-label);
+  border-left: 1px solid var(--cocoa-separator);
+  box-shadow: var(--cocoa-shadow-modal);
+  animation: c22-guide-slide-in var(--cocoa-duration-base) var(--cocoa-ease-out);
+}
+.c22-guide-help-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cocoa-space-3);
+  padding: var(--cocoa-space-4) var(--cocoa-space-4) var(--cocoa-space-3);
+  border-bottom: 1px solid var(--cocoa-separator);
+}
+.c22-guide-help-head h2 {
+  margin: 2px 0 0;
+  font-size: var(--cocoa-fs-title-2);
+  line-height: var(--cocoa-lh-title-2);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  color: var(--cocoa-label);
+}
+.c22-guide-help-eyebrow {
+  margin: 0;
+  font-size: var(--cocoa-fs-subheadline);
+  line-height: var(--cocoa-lh-subheadline);
+  font-weight: var(--cocoa-fw-bold);
+  letter-spacing: var(--cocoa-tracking-wide);
+  text-transform: uppercase;
+  color: var(--cocoa-tone-accent-text);
+}
+.c22-guide-help-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--cocoa-space-6);
+  height: var(--cocoa-space-6);
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-sm);
+  background: var(--cocoa-background-control);
+  color: var(--cocoa-label-secondary);
+  cursor: pointer;
+  transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out), color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.c22-guide-help-close:hover {
+  color: var(--cocoa-label);
+  background: var(--cocoa-background-control-hover);
+}
+.c22-guide-help-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--cocoa-space-4) var(--cocoa-space-4) var(--cocoa-space-6);
+  overflow-y: auto;
+}
+.c22-guide-help-empty { margin-top: var(--cocoa-space-4); }
+
+.c22-guide-help-tour-cta {
+  display: flex;
+  align-items: center;
+  gap: var(--cocoa-space-3);
+  width: 100%;
+  margin-top: var(--cocoa-space-3);
+  padding: var(--cocoa-space-3);
+  text-align: left;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  border: 1px solid var(--cocoa-accent);
+  border-radius: var(--cocoa-radius-md);
+  background: var(--cocoa-accent-bg);
+  color: var(--cocoa-label);
+  cursor: pointer;
+  transition: border-color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.c22-guide-help-tour-cta:hover { border-color: var(--cocoa-accent-hover); }
+.c22-guide-help-tour-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--cocoa-radius-full);
+  background: var(--cocoa-background-content);
+  color: var(--cocoa-tone-accent-text);
+}
+.c22-guide-help-tour-text { flex: 1; min-width: 0; }
+.c22-guide-help-tour-text strong {
+  display: block;
+  font-size: var(--cocoa-fs-headline);
+  line-height: var(--cocoa-lh-headline);
+  font-weight: var(--cocoa-fw-semibold);
+}
+.c22-guide-help-tour-text small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--cocoa-fs-callout);
+  line-height: var(--cocoa-leading-text);
+  color: var(--cocoa-label-secondary);
+}
+
+.c22-guide-help-section-title {
+  margin: var(--cocoa-space-5) 0 var(--cocoa-space-2);
+  font-size: var(--cocoa-fs-subheadline);
+  line-height: var(--cocoa-lh-subheadline);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-wide);
+  text-transform: uppercase;
+  color: var(--cocoa-label-secondary);
+}
+.c22-guide-help-list { display: flex; flex-direction: column; gap: var(--cocoa-space-2); }
+.c22-guide-help-item {
+  overflow: hidden;
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-md);
+  background: var(--cocoa-background-content);
+  transition: border-color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.c22-guide-help-item[data-open="true"] { border-color: var(--cocoa-accent); }
+.c22-guide-help-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cocoa-space-2);
+  width: 100%;
+  padding: var(--cocoa-space-3);
+  text-align: left;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  border: none;
+  background: transparent;
+  color: var(--cocoa-label);
+  cursor: pointer;
+  transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.c22-guide-help-item-head:hover { background: var(--cocoa-background-control-hover); }
+.c22-guide-help-item-text { min-width: 0; }
+.c22-guide-help-item-text strong {
+  display: block;
+  font-size: var(--cocoa-fs-headline);
+  line-height: var(--cocoa-lh-headline);
+  font-weight: var(--cocoa-fw-semibold);
+}
+.c22-guide-help-item-text small {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--cocoa-fs-callout);
+  line-height: var(--cocoa-lh-callout);
+  color: var(--cocoa-label-secondary);
+}
+.c22-guide-help-chevron {
+  flex-shrink: 0;
+  font-size: var(--cocoa-fs-callout);
+  color: var(--cocoa-label-secondary);
+}
+.c22-guide-help-item-body { padding: var(--cocoa-space-1) var(--cocoa-space-3) var(--cocoa-space-3); }
+.c22-guide-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cocoa-space-2);
+  margin: 0 0 var(--cocoa-space-3);
+  padding: 0;
+  list-style: none;
+}
+.c22-guide-steps li {
+  display: flex;
+  gap: var(--cocoa-space-2);
+  font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-leading-text);
+  color: var(--cocoa-label);
+}
+.c22-guide-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--cocoa-radius-full);
+  background: var(--cocoa-accent-bg);
+  color: var(--cocoa-tone-accent-text);
+  font-size: var(--cocoa-fs-subheadline);
+  font-weight: var(--cocoa-fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+.c22-guide-help-shortcuts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cocoa-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.c22-guide-help-shortcuts li {
+  display: flex;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-lh-body);
+  color: var(--cocoa-label-secondary);
+}
+/* La tecla es CocoaKbd (c22-kbd): aquí solo su anchura mínima en la lista. */
+.c22-guide-help-shortcuts .c22-kbd { min-width: 34px; justify-content: center; }
+
+/* --- Catálogo de recorridos (filas del centro de ayuda) --- */
+.c22-guide-tour-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cocoa-space-2);
+  width: 100%;
+  padding: var(--cocoa-space-3);
+  text-align: left;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-md);
+  background: var(--cocoa-background-content);
+  color: var(--cocoa-label);
+  cursor: pointer;
+  transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out), border-color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.c22-guide-tour-row:hover {
+  background: var(--cocoa-background-control-hover);
+  border-color: var(--cocoa-accent);
+}
+.c22-guide-tour-row-text { min-width: 0; }
+.c22-guide-tour-row-text strong {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--cocoa-space-2);
+  font-size: var(--cocoa-fs-headline);
+  line-height: var(--cocoa-lh-headline);
+  font-weight: var(--cocoa-fw-semibold);
+}
+.c22-guide-tour-row-text small {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--cocoa-fs-callout);
+  line-height: var(--cocoa-lh-callout);
+  color: var(--cocoa-label-secondary);
+}
+.c22-guide-tour-badge {
+  flex-shrink: 0;
+  padding: 1px var(--cocoa-space-2);
+  border-radius: var(--cocoa-radius-full);
+  background: var(--cocoa-accent-bg);
+  color: var(--cocoa-tone-accent-text);
+  font-size: var(--cocoa-fs-caption);
+  line-height: var(--cocoa-lh-caption);
+  font-weight: var(--cocoa-fw-bold);
+  letter-spacing: var(--cocoa-tracking-wide);
+  text-transform: none;
+}
+.c22-guide-tour-row-meta {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--cocoa-space-2);
+}
+.c22-guide-tour-steps {
+  font-size: var(--cocoa-fs-subheadline);
+  line-height: var(--cocoa-lh-subheadline);
+  color: var(--cocoa-label-secondary);
+  white-space: nowrap;
+}
+
+/* Anillo de foco de los botones-fila propios (los CocoaButton traen el suyo). */
+.c22-guide-help-close:focus-visible,
+.c22-guide-help-tour-cta:focus-visible,
+.c22-guide-help-item-head:focus-visible,
+.c22-guide-tour-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cocoa-focus-ring);
+}
+
+/* ------------------------------------------------------------
+   Artículo de ayuda en markdown (components/guide/HelpMarkdown.tsx)
+   ------------------------------------------------------------ */
+.c22-guide-help-article {
+  font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-leading-body);
+  color: var(--cocoa-label);
+}
+.c22-guide-help-heading {
+  margin: var(--cocoa-space-3) 0 var(--cocoa-space-1);
+  font-size: var(--cocoa-fs-headline);
+  line-height: var(--cocoa-lh-headline);
+  font-weight: var(--cocoa-fw-bold);
+  color: var(--cocoa-label);
+}
+.c22-guide-help-heading[data-level="1"] { font-size: var(--cocoa-fs-title-2); line-height: var(--cocoa-lh-title-2); }
+.c22-guide-help-heading[data-level="2"] { font-size: var(--cocoa-fs-title-3); line-height: var(--cocoa-lh-title-3); }
+.c22-guide-help-p { margin: var(--cocoa-space-2) 0; }
+.c22-guide-help-article ul,
+.c22-guide-help-article ol {
+  margin: var(--cocoa-space-2) 0;
+  padding-left: var(--cocoa-space-5);
+}
+.c22-guide-help-article li { margin: 2px 0; }
+.c22-guide-help-article code {
+  padding: 1px var(--cocoa-space-1);
+  border-radius: var(--cocoa-radius-sm);
+  background: var(--cocoa-fill-tertiary);
+  font-family: var(--cocoa-font-mono);
+  font-size: 0.92em;
+}
+.c22-guide-help-table-wrap { margin: var(--cocoa-space-2) 0; overflow-x: auto; }
+.c22-guide-help-article table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--cocoa-fs-callout);
+  line-height: var(--cocoa-lh-callout);
+}
+.c22-guide-help-article th,
+.c22-guide-help-article td {
+  padding: var(--cocoa-space-1) var(--cocoa-space-2);
+  border-bottom: 1px solid var(--cocoa-separator);
+  text-align: left;
+  vertical-align: top;
+}
+.c22-guide-help-article th {
+  font-weight: var(--cocoa-fw-semibold);
+  color: var(--cocoa-label-secondary);
+}
+
+/* ------------------------------------------------------------
+   Tarjeta de bienvenida — esquina, no bloqueante (GuideProvider.tsx)
+   ------------------------------------------------------------ */
+.c22-guide-welcome {
+  position: fixed;
+  right: var(--cocoa-space-5);
+  bottom: var(--cocoa-space-5);
+  z-index: var(--cocoa-z-popover);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--cocoa-space-3);
+  align-items: start;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - var(--cocoa-space-6)));
+  padding: var(--cocoa-space-4);
+  background: var(--cocoa-background-elevated);
+  color: var(--cocoa-label);
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-lg);
+  box-shadow: var(--cocoa-shadow-floating);
+  animation: c22-guide-rise var(--cocoa-duration-enter) var(--cocoa-ease-out);
+}
+.c22-guide-welcome-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--cocoa-radius-full);
+  background: var(--cocoa-accent-bg);
+  color: var(--cocoa-tone-accent-text);
+}
+.c22-guide-welcome-text { min-width: 0; }
+.c22-guide-welcome-text strong {
+  font-size: var(--cocoa-fs-headline);
+  line-height: var(--cocoa-lh-headline);
+  font-weight: var(--cocoa-fw-semibold);
+}
+.c22-guide-welcome-text p {
+  margin: var(--cocoa-space-1) 0 0;
+  font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-leading-text);
+  color: var(--cocoa-label-secondary);
+}
+.c22-guide-welcome-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--cocoa-space-2);
+  margin-top: 2px;
+}
+
+@media (max-width: 599px) {
+  .c22-guide-welcome {
+    left: var(--cocoa-space-4);
+    right: var(--cocoa-space-4);
+    width: auto;
+  }
+}
+
+/* ------------------------------------------------------------
+   Guía de estilo (dev) · muestra de color
+   screens/dev/StyleGuideScreen.tsx pinta el valor DECLARADO en claro/oscuro
+   de cada token (leído del CSSOM de cocoa-tokens.css) o el token de
+   respaldo; llega como custom property desde un objeto de estilo con
+   nombre (regla 6 del contrato: nunca un color en un literal style={{…}}).
+   ------------------------------------------------------------ */
+.c22-guide-swatch {
+  display: inline-block;
+  width: 28px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: var(--cocoa-radius-sm);
+  box-shadow: inset 0 0 0 1px var(--cocoa-separator);
+  background: var(--c22-guide-swatch);
+}
+
+/* ------------------------------------------------------------
+   Movimiento
+   ------------------------------------------------------------ */
+@keyframes c22-guide-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes c22-guide-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes c22-guide-rise { from { transform: translateY(14px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .c22-guide-help-scrim,
+  .c22-guide-help-panel,
+  .c22-guide-welcome { animation: none; }
+  .c22-guide-spotlight,
+  .c22-guide-dot { transition: none; }
+}
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .c22-guide-help-scrim,
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .c22-guide-help-panel,
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .c22-guide-welcome { animation: none; }
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .c22-guide-spotlight,
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .c22-guide-dot { transition: none; }

@@ -207,9 +207,9 @@ function PipelineSkeleton() {
   );
 }
 
-export function AiPipelineStatusScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
-  const hosted = useTabHost() !== null || embedded;
+export function AiPipelineStatusScreen() {
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1.
+  const hosted = useTabHost() !== null;
   const state = useApiData<PipelineDashboard>("/ai-operations/pipeline/dashboard", {
     pollIntervalMs: 30000,
     query: { organizationId: ORGANIZATION_ID }

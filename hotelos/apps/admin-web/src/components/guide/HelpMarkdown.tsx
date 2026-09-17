@@ -4,6 +4,10 @@
 // unordered (-, *) and ordered (1.) lists, pipe tables, and inline `code`,
 // **bold** and *italic*. Anything else renders as plain text, so an article
 // can never crash the help center.
+//
+// Skin: styles/cocoa-22-guide.css (`c22-guide-help-article` and its parts) —
+// no inline styles here, so the article follows the Cocoa tokens in both
+// appearances.
 import { Fragment, type ReactNode } from "react";
 
 type Block =
@@ -103,11 +107,7 @@ export function renderInline(text: string, keyPrefix = "i"): ReactNode[] {
   return parts.map((part, index) => {
     const key = `${keyPrefix}-${index}`;
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
-      return (
-        <code key={key} style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: "0.92em", padding: "1px 4px", borderRadius: 4, background: "var(--surface-sunken)" }}>
-          {part.slice(1, -1)}
-        </code>
-      );
+      return <code key={key}>{part.slice(1, -1)}</code>;
     }
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={key}>{part.slice(2, -2)}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={key}>{part.slice(1, -1)}</em>;
@@ -119,47 +119,35 @@ export function HelpMarkdown({ markdown, hideTitle = false }: { markdown: string
   const blocks = parseMarkdownBlocks(markdown);
   const body = hideTitle ? blocks.filter((block, index) => !(index === 0 && block.kind === "heading" && block.level === 1)) : blocks;
   return (
-    <div className="guide-help-article" style={{ fontSize: 13, lineHeight: 1.5, color: "var(--ink)" }}>
+    <div className="c22-guide-help-article">
       {body.map((block, index) => {
         const key = `b-${index}`;
         switch (block.kind) {
-          case "heading": {
-            const size = block.level === 1 ? 16 : block.level === 2 ? 14 : 13;
+          case "heading":
             return (
-              <p key={key} style={{ margin: "12px 0 4px", fontSize: size, fontWeight: 700, color: "var(--ink)" }}>
+              <p key={key} className="c22-guide-help-heading" data-level={block.level}>
                 {renderInline(block.text, key)}
               </p>
             );
-          }
           case "paragraph":
             return (
-              <p key={key} style={{ margin: "6px 0" }}>
+              <p key={key} className="c22-guide-help-p">
                 {renderInline(block.text, key)}
               </p>
             );
           case "list": {
-            const items = block.items.map((item, itemIndex) => <li key={`${key}-${itemIndex}`} style={{ margin: "2px 0" }}>{renderInline(item, `${key}-${itemIndex}`)}</li>);
-            return block.ordered ? (
-              <ol key={key} style={{ margin: "6px 0", paddingLeft: 22 }}>
-                {items}
-              </ol>
-            ) : (
-              <ul key={key} style={{ margin: "6px 0", paddingLeft: 20 }}>
-                {items}
-              </ul>
-            );
+            const items = block.items.map((item, itemIndex) => <li key={`${key}-${itemIndex}`}>{renderInline(item, `${key}-${itemIndex}`)}</li>);
+            return block.ordered ? <ol key={key}>{items}</ol> : <ul key={key}>{items}</ul>;
           }
           case "table": {
             const [head, ...rows] = block.rows;
             return (
-              <div key={key} style={{ overflowX: "auto", margin: "8px 0" }}>
-                <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12.5 }}>
+              <div key={key} className="c22-guide-help-table-wrap">
+                <table>
                   <thead>
                     <tr>
                       {head.map((cell, cellIndex) => (
-                        <th key={`${key}-h-${cellIndex}`} style={{ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid var(--line)", color: "var(--ink-muted)", fontWeight: 600 }}>
-                          {renderInline(cell, `${key}-h-${cellIndex}`)}
-                        </th>
+                        <th key={`${key}-h-${cellIndex}`}>{renderInline(cell, `${key}-h-${cellIndex}`)}</th>
                       ))}
                     </tr>
                   </thead>
@@ -167,9 +155,7 @@ export function HelpMarkdown({ markdown, hideTitle = false }: { markdown: string
                     {rows.map((row, rowIndex) => (
                       <tr key={`${key}-r-${rowIndex}`}>
                         {row.map((cell, cellIndex) => (
-                          <td key={`${key}-r-${rowIndex}-${cellIndex}`} style={{ padding: "4px 8px", borderBottom: "1px solid var(--line-soft, var(--line))", verticalAlign: "top" }}>
-                            {renderInline(cell, `${key}-r-${rowIndex}-${cellIndex}`)}
-                          </td>
+                          <td key={`${key}-r-${rowIndex}-${cellIndex}`}>{renderInline(cell, `${key}-r-${rowIndex}-${cellIndex}`)}</td>
                         ))}
                       </tr>
                     ))}

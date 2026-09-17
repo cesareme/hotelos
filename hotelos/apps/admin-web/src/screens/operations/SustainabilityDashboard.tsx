@@ -1,25 +1,22 @@
 // Sostenibilidad — /cumplimiento/sostenibilidad (Cocoa 22 · ola 8 · lote 8-C,
-// plantilla DashboardAlojado; hosted in SostenibilidadTabs through `embed()`).
+// plantilla DashboardAlojado; hosted in SostenibilidadTabs on the host context).
 //
 // Read-only panel of GET /dashboards/sustainability?propertyId= (5-minute
 // polling): CO2, water and waste per occupied room night as a KPI strip with
 // status thresholds, the metrics by category and the recent metrics as
 // CocoaTables, the active sustainability actions with a CocoaChart.Progress.
 //
-// L1c bridge: the loader still wraps the screen with `embed()` and the tests
-// (tabs/cumplimiento/__tests__/cumplimiento-tabs.test.mts EMBED_BRIDGE,
-// screens/__tests__/screens-fixes-contract.test.mts) expect the `embedded?:
-// boolean` prop and `pageHead(embedded)` in the code, so the screen keeps that
-// head (HostedHead inside a container, CocoaPageHeader standalone — the same
-// head CocoaPage paints from the host context); states, skeleton and ⌘K
-// commands are handled here. Once those entries go, the frame becomes CocoaPage.
+// Frame: CocoaPage on the host context (hosted, the container paints eyebrow
+// and H1; `treeHeaderFor` keeps the standalone header on the menu labels);
+// page states (skeleton on the first load, error state when nothing loaded; a
+// later error keeps the last data with a callout) and the ⌘K command are the
+// page's.
 
-import { useEffect, type ReactNode } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { dateTime, number, percent, plural } from "../../lib/format";
 import { ACTIONS, FIELD_LABELS, errorStateFor } from "../../content/actions";
-import { pageHead, treeHeaderFor } from "../tabs/tab-helpers";
+import { treeHeaderFor } from "../tabs/tab-helpers";
 import {
   CocoaBadge,
   CocoaButton,
@@ -28,12 +25,12 @@ import {
   CocoaGrid,
   CocoaKpi,
   CocoaKpiStrip,
+  CocoaPage,
   CocoaSection,
   CocoaSkeleton,
   CocoaSpan,
   CocoaState,
   CocoaTable,
-  registerPageCommands,
   type CocoaKpiStatus,
   type CocoaTableColumn
 } from "../../components/cocoa";
@@ -200,136 +197,125 @@ function ActionItem({ action }: { action: SustainabilityAction }) {
   );
 }
 
-export function SustainabilityDashboard({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container the page header belongs to the container: the head paints only subtitle and actions.
-  const Head = pageHead(embedded);
+export function SustainabilityDashboard() {
   const state = useApiData<SustainabilityDashboardData>(`/dashboards/sustainability?propertyId=${PROPERTY_ID}`, { pollIntervalMs: 300000 });
   const refresh = state.refresh;
-
-  // ⌘K: the page's command while it is mounted (D28).
-  useEffect(() => registerPageCommands([{ id: "sostenibilidad-refresh", label: "Actualizar el panel de sostenibilidad", run: refresh }]), [refresh]);
 
   const data = state.data ?? EMPTY;
   const { kpis, metricsByCategory, activeActions, recentMetrics } = data;
   const firstLoad = state.loading && !state.data;
 
-  // Page states (D27): skeleton on the first load, error state when nothing loaded, else the content (a later error keeps the last data with a callout).
-  let body: ReactNode;
-  if (firstLoad) body = <SustainabilitySkeleton />;
-  else if (state.error && !state.data) body = <CocoaState kind="error" title={LOAD_ERROR.title} message={LOAD_ERROR.message} onRetry={refresh} />;
-  else {
-    body = (
-      <>
-        {state.error && state.data ? (
-          <CocoaCallout
-            tone="danger"
-            role="alert"
-            title={LOAD_ERROR.title}
-            actions={
-              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => state.refresh()}>
-                {ACTIONS.retry}
-              </CocoaButton>
-            }
-          >
-            {LOAD_ERROR.message} Se muestran los últimos datos cargados.
-          </CocoaCallout>
-        ) : null}
-
-        <CocoaKpiStrip stagger aria-label="Indicadores de sostenibilidad">
-          <CocoaKpi
-            label="CO2 por noche ocupada"
-            value={number(kpis.co2KgPerRoomNight)}
-            unit="kg"
-            caption="intensidad de carbono por noche ocupada"
-            polarity="neutral"
-            status={intensityStatus(kpis.co2KgPerRoomNight, 15, 30)}
-          />
-          <CocoaKpi
-            label="CO2 total (30 días)"
-            value={number(kpis.co2Total30dKg)}
-            unit="kg"
-            caption="suma de las métricas de CO2 en la ventana"
-            polarity="neutral"
-            status={kpis.co2Total30dKg > 0 ? "warning" : "ok"}
-          />
-          <CocoaKpi
-            label="Agua por noche ocupada"
-            value={number(kpis.waterLitersPerRoomNight)}
-            unit="L"
-            caption="litros por noche ocupada"
-            polarity="neutral"
-            status={intensityStatus(kpis.waterLitersPerRoomNight, 200, 400)}
-          />
-          <CocoaKpi
-            label="Residuos por noche ocupada"
-            value={number(kpis.wastePerRoomNightKg)}
-            unit="kg"
-            caption="kilos por noche ocupada"
-            polarity="neutral"
-            status={intensityStatus(kpis.wastePerRoomNightKg, 1, 2)}
-          />
-          <CocoaKpi label="Acciones activas" value={kpis.activeActions} caption="ni cerradas ni canceladas" polarity="neutral" status={kpis.activeActions > 0 ? "warning" : "ok"} />
-        </CocoaKpiStrip>
-
-        <CocoaGrid align="start" aria-label="Métricas por categoría y acciones activas">
-          <CocoaSpan cols={6} min={320}>
-            <CocoaSection
-              title="Métricas por categoría"
-              meta={plural(metricsByCategory.length, "categoría", "categorías", { withCount: true })}
-              padding={metricsByCategory.length > 0 ? "none" : "md"}
-              style={{ overflow: "clip" }}
-            >
-              {metricsByCategory.length === 0 ? (
-                <CocoaState kind="empty" inline title="Sin métricas registradas en el periodo seleccionado." />
-              ) : (
-                <CocoaTable columns={CATEGORY_COLUMNS} rows={metricsByCategory} rowKey="category" caption="Métricas por categoría" aria-label="Métricas por categoría" />
-              )}
-            </CocoaSection>
-          </CocoaSpan>
-          <CocoaSpan cols={6} min={320}>
-            <CocoaSection title="Acciones activas" meta={plural(activeActions.length, "acción", "acciones", { withCount: true })}>
-              {activeActions.length === 0 ? (
-                <CocoaState kind="empty" inline title="Sin acciones de sostenibilidad activas." />
-              ) : (
-                <ol className="c22-section__list" aria-label="Acciones de sostenibilidad activas">
-                  {activeActions.map((action) => (
-                    <ActionItem key={action.id} action={action} />
-                  ))}
-                </ol>
-              )}
-            </CocoaSection>
-          </CocoaSpan>
-        </CocoaGrid>
-
-        <CocoaSection
-          title="Métricas recientes"
-          meta={plural(recentMetrics.length, "métrica", "métricas", { withCount: true })}
-          padding={recentMetrics.length > 0 ? "none" : "md"}
-          style={{ overflow: "clip" }}
-        >
-          {recentMetrics.length === 0 ? (
-            <CocoaState kind="empty" inline title="Sin métricas recientes." />
-          ) : (
-            <CocoaTable columns={RECENT_COLUMNS} rows={recentMetrics} rowKey="id" caption="Métricas recientes" aria-label="Métricas recientes" />
-          )}
-        </CocoaSection>
-      </>
-    );
-  }
+  // Page states (D27) are CocoaPage's: skeleton on the first load, error state when nothing loaded, else the content (a later error keeps the last data with a callout).
+  const pageState: "loading" | "error" | "ready" = firstLoad ? "loading" : state.error && !state.data ? "error" : "ready";
 
   return (
-    <div className="cocoa-stack" data-gap="4" aria-busy={firstLoad ? true : undefined}>
-      <Head
-        eyebrow={HEADER.eyebrow}
-        title={HEADER.title}
-        subtitle="Panel de sostenibilidad en solo lectura: emisiones de CO2, consumo de agua y residuos por habitación-noche, y acciones de sostenibilidad activas. Se actualiza cada 5 minutos."
-        actions={
-          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={state.loading}>
-            {ACTIONS.refresh}
-          </CocoaButton>
-        }
-      />
-      {body}
-    </div>
+    <CocoaPage
+      eyebrow={HEADER.eyebrow}
+      title={HEADER.title}
+      subtitle="Panel de sostenibilidad en solo lectura: emisiones de CO2, consumo de agua y residuos por habitación-noche, y acciones de sostenibilidad activas. Se actualiza cada 5 minutos."
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={state.loading}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      state={pageState}
+      skeleton={<SustainabilitySkeleton />}
+      error={{ title: LOAD_ERROR.title, message: LOAD_ERROR.message, onRetry: refresh }}
+      commands={[{ id: "sostenibilidad-refresh", label: "Actualizar el panel de sostenibilidad", run: refresh }]}
+    >
+      {state.error && state.data ? (
+        <CocoaCallout
+          tone="danger"
+          role="alert"
+          title={LOAD_ERROR.title}
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => state.refresh()}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          {LOAD_ERROR.message} Se muestran los últimos datos cargados.
+        </CocoaCallout>
+      ) : null}
+
+      <CocoaKpiStrip stagger aria-label="Indicadores de sostenibilidad">
+        <CocoaKpi
+          label="CO2 por noche ocupada"
+          value={number(kpis.co2KgPerRoomNight)}
+          unit="kg"
+          caption="intensidad de carbono por noche ocupada"
+          polarity="neutral"
+          status={intensityStatus(kpis.co2KgPerRoomNight, 15, 30)}
+        />
+        <CocoaKpi
+          label="CO2 total (30 días)"
+          value={number(kpis.co2Total30dKg)}
+          unit="kg"
+          caption="suma de las métricas de CO2 en la ventana"
+          polarity="neutral"
+          status={kpis.co2Total30dKg > 0 ? "warning" : "ok"}
+        />
+        <CocoaKpi
+          label="Agua por noche ocupada"
+          value={number(kpis.waterLitersPerRoomNight)}
+          unit="L"
+          caption="litros por noche ocupada"
+          polarity="neutral"
+          status={intensityStatus(kpis.waterLitersPerRoomNight, 200, 400)}
+        />
+        <CocoaKpi
+          label="Residuos por noche ocupada"
+          value={number(kpis.wastePerRoomNightKg)}
+          unit="kg"
+          caption="kilos por noche ocupada"
+          polarity="neutral"
+          status={intensityStatus(kpis.wastePerRoomNightKg, 1, 2)}
+        />
+        <CocoaKpi label="Acciones activas" value={kpis.activeActions} caption="ni cerradas ni canceladas" polarity="neutral" status={kpis.activeActions > 0 ? "warning" : "ok"} />
+      </CocoaKpiStrip>
+
+      <CocoaGrid align="start" aria-label="Métricas por categoría y acciones activas">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Métricas por categoría"
+            meta={plural(metricsByCategory.length, "categoría", "categorías", { withCount: true })}
+            padding={metricsByCategory.length > 0 ? "none" : "md"}
+            style={{ overflow: "clip" }}
+          >
+            {metricsByCategory.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin métricas registradas en el periodo seleccionado." />
+            ) : (
+              <CocoaTable columns={CATEGORY_COLUMNS} rows={metricsByCategory} rowKey="category" caption="Métricas por categoría" aria-label="Métricas por categoría" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Acciones activas" meta={plural(activeActions.length, "acción", "acciones", { withCount: true })}>
+            {activeActions.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin acciones de sostenibilidad activas." />
+            ) : (
+              <ol className="c22-section__list" aria-label="Acciones de sostenibilidad activas">
+                {activeActions.map((action) => (
+                  <ActionItem key={action.id} action={action} />
+                ))}
+              </ol>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaSection
+        title="Métricas recientes"
+        meta={plural(recentMetrics.length, "métrica", "métricas", { withCount: true })}
+        padding={recentMetrics.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+      >
+        {recentMetrics.length === 0 ? (
+          <CocoaState kind="empty" inline title="Sin métricas recientes." />
+        ) : (
+          <CocoaTable columns={RECENT_COLUMNS} rows={recentMetrics} rowKey="id" caption="Métricas recientes" aria-label="Métricas recientes" />
+        )}
+      </CocoaSection>
+    </CocoaPage>
   );
 }

@@ -2,8 +2,8 @@
 // 2026-09-15): helpers puros que sostienen cada corrección — precedencia de
 // los mapeos por producto (browser-ux-final#1), colocación del popover (#2),
 // acciones de una recomendación «hold» (#3), recuentos y unidades (#7),
-// margen del toast sobre la barra (#9), modo del drawer con un envío en curso
-// (#10), etiquetas de modo/proveedor/tipo (#11, #12) y el hash `#channel=`
+// modo del drawer con un envío en curso (#10; el margen del toast sobre la
+// barra, #9, lo escribe hoy CocoaActionBar · `publishToastOffset`), etiquetas de modo/proveedor/tipo (#11, #12) y el hash `#channel=`
 // de Mapeos (#13). Sin React ni DOM.
 
 import assert from "node:assert/strict";
@@ -17,8 +17,7 @@ import {
   providerLabel,
   queuedDeliveriesSummary,
   recommendationChoices,
-  snapshotBefore,
-  toastOffsetForBar
+  snapshotBefore
 } from "../helpers.ts";
 import { channelsForProduct, countDraftCellsByChannel, isChannelMappedForProduct, indexProductMappings, resolveReviewDrawerMode } from "../rate-grid-utils.ts";
 import { draftReducer, initialDraftStore } from "../draft-store.ts";
@@ -129,15 +128,6 @@ describe("final · recuentos y unidades (browser-ux-final#7)", () => {
     assert.equal(queuedDeliveriesSummary(3, 1, 3), "3 entregas encoladas para 1 celda en 3 canales.");
     assert.equal(queuedDeliveriesSummary(1, 1, 1), "1 entrega encolada para 1 celda en 1 canal.");
     assert.equal(queuedDeliveriesSummary(0, 2, 0), "0 entregas encoladas para 2 celdas en 0 canales.");
-  });
-});
-
-describe("final · toast sobre la barra sticky (browser-ux-final#9)", () => {
-  it("120 px con la barra de una fila y la diferencia cuando crece", () => {
-    assert.equal(toastOffsetForBar(44), 120);
-    assert.equal(toastOffsetForBar(86), 162);
-    assert.equal(toastOffsetForBar(30), 120);
-    assert.equal(toastOffsetForBar(Number.NaN), 120);
   });
 });
 

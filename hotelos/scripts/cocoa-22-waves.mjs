@@ -9,9 +9,10 @@
 //     importing the test file runs its suites)
 // plus the wave rules of this file (§2.3 of the plan): a screen belongs to the
 // wave of its inventory category, a key-less dialog/drawer/sub-view to the wave
-// of the screen that mounts it (OVERRIDE), and eight files without importers
-// are retired, not migrated (DEAD). Lots inside a wave are disjoint by
-// construction (first matching LOT test wins; the last lot is the catch-all).
+// of the screen that mounts it (OVERRIDE), and the files without importers
+// were retired, not migrated (DEAD: empty since ola 11, kept as the mechanism).
+// Lots inside a wave are disjoint by construction (first matching LOT test
+// wins; the last lot is the catch-all).
 //
 // Usage (from hotelos/):
 //   node scripts/cocoa-22-waves.mjs --stdout    print the block
@@ -72,9 +73,8 @@ const OVERRIDE = {
   "operations/FrontDeskActionQueue.tsx": { wave: 2, mode: "sub-vista", note: "sub-vista de FrontDeskDashboard (`/hoy`)" },
   "onboarding/OnboardingInteractive.tsx": { wave: 11, mode: "sub-vista", note: "solo lo monta OnboardingScreens (dev-only, `/desarrollo/migracion`)" },
   "invoicing/InvoiceRectifyDialog.tsx": { wave: 6, note: "diálogo de InvoiceRectificationsScreen (`/finanzas/facturacion/rectificativas`)" },
-  "admin/InviteUserDialog.tsx": { wave: 10, note: "diálogo (barrel `admin/index.ts`) de UserRoleManager (`/configuracion/usuarios`)" },
+  // admin/InviteUserDialog.tsx and admin/ResetPasswordConfirmDialog.tsx (barrel admin/index.ts, 0 importers): retired in wave 11 (git D, lote 11-A).
   "admin/NewTenantWizardDialog.tsx": { wave: 10, note: "diálogo de TenantAdminConsoleScreen (`/configuracion/sistema/organizaciones`)" },
-  "admin/ResetPasswordConfirmDialog.tsx": { wave: 10, note: "diálogo (barrel `admin/index.ts`) de UserRoleManager (`/configuracion/usuarios`)" },
   "fiscal/ReportErrorCard.tsx": { wave: 8, mode: "componente (tarjeta)", note: "tarjeta de Modelo111/115/180/303/390 (`/cumplimiento/modelos-aeat/*`)" },
   "fiscal/ComplianceInbox.tsx": { wave: 8, mode: "standalone", url: "/cumplimiento/bandeja", note: "App.tsx:158 la envuelve en `ComplianceInboxWired` (clave `ComplianceInbox`)" },
   "auth/AcceptInviteScreen.tsx": { wave: 1, mode: "pública", url: "/accept-invite", note: "auth/PublicAuthRoutes.tsx — marco `auth/AuthShell.tsx` (ola 1)" },
@@ -83,22 +83,21 @@ const OVERRIDE = {
   "errors/CocoaNotFoundScreen.tsx": { wave: 1, mode: "shell", note: "404 del shell (App.tsx:766): `CocoaState kind=\"error\"` a página completa, sin `<h1>` crudo" },
   "ModuleSettingsPlaceholder.tsx": { wave: 11, mode: "fábrica", note: "`makeModulePlaceholder` (App.tsx; 16 placeholders, presupuesto 20 de check-discoverability)" },
   "ScreenScaffold.tsx": { wave: 11, mode: "sub-vista", note: "solo lo usa OnboardingScreens" },
-  "tabs/tab-helpers.tsx": { wave: 11, note: "pinta el `<h1>` alojado (`HostedHead`): exención de la regla 8 o traslado a `components/` antes de salir de `NOT_MIGRATED`" },
-  "tabs/TabHost.tsx": { wave: 11, note: "pinta el `<h1>` alojado: misma exención de la regla 8 que `tab-helpers.tsx`" },
-  "tabs/NavItemTabs.tsx": { wave: 11, note: "ya Cocoa (`CocoaPageHeader` + `CocoaRouteTabs`); solo salir de `NOT_MIGRATED`" },
+  "tabs/tab-helpers.tsx": { wave: 11, note: "helpers de los contenedores sin `embed()` ni `pageHead()` desde la ola 11; el `<h1>` alojado vive en `components/cocoa/HostedHead.tsx` (sin exención de la regla 8)" },
+  "tabs/TabHost.tsx": { wave: 11, note: "`TabHostProvider` + `useTabHost` (contexto del host); no pinta ningún `<h1>` desde la ola 11" },
+  "tabs/NavItemTabs.tsx": { wave: 11, note: "ya Cocoa (`CocoaPageHeader` + `CocoaRouteTabs`); fuera de `NOT_MIGRATED` desde la ola 11" },
   // tabs/configuracion/tab-helpers.tsx: compatibility re-export with 0 importers, retired in wave 10 (integración; git D).
-  "dev/StyleGuideScreen.tsx": { wave: 11, note: "ya en `CocoaPage` (37 `style={` de muestras): `STYLE_BUDGET` 40 y salir de `NOT_MIGRATED` en cuanto el integrador lo decida (puede ir con la ola 1)" }
+  "dev/StyleGuideScreen.tsx": { wave: 11, note: "en `CocoaPage` (37 `style={` de muestras, `STYLE_BUDGET` 40); fuera de `NOT_MIGRATED` desde la ola 11" }
 };
 
 /** Files with zero importers in apps/admin-web/src: retired in their wave, never migrated. */
 const DEAD = {
   // reservations/QuickActionsDialogs.tsx: retired in wave 3 (git D, lote 3-C).
-  "billing/SplitFolioDialog.tsx": "0 importadores",
-  "billing/InvoiceDetailScreen.tsx": "0 importadores (solo un comentario en billing/invoiceStatus.ts:2); sin clave ni URL",
+  // billing/SplitFolioDialog.tsx and billing/InvoiceDetailScreen.tsx: retired in wave 6 (git D, lote 6-A).
   // onboarding/CocoaOnboardingWizard.tsx: retired in wave 10 (git D, lote 10-C; shell-cocoa22-contract.test.mts no longer reads it).
   // auth/CocoaLoginScreen.tsx and errors/CocoaServerErrorScreen.tsx: retired in wave 1 (git D).
-  "developer/CocoaShowcaseScreen.tsx": "0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:36 (borrar la línea)",
-  "preview/CocoaGalleryScreen.tsx": "0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:37 (borrar la línea)"
+  // developer/CocoaShowcaseScreen.tsx and preview/CocoaGalleryScreen.tsx: retired in wave 11 (git D, lote 11-A; their
+  // exemptions in tests/admin-web-spanish-copy-contract.test.mjs are gone too).
 };
 
 /** §4.3 template per archetype and rule-6 budget (§9: 25 dashboard/default · 15 list/detail/form · 40 calendar/workspace). */

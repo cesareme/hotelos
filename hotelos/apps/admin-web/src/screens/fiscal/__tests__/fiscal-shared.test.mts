@@ -4,6 +4,8 @@ import {
   KPI_KEYS,
   KPI_LABEL_MAX_CHARS,
   QUARTER_OPTIONS,
+  SUBMISSION_PENDING_STATUSES,
+  SUBMISSION_RETRYABLE_STATUSES,
   SUBMISSION_STATUS_LABELS,
   TOTALES_LABELS,
   bookPeriodOptions,
@@ -197,6 +199,24 @@ describe("fiscal-shared · estados de envío", () => {
 
   it("falls back to the raw value for a status the API adds later", () => {
     assert.equal(submissionStatusLabel("estado_nuevo"), "estado_nuevo");
+  });
+
+  it("sent es pendiente, accepted/rejected no (Cocoa 22 · ola 11: el API trata sent como abierto)", () => {
+    for (const open of ["queued", "sent", "submitting", "retrying", "network_error", "pending"]) {
+      assert.ok(SUBMISSION_PENDING_STATUSES.has(open), `«${open}» debería seguir sondeándose`);
+    }
+    for (const closed of ["accepted", "accepted_with_errors", "accepted_with_warnings", "rejected", "failed", "abandoned", "annulled", "delivered", "acknowledged"]) {
+      assert.ok(!SUBMISSION_PENDING_STATUSES.has(closed), `«${closed}» no es pendiente`);
+    }
+    for (const status of SUBMISSION_PENDING_STATUSES) assert.ok(status in SUBMISSION_STATUS_LABELS, `«${status}» sin etiqueta`);
+  });
+
+  it("retryable: rejected / failed / abandoned / retrying / network_error, never an accepted or open row", () => {
+    assert.deepEqual([...SUBMISSION_RETRYABLE_STATUSES].sort(), ["abandoned", "failed", "network_error", "rejected", "retrying"]);
+    for (const status of ["accepted", "accepted_with_errors", "queued", "sent", "submitting", "annulled"]) {
+      assert.ok(!SUBMISSION_RETRYABLE_STATUSES.has(status), `«${status}» no admite reintento manual`);
+    }
+    for (const status of SUBMISSION_RETRYABLE_STATUSES) assert.ok(status in SUBMISSION_STATUS_LABELS, `«${status}» sin etiqueta`);
   });
 });
 

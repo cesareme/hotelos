@@ -81,6 +81,6 @@ describe("shell · switcher agrupado por sociedad (Tanda 6b · L7)", () => {
     assert.match(layout, /aria-label="Centro no alojativo activo"/);
     assert.match(layout, /Aquí trabajan Finanzas y Cumplimiento\./);
     assert.match(layout, /<OfficeCentreBanner onOpenFinance=\{\(\) => selectAndClose\("FinancePositionDashboard"\)\} \/>/);
-    assert.equal((layout.match(/<OfficeCentreBanner /g) ?? []).length, 2, "mounted in the Cocoa shell and in the legacy chrome");
+    assert.equal((layout.match(/<OfficeCentreBanner /g) ?? []).length, 1, "mounted once, in the Cocoa shell (the legacy chrome was retired in wave 11)");
   });
 });

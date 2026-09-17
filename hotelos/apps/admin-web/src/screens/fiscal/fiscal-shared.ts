@@ -179,6 +179,14 @@ export function submissionStatusLabel(status: string): string {
   return SUBMISSION_STATUS_LABELS[status] ?? status;
 }
 
+// Cocoa 22 · ola 11: el API trata sent como abierto (ses-submission.service.ts:61 SES_OPEN_STATUSES)
+/** Statuses the pipeline still owes an answer for: the submissions centre keeps polling while any row is in one of them. */
+export const SUBMISSION_PENDING_STATUSES: ReadonlySet<string> = new Set(["queued", "sent", "submitting", "retrying", "network_error", "pending"]);
+
+/** States the operator may force a resend from: the terminal ones too, since a
+ *  manual retry resets the attempt counter (409 when the invoice is no longer issuable). */
+export const SUBMISSION_RETRYABLE_STATUSES: ReadonlySet<string> = new Set(["rejected", "retrying", "network_error", "failed", "abandoned"]);
+
 /** `totales` keys of the six models → Spanish label; unknown keys fall back to the key itself. */
 export const TOTALES_LABELS: Readonly<Record<string, string>> = Object.freeze({
   baseDevengada: "Base imponible devengada",

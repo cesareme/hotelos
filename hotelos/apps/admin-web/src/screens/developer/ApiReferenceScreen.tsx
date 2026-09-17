@@ -9,8 +9,7 @@
 // and method filters, visible count) → one CocoaSection per category with
 // the endpoints as a `c22-section__list` (method badge · path · description ·
 // permission badges · risk badge). Hosted in SistemaTabs the container
-// paints the title; the `embedded` prop stays only for the `embed()` loader
-// bridge (TabHost.tsx) — the host context is what decides.
+// paints the title: the host context (`useTabHost()`) is what decides.
 //
 // qa#17 (fix:10-A): the API derives most descriptions from the last path
 // segment («Listar housekeeping settings.», api-reference.service.ts
@@ -61,12 +60,12 @@ type Data = {
   manifestVersion: number;
   totalEndpoints: number;
   publicEndpoints: number;
-  byMethod: { GET: number; POST: number; PATCH: number; DELETE: number };
+  byMethod: { GET: number; POST: number; PATCH: number; DELETE: number; PUT: number };
   byRisk: { public: number; low: number; medium: number; high: number; critical: number };
   categories: CategoryGroup[];
 };
 
-const METHOD_TONE: Record<string, CocoaTone> = { GET: "success", POST: "info", PATCH: "warning", DELETE: "danger" };
+const METHOD_TONE: Record<string, CocoaTone> = { GET: "success", POST: "info", PATCH: "warning", PUT: "warning", DELETE: "danger" };
 
 const RISK: Record<string, { tone: CocoaTone; label: string }> = {
   public: { tone: "success", label: "público" },
@@ -81,6 +80,7 @@ const METHOD_OPTIONS = [
   { value: "GET", label: "GET" },
   { value: "POST", label: "POST" },
   { value: "PATCH", label: "PATCH" },
+  { value: "PUT", label: "PUT" },
   { value: "DELETE", label: "DELETE" }
 ];
 
@@ -99,8 +99,8 @@ function endpointDescription(ep: Pick<EndpointRef, "method" | "path" | "descript
   return text;
 }
 
-export function ApiReferenceScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  const hosted = useTabHost() !== null || embedded;
+export function ApiReferenceScreen() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<Data>("/developer/api-reference");
   const [query, setQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | "all">("all");
@@ -157,6 +157,7 @@ export function ApiReferenceScreen({ embedded = false }: { embedded?: boolean } 
           <CocoaKpi label="GET" value={number(data.byMethod.GET)} size="compact" />
           <CocoaKpi label="POST" value={number(data.byMethod.POST)} size="compact" />
           <CocoaKpi label="PATCH" value={number(data.byMethod.PATCH)} size="compact" />
+          <CocoaKpi label="PUT" value={number(data.byMethod.PUT ?? 0)} size="compact" />
           <CocoaKpi label="DELETE" value={number(data.byMethod.DELETE)} size="compact" />
           <CocoaKpi
             label="Riesgo alto o crítico"

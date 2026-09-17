@@ -38,7 +38,7 @@ function openCategoryDetail(categoryCode: string): void {
   if (url) openTabPath(url);
 }
 
-export function CategoryOptionForm(props: { category?: ConfigurationCategory; categoryCode?: string; onSaved?: () => void; embedded?: boolean }) {
+export function CategoryOptionForm(props: { category?: ConfigurationCategory; categoryCode?: string; onSaved?: () => void }) {
   // `categoryCode` alone comes from the `…/categorias/:codigo/opciones/nueva` sub-URL (Tanda 5).
   const categoryCode = props.category?.code ?? props.categoryCode ?? "room_features";
   const [values, setValues] = useState({

@@ -6,9 +6,11 @@
 // with useApiData and polled every 12 s while a submission is still pending;
 // «Reintentar N fallidos» re-queues every retryable row (POST …/retry, one
 // request per row, summarised in a toast). A row opens the detail drawer
-// (SubmissionDetailDrawer below, formerly components/SubmissionDetailPanel):
-// identifiers, life cycle, transport, the authority's error, the canonical XML
-// and the authority's response, with a manual retry. Simulated acknowledgements
+// (SubmissionDetailDrawer, defined below in this file): identifiers, life
+// cycle, transport, the authority's error, the canonical XML and the
+// authority's response, with a manual retry. The pending / retryable status
+// sets live in fiscal-shared.ts (SUBMISSION_PENDING_STATUSES counts «sent» as
+// open, like the API's SES_OPEN_STATUSES). Simulated acknowledgements
 // (endpoint `stub://…`, no real submission) are labelled «Simulado · no enviado»
 // and never painted green (auditoría 2026-07).
 
@@ -19,7 +21,7 @@ import { apiRequest } from "../../services/api-client";
 import { useToast } from "../../components/Toast";
 import { ACTIONS, FIELD_LABELS, STATUS_LABELS } from "../../content/actions";
 import { EMPTY, dateTime, number, plural } from "../../lib/format";
-import { submissionStatusLabel } from "./fiscal-shared";
+import { SUBMISSION_PENDING_STATUSES, SUBMISSION_RETRYABLE_STATUSES, submissionStatusLabel } from "./fiscal-shared";
 import {
   CocoaBadge,
   CocoaButton,
@@ -75,11 +77,6 @@ function statusTone(status: string, simulated = false): CocoaTone {
 
 // The Spanish label of every wire status lives in fiscal-shared.ts
 // (`submissionStatusLabel`, shared with TbaiForalScreen and unit-tested).
-
-/** States the operator may force a resend from: the terminal ones too, since a
- *  manual retry resets the attempt counter (409 when the invoice is no longer issuable). */
-const RETRYABLE_STATUSES = new Set(["rejected", "retrying", "network_error", "failed", "abandoned"]);
-const PENDING_STATUSES = new Set(["retrying", "submitting", "queued", "network_error"]);
 
 /** Simulated submission: the default submitter persists acknowledgements with an
  *  endpoint `stub://…` without contacting the Administration. */
@@ -218,7 +215,7 @@ export function FiscalSubmissionsCenter() {
           : Array.isArray((raw as { submissions?: SubmissionRow[] } | null)?.submissions)
             ? ((raw as { submissions: SubmissionRow[] }).submissions)
             : [];
-      return list.some((r) => PENDING_STATUSES.has(r.status));
+      return list.some((r) => SUBMISSION_PENDING_STATUSES.has(r.status));
     }
   });
 
@@ -233,7 +230,7 @@ export function FiscalSubmissionsCenter() {
     }
     return [];
   }, [data]);
-  const retryable = useMemo(() => rows.filter((r) => RETRYABLE_STATUSES.has(r.status)), [rows]);
+  const retryable = useMemo(() => rows.filter((r) => SUBMISSION_RETRYABLE_STATUSES.has(r.status)), [rows]);
   const columns = useMemo(() => submissionColumns(tab), [tab]);
   const authority = AUTHORITIES.find((a) => a.id === tab) ?? AUTHORITIES[0];
 
@@ -461,8 +458,8 @@ function SubmissionDetailDrawer(props: { open: boolean; authority: AuthorityKind
 
   const sub = props.open ? data : null;
   const identifier = sub?.csvCode ?? sub?.tbaiCode ?? sub?.acknowledgementCode ?? sub?.acceptedHash;
-  const canRetry = sub !== null && sub !== undefined && RETRYABLE_STATUSES.has(sub.status);
-  const pending = sub ? PENDING_STATUSES.has(sub.status) : false;
+  const canRetry = sub !== null && sub !== undefined && SUBMISSION_RETRYABLE_STATUSES.has(sub.status);
+  const pending = sub ? SUBMISSION_PENDING_STATUSES.has(sub.status) : false;
   const title = sub?.invoiceNumber ?? sub?.externalReference ?? "Detalle de envío";
 
   let body: ReactNode;

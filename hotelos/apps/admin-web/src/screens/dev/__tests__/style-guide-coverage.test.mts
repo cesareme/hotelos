@@ -29,8 +29,8 @@ function pageOpeningTag(): string {
   return jsx.slice(start, end);
 }
 
-/** Inline `style={` budget of the guide: the four presentational helpers plus layout-only props of the demos. */
-const INLINE_STYLE_BUDGET = 45;
+/** Inline `style={` budget of the guide: the presentational helpers (named objects with system values) plus layout-only props of the demos and the colour swatch (ola 11: 37 real + 2). */
+const INLINE_STYLE_BUDGET = 39;
 
 /**
  * `<Name …prop…>` somewhere in the JSX: the prop must appear within the 600

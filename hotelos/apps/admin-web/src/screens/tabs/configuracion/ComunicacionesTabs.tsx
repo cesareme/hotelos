@@ -11,10 +11,9 @@
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
-import { embed } from "../tab-helpers";
 
 export const loaders: TabLoaders = {
-  NotificationsScreen: () => import("../../notifications/NotificationsScreen").then((m) => embed(m.NotificationsScreen)),
+  NotificationsScreen: () => import("../../notifications/NotificationsScreen").then((m) => ({ default: m.NotificationsScreen })),
   EmailConnectors: () => import("../../aiOperations/EmailConnectorsScreen").then((m) => ({ default: m.EmailConnectorsScreen }))
 };
 

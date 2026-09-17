@@ -3,7 +3,7 @@
 // Compact tile that surfaces the health of a single operational module
 // (housekeeping, maintenance, workforce, safety, pos) at a glance. Designed
 // to live inside the Director Overview grid alongside the existing KPI tiles
-// (see `DirectorKpiTile`).
+// (see `CocoaKpi`).
 //
 // Layout (vertical):
 //   - Header row: module icon + title + status dot (green / amber / red)

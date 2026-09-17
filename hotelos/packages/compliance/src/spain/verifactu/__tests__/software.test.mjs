@@ -44,9 +44,9 @@ test("blank strings count as absent: the demo .env (NIF= and INSTALL_NUMBER=) is
     VERIFACTU_INSTALL_NUMBER: ""
   });
   assert.equal(result.ok, false);
-  assert.ok(result.errors.some((e) => e.includes("VERIFACTU_SOFTWARE_NAME")));
-  assert.ok(result.errors.some((e) => e.includes("VERIFACTU_SOFTWARE_NIF")));
-  assert.ok(result.errors.some((e) => e.includes("VERIFACTU_INSTALL_NUMBER")));
+  assert.ok(result.errors.some((e) => e === "Falta la razón social del productor del software."));
+  assert.ok(result.errors.some((e) => e === "Falta el NIF del productor del software (no el del hotel emisor)."));
+  assert.ok(result.errors.some((e) => e === "Falta el número de instalación asignado por el productor a este despliegue."));
   // Sandbox fillers are never empty (the XML must still be well formed).
   assert.equal(result.software.nif, VERIFACTU_SOFTWARE_DEFAULTS.nif);
   assert.equal(result.software.numeroInstalacion, VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion);
@@ -83,7 +83,7 @@ test("NIF is normalised and checksum-validated (producer NIF, not the issuer)", 
 
   const invalid = resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_SOFTWARE_NIF: "B99999999" });
   assert.equal(invalid.ok, false);
-  assert.ok(invalid.errors.some((e) => e.startsWith("VERIFACTU_SOFTWARE_NIF no es un NIF válido")));
+  assert.ok(invalid.errors.some((e) => e.startsWith("El NIF del productor del software no es válido")));
 
   const placeholder = resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_SOFTWARE_NIF: "B00000000" });
   assert.equal(placeholder.ok, false, "the all-zero sandbox placeholder is never a valid producer NIF");
@@ -100,11 +100,11 @@ test("XSD lengths: NombreRazon ≤120, NombreSistema ≤30, IdSistema == 2, Vers
   });
   assert.equal(tooLong.ok, false);
   assert.equal(tooLong.errors.length, 5, tooLong.errors.join("\n"));
-  assert.ok(tooLong.errors.some((e) => e.includes("VERIFACTU_SOFTWARE_NAME") && e.includes("120")));
-  assert.ok(tooLong.errors.some((e) => e.includes("VERIFACTU_SYSTEM_NAME") && e.includes("30")));
-  assert.ok(tooLong.errors.some((e) => e.includes("VERIFACTU_SYSTEM_ID") && e.includes("exactamente 2")));
-  assert.ok(tooLong.errors.some((e) => e.includes("VERIFACTU_SYSTEM_VERSION") && e.includes("50")));
-  assert.ok(tooLong.errors.some((e) => e.includes("VERIFACTU_INSTALL_NUMBER") && e.includes("100")));
+  assert.ok(tooLong.errors.some((e) => e.startsWith("La razón social del productor supera los 120 caracteres que admite la AEAT (121)")));
+  assert.ok(tooLong.errors.some((e) => e.startsWith("El nombre del sistema supera los 30 caracteres")));
+  assert.ok(tooLong.errors.some((e) => e.startsWith("El identificador del sistema debe tener exactamente 2 caracteres")));
+  assert.ok(tooLong.errors.some((e) => e.startsWith("La versión del sistema supera los 50 caracteres")));
+  assert.ok(tooLong.errors.some((e) => e.startsWith("El número de instalación supera los 100 caracteres")));
 
   const exact = resolveVerifactuSoftware({
     ...COMPLETE,
@@ -122,7 +122,7 @@ test("VERIFACTU_MULTI_OT accepts s/n case-insensitively and rejects anything els
   assert.equal(resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_MULTI_OT: "n" }).software.indicadorMultiplesOT, "N");
   const bad = resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_MULTI_OT: "yes" });
   assert.equal(bad.ok, false);
-  assert.ok(bad.errors.some((e) => e.includes("VERIFACTU_MULTI_OT")));
+  assert.ok(bad.errors.some((e) => e === "El indicador de varios obligados tributarios debe ser «S» o «N» (valor actual: «yes»)."));
   assert.equal(bad.software.tipoUsoPosibleMultiOT, "S", "falls back to the SaaS default");
 });
 
@@ -131,4 +131,22 @@ test("never throws and never mutates the environment object", () => {
   const snapshot = JSON.stringify(env);
   assert.doesNotThrow(() => resolveVerifactuSoftware(env));
   assert.equal(JSON.stringify(env), snapshot);
+});
+
+test("Cocoa 22 · ola 11 (qa#14): errors read in Spanish without env variables, XML element names or table names", () => {
+  const jargon = /[A-Z][A-Z0-9]*_[A-Z0-9_]+|verifactu_installations|IdSistemaInformatico|NombreRazon|SistemaInformatico|\bXSD\b|\bsandbox\b|\bstub\b|\bpreproduction\b|\bproduction\b/;
+  const cases = [
+    resolveVerifactuSoftware({}),
+    resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_SOFTWARE_NIF: "B99999999", VERIFACTU_SYSTEM_ID: "001", VERIFACTU_MULTI_OT: "yes" }),
+    resolveVerifactuSoftware({ ...COMPLETE, VERIFACTU_SOFTWARE_NAME: "N".repeat(121) }),
+    resolveVerifactuSoftware(COMPLETE, { installation: null, requireInstallation: true }),
+    resolveVerifactuSoftware(COMPLETE, { installation: { numeroInstalacion: "  " } })
+  ];
+  for (const result of cases) {
+    assert.ok(result.errors.length > 0);
+    for (const error of result.errors) {
+      assert.doesNotMatch(error, jargon, error);
+      assert.match(error, /^[A-ZÁÉÍÓÚ].*\.$/, error);
+    }
+  }
 });

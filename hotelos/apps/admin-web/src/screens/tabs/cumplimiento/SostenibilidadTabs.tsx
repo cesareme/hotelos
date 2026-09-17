@@ -8,10 +8,9 @@
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
-import { embed } from "../tab-helpers";
 
 export const loaders: TabLoaders = {
-  SustainabilityDashboard: () => import("../../operations/SustainabilityDashboard").then((m) => embed(m.SustainabilityDashboard)),
+  SustainabilityDashboard: () => import("../../operations/SustainabilityDashboard").then((m) => ({ default: m.SustainabilityDashboard })),
   EsrsReport: () => import("../../esrs/EsrsReportScreen").then((m) => ({ default: m.EsrsReportScreen }))
 };
 

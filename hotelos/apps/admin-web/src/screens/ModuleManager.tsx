@@ -36,7 +36,7 @@ import {
  * invalidates the session cache of enabled modules and notifies the Sidebar
  * and the tab containers: an entry unlocked here appears without a reload.
  *
- * Tanda 5: base tab of Configuración › Módulos e integraciones (`embedded`),
+ * Tanda 5: base tab of Configuración › Módulos e integraciones (host context),
  * visible to dirección and admin. Each card says which menu entries the module
  * unlocks, read from the navigation tree (nav-tree.generated.json, §6.2 of
  * pilots/tanda5-nav-tree.md) with the manifest's `menuEntries` as fallback, so
@@ -132,10 +132,10 @@ function readHashCode(): string | null {
   return moduleCodeFromHash(window.location.hash);
 }
 
-function ModuleManagerPage({ embedded }: { embedded: boolean }) {
-  // The host context decides the head (CocoaPage reads it); `embedded` is the L1c bridge the loader still passes.
+function ModuleManagerPage() {
+  // The host context decides the head (CocoaPage reads it).
   // Hosted, the container already describes the modules in its subtitle (§4.2 D20).
-  const hosted = embedded || useTabHost() !== null;
+  const hosted = useTabHost() !== null;
   const propertyId = useMemo(() => getActivePropertyId(), []);
   const { showToast } = useToast();
 
@@ -313,7 +313,7 @@ function ModuleManagerPage({ embedded }: { embedded: boolean }) {
   );
 }
 
-// Bridge of L1c (TabHost.tsx): the loader still passes `embedded`; the page reads the host context.
-export function ModuleManager({ embedded = false }: { embedded?: boolean } = {}) {
-  return <ModuleManagerPage embedded={embedded} />;
+// The page reads the host context (TabHost.tsx); the loader hands it over as it is.
+export function ModuleManager() {
+  return <ModuleManagerPage />;
 }

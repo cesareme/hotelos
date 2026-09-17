@@ -1,7 +1,7 @@
 // CocoaState + CocoaSkeleton — the honest states of Cocoa 22 (COCOA-22.md
 // §3.10; replaces `LoadingBlock/Skeleton/EmptyState/ErrorState` of
-// `.bo-*`, the local `DashboardSkeleton`s and `CocoaEmptyState`, which stays
-// as the alias of `kind="empty"`).
+// `.bo-*`, the local `DashboardSkeleton`s and the former empty-state kit,
+// consolidated into `kind="empty"` in ola 11).
 //
 //   empty     illustration 200×150 tertiary · title-2 600 · subheadline secondary · actions · min-height 320 · role=status
 //   error     danger icon · title in --cocoa-danger-ink · message · «Reintentar» · role=alert

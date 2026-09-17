@@ -1,5 +1,5 @@
 // Spanish labels for record keys the back-office paints from raw API objects
-// (Tanda 5 · L1c). `DataPreview` (components/forms) used to humanise the key
+// (Tanda 5 · L1c). `DataPreview` (components/cocoa-extras/CocoaDataPreview) used to humanise the key
 // («HAS BAR», «TAX REGION RAW», «SORT ORDER») and print booleans as «Yes/No»
 // (browser-roles#9); every read-only dump now goes through this dictionary,
 // with the form's own field labels taking precedence when the screen has them.

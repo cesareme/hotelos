@@ -1,5 +1,5 @@
 // Auth session storage backed by localStorage. Centralises read/write of the
-// JWT + user profile so the rest of the app (api-client, AuthGate, TopBar)
+// JWT + user profile so the rest of the app (api-client, AuthGate, the shell)
 // can react to login/logout without duplicating storage keys.
 
 const TOKEN_KEY = "hotelos.auth.token";

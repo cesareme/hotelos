@@ -8,11 +8,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  FISCAL_ADDRESS_FIELD_LABELS,
   SES_USAGE_WINDOW_DAYS,
   assertPostalAndIneCoherent,
+  integrationModePhrase,
   normalizeClearablePatchField,
   resolveComplianceApplicability,
   resolveFiscalLocation,
+  taxRegionName,
   validateSesRegistryNumber,
   withUsageNote,
   type FiscalLocationDeps
@@ -37,12 +40,12 @@ const normalizer: FiscalLocationDeps = {
 
 describe("resolveComplianceApplicability — flag OR real usage", () => {
   it("does not apply when the flag is off and there is no usage", () => {
-    const result = resolveComplianceApplicability({ flagEnabled: false, usageCount: 0, flagName: "sesHospedajesEnabled", usageLabel: "envíos" });
+    const result = resolveComplianceApplicability({ flagEnabled: false, usageCount: 0, switchLabel: "SES.HOSPEDAJES", usageLabel: "envíos" });
     assert.deepEqual(result, { applies: false, byFlag: false, byUsage: false, usageCount: 0, usageNote: null });
   });
 
   it("applies by flag without a note", () => {
-    const result = resolveComplianceApplicability({ flagEnabled: true, usageCount: 0, flagName: "verifactuEnabled", usageLabel: "facturas emitidas" });
+    const result = resolveComplianceApplicability({ flagEnabled: true, usageCount: 0, switchLabel: "VeriFactu", usageLabel: "facturas emitidas" });
     assert.equal(result.applies, true);
     assert.equal(result.byFlag, true);
     assert.equal(result.byUsage, false);
@@ -53,19 +56,21 @@ describe("resolveComplianceApplicability — flag OR real usage", () => {
     const result = resolveComplianceApplicability({
       flagEnabled: false,
       usageCount: 3,
-      flagName: "sesHospedajesEnabled",
+      switchLabel: "SES.HOSPEDAJES",
       usageLabel: "envíos",
       windowLabel: `últimos ${SES_USAGE_WINDOW_DAYS} días`
     });
     assert.equal(result.applies, true);
     assert.equal(result.byUsage, true);
     assert.equal(result.usageCount, 3);
-    assert.ok(result.usageNote?.includes("activo por uso: 3 envíos; el flag sesHospedajesEnabled está desactivado"));
+    assert.ok(result.usageNote?.includes("activo por uso: 3 envíos; SES.HOSPEDAJES está desactivado en los ajustes del establecimiento"));
     assert.ok(result.usageNote?.endsWith("(últimos 180 días)"));
+    // Cocoa 22 · ola 11 (qa#14): the note never names a flag, an env variable or a test mode.
+    assert.doesNotMatch(result.usageNote ?? "", /\bflag\b|[a-z]+Enabled\b|[A-Z][A-Z0-9]*_[A-Z0-9_]+|\bsandbox\b/);
   });
 
   it("flag on AND usage carries no note (nothing to reconcile)", () => {
-    const result = resolveComplianceApplicability({ flagEnabled: true, usageCount: 12, flagName: "verifactuEnabled", usageLabel: "facturas emitidas" });
+    const result = resolveComplianceApplicability({ flagEnabled: true, usageCount: 12, switchLabel: "VeriFactu", usageLabel: "facturas emitidas" });
     assert.equal(result.applies, true);
     assert.equal(result.byFlag, true);
     assert.equal(result.byUsage, true);
@@ -73,17 +78,17 @@ describe("resolveComplianceApplicability — flag OR real usage", () => {
   });
 
   it("negative or non-finite counts are treated as zero usage", () => {
-    assert.equal(resolveComplianceApplicability({ flagEnabled: false, usageCount: -2, flagName: "x", usageLabel: "y" }).applies, false);
-    assert.equal(resolveComplianceApplicability({ flagEnabled: false, usageCount: Number.NaN, flagName: "x", usageLabel: "y" }).applies, false);
+    assert.equal(resolveComplianceApplicability({ flagEnabled: false, usageCount: -2, switchLabel: "x", usageLabel: "y" }).applies, false);
+    assert.equal(resolveComplianceApplicability({ flagEnabled: false, usageCount: Number.NaN, switchLabel: "x", usageLabel: "y" }).applies, false);
   });
 
   it("withUsageNote appends the note only when present", () => {
-    const silent = resolveComplianceApplicability({ flagEnabled: true, usageCount: 0, flagName: "verifactuEnabled", usageLabel: "facturas emitidas" });
-    assert.equal(withUsageNote("Bloque completo.", silent), "Bloque completo.");
-    const byUsage = resolveComplianceApplicability({ flagEnabled: false, usageCount: 5, flagName: "verifactuEnabled", usageLabel: "facturas emitidas" });
+    const silent = resolveComplianceApplicability({ flagEnabled: true, usageCount: 0, switchLabel: "VeriFactu", usageLabel: "facturas emitidas" });
+    assert.equal(withUsageNote("Declaración completa.", silent), "Declaración completa.");
+    const byUsage = resolveComplianceApplicability({ flagEnabled: false, usageCount: 5, switchLabel: "VeriFactu", usageLabel: "facturas emitidas" });
     assert.equal(
-      withUsageNote("Bloque SistemaInformatico incompleto.", byUsage),
-      "Bloque SistemaInformatico incompleto. Nota: activo por uso: 5 facturas emitidas; el flag verifactuEnabled está desactivado."
+      withUsageNote("Declaración del sistema informático de VeriFactu incompleta.", byUsage),
+      "Declaración del sistema informático de VeriFactu incompleta. Nota: activo por uso: 5 facturas emitidas; VeriFactu está desactivado en los ajustes del establecimiento."
     );
   });
 });
@@ -184,5 +189,20 @@ describe("validateSesRegistryNumber — 3..64 alphanumeric or hyphens", () => {
         `expected 400 for «${bad}»`
       );
     }
+  });
+});
+
+describe("readiness message helpers (Cocoa 22 · ola 11 · qa#14)", () => {
+  it("names integration modes, fiscal address fields and tax regions in Spanish", () => {
+    assert.equal(integrationModePhrase("sandbox"), "modo de pruebas");
+    assert.equal(integrationModePhrase("preproduction"), "modo de preproducción");
+    assert.equal(integrationModePhrase("production"), "modo de producción");
+    assert.deepEqual(["address", "municipality", "province", "postalCode"].map((key) => FISCAL_ADDRESS_FIELD_LABELS[key]), ["dirección", "municipio", "provincia", "código postal"]);
+    assert.equal(taxRegionName("ES_PENINSULA_BALEARES"), "Península y Baleares");
+    assert.equal(taxRegionName("ES_CANARIAS"), "Canarias");
+    assert.equal(taxRegionName("ES_CEUTA"), "Ceuta");
+    assert.equal(taxRegionName("ES_MELILLA"), "Melilla");
+    assert.equal(taxRegionName(null), "desconocida");
+    assert.equal(taxRegionName("XX"), "XX");
   });
 });

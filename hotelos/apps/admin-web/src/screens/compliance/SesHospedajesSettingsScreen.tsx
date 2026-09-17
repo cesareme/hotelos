@@ -13,7 +13,7 @@
 //     the row detail (summary · XML · authority response) in a CocoaDrawer that
 //     polls GET /ses/submissions/:id while the submission is pending, and the
 //     pipeline retry (POST /ses/submissions/:id/retry) per row and in the drawer.
-//     The legacy SubmissionDetailPanel (fixed aside, .bo-*) is replaced by the
+//     The legacy fixed aside (.bo-*, retired in ola 11) is replaced by the
 //     drawer; the calls are the same.
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
@@ -33,6 +33,7 @@ import { navigateTo } from "../../lib/navigate";
 import { dateTime, number, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS as UI_STATUS } from "../../content/actions";
 import { useTabHost } from "../tabs/TabHost";
+import { SUBMISSION_PENDING_STATUSES } from "../fiscal/fiscal-shared";
 import {
   CocoaBadge,
   CocoaButton,
@@ -94,8 +95,10 @@ const STATUS_FILTER_OPTIONS = [
 
 /** States the operator can force a resend from: the terminal ones too (the manual retry resets the attempt counter). */
 const RETRYABLE = new Set(["rejected", "retrying", "network_error", "failed", "abandoned"]);
-/** States the detail drawer keeps polling for (8 s), as the legacy panel did. */
-const PENDING_STATUSES = new Set(["retrying", "submitting", "queued", "pending", "network_error"]);
+/** States the detail drawer keeps polling for (8 s), as the legacy panel did: the shared set of
+ *  fiscal-shared, so «sent» (open for the API: ses-submission.service.ts SES_OPEN_STATUSES) keeps
+ *  polling here too (Cocoa 22 · ola 11 · R3). */
+const PENDING_STATUSES = SUBMISSION_PENDING_STATUSES;
 
 const ESTABLISHMENT_FIELD_LABELS: Record<string, string> = {
   registryNumber: "Nº de registro turístico",

@@ -45,7 +45,5 @@ export * from "./CocoaSplitView";
 export * from "./CocoaSidebar";
 export * from "./CocoaRouteTabs";
 
-// Sibling kits that Cocoa 22 keeps as-is (§8): degraded helpers and the
-// empty-state alias of `CocoaState kind="empty"`.
-export { CocoaEmptyState, type CocoaEmptyStateProps, type CocoaEmptyStateAction } from "../cocoa-empty-state/CocoaEmptyState";
+// Sibling kit that Cocoa 22 keeps as-is (§8): the degraded helpers.
 export { DegradedValue, DegradedNote, DegradedCard, DegradedBanner, isDegraded, DEGRADED_HINT, type DegradedLabel, type DegradedList } from "../cocoa-extras/DegradedValue";

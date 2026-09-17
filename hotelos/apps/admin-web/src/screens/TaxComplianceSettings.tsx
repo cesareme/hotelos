@@ -67,7 +67,7 @@ import { TAX_COMPLIANCE_INSTRUCTIONS } from "../content/screen-instructions/taxe
 import { ACTIONS, STATUS_LABELS, confirmDiscard } from "../content/actions";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
-import { dateTime, number, plural } from "../lib/format";
+import { dateTime, number, plural, readinessMessage } from "../lib/format";
 import { treeHeaderFor } from "./tabs/tab-helpers";
 
 const PROPERTY_ID = getActivePropertyId();
@@ -468,7 +468,7 @@ export function TaxComplianceSettings() {
                 {verifactuHealth ? (
                   <p>
                     {connectorLine(verifactuHealth)}
-                    {verifactuHealth.notes ? ` · ${verifactuHealth.notes}` : ""}
+                    {verifactuHealth.notes ? ` · ${readinessMessage(verifactuHealth.notes)}` : ""}
                   </p>
                 ) : (
                   <p className="cocoa-note">Estado del conector no disponible{healthError ? `: ${healthError}` : "."}</p>
@@ -481,7 +481,7 @@ export function TaxComplianceSettings() {
                   ) : (
                     <CocoaCallout tone="danger" title="Software VeriFactu incompleto" role="alert">
                       <ul className="c22-section__list" aria-label="Errores del bloque SistemaInformatico">
-                        {software.errors.map((message, index) => (
+                        {software.errors.map(readinessMessage).map((message, index) => (
                           <li key={`${index}-${message}`}>
                             <span className="cocoa-note">{message}</span>
                           </li>

@@ -1,7 +1,7 @@
 // Cocoa 22 · pure SVG geometry for CocoaChart (COCOA-22.md §3.12).
 //
-// Extracted verbatim from the canon (`cocoa-director/DirectorKpiTile`,
-// `DirectorForwardPaceChart`, `DirectorCancellationRiskGauge`,
+// Extracted verbatim from the canon (the former director KPI tile, now
+// `CocoaKpi`; `cocoa-director/DirectorForwardPaceChart`, `DirectorCancellationRiskGauge`,
 // `DirectorChannelMixDonut`, `DirectorPickupBar`) so CocoaChart renders the
 // same shapes: sparkline 60×20 padding 1 · line chart padding 16/16/32/44 with
 // 4 Y ticks and "nice" ceilings · gauge 220×130, r 90, stroke 16, needle +

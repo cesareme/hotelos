@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import type { TourStep } from "./guideContent";
+import { CocoaButton } from "../cocoa/CocoaButton";
 
 type Rect = { top: number; left: number; width: number; height: number };
 
@@ -130,39 +131,40 @@ export function GuidedTour(props: {
     calloutStyle.transform = "translate(-50%, -50%)";
   }
 
+  // Skin: styles/cocoa-22-guide.css (`c22-guide-tour-root`, `c22-guide-callout`…);
+  // the variants travel as data-* (data-dim, data-mode, data-active), never as
+  // modifier classes. The callout geometry stays inline (computed per step).
   return (
-    <div className="guide-tour-root" role="dialog" aria-modal="true" aria-label={tourTitle ?? "Recorrido guiado"}>
-      {/* Click-guard blocks accidental interaction; dims only for center/spotlight modes. */}
-      <div className={`guide-clickguard${mode === "center" ? " dim" : ""}`} />
+    <div className="c22-guide-tour-root" role="dialog" aria-modal="true" aria-label={tourTitle ?? "Recorrido guiado"}>
+      {/* Click-guard blocks accidental interaction; dims only for the center mode (the spotlight dims by itself). */}
+      <div className="c22-guide-clickguard" data-dim={mode === "center" ? "true" : "false"} />
       {mode === "spotlight" && spotlight ? (
         <div
-          className="guide-spotlight"
+          className="c22-guide-spotlight"
           style={{ top: spotlight.top, left: spotlight.left, width: spotlight.width, height: spotlight.height }}
         />
       ) : null}
-      <div className={`guide-callout guide-callout-${mode}`} style={calloutStyle}>
-        <div className="guide-callout-head">
-          <span className="guide-callout-step">
-            {tourTitle ? <span className="guide-callout-tour">{tourTitle}</span> : null}
+      <div className="c22-guide-callout" data-mode={mode} style={calloutStyle}>
+        <div className="c22-guide-callout-head">
+          <span className="c22-guide-callout-step">
+            {tourTitle ? <span className="c22-guide-callout-tour">{tourTitle}</span> : null}
             Paso {index + 1} de {steps.length}
           </span>
-          <button type="button" className="guide-callout-skip" onClick={onClose}>Saltar</button>
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={onClose}>Saltar</CocoaButton>
         </div>
-        <h3 className="guide-callout-title">{step.title}</h3>
-        <p className="guide-callout-body">{step.body}</p>
-        <div className="guide-callout-foot">
-          <div className="guide-dots" aria-hidden>
+        <h3 className="c22-guide-callout-title">{step.title}</h3>
+        <p className="c22-guide-callout-body">{step.body}</p>
+        <div className="c22-guide-callout-foot">
+          <div className="c22-guide-dots" aria-hidden>
             {steps.map((_, i) => (
-              <span key={i} className={`guide-dot${i === index ? " active" : ""}`} />
+              <span key={i} className="c22-guide-dot" data-active={i === index ? "true" : "false"} />
             ))}
           </div>
-          <div className="guide-callout-actions">
+          <div className="c22-guide-callout-actions">
             {index > 0 ? (
-              <button type="button" className="ghost" onClick={prev}>Atrás</button>
+              <CocoaButton variant="plain" tone="neutral" onClick={prev}>Atrás</CocoaButton>
             ) : null}
-            <button type="button" className="primary" onClick={next}>
-              {isLast ? "Entendido" : "Siguiente"}
-            </button>
+            <CocoaButton onClick={next}>{isLast ? "Entendido" : "Siguiente"}</CocoaButton>
           </div>
         </div>
       </div>

@@ -1,4 +1,3 @@
-export * from './DirectorKpiTile';
 export * from './DirectorForwardPaceChart';
 export * from './DirectorPickupBar';
 export * from './DirectorOpsHealthMini';

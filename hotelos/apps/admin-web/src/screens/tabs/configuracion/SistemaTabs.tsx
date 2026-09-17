@@ -17,9 +17,9 @@ import { commitTabNavigation } from "../../../components/cocoa/CocoaRouteTabs";
 import { urlForScreen } from "../../../navigation/nav-tree";
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
-import { embed, useRouteParam } from "../tab-helpers";
+import { useRouteParam } from "../tab-helpers";
 
-type TenantDetailProps = { orgId: string; onClose: () => void; embedded?: boolean };
+type TenantDetailProps = { orgId: string; onClose: () => void };
 
 const BASE_PATH = urlForScreen("AuditLogViewer") ?? "/configuracion/sistema";
 const ORGANIZACIONES_PATH = urlForScreen("TenantAdminConsoleScreen") ?? `${BASE_PATH}/organizaciones`;
@@ -34,7 +34,7 @@ export function closeOrganizacion(): void {
 function OrganizacionParam({ Screen }: { Screen: ComponentType<TenantDetailProps> }) {
   const orgId = useRouteParam(ORGANIZACION_PATTERN, "id");
   if (!orgId) return null;
-  return <Screen key={orgId} orgId={orgId} onClose={closeOrganizacion} embedded />;
+  return <Screen key={orgId} orgId={orgId} onClose={closeOrganizacion} />;
 }
 
 function withOrganizacionParam(Screen: ComponentType<TenantDetailProps>): { default: ComponentType<Record<string, never>> } {
@@ -47,7 +47,7 @@ export const loaders: TabLoaders = {
   AuditLogViewer: () => import("../../AuditLogViewer").then((m) => ({ default: m.AuditLogViewer })),
   WebhooksAdmin: () => import("../../developer/WebhooksAdminScreen").then((m) => ({ default: m.WebhooksAdminScreen })),
   DeveloperApps: () => import("../../developer/DeveloperAppsScreen").then((m) => ({ default: m.DeveloperAppsScreen })),
-  ApiReferenceScreen: () => import("../../developer/ApiReferenceScreen").then((m) => embed(m.ApiReferenceScreen)),
+  ApiReferenceScreen: () => import("../../developer/ApiReferenceScreen").then((m) => ({ default: m.ApiReferenceScreen })),
   TenantAdminConsoleScreen: () => import("../../admin/TenantAdminConsoleScreen").then((m) => ({ default: m.TenantAdminConsoleScreen })),
   TenantDetailScreen: () => import("../../admin/TenantDetailScreen").then((m) => withOrganizacionParam(m.TenantDetailScreen))
 };

@@ -6,10 +6,11 @@
 // opens the submissions centre), the AEAT models (303 · 390 · IRPF) and the
 // reference table of the signing certificates.
 //
-// Bridge (TabHost.tsx, cumplimiento-tabs test): VerifactuTabs still loads this
-// screen through `embed()`, so the `embedded` prop stays and the header is
-// `pageHead(embedded)` — HostedHead inside the container (the container paints
-// eyebrow and H1), CocoaPageHeader standalone. The host context decides too.
+// Cocoa 22 · ola 11: CocoaPage on the host context (hosted, the container
+// paints eyebrow and H1 and the page keeps its inner views and actions). The
+// frame stays `state="ready"` on purpose: the skeleton and the callout of the
+// feeds that failed live in the body, so a failed authority is still reported
+// while another one is loading. Navigation goes through the typed `navigateTo`.
 
 import { useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
@@ -18,7 +19,7 @@ import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
 import { number, percent, plural } from "../../lib/format";
 import { ACTIONS, FIELD_LABELS, STATUS_LABELS } from "../../content/actions";
-import { pageHead } from "../tabs/tab-helpers";
+import { navigateTo } from "../../lib/navigate";
 import { useTabHost } from "../tabs/TabHost";
 import {
   CocoaBadge,
@@ -27,6 +28,7 @@ import {
   CocoaGrid,
   CocoaKpi,
   CocoaKpiStrip,
+  CocoaPage,
   CocoaSection,
   CocoaSkeleton,
   CocoaSpan,
@@ -136,10 +138,8 @@ function FiscalSkeleton() {
   );
 }
 
-export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; embedded?: boolean }) {
-  const embedded = props.embedded === true;
-  const hosted = useTabHost() !== null || embedded;
-  const Head = pageHead(embedded);
+export function FiscalDashboard() {
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const verifactu = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/verifactu/submissions`);
   const tbai = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/tbai/submissions`);
@@ -184,31 +184,34 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; 
   const failedFeeds = AUTHORITIES.filter((a) => feeds[a.id].error !== null).map((a) => a.label);
 
   return (
-    <div className="cocoa-stack" data-gap="4">
-      <Head
-        eyebrow="Cumplimiento"
-        title="Centro fiscal"
-        subtitle={
-          hosted
-            ? undefined
-            : "Cumplimiento normativo español: VeriFactu (AEAT), TicketBAI (forales vascos), IGIC (Canarias), SES.HOSPEDAJES (MIR) y Modelos 303 / 390. Todos los envíos se firman con XAdES-EPES, se encadenan con huellas digitales y se reintentan automáticamente."
-        }
-        tabs={SECTION_TABS}
-        panelId="fiscal-dashboard-panel"
-        activeTab={activeSection}
-        onTabChange={(value) => setActiveSection(value as FiscalSection)}
-        actions={
-          <>
-            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refreshAll()} loading={anyLoading && !initialLoading}>
-              {ACTIONS.refresh}
-            </CocoaButton>
-            <CocoaButton variant="filled" tone="accent" size="small" onClick={() => props.onNavigate?.("Modelo303Screen")}>
-              Generar Modelo 303
-            </CocoaButton>
-          </>
-        }
-      />
-
+    <CocoaPage
+      eyebrow="Cumplimiento"
+      title="Centro fiscal"
+      state="ready"
+      commands={[
+        { id: "centro-fiscal-actualizar", label: "Actualizar el centro fiscal", run: () => void refreshAll() },
+        { id: "centro-fiscal-modelo-303", label: "Generar el Modelo 303", run: () => navigateTo("Modelo303Screen") }
+      ]}
+      subtitle={
+        hosted
+          ? undefined
+          : "Cumplimiento normativo español: VeriFactu (AEAT), TicketBAI (forales vascos), IGIC (Canarias), SES.HOSPEDAJES (MIR) y Modelos 303 / 390. Todos los envíos se firman con XAdES-EPES, se encadenan con huellas digitales y se reintentan automáticamente."
+      }
+      tabs={SECTION_TABS}
+      panelId="fiscal-dashboard-panel"
+      activeTab={activeSection}
+      onTabChange={(value) => setActiveSection(value as FiscalSection)}
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refreshAll()} loading={anyLoading && !initialLoading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={() => navigateTo("Modelo303Screen")}>
+            Generar Modelo 303
+          </CocoaButton>
+        </>
+      }
+    >
       {failedFeeds.length > 0 ? (
         <CocoaCallout
           tone="danger"
@@ -253,7 +256,7 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; 
                         title={a.label}
                         meta={a.body}
                         action={
-                          <CocoaButton variant="plain" tone="accent" size="small" onClick={() => props.onNavigate?.("FiscalSubmissionsCenter")}>
+                          <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("FiscalSubmissionsCenter")}>
                             Ver envíos
                           </CocoaButton>
                         }
@@ -284,7 +287,7 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; 
                     title="Modelo 303 · Declaración trimestral del IVA"
                     meta={<CocoaBadge tone="neutral">Trimestral</CocoaBadge>}
                     footer={
-                      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => props.onNavigate?.("Modelo303Screen")}>
+                      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => navigateTo("Modelo303Screen")}>
                         Abrir Modelo 303
                       </CocoaButton>
                     }
@@ -299,7 +302,7 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; 
                     title="Modelo 390 · Resumen anual del IVA"
                     meta={<CocoaBadge tone="neutral">Anual</CocoaBadge>}
                     footer={
-                      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => props.onNavigate?.("Modelo390Screen")}>
+                      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => navigateTo("Modelo390Screen")}>
                         Abrir Modelo 390
                       </CocoaButton>
                     }
@@ -315,13 +318,13 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; 
                     meta={<CocoaBadge tone="neutral">Retenciones</CocoaBadge>}
                     footer={
                       <div className="cocoa-row" data-gap="2">
-                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => props.onNavigate?.("Modelo111Screen")}>
+                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("Modelo111Screen")}>
                           Modelo 111
                         </CocoaButton>
-                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => props.onNavigate?.("Modelo115Screen")}>
+                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("Modelo115Screen")}>
                           Modelo 115
                         </CocoaButton>
-                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => props.onNavigate?.("Modelo180Screen")}>
+                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("Modelo180Screen")}>
                           Modelo 180
                         </CocoaButton>
                       </div>
@@ -354,6 +357,6 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; 
           </div>
         </>
       )}
-    </div>
+    </CocoaPage>
   );
 }

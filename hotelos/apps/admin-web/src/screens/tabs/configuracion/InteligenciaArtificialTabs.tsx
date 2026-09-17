@@ -14,13 +14,12 @@
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
-import { embed } from "../tab-helpers";
 
 export const loaders: TabLoaders = {
-  PropertyAiScreen: () => import("../../aiOperations/PropertyAiScreen").then((m) => embed(m.PropertyAiScreen)),
-  AiToolRegistryScreen: () => import("../../aiOperations/AiToolRegistryScreen").then((m) => embed(m.AiToolRegistryScreen)),
-  AiPipelineStatusScreen: () => import("../../aiOperations/AiPipelineStatusScreen").then((m) => embed(m.AiPipelineStatusScreen)),
-  AiGovernanceScreen: () => import("../../aiOperations/AiGovernanceScreen").then((m) => embed(m.AiGovernanceScreen)),
+  PropertyAiScreen: () => import("../../aiOperations/PropertyAiScreen").then((m) => ({ default: m.PropertyAiScreen })),
+  AiToolRegistryScreen: () => import("../../aiOperations/AiToolRegistryScreen").then((m) => ({ default: m.AiToolRegistryScreen })),
+  AiPipelineStatusScreen: () => import("../../aiOperations/AiPipelineStatusScreen").then((m) => ({ default: m.AiPipelineStatusScreen })),
+  AiGovernanceScreen: () => import("../../aiOperations/AiGovernanceScreen").then((m) => ({ default: m.AiGovernanceScreen })),
   AiPropertySetupForm: () => import("../../propertySetup/PropertySetupForms").then((m) => ({ default: m.AiPropertySetupForm }))
 };
 

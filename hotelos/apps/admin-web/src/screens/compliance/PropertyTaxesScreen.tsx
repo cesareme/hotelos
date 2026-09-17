@@ -18,12 +18,9 @@
 // footer; the confirmation is a CocoaDialog with `busy`) → tourist tax and
 // IPSI ordinance in a 6/6 grid.
 //
-// L1c bridge: the screen keeps `pageHead(embedded)` (HostedHead inside a
-// container, CocoaPageHeader standalone — the same head CocoaPage paints from
-// the host context) because the container test
-// (tabs/cumplimiento/__tests__/cumplimiento-tabs.test.mts, EMBEDDED_SCREENS)
-// still expects the `embedded?: boolean` prop; states, skeleton and ⌘K
-// commands are handled here. Once that entry goes, the frame becomes CocoaPage.
+// Frame: CocoaPage on the host context (hosted in ImpuestosTabs the container
+// paints eyebrow and H1); page states (skeleton on the first load, error /
+// empty without a profile) and the three ⌘K commands are the page's.
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { ApiError } from "../../services/api-client";
@@ -58,7 +55,7 @@ import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
 import { date, percent, plural } from "../../lib/format";
-import { pageHead, treeHeaderFor } from "../tabs/tab-helpers";
+import { treeHeaderFor } from "../tabs/tab-helpers";
 import {
   CocoaBadge,
   CocoaButton,
@@ -69,6 +66,7 @@ import {
   CocoaFormRow,
   CocoaGrid,
   CocoaInput,
+  CocoaPage,
   CocoaSection,
   CocoaSelect,
   CocoaSkeleton,
@@ -76,7 +74,6 @@ import {
   CocoaState,
   CocoaSwitch,
   CocoaTable,
-  registerPageCommands,
   type CocoaTableColumn
 } from "../../components/cocoa";
 
@@ -194,9 +191,7 @@ function TaxesSkeleton() {
   );
 }
 
-export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container the page header belongs to the container: the head paints only subtitle and actions.
-  const Head = pageHead(embedded);
+export function PropertyTaxesScreen() {
   const { showToast } = useToast();
   const [profile, setProfile] = useState<PropertyTaxProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -222,17 +217,6 @@ export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean }
   useEffect(() => {
     void load();
   }, [load]);
-
-  // ⌘K: the page's commands while it is mounted (D28); every `run` is a stable closure.
-  useEffect(
-    () =>
-      registerPageCommands([
-        { id: "impuestos-restaurar-catalogo", label: `${RESTORE_LABEL} de impuestos`, run: () => setPending({ kind: "provision" }) },
-        { id: "impuestos-ajustes-fiscales", label: "Abrir ajustes fiscales", run: () => navigateTo("TaxComplianceSettings") },
-        { id: "impuestos-centro-fiscal", label: "Abrir el centro fiscal", run: () => navigateTo("FiscalDashboard") }
-      ]),
-    []
-  );
 
   // The editor opens below the table: bring it into view and focus its first control.
   const editorCategory = editor?.category ?? null;
@@ -399,12 +383,11 @@ export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean }
     </>
   );
 
-  // Page states (D27): skeleton while the first load runs, error / empty when there is no profile, else the content.
-  let body: ReactNode;
-  if (loading && !profile) body = <TaxesSkeleton />;
-  else if (error && !profile) body = <CocoaState kind="error" title="No se pudo cargar el perfil fiscal" message={error} onRetry={() => void load()} />;
-  else if (!profile) body = <CocoaState kind="empty" title="Sin perfil fiscal" message="La propiedad no devolvió ningún perfil fiscal." onRetry={() => void load()} />;
-  else {
+  // Page states (D27) are CocoaPage's: skeleton while the first load runs, error / empty when there is no profile, else the content.
+  const pageState = loading && !profile ? "loading" : error && !profile ? "error" : !profile ? "empty" : "ready";
+  const onRetry = () => void load();
+  let body: ReactNode = null;
+  if (profile) {
     body = (
       <>
         <CocoaScreenInstructionsCard
@@ -669,10 +652,23 @@ export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean }
   }
 
   return (
-    <div className="cocoa-stack" data-gap="4" aria-busy={loading && !profile ? true : undefined}>
-      <Head eyebrow={HEADER.eyebrow} title={HEADER.title} subtitle="Tipos de IVA / IGIC / IPSI por concepto de folio, con su base legal y vigencia." actions={actions} />
+    <CocoaPage
+      eyebrow={HEADER.eyebrow}
+      title={HEADER.title}
+      subtitle="Tipos de IVA / IGIC / IPSI por concepto de folio, con su base legal y vigencia."
+      actions={actions}
+      state={pageState}
+      skeleton={<TaxesSkeleton />}
+      error={{ title: "No se pudo cargar el perfil fiscal", message: error ?? undefined, onRetry }}
+      empty={{ title: "Sin perfil fiscal", message: "La propiedad no devolvió ningún perfil fiscal.", onRetry }}
+      commands={[
+        { id: "impuestos-restaurar-catalogo", label: `${RESTORE_LABEL} de impuestos`, run: () => setPending({ kind: "provision" }) },
+        { id: "impuestos-ajustes-fiscales", label: "Abrir ajustes fiscales", run: () => navigateTo("TaxComplianceSettings") },
+        { id: "impuestos-centro-fiscal", label: "Abrir el centro fiscal", run: () => navigateTo("FiscalDashboard") }
+      ]}
+    >
       {body}
-    </div>
+    </CocoaPage>
   );
 }
 

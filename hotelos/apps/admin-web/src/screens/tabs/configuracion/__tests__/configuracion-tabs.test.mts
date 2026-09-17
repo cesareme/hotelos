@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { CocoaPageHeader } from "../../../../components/cocoa/CocoaPageHeader.tsx";
 import { NAV_TREE, urlForScreen } from "../../../../navigation/nav-tree.ts";
 import { buildItemTabs, isTabVisible, itemForScreen, landingKeysFor, missingLoaders, type TabLoaders } from "../../nav-item-tabs.ts";
-import { HostedHead, embed, pageHead } from "../../tab-helpers.tsx";
+import { HostedHead } from "../../../../components/cocoa/HostedHead.tsx";
 
 // Containers of lote tabs-c · Configuración: item screen key → container source file.
 const CONTAINERS: Record<string, string> = {
@@ -19,13 +19,10 @@ const CONTAINERS: Record<string, string> = {
   AuditLogViewer: "SistemaTabs.tsx"
 };
 
-// Screens merged here that still take the `embedded` prop (bridge of L1c, see TabHost.tsx):
-// since Cocoa 22 · ola 10 every one of them reads `useTabHost()` (CocoaPage) and keeps the
-// prop only as the bridge — `hosted = useTabHost() !== null || embedded` or a wrapper that
-// forwards `embedded={embedded}`; the ones in EMBED_BRIDGE keep `embed()` in their loader.
-// BillingSettings, PaymentSettings, AccountingSettings and TaxComplianceSettings (lote 10-D)
-// dropped the prop altogether (direct loaders, CocoaPage on the context) and left this list.
-const EMBEDDED_SCREENS = [
+// Screens merged here that left the L1c bridge in Cocoa 22 · ola 11: every one reads
+// `useTabHost()` (directly or through CocoaPage), takes no `embedded` prop and its loader
+// hands it over as it is (`{ default: m.X }`) — no `embed()` wrapper, no `hosted = … || embedded`.
+const HOST_CONTEXT_SCREENS = [
   "backoffice/SetupCenterScreen.tsx",
   "GoLiveChecklist.tsx",
   "notifications/NotificationsScreen.tsx",
@@ -39,18 +36,6 @@ const EMBEDDED_SCREENS = [
   "admin/TenantAdminConsoleScreen.tsx",
   "admin/TenantDetailScreen.tsx"
 ];
-
-/** Loader export names that must still go through `embed()` (they read `embedded` by hand, not `useTabHost()`). */
-const EMBED_BRIDGE = new Set([
-  "SetupCenterScreen",
-  "NotificationsScreen",
-  "ModuleHealthCenter",
-  "PropertyAiScreen",
-  "AiToolRegistryScreen",
-  "AiPipelineStatusScreen",
-  "AiGovernanceScreen",
-  "ApiReferenceScreen"
-]);
 
 const noop = () => Promise.reject(new Error("loader not meant to run in tests"));
 const loadersFor = (item: { screenKey: string; tabs: readonly { screenKey: string }[] }): TabLoaders =>
@@ -68,16 +53,14 @@ describe("tabs-c · Configuración · containers wire every screen of the tree",
         assert.match(source, new RegExp(`^\\s+${key}:\\s*\\(\\)\\s*=>\\s*import\\(`, "m"), `${file}: loader ${key} missing`);
       }
       assert.deepEqual(missingLoaders(item, loadersFor(item)), []);
-      // ONE convention (L1c): a loader hands the screen over as it is (`{ default: m.X }`,
-      // the screen reads useTabHost()) or injects the URL param of a detail sub-URL;
-      // `embed()` survives only for the screens of EMBED_BRIDGE.
+      // ONE convention (L1c, bridge retired in ola 11): a loader hands the screen over as it is
+      // (`{ default: m.X }`, the screen reads useTabHost()) or injects the URL param of a detail
+      // sub-URL. No `embed()` wrapper left.
       const loaderCount = (source.match(/=>\s*import\(/g) ?? []).length;
       const direct = [...source.matchAll(/\(\{ default: m\.([A-Za-z0-9_]+) \}\)/g)].map((m) => m[1]);
-      const embedded = [...source.matchAll(/embed\(m\.([A-Za-z0-9_]+)/g)].map((m) => m[1]);
       const wrapped = (source.match(/withCategoryParam\(m\.|withOrganizacionParam\(m\./g) ?? []).length;
-      assert.equal(direct.length + embedded.length + wrapped, loaderCount, `${file}: every loader is direct, embed() (bridge) or a param wrapper`);
-      for (const name of embedded) assert.ok(EMBED_BRIDGE.has(name), `${file}: ${name} no longer needs embed() (use { default: m.${name} })`);
-      for (const name of direct) assert.ok(!EMBED_BRIDGE.has(name), `${file}: ${name} still reads the embedded prop by hand and needs embed()`);
+      assert.equal(direct.length + wrapped, loaderCount, `${file}: every loader is direct or a param wrapper`);
+      assert.doesNotMatch(source, /embed\(m\./, `${file}: the embed() bridge is gone`);
     });
   }
 });
@@ -161,29 +144,14 @@ describe("tabs-c · Configuración · tabs from the tree", () => {
   });
 });
 
-describe("tabs · tab-helpers (screens/tabs/tab-helpers.tsx)", () => {
-  it("embed() renders the screen with embedded: true and the extra props, once per lazy instance", () => {
-    const seen: unknown[] = [];
-    const Screen = (props: { embedded?: boolean; onNavigate?: (screen: string) => void }) => {
-      seen.push(props);
-      return null;
-    };
-    const onNavigate = () => undefined;
-    const module = embed(Screen, { onNavigate });
-    assert.equal(typeof module.default, "function");
-    assert.equal((module.default as { displayName?: string }).displayName, "Embedded(Screen)");
-    const element = (module.default as unknown as () => { props: Record<string, unknown>; type: unknown })();
-    assert.equal(element.type, Screen);
-    assert.deepEqual(element.props, { onNavigate, embedded: true });
-  });
-
-  it("pageHead() forces HostedHead when embedded and otherwise lets the host context decide", () => {
-    assert.equal(pageHead(true), HostedHead);
-    const contextual = pageHead(undefined);
-    assert.equal(pageHead(false), contextual, "false and undefined mean «ask the context»");
-    assert.notEqual(contextual, CocoaPageHeader);
-    assert.notEqual(contextual, HostedHead);
-    assert.equal((contextual as { displayName?: string }).displayName, "PageHead");
+describe("tabs · HostedHead (components/cocoa/HostedHead.tsx)", () => {
+  it("tab-helpers keeps only the tree and route helpers: no embed() / pageHead() bridge, no head of its own", () => {
+    const helpers = read("../../tab-helpers.tsx");
+    assert.doesNotMatch(helpers, /export function (embed|pageHead|HostedHead)\b|createElement\(|style=\{/);
+    assert.match(helpers, /export function treeHeaderFor\(/);
+    assert.match(helpers, /export function useRouteParam\(/);
+    assert.match(helpers, /export function shellNavigate\(/);
+    assert.notEqual(HostedHead, CocoaPageHeader);
   });
 
   it("HostedHead paints nothing without subtitle, tabs or actions (no empty toolbar in the panel)", () => {
@@ -218,22 +186,20 @@ describe("tabs-c · Configuración · registration and hosted screens", () => {
       assert.match(app, new RegExp(`lazyTab\\("${name}"\\)`), `${name} not registered in App.tsx`);
       assert.ok(!whitelist.screens.includes(name), `${name} must leave the whitelist once App.tsx registers it`);
     }
-    // HostedHead is a helper, not a screen: it stays whitelisted on purpose.
-    assert.ok(whitelist.screens.includes("HostedHead"));
   });
 
-  it("every merged screen with a page header still accepts `embedded` (bridge) and hides its own H1 inside a container", () => {
-    for (const file of EMBEDDED_SCREENS) {
+  it("every merged screen reads the host context and carries no `embedded` bridge (prop, wrapper forward or `|| embedded`)", () => {
+    for (const file of HOST_CONTEXT_SCREENS) {
       const source = read(`../../../${file}`);
-      assert.match(source, /embedded\?: boolean/, `${file}: embedded prop missing`);
-      assert.match(source, /pageHead\(embedded\)|\{embedded \? null : <h1 |embedded=\{embedded\}|useTabHost\(\) !== null \|\| embedded/, `${file}: header not demoted when embedded`);
+      assert.match(source, /useTabHost\(\)/, `${file}: must read the tab host context`);
+      assert.doesNotMatch(source, /embedded\?: boolean|embedded=\{embedded\}|\|\| embedded\b|embedded \|\|/, `${file}: L1c bridge left`);
     }
   });
 
   it("detail screens take their key from the URL and the keep items carry their CSV label", () => {
     assert.match(read("../../../backoffice/categories/CategoryDetailScreen.tsx"), /categoryCode\?: string/);
     assert.match(read("../../../backoffice/categories/CategoryOptionForm.tsx"), /categoryCode\?: string/);
-    assert.match(read("../../../admin/TenantDetailScreen.tsx"), /embedded\?: boolean/);
+    assert.doesNotMatch(read("../../../admin/TenantDetailScreen.tsx"), /embedded\?: boolean/);
     assert.match(read("../../../UserRoleManager.tsx"), /title="Usuarios y roles"/);
     assert.match(read("../../../ModuleManager.tsx"), /menuEntriesUnlockedBy\(/);
     assert.match(read("../../../backoffice/SetupCenterScreen.tsx"), /Todos los ajustes/);

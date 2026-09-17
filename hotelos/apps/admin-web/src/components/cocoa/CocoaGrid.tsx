@@ -1,6 +1,6 @@
-// CocoaGrid + CocoaSpan — the 12-column grid of the canon (COCOA-22.md §3.4;
-// replaces `gridRowStyle/spanStyle`, `.bo-grid.two/three`, `.rev-kpi-grid`
-// and the `.gm-grid` rules of mobile.css).
+// CocoaGrid + CocoaSpan — the 12-column grid of the canon (COCOA-22.md §3.4).
+// The legacy grids (`gridRowStyle/spanStyle`, the two/three-column classes and
+// the tablet alias of cocoa-22-layout.css) retired with Cocoa 22 · ola 11.
 //
 // Responsive rules (§5.1) are CLASS-based, never inline (§8): the css lot
 // owns them in styles/cocoa-22-layout.css.

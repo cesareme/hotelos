@@ -189,9 +189,9 @@ function SettingsSkeleton() {
 
 // --- screen --------------------------------------------------------------
 
-export function PropertyAiScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
-  const hosted = useTabHost() !== null || embedded;
+export function PropertyAiScreen() {
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1.
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const settingsState = useApiData<PropertyAiSettings>("/ai-operations/property/settings", {
     query: { propertyId: PROPERTY_ID }

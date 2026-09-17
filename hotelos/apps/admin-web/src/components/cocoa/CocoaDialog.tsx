@@ -1,5 +1,5 @@
-// CocoaDialog — confirmation dialog of Cocoa 22 (COCOA-22.md §3.9; the base
-// `ConfirmDialog` now wraps it and `window.confirm` is forbidden).
+// CocoaDialog — confirmation dialog of Cocoa 22 (COCOA-22.md §3.9; the legacy
+// confirm wrapper was retired in ola 11 and `window.confirm` is forbidden).
 //
 //   max 440 (sm) / 560 (md) · content bg · radius 12 · shadow modal · title-2 600
 //   description body secondary · overlay `--cocoa-scrim` · z --cocoa-z-modal

@@ -78,9 +78,9 @@ function statusMeta(check: ReadinessCheck): { label: string; tone: CocoaTone } {
   return check.severity === "blocking" ? { label: "Bloqueante", tone: "danger" } : { label: "Pendiente", tone: "warning" };
 }
 
-function GoLivePage({ embedded }: { embedded: boolean }) {
-  // The host context decides the head (CocoaPage reads it); `embedded` is the L1c bridge the loader still passes.
-  const hosted = embedded || useTabHost() !== null;
+function GoLivePage() {
+  // The host context decides the head (CocoaPage reads it).
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const [readiness, setReadiness] = useState<PropertyReadiness | null>(null);
   const [loading, setLoading] = useState(true);
@@ -220,9 +220,9 @@ function GoLivePage({ embedded }: { embedded: boolean }) {
   );
 }
 
-// Bridge of L1c (TabHost.tsx): the loader may still pass `embedded`; the page reads the host context.
-export function GoLiveChecklist({ embedded = false }: { embedded?: boolean } = {}) {
-  return <GoLivePage embedded={embedded} />;
+// The page reads the host context (TabHost.tsx); the loader hands it over as it is.
+export function GoLiveChecklist() {
+  return <GoLivePage />;
 }
 
 export default GoLiveChecklist;

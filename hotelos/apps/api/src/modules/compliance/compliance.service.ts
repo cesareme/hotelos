@@ -1494,7 +1494,7 @@ export async function testSesHospedajesConnection(input: { context: UserContext;
   const message = !establishment.ok
     ? `Faltan datos del establecimiento: ${establishment.missing.join(", ")}. Completa el perfil de la propiedad (dirección, código postal, código INE) y el número de registro SES.`
     : mode === "sandbox"
-      ? "Establecimiento completo. Modo sandbox: los envíos se simulan (stub); configura SES_HOSPEDAJES_MODE y el certificado para el MIR real."
+      ? "Establecimiento completo. Modo de pruebas: los envíos se simulan; configura el modo de producción y el certificado para enviar al Ministerio del Interior."
       : "Establecimiento completo y modo real configurado.";
   return {
     status,

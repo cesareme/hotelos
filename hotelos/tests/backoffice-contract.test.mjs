@@ -274,12 +274,9 @@ describe("Back Office hotel setup layer", () => {
     assert.match(goLiveChecklist, /Recalcular preparación/);
     assert.match(adminApp, /OnboardingGoLiveReadiness: PuestaEnMarchaTabs/);
 
-    // The Aurora theme tokens were migrated from per-component --bo-* vars to
-    // the shared design-token system. The CSS classes that the dashboard
-    // relies on still exist; we keep checking those.
-    for (const marker of ["bo-hero", "bo-progress-list", "bo-readiness-card", "bo-import-preview", "bo-page-title"]) {
-      assert.match(adminStyles, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    }
+    // Cocoa 22 · ola 11: the legacy Aurora sheet (its cascade layer and the
+    // .bo-* classes) retired from styles.css; only the :root tokens remain.
+    assert.doesNotMatch(adminStyles, /@layer cocoa-legacy|\.bo-[a-z]/);
 
     assert.match(mobileSummary, /Setup track/);
   });

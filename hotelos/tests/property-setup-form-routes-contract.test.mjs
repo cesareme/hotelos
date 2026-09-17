@@ -176,7 +176,6 @@ describe("Property setup form routes", () => {
 
   it("makes admin property setup forms saveable against the API", () => {
     const propertySetupScreen = readFileSync(new URL("../apps/admin-web/src/screens/propertySetup/PropertySetupForms.tsx", import.meta.url), "utf8");
-    const formComponents = readFileSync(new URL("../apps/admin-web/src/components/forms/FormComponents.tsx", import.meta.url), "utf8");
     // The form labels were translated to Spanish during the Aurora refactor.
     // The semantic intent (current data preview, submission history,
     // entry point to the form, source-of-truth display) is preserved.
@@ -188,7 +187,7 @@ describe("Property setup form routes", () => {
       "envíos anteriores",         // Submission history (chip in status panel)
       "onChange"
     ]) {
-      assert.match(propertySetupScreen + formComponents, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(propertySetupScreen, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
     // The forms are reached through their tab containers (entry point to the form).
     const propiedadTabs = readFileSync(new URL("../apps/admin-web/src/screens/tabs/configuracion/PropiedadTabs.tsx", import.meta.url), "utf8");

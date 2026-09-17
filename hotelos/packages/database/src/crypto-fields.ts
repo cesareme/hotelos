@@ -180,6 +180,7 @@ export const PII_FIELDS: Record<string, readonly string[]> = {
 export function __resetCryptoWarningForTests(): void {
   warnedAboutMissingKey = false;
   warnedAboutMissingLookupKey = false;
+  warnedUndecryptableFields.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -455,12 +456,27 @@ export function decryptResultForModel<T>(modelName: string, result: T): T {
   const fields = PII_FIELDS[modelName];
   if (!fields || result === null || result === undefined) return result;
   if (Array.isArray(result)) {
-    return result.map((row) => decryptResultRow(fields, row)) as unknown as T;
+    return result.map((row) => decryptResultRow(modelName, fields, row)) as unknown as T;
   }
-  return decryptResultRow(fields, result) as T;
+  return decryptResultRow(modelName, fields, result) as T;
 }
 
-function decryptResultRow(fields: readonly string[], row: unknown): unknown {
+// One warning per (model, field) per process: a row written under another key
+// (QA residue grr_e86d63b9 of Cocoa 22 · ola 11) must not spam the log on
+// every read. The envelope and the key are NEVER logged.
+const warnedUndecryptableFields = new Set<string>();
+
+function warnUndecryptableField(modelName: string, field: string): void {
+  const key = `${modelName}.${field}`;
+  if (warnedUndecryptableFields.has(key)) return;
+  warnedUndecryptableFields.add(key);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[crypto-fields] ${key} could not be decrypted with the configured key (row written under another key or corrupted); the field is returned as null. The stored value is kept: investigate the row instead of reading the envelope.`
+  );
+}
+
+function decryptResultRow(modelName: string, fields: readonly string[], row: unknown): unknown {
   if (!isPlainObject(row)) return row;
   const out: Record<string, unknown> = { ...row };
   for (const field of fields) {
@@ -469,9 +485,11 @@ function decryptResultRow(fields: readonly string[], row: unknown): unknown {
       try {
         out[field] = decryptField(v);
       } catch {
-        // Leave the envelope untouched on failure rather than blowing up
-        // the whole query — the operator can investigate the row.
-        out[field] = v;
+        // Never hand the envelope to a caller (it would reach the UI as a
+        // «document number»): the field reads as null and the row stays
+        // intact in the database for the operator to investigate.
+        out[field] = null;
+        warnUndecryptableField(modelName, field);
       }
     }
   }

@@ -15,7 +15,7 @@
 
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { DataPreview } from "../../components/forms/FormComponents";
+import { DataPreview } from "../../components/cocoa-extras/CocoaDataPreview";
 import {
   CocoaActionBar,
   CocoaBadge,

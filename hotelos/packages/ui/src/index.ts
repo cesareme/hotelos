@@ -36,7 +36,6 @@ export * from "./components/CommandDock.js";
 export * from "./components/VoiceButton.js";
 export * from "./components/CameraActionButton.js";
 export * from "./components/TimelineGrid.js";
-export * from "./components/timeline/index.js";
 export * from "./components/panels/index.js";
 export * from "./components/RateGridCell.js";
 export * from "./components/IntegrationCard.js";

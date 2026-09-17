@@ -22,12 +22,12 @@ const sidebar =
   readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8") +
   readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8");
 const navTree = JSON.parse(readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8"));
-const forms = readFileSync(new URL("../apps/admin-web/src/components/forms/FormComponents.tsx", import.meta.url), "utf8");
+const cocoaIndex = readFileSync(new URL("../apps/admin-web/src/components/cocoa/index.ts", import.meta.url), "utf8");
 const apiClient = readFileSync(new URL("../apps/admin-web/src/services/backofficeApi.ts", import.meta.url), "utf8");
 const categoryManager = readFileSync(new URL("../apps/admin-web/src/screens/backoffice/categories/CategoryManagerScreen.tsx", import.meta.url), "utf8");
 const categoryDetail = readFileSync(new URL("../apps/admin-web/src/screens/backoffice/categories/CategoryDetailScreen.tsx", import.meta.url), "utf8");
 const categoryOptionForm = readFileSync(new URL("../apps/admin-web/src/screens/backoffice/categories/CategoryOptionForm.tsx", import.meta.url), "utf8");
-const styles = readFileSync(new URL("../apps/admin-web/src/styles.css", import.meta.url), "utf8");
+const cocoaCss = readFileSync(new URL("../apps/admin-web/src/styles/cocoa-22.css", import.meta.url), "utf8");
 const demoHtml = readFileSync(new URL("../demo/public/index.html", import.meta.url), "utf8");
 const docs = readFileSync(new URL("../docs/property-configuration-category-manager.md", import.meta.url), "utf8");
 
@@ -212,28 +212,13 @@ describe("Property Configuration & Category Manager", () => {
       assert.match(sidebar + adminRoutes, new RegExp(label.replace(/[.*+?^${}()[\]\\]/g, "\\$&")));
     }
 
-    for (const formComponent of [
-      "FormPage",
-      "FormSection",
-      "FormRow",
-      "FormField",
-      "FormSelect",
-      "FormMultiSelect",
-      "FormSwitch",
-      "FormNumberInput",
-      "FormMoneyInput",
-      "FormDateInput",
-      "FormTextarea",
-      "FormColorPicker",
-      "FormIconPicker",
-      "FormRepeater",
-      "FormPreviewPanel",
-      "FormStickyActionBar",
-      "FormValidationSummary"
-    ]) {
-      assert.match(forms, new RegExp(`export function ${formComponent}`));
+    // The legacy components/forms kit (FormPage … FormValidationSummary) was
+    // retired in Cocoa 22 · ola 11: the setup forms build on the Cocoa primitives
+    // of the barrel and the field is painted by styles/cocoa-22.css (`.c22-field`).
+    for (const primitive of ["CocoaField", "CocoaInput", "CocoaSelect", "CocoaSwitch", "CocoaActionBar", "CocoaCallout", "CocoaTable"]) {
+      assert.match(cocoaIndex, new RegExp("./" + primitive + "\""));
     }
-    assert.match(styles, /\.bo-form-field/);
+    assert.match(cocoaCss, /\.c22-field\b/);
   });
 
   it("wires Category Manager UI to category APIs and save endpoints", () => {

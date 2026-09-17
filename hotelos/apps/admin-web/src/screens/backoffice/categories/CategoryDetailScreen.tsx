@@ -74,7 +74,7 @@ type LoadState = { status: "loading" } | { status: "error"; message: string } | 
  * Categorías (Tanda 5). L1c: without a code, or when the API fails, the screen
  * says so instead of painting the old «Room features» demo category.
  */
-export function CategoryDetailScreen({ categoryCode }: { categoryCode?: string; embedded?: boolean } = {}) {
+export function CategoryDetailScreen({ categoryCode }: { categoryCode?: string } = {}) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   // Data source marker (contract test): source: {source}
   const source = state.status === "ready" ? "api" : state.status;

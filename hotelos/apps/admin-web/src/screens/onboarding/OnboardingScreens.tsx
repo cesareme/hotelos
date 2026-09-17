@@ -1,4 +1,6 @@
-import { ScreenScaffold, type ScreenScaffoldAction, type ScreenScaffoldProps } from "../ScreenScaffold";
+import { CocoaButton, CocoaPage } from "../../components/cocoa";
+import { navigateTo, type ScreenKey } from "../../lib/navigate";
+import { ScreenScaffold, type ScreenScaffoldProps } from "../ScreenScaffold";
 
 // Sprint 53 — the upload→classify→extract screens are real, interactive
 // components living in OnboardingInteractive.tsx. They are re-exported here so
@@ -13,6 +15,10 @@ export { FileUploadAndClassificationScreen, AIExtractionReviewScreen } from "./O
 // channel / guest / reservation / revenue-history / compliance reviews,
 // data-quality, dry-run, cutover, AI setup center) are gone; their links land
 // on the covering screen (nav-tree.generated.json → retired[].url).
+//
+// Cocoa 22 · ola 11: every screen is a standalone CocoaPage (eyebrow · h1 ·
+// subtitle · next-step actions) whose body is the migrated ScreenScaffold
+// (pending-note callout + card grid).
 
 const EYEBROW = "Onboarding con IA y migración";
 
@@ -20,7 +26,8 @@ const EYEBROW = "Onboarding con IA y migración";
 const ONBOARDING_PENDING_NOTE =
   "Pantalla en construcción: este paso aún no está conectado al API de onboarding y no muestra datos de tu propiedad.";
 
-type OnboardingCard = { title: string; body: string; actions?: ScreenScaffoldAction[] };
+type OnboardingCard = ScreenScaffoldProps["cards"][number];
+type OnboardingNav = { label: string; screen: ScreenKey };
 
 const sharedCards: OnboardingCard[] = [
   {
@@ -41,29 +48,30 @@ function OnboardingScreen(props: {
   title: string;
   summary: string;
   cards?: OnboardingCard[];
-  nav?: ScreenScaffoldAction[];
+  /** Next steps of the journey, painted as header actions. */
+  nav?: OnboardingNav[];
   /** Custom "under construction" wording; the onboarding default applies otherwise. */
   pendingNote?: string;
 }) {
-  const baseCards = props.cards ?? sharedCards;
-  const cards: ScreenScaffoldProps["cards"] = props.nav?.length
-    ? [
-        ...baseCards,
-        {
-          title: "Continuar el recorrido",
-          body: "Ir al siguiente paso del onboarding asistido por IA y de la migración.",
-          actions: props.nav
-        }
-      ]
-    : baseCards;
   return (
-    <ScreenScaffold
+    <CocoaPage
       eyebrow={EYEBROW}
       title={props.title}
-      summary={props.summary}
-      cards={cards}
-      pendingNote={props.pendingNote ?? ONBOARDING_PENDING_NOTE}
-    />
+      subtitle={props.summary}
+      actions={
+        props.nav?.length ? (
+          <>
+            {props.nav.map((item) => (
+              <CocoaButton key={item.screen} variant="bordered" tone="neutral" size="small" onClick={() => navigateTo(item.screen)}>
+                {item.label}
+              </CocoaButton>
+            ))}
+          </>
+        ) : undefined
+      }
+    >
+      <ScreenScaffold cards={props.cards ?? sharedCards} pendingNote={props.pendingNote ?? ONBOARDING_PENDING_NOTE} />
+    </CocoaPage>
   );
 }
 

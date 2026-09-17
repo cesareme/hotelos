@@ -36,7 +36,7 @@ import { useSessionLanding } from "./navigation/useEnabledModules";
 import { makeModulePlaceholder } from "./screens/ModuleSettingsPlaceholder";
 import { ToastProvider, ToastHost } from "./components/Toast";
 import { CocoaGlobalProvider } from "./providers/CocoaGlobalProvider";
-import { LoadingBlock } from "./components/States";
+import { CocoaState } from "./components/cocoa/CocoaState";
 import { CocoaButton } from "./components/cocoa/CocoaButton";
 import "./styles.css";
 
@@ -585,9 +585,9 @@ function NoPropertiesScreen({ user }: { user: AuthUser }) {
           Tu usuario ({user.email ?? user.fullName}) no tiene acceso a ninguna propiedad. Pide a un
           administrador que te asigne una y vuelve a iniciar sesión.
         </p>
-        <button type="button" className="bo-button-link" onClick={() => clearSession()}>
+        <CocoaButton variant="plain" tone="accent" size="small" onClick={() => clearSession()}>
           Cerrar sesión
-        </button>
+        </CocoaButton>
       </div>
     </div>
   );
@@ -627,8 +627,8 @@ function initialAuthScreen(): "LoginScreen" | "ForgotPasswordScreen" {
  * AuthGate
  * --------
  * Reads the persisted user from auth-storage on mount and re-checks whenever a
- * "hotelos-auth-changed" event fires (login from LoginScreen, logout from
- * TopBar, or a 401 propagated from api-client). When there is no user we
+ * "hotelos-auth-changed" event fires (login from LoginScreen, logout from the
+ * shell's user menu, or a 401 propagated from api-client). When there is no user we
  * render the LoginScreen / ForgotPasswordScreen instead of the protected app;
  * the two public URLs (/acceso, /acceso/recuperar-contrasena) pick the screen
  * on load, and switching between them writes the public URL only when the
@@ -698,7 +698,7 @@ function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (!propertyGate || propertyGate.userId !== user.userId) {
-    return <LoadingBlock label="Comprobando tu propiedad…" />;
+    return <CocoaState kind="loading" title="Comprobando tu propiedad…" />;
   }
   if (propertyGate.status === "empty") {
     return <NoPropertiesScreen user={user} />;
@@ -788,7 +788,7 @@ export function App() {
   if (ActiveScreen) {
     body = <ActiveScreen />;
   } else if (route.kind === "landing") {
-    body = <LoadingBlock label="Abriendo tu página de inicio…" />;
+    body = <CocoaState kind="loading" title="Abriendo tu página de inicio…" />;
   } else if (route.kind === "dev-locked") {
     body = <DevOnlyLockedScreen onHome={() => selectScreen(landing?.screenKey ?? FALLBACK_LANDING_SCREEN)} />;
   } else {
@@ -811,7 +811,7 @@ export function App() {
               palette must not open on top of it (cierre 2026-09-15). */}
           <CocoaGlobalProvider commandPaletteHotkey={false}>
             <BackOfficeLayout activeScreen={activeScreen ?? ""} onSelect={selectScreen}>
-              <Suspense fallback={<LoadingBlock label="Cargando pantalla…" />}>{body}</Suspense>
+              <Suspense fallback={<CocoaState kind="loading" title="Cargando pantalla…" />}>{body}</Suspense>
             </BackOfficeLayout>
           </CocoaGlobalProvider>
         </AuthGate>

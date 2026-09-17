@@ -11,31 +11,31 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 224,
-    "lines": 91375,
-    "boClasses": 78,
-    "boCard": 26,
-    "boPageTitle": 3,
-    "rawButtons": 12,
-    "cocoaButtons": 1052,
-    "rawTables": 3,
-    "cocoaTables": 289,
-    "rawInputs": 4,
-    "cocoaInputs": 1055,
-    "inlineStyles": 801,
-    "cocoaCards": 35,
-    "colourLiterals": 2,
+    "files": 220,
+    "lines": 89029,
+    "boClasses": 0,
+    "boCard": 0,
+    "boPageTitle": 0,
+    "rawButtons": 0,
+    "cocoaButtons": 1039,
+    "rawTables": 2,
+    "cocoaTables": 288,
+    "rawInputs": 0,
+    "cocoaInputs": 1032,
+    "inlineStyles": 682,
+    "cocoaCards": 33,
+    "colourLiterals": 0,
     "colourFallbacks": 0,
-    "rawH1": 6,
+    "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 197,
+    "withPageHeader": 196,
     "withTabHost": 87,
-    "debtPoints": 313
+    "debtPoints": 194
   },
   "bySize": {
-    "S": 95,
+    "S": 93,
     "M": 105,
-    "L": 21,
+    "L": 19,
     "XL": 3
   },
   "byArchetype": {
@@ -43,11 +43,11 @@
     "lista": 15,
     "detalle": 3,
     "formulario": 19,
-    "asistente": 12,
+    "asistente": 10,
     "workspace": 5,
     "calendario": 6,
     "chat": 1,
-    "dialogo": 15,
+    "dialogo": 13,
     "contenedor": 41,
     "otro": 14
   },
@@ -72,8 +72,8 @@
     "compartido": {
       "label": "Compartido / sin entrada de menú",
       "files": 8,
-      "lines": 2201,
-      "debtPoints": 26,
+      "lines": 2011,
+      "debtPoints": 0,
       "sizes": {
         "S": 5,
         "M": 3,
@@ -89,18 +89,18 @@
     },
     "configuracion": {
       "label": "Configuración",
-      "files": 46,
-      "lines": 15997,
-      "debtPoints": 82,
+      "files": 44,
+      "lines": 15658,
+      "debtPoints": 23,
       "sizes": {
-        "S": 21,
-        "M": 22,
-        "L": 3,
+        "S": 19,
+        "M": 23,
+        "L": 2,
         "XL": 0
       },
       "archetypes": {
         "formulario": 10,
-        "dialogo": 3,
+        "dialogo": 1,
         "dashboard": 11,
         "detalle": 2,
         "lista": 7,
@@ -112,7 +112,7 @@
     "cumplimiento": {
       "label": "Cumplimiento",
       "files": 29,
-      "lines": 8725,
+      "lines": 8689,
       "debtPoints": 10,
       "sizes": {
         "S": 15,
@@ -131,17 +131,17 @@
     },
     "desarrollo": {
       "label": "Desarrollo",
-      "files": 4,
-      "lines": 4474,
-      "debtPoints": 43,
+      "files": 2,
+      "lines": 2693,
+      "debtPoints": 9,
       "sizes": {
         "S": 1,
-        "M": 1,
-        "L": 1,
+        "M": 0,
+        "L": 0,
         "XL": 1
       },
       "archetypes": {
-        "asistente": 4
+        "asistente": 2
       }
     },
     "finanzas": {
@@ -309,7 +309,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -348,7 +347,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -387,7 +385,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -426,7 +423,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -465,7 +461,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -504,7 +499,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -543,7 +537,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -582,7 +575,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -621,7 +613,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -660,7 +651,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -699,47 +689,11 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": true,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
       "debtPoints": 1,
       "size": "M"
-    },
-    {
-      "path": "apps/admin-web/src/screens/admin/InviteUserDialog.tsx",
-      "name": "InviteUserDialog",
-      "screenKeys": [],
-      "category": "configuracion",
-      "categories": [],
-      "archetype": "dialogo",
-      "lines": 190,
-      "metrics": {
-        "lines": 190,
-        "boClasses": 0,
-        "boCard": 0,
-        "boPageTitle": 0,
-        "rawButtons": 0,
-        "cocoaButtons": 0,
-        "rawTables": 0,
-        "cocoaTables": 0,
-        "rawInputs": 0,
-        "cocoaInputs": 5,
-        "inlineStyles": 0,
-        "cocoaCards": 0,
-        "colourLiterals": 0,
-        "colourFallbacks": 0,
-        "rawH1": 0,
-        "hasCocoaPageHeader": false,
-        "usesTabHost": false,
-        "usesSplitView": false,
-        "usesStepper": false,
-        "usesGmGrid": false,
-        "emoji": 0
-      },
-      "headerExempt": true,
-      "debtPoints": 0,
-      "size": "S"
     },
     {
       "path": "apps/admin-web/src/screens/admin/NewTenantWizardDialog.tsx",
@@ -769,7 +723,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -809,47 +762,11 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
       "debtPoints": 0,
       "size": "M"
-    },
-    {
-      "path": "apps/admin-web/src/screens/admin/ResetPasswordConfirmDialog.tsx",
-      "name": "ResetPasswordConfirmDialog",
-      "screenKeys": [],
-      "category": "configuracion",
-      "categories": [],
-      "archetype": "dialogo",
-      "lines": 146,
-      "metrics": {
-        "lines": 146,
-        "boClasses": 0,
-        "boCard": 0,
-        "boPageTitle": 0,
-        "rawButtons": 0,
-        "cocoaButtons": 1,
-        "rawTables": 0,
-        "cocoaTables": 0,
-        "rawInputs": 0,
-        "cocoaInputs": 1,
-        "inlineStyles": 1,
-        "cocoaCards": 0,
-        "colourLiterals": 0,
-        "colourFallbacks": 0,
-        "rawH1": 0,
-        "hasCocoaPageHeader": false,
-        "usesTabHost": false,
-        "usesSplitView": false,
-        "usesStepper": false,
-        "usesGmGrid": false,
-        "emoji": 0
-      },
-      "headerExempt": true,
-      "debtPoints": 0,
-      "size": "S"
     },
     {
       "path": "apps/admin-web/src/screens/admin/TenantAdminConsoleScreen.tsx",
@@ -883,7 +800,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -901,9 +817,9 @@
         "configuracion"
       ],
       "archetype": "detalle",
-      "lines": 719,
+      "lines": 717,
       "metrics": {
-        "lines": 719,
+        "lines": 717,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -922,7 +838,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -961,7 +876,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1000,7 +914,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1039,7 +952,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1078,7 +990,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1117,7 +1028,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1156,7 +1066,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1195,7 +1104,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1234,7 +1142,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1273,7 +1180,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1312,7 +1218,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1347,7 +1252,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1382,7 +1286,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1419,7 +1322,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1456,7 +1358,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1491,7 +1392,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1530,7 +1430,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1569,7 +1468,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1608,7 +1506,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1647,7 +1544,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1686,7 +1582,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1725,7 +1620,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1764,7 +1658,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1803,7 +1696,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1842,7 +1734,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1881,7 +1772,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1920,7 +1810,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1959,7 +1848,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -1977,9 +1865,9 @@
         "cumplimiento"
       ],
       "archetype": "formulario",
-      "lines": 143,
+      "lines": 139,
       "metrics": {
-        "lines": 143,
+        "lines": 139,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1998,7 +1886,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2037,7 +1924,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2076,7 +1962,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2094,9 +1979,9 @@
         "cumplimiento"
       ],
       "archetype": "formulario",
-      "lines": 172,
+      "lines": 159,
       "metrics": {
-        "lines": 172,
+        "lines": 159,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2115,7 +2000,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2154,7 +2038,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2172,9 +2055,9 @@
         "cumplimiento"
       ],
       "archetype": "lista",
-      "lines": 680,
+      "lines": 676,
       "metrics": {
-        "lines": 680,
+        "lines": 676,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2193,7 +2076,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2211,9 +2093,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 837,
+      "lines": 840,
       "metrics": {
-        "lines": 837,
+        "lines": 840,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2232,7 +2114,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2271,7 +2152,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2310,7 +2190,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2328,9 +2207,9 @@
         "desarrollo"
       ],
       "archetype": "asistente",
-      "lines": 2538,
+      "lines": 2573,
       "metrics": {
-        "lines": 2538,
+        "lines": 2573,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2340,7 +2219,7 @@
         "cocoaTables": 8,
         "rawInputs": 0,
         "cocoaInputs": 63,
-        "inlineStyles": 40,
+        "inlineStyles": 37,
         "cocoaCards": 16,
         "colourLiterals": 0,
         "colourFallbacks": 0,
@@ -2349,11 +2228,10 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": true,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
-      "debtPoints": 10,
+      "debtPoints": 9,
       "size": "XL"
     },
     {
@@ -2367,9 +2245,9 @@
         "configuracion"
       ],
       "archetype": "dashboard",
-      "lines": 253,
+      "lines": 254,
       "metrics": {
-        "lines": 253,
+        "lines": 254,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2388,47 +2266,11 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
       "debtPoints": 1,
       "size": "S"
-    },
-    {
-      "path": "apps/admin-web/src/screens/developer/CocoaShowcaseScreen.tsx",
-      "name": "CocoaShowcaseScreen",
-      "screenKeys": [],
-      "category": "desarrollo",
-      "categories": [],
-      "archetype": "asistente",
-      "lines": 1076,
-      "metrics": {
-        "lines": 1076,
-        "boClasses": 0,
-        "boCard": 0,
-        "boPageTitle": 0,
-        "rawButtons": 0,
-        "cocoaButtons": 18,
-        "rawTables": 0,
-        "cocoaTables": 1,
-        "rawInputs": 1,
-        "cocoaInputs": 11,
-        "inlineStyles": 56,
-        "cocoaCards": 2,
-        "colourLiterals": 1,
-        "colourFallbacks": 0,
-        "rawH1": 0,
-        "hasCocoaPageHeader": true,
-        "usesTabHost": false,
-        "usesSplitView": false,
-        "usesStepper": true,
-        "usesGmGrid": false,
-        "emoji": 0
-      },
-      "headerExempt": false,
-      "debtPoints": 16,
-      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/developer/DeveloperAppsScreen.tsx",
@@ -2462,7 +2304,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2501,7 +2342,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2536,7 +2376,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2575,7 +2414,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2614,7 +2452,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2653,7 +2490,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2692,7 +2528,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2731,7 +2566,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2770,7 +2604,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2809,7 +2642,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2848,7 +2680,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2887,7 +2718,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2922,7 +2752,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2940,9 +2769,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 360,
+      "lines": 363,
       "metrics": {
-        "lines": 360,
+        "lines": 363,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2961,7 +2790,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -2996,7 +2824,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3014,9 +2841,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 596,
+      "lines": 593,
       "metrics": {
-        "lines": 596,
+        "lines": 593,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3035,7 +2862,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3074,7 +2900,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3113,7 +2938,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3152,7 +2976,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3191,7 +3014,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3230,7 +3052,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3269,7 +3090,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3304,7 +3124,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -3343,7 +3162,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3382,7 +3200,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3421,7 +3238,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3460,7 +3276,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3499,7 +3314,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3538,7 +3352,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3577,7 +3390,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3616,7 +3428,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3655,7 +3466,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3694,7 +3504,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3729,7 +3538,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -3768,7 +3576,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3807,7 +3614,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3846,7 +3652,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3885,7 +3690,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3924,7 +3728,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -3938,32 +3741,31 @@
       "category": "compartido",
       "categories": [],
       "archetype": "formulario",
-      "lines": 179,
+      "lines": 96,
       "metrics": {
-        "lines": 179,
-        "boClasses": 13,
-        "boCard": 3,
-        "boPageTitle": 1,
-        "rawButtons": 3,
-        "cocoaButtons": 0,
+        "lines": 96,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 1,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
         "cocoaInputs": 0,
-        "inlineStyles": 18,
-        "cocoaCards": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 1,
         "colourLiterals": 0,
         "colourFallbacks": 0,
-        "rawH1": 1,
-        "hasCocoaPageHeader": false,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
-      "headerExempt": true,
-      "debtPoints": 16,
+      "headerExempt": false,
+      "debtPoints": 0,
       "size": "S"
     },
     {
@@ -3998,7 +3800,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4012,33 +3813,32 @@
       "category": "configuracion",
       "categories": [],
       "archetype": "asistente",
-      "lines": 677,
+      "lines": 679,
       "metrics": {
-        "lines": 677,
-        "boClasses": 55,
-        "boCard": 19,
-        "boPageTitle": 2,
-        "rawButtons": 8,
-        "cocoaButtons": 0,
-        "rawTables": 1,
-        "cocoaTables": 0,
-        "rawInputs": 3,
-        "cocoaInputs": 0,
-        "inlineStyles": 17,
+        "lines": 679,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 8,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 3,
+        "inlineStyles": 4,
         "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
-        "rawH1": 2,
-        "hasCocoaPageHeader": false,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
-      "debtPoints": 60,
-      "size": "L"
+      "debtPoints": 1,
+      "size": "M"
     },
     {
       "path": "apps/admin-web/src/screens/onboarding/OnboardingScreens.tsx",
@@ -4055,14 +3855,14 @@
         "desarrollo"
       ],
       "archetype": "asistente",
-      "lines": 112,
+      "lines": 120,
       "metrics": {
-        "lines": 112,
+        "lines": 120,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 0,
+        "cocoaButtons": 1,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -4072,15 +3872,14 @@
         "colourLiterals": 0,
         "colourFallbacks": 0,
         "rawH1": 0,
-        "hasCocoaPageHeader": false,
+        "hasCocoaPageHeader": true,
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
-      "debtPoints": 5,
+      "debtPoints": 0,
       "size": "S"
     },
     {
@@ -4115,7 +3914,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4154,7 +3952,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4193,7 +3990,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4232,7 +4028,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4271,7 +4066,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4310,7 +4104,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4349,7 +4142,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4384,7 +4176,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -4423,7 +4214,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4462,7 +4252,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4497,7 +4286,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -4536,7 +4324,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4575,7 +4362,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4610,7 +4396,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -4649,7 +4434,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4688,7 +4472,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4727,7 +4510,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4766,7 +4548,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4805,7 +4586,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4844,7 +4624,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4879,7 +4658,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -4914,7 +4692,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -4953,7 +4730,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -4992,7 +4768,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5031,7 +4806,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5070,7 +4844,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": true,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5109,7 +4882,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5148,7 +4920,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5187,7 +4958,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5222,7 +4992,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -5257,7 +5026,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -5296,7 +5064,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5327,11 +5094,10 @@
         "colourLiterals": 0,
         "colourFallbacks": 0,
         "rawH1": 0,
-        "hasCocoaPageHeader": true,
+        "hasCocoaPageHeader": false,
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -5366,7 +5132,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -5405,7 +5170,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5444,7 +5208,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5483,7 +5246,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5522,7 +5284,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5561,7 +5322,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5600,7 +5360,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5618,9 +5377,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 336,
+      "lines": 322,
       "metrics": {
-        "lines": 336,
+        "lines": 322,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5639,7 +5398,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5678,7 +5436,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5717,7 +5474,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5756,7 +5512,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5795,7 +5550,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5834,7 +5588,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5873,7 +5626,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5912,7 +5664,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5951,7 +5702,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -5986,7 +5736,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -6025,7 +5774,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6064,47 +5812,11 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": true,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
       "debtPoints": 0,
       "size": "L"
-    },
-    {
-      "path": "apps/admin-web/src/screens/preview/CocoaGalleryScreen.tsx",
-      "name": "CocoaGalleryScreen",
-      "screenKeys": [],
-      "category": "desarrollo",
-      "categories": [],
-      "archetype": "asistente",
-      "lines": 748,
-      "metrics": {
-        "lines": 748,
-        "boClasses": 0,
-        "boCard": 0,
-        "boPageTitle": 0,
-        "rawButtons": 0,
-        "cocoaButtons": 5,
-        "rawTables": 0,
-        "cocoaTables": 1,
-        "rawInputs": 0,
-        "cocoaInputs": 8,
-        "inlineStyles": 22,
-        "cocoaCards": 1,
-        "colourLiterals": 1,
-        "colourFallbacks": 0,
-        "rawH1": 1,
-        "hasCocoaPageHeader": false,
-        "usesTabHost": false,
-        "usesSplitView": false,
-        "usesStepper": true,
-        "usesGmGrid": false,
-        "emoji": 0
-      },
-      "headerExempt": false,
-      "debtPoints": 12,
-      "size": "M"
     },
     {
       "path": "apps/admin-web/src/screens/PropertyMapper.tsx",
@@ -6138,7 +5850,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6191,7 +5902,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6231,7 +5941,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6270,7 +5979,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6309,7 +6017,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": true,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6348,7 +6055,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": true,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6387,7 +6093,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6426,7 +6131,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6465,7 +6169,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6504,7 +6207,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6543,7 +6245,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6582,7 +6283,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6621,7 +6321,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6660,7 +6359,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6699,7 +6397,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6738,7 +6435,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6777,7 +6473,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6816,7 +6511,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6856,7 +6550,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -6870,19 +6563,19 @@
       "category": "compartido",
       "categories": [],
       "archetype": "otro",
-      "lines": 132,
+      "lines": 140,
       "metrics": {
-        "lines": 132,
-        "boClasses": 10,
-        "boCard": 4,
+        "lines": 140,
+        "boClasses": 0,
+        "boCard": 0,
         "boPageTitle": 0,
-        "rawButtons": 1,
-        "cocoaButtons": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 1,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
         "cocoaInputs": 0,
-        "inlineStyles": 2,
+        "inlineStyles": 0,
         "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
@@ -6891,11 +6584,10 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
-      "debtPoints": 9,
+      "debtPoints": 0,
       "size": "S"
     },
     {
@@ -6926,7 +6618,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -6965,7 +6656,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -7004,7 +6694,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -7039,7 +6728,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7078,7 +6766,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -7117,7 +6804,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -7156,7 +6842,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -7191,7 +6876,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7226,7 +6910,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7261,7 +6944,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7296,7 +6978,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7310,9 +6991,9 @@
       "category": "configuracion",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 30,
+      "lines": 29,
       "metrics": {
-        "lines": 30,
+        "lines": 29,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -7331,7 +7012,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7366,7 +7046,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7401,7 +7080,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7436,7 +7114,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7471,7 +7148,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7481,41 +7157,6 @@
     {
       "path": "apps/admin-web/src/screens/tabs/configuracion/InteligenciaArtificialTabs.tsx",
       "name": "InteligenciaArtificialTabs",
-      "screenKeys": [],
-      "category": "configuracion",
-      "categories": [],
-      "archetype": "contenedor",
-      "lines": 36,
-      "metrics": {
-        "lines": 36,
-        "boClasses": 0,
-        "boCard": 0,
-        "boPageTitle": 0,
-        "rawButtons": 0,
-        "cocoaButtons": 0,
-        "rawTables": 0,
-        "cocoaTables": 0,
-        "rawInputs": 0,
-        "cocoaInputs": 0,
-        "inlineStyles": 0,
-        "cocoaCards": 0,
-        "colourLiterals": 0,
-        "colourFallbacks": 0,
-        "rawH1": 0,
-        "hasCocoaPageHeader": true,
-        "usesTabHost": false,
-        "usesSplitView": false,
-        "usesStepper": false,
-        "usesGmGrid": false,
-        "emoji": 0
-      },
-      "headerExempt": true,
-      "debtPoints": 0,
-      "size": "S"
-    },
-    {
-      "path": "apps/admin-web/src/screens/tabs/configuracion/ModulosTabs.tsx",
-      "name": "ModulosTabs",
       "screenKeys": [],
       "category": "configuracion",
       "categories": [],
@@ -7541,7 +7182,40 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/tabs/configuracion/ModulosTabs.tsx",
+      "name": "ModulosTabs",
+      "screenKeys": [],
+      "category": "configuracion",
+      "categories": [],
+      "archetype": "contenedor",
+      "lines": 34,
+      "metrics": {
+        "lines": 34,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 0,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7576,7 +7250,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7590,9 +7263,9 @@
       "category": "configuracion",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 63,
+      "lines": 62,
       "metrics": {
-        "lines": 63,
+        "lines": 62,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -7611,7 +7284,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7646,7 +7318,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7681,7 +7352,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7716,7 +7386,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7751,7 +7420,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7765,9 +7433,9 @@
       "category": "cumplimiento",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 27,
+      "lines": 26,
       "metrics": {
-        "lines": 27,
+        "lines": 26,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -7786,7 +7454,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7800,9 +7467,9 @@
       "category": "cumplimiento",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 32,
+      "lines": 29,
       "metrics": {
-        "lines": 32,
+        "lines": 29,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -7821,7 +7488,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7856,7 +7522,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7891,7 +7556,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7926,7 +7590,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7961,7 +7624,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -7996,7 +7658,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8031,7 +7692,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8066,7 +7726,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8101,7 +7760,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8136,7 +7794,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8150,9 +7807,9 @@
       "category": "compartido",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 123,
+      "lines": 122,
       "metrics": {
-        "lines": 123,
+        "lines": 122,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -8171,7 +7828,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8206,7 +7862,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8241,7 +7896,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8276,7 +7930,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8311,7 +7964,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8346,7 +7998,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8381,7 +8032,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8416,7 +8066,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8451,7 +8100,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8486,7 +8134,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8521,7 +8168,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8535,44 +8181,9 @@
       "category": "compartido",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 165,
+      "lines": 56,
       "metrics": {
-        "lines": 165,
-        "boClasses": 0,
-        "boCard": 0,
-        "boPageTitle": 0,
-        "rawButtons": 0,
-        "cocoaButtons": 0,
-        "rawTables": 0,
-        "cocoaTables": 0,
-        "rawInputs": 0,
-        "cocoaInputs": 1,
-        "inlineStyles": 4,
-        "cocoaCards": 0,
-        "colourLiterals": 0,
-        "colourFallbacks": 0,
-        "rawH1": 1,
-        "hasCocoaPageHeader": true,
-        "usesTabHost": true,
-        "usesSplitView": false,
-        "usesStepper": false,
-        "usesGmGrid": false,
-        "emoji": 0
-      },
-      "headerExempt": true,
-      "debtPoints": 1,
-      "size": "S"
-    },
-    {
-      "path": "apps/admin-web/src/screens/tabs/TabHost.tsx",
-      "name": "TabHost",
-      "screenKeys": [],
-      "category": "compartido",
-      "categories": [],
-      "archetype": "contenedor",
-      "lines": 91,
-      "metrics": {
-        "lines": 91,
+        "lines": 56,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -8586,12 +8197,45 @@
         "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
-        "rawH1": 1,
-        "hasCocoaPageHeader": true,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/tabs/TabHost.tsx",
+      "name": "TabHost",
+      "screenKeys": [],
+      "category": "compartido",
+      "categories": [],
+      "archetype": "contenedor",
+      "lines": 86,
+      "metrics": {
+        "lines": 86,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 0,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
         "emoji": 0
       },
       "headerExempt": true,
@@ -8630,7 +8274,6 @@
         "usesTabHost": false,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -8669,7 +8312,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -8708,7 +8350,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,
@@ -8747,7 +8388,6 @@
         "usesTabHost": true,
         "usesSplitView": false,
         "usesStepper": false,
-        "usesGmGrid": false,
         "emoji": 0
       },
       "headerExempt": false,

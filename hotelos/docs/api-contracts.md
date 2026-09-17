@@ -268,6 +268,11 @@ PMS Core is enabled by default and cannot be disabled. Optional modules validate
 
 Integration connection config may include only operational settings. Credentials are stored in a secret manager and referenced through `credentialsSecretRef`; plaintext credentials are rejected.
 
+### Correo entrante (conexiones de correo · Cocoa 22 · ola 11)
+
+- `GET /properties/:propertyId/email/connections` · `POST /properties/:propertyId/email/connections` (`integrations.connect`, high; la respuesta añade `needsOAuth` y `authorizeAvailable`) · `GET /email/connections/:id/authorize-url` · `POST /email/connections/:id/poll` (`integrations.connect`, medium).
+- `DELETE /email/connections/:id` (`integrations.disconnect`, medium) — «Desconectar». Una conexión que nunca llegó a autorizarse (`pending_auth` sin refresh token: la fila «Gmail · desconectado» que un operador dio de alta y abandonó) se **borra** y la respuesta es la conexión con `status: "deleted"` y **`deleted: true`** (auditoría `EMAIL_CONNECTION_DELETED`, `entityType: "email_connection"`, `beforeJson { provider, status }`, `afterJson: null`); cualquier conexión que tuvo credenciales se conserva como `disconnected` (refresh token y contraseña IMAP a `null`), responde `deleted: false` y audita `EMAIL_CONNECTION_DISCONNECTED`. Regla pura `disconnectOutcome()` en `modules/integrations/email/email-reservation.service.ts` (test `__tests__/email-connections.test.mts`).
+
 ## Upsell Offers (Tanda 3 · CF-02)
 
 Staff catalogue over Prisma `UpsellOffer` — the same table `GET /dashboards/upsells` aggregates. The former front paths under `/guest-self-service/upsell_offers` never existed.

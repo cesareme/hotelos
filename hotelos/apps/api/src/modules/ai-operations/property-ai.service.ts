@@ -241,23 +241,32 @@ export async function updatePropertyAiSettings(
   return settings;
 }
 
+/** Spanish name of each automation level (the readiness detail names the level, never its key). */
+export const AUTOMATION_LEVEL_LABELS: Record<AutomationLevel, string> = {
+  off: "desactivado",
+  suggest: "sugerir",
+  suggest_and_confirm: "sugerir y confirmar",
+  autonomous: "autónomo"
+};
+
 /**
- * Surface whether the property's AI is safely configured. These are the
- * minimum bars before AI should be relied on in front of guests.
+ * Pure (Cocoa 22 · ola 11 · qa#3): the four readiness checks of a property's
+ * AI settings with `label` / `detail` in Spanish. The keys are the stable
+ * contract of GET /ai-operations/property/readiness (the front maps by key);
+ * the texts are what the API shows when the front knows no key.
  */
-export async function aiReadiness(propertyId: string): Promise<AiReadiness> {
-  const settings = await getPropertyAiSettings(propertyId);
+export function buildAiReadinessChecks(settings: PropertyAiSettings): ReadinessCheck[] {
   const checks: ReadinessCheck[] = [];
 
   // 1. Master switch.
   checks.push(
     settings.aiEnabled
-      ? { key: "enabled", label: "AI enabled", status: "ok", detail: "AI is enabled for this property." }
+      ? { key: "enabled", label: "IA activada", status: "ok", detail: "La IA está activada para esta propiedad." }
       : {
           key: "enabled",
-          label: "AI enabled",
+          label: "IA activada",
           status: "warn",
-          detail: "AI is currently disabled. No AI features will run for this property."
+          detail: "La IA está desactivada: no se ejecutará ninguna función de IA en esta propiedad."
         }
   );
 
@@ -267,33 +276,33 @@ export async function aiReadiness(propertyId: string): Promise<AiReadiness> {
     hasDisclosure
       ? {
           key: "disclosure",
-          label: "Guest-facing disclosure",
+          label: "Aviso a los huéspedes",
           status: "ok",
-          detail: "A guest-facing AI disclosure is configured."
+          detail: "Hay un aviso de IA al huésped configurado."
         }
       : {
           key: "disclosure",
-          label: "Guest-facing disclosure",
+          label: "Aviso a los huéspedes",
           status: "error",
-          detail:
-            "No guest-facing disclosure set. Disclosing AI involvement to guests is a legal requirement."
+          detail: "No hay aviso de IA al huésped. Informar al huésped de que interviene la IA es un requisito legal."
         }
   );
 
   // 3. At least one voice locale.
+  const localeCount = settings.voiceLocales.length;
   checks.push(
-    settings.voiceLocales.length > 0
+    localeCount > 0
       ? {
           key: "voice_locales",
-          label: "Voice locales",
+          label: "Idiomas de voz",
           status: "ok",
-          detail: `${settings.voiceLocales.length} locale(s) configured: ${settings.voiceLocales.join(", ")}.`
+          detail: `${localeCount === 1 ? "1 idioma configurado" : `${localeCount} idiomas configurados`}: ${settings.voiceLocales.join(", ")}.`
         }
       : {
           key: "voice_locales",
-          label: "Voice locales",
+          label: "Idiomas de voz",
           status: "warn",
-          detail: "No voice locales configured. Voice AI will have no language to respond in."
+          detail: "No hay idiomas de voz configurados: la IA de voz no tendría ningún idioma en el que responder."
         }
   );
 
@@ -302,9 +311,9 @@ export async function aiReadiness(propertyId: string): Promise<AiReadiness> {
   if (!isAutomationLevel(settings.defaultAutomationLevel)) {
     automationCheck = {
       key: "automation_level",
-      label: "Automation level",
+      label: "Nivel de automatización",
       status: "error",
-      detail: "Automation level is not recognized."
+      detail: "No se reconoce el nivel de automatización configurado."
     };
   } else if (settings.defaultAutomationLevel === "autonomous") {
     const approvedBy = settings.configurationJson.autonomousApprovedBy;
@@ -312,26 +321,35 @@ export async function aiReadiness(propertyId: string): Promise<AiReadiness> {
       approvedBy && (typeof approvedBy !== "string" || approvedBy.trim() !== "")
         ? {
             key: "automation_level",
-            label: "Automation level",
+            label: "Nivel de automatización",
             status: "ok",
-            detail: `Autonomous, approved by ${String(approvedBy)}.`
+            detail: `Modo autónomo, aprobado por ${String(approvedBy)}.`
           }
         : {
             key: "automation_level",
-            label: "Automation level",
+            label: "Nivel de automatización",
             status: "error",
-            detail: "Autonomous automation is set without an approver of record."
+            detail: "El modo autónomo está activado sin un responsable de aprobación registrado."
           };
   } else {
     automationCheck = {
       key: "automation_level",
-      label: "Automation level",
+      label: "Nivel de automatización",
       status: "ok",
-      detail: `Default automation level is "${settings.defaultAutomationLevel}".`
+      detail: `Nivel de automatización por defecto: ${AUTOMATION_LEVEL_LABELS[settings.defaultAutomationLevel]}.`
     };
   }
   checks.push(automationCheck);
+  return checks;
+}
 
+/**
+ * Surface whether the property's AI is safely configured. These are the
+ * minimum bars before AI should be relied on in front of guests.
+ */
+export async function aiReadiness(propertyId: string): Promise<AiReadiness> {
+  const settings = await getPropertyAiSettings(propertyId);
+  const checks = buildAiReadinessChecks(settings);
   const ready = checks.every((check) => check.status === "ok");
   return { propertyId, checks, ready };
 }

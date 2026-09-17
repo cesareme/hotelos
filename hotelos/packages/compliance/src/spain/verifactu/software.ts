@@ -28,6 +28,9 @@
 // Missing required values are replaced by labelled sandbox defaults so the
 // stub pipeline keeps working, and reported in `errors` so real modes
 // (preproduction / production) refuse to send and readiness stays red.
+// Cocoa 22 · ola 11 (qa#14): every error is a Spanish sentence a hotelier can
+// read — it names the field, never the environment variable, the XML element
+// or the table; the error CODES stay constants (VERIFACTU_INSTALLATION_NOT_DECLARED_CODE).
 //
 // Installation (Tanda 6b · L3, design §5.2 R7): callers that know the
 // VerifactuInstallation of the record pass it in `options.installation`; its
@@ -121,18 +124,18 @@ function readEnv(env: NodeJS.ProcessEnv, name: string): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function readFlag(env: NodeJS.ProcessEnv, name: string, fallback: VerifactuSoftwareFlag, errors: string[]): VerifactuSoftwareFlag {
+function readFlag(env: NodeJS.ProcessEnv, name: string, label: string, fallback: VerifactuSoftwareFlag, errors: string[]): VerifactuSoftwareFlag {
   const raw = readEnv(env, name);
   if (raw === null) return fallback;
   const upper = raw.toUpperCase();
   if (upper === "S" || upper === "N") return upper;
-  errors.push(`${name} debe ser "S" o "N" (valor actual: "${raw}").`);
+  errors.push(`${label} debe ser «S» o «N» (valor actual: «${raw}»).`);
   return fallback;
 }
 
-function checkMaxLength(value: string, max: number, label: string, variable: string, errors: string[]): void {
+function checkMaxLength(value: string, max: number, label: string, errors: string[]): void {
   if (value.length > max) {
-    errors.push(`${label} (${variable}) supera los ${max} caracteres permitidos por el XSD (${value.length}).`);
+    errors.push(`${label} supera los ${max} caracteres que admite la AEAT (${value.length}).`);
   }
 }
 
@@ -153,9 +156,9 @@ export function resolveNumeroInstalacion(
   if (installation) {
     const declared = installation.numeroInstalacion.trim();
     if (declared.length === 0) {
-      errors.push("La instalación VeriFactu declarada no tiene número (verifactu_installations.numero_instalacion vacío).");
+      errors.push("La instalación VeriFactu declarada no tiene número de instalación.");
     } else {
-      checkMaxLength(declared, VERIFACTU_SOFTWARE_LIMITS.numeroInstalacion, "El número de instalación", "verifactu_installations.numero_instalacion", errors);
+      checkMaxLength(declared, VERIFACTU_SOFTWARE_LIMITS.numeroInstalacion, "El número de instalación", errors);
     }
     return { numeroInstalacion: declared.length > 0 ? declared : VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion, source: "installation" };
   }
@@ -163,15 +166,15 @@ export function resolveNumeroInstalacion(
   const fromEnv = readEnv(env, "VERIFACTU_INSTALL_NUMBER");
   if (options.requireInstallation) {
     errors.push(
-      `${VERIFACTU_INSTALLATION_NOT_DECLARED_CODE}: el centro no tiene una instalación VeriFactu declarada (verifactu_installations). En preproduction/production el NumeroInstalacion nunca sale del entorno: da de alta la instalación del centro (o de la sociedad, según la política de cadena) en Configuración › Estructura societaria › Series y VeriFactu.`
+      "El centro no tiene una instalación VeriFactu declarada. En preproducción y producción el número de instalación nunca sale de la configuración del servidor: da de alta la instalación del centro (o de la sociedad, según la política de cadena) en Configuración › Estructura societaria › Series y VeriFactu."
     );
     return { numeroInstalacion: fromEnv ?? VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion, source: fromEnv ? "env" : "default" };
   }
   if (fromEnv === null) {
-    errors.push("Falta VERIFACTU_INSTALL_NUMBER (número de instalación asignado por el productor a este despliegue).");
+    errors.push("Falta el número de instalación asignado por el productor a este despliegue.");
     return { numeroInstalacion: VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion, source: "default" };
   }
-  checkMaxLength(fromEnv, VERIFACTU_SOFTWARE_LIMITS.numeroInstalacion, "El número de instalación", "VERIFACTU_INSTALL_NUMBER", errors);
+  checkMaxLength(fromEnv, VERIFACTU_SOFTWARE_LIMITS.numeroInstalacion, "El número de instalación", errors);
   return { numeroInstalacion: fromEnv, source: "env" };
 }
 
@@ -187,39 +190,37 @@ export function resolveVerifactuSoftware(env: NodeJS.ProcessEnv = process.env, o
   const nombreRazonRaw = readEnv(env, "VERIFACTU_SOFTWARE_NAME");
   const nombreRazon = nombreRazonRaw ?? VERIFACTU_SOFTWARE_DEFAULTS.nombreRazon;
   if (nombreRazonRaw === null) {
-    errors.push("Falta VERIFACTU_SOFTWARE_NAME (razón social del productor del software, NombreRazon del bloque SistemaInformatico).");
+    errors.push("Falta la razón social del productor del software.");
   } else {
-    checkMaxLength(nombreRazonRaw, VERIFACTU_SOFTWARE_LIMITS.nombreRazon, "La razón social del productor", "VERIFACTU_SOFTWARE_NAME", errors);
+    checkMaxLength(nombreRazonRaw, VERIFACTU_SOFTWARE_LIMITS.nombreRazon, "La razón social del productor", errors);
   }
 
   const nifRaw = readEnv(env, "VERIFACTU_SOFTWARE_NIF");
   const nifNormalized = normalizeTaxId(nifRaw);
   let nif: string = VERIFACTU_SOFTWARE_DEFAULTS.nif;
   if (nifRaw === null || nifNormalized === null) {
-    errors.push("Falta VERIFACTU_SOFTWARE_NIF (NIF del productor del software, no del hotel emisor).");
+    errors.push("Falta el NIF del productor del software (no el del hotel emisor).");
   } else if (!isValidSpanishTaxId(nifNormalized)) {
-    errors.push(`VERIFACTU_SOFTWARE_NIF no es un NIF válido: ${spanishTaxIdValidationMessage(nifNormalized) ?? "formato incorrecto"}`);
+    errors.push(`El NIF del productor del software no es válido: ${spanishTaxIdValidationMessage(nifNormalized) ?? "formato incorrecto"}`);
     nif = nifNormalized;
   } else {
     nif = nifNormalized;
   }
 
   const nombreSistema = readEnv(env, "VERIFACTU_SYSTEM_NAME") ?? VERIFACTU_SOFTWARE_DEFAULTS.nombreSistema;
-  checkMaxLength(nombreSistema, VERIFACTU_SOFTWARE_LIMITS.nombreSistema, "El nombre del sistema", "VERIFACTU_SYSTEM_NAME", errors);
+  checkMaxLength(nombreSistema, VERIFACTU_SOFTWARE_LIMITS.nombreSistema, "El nombre del sistema", errors);
 
   const idSistema = readEnv(env, "VERIFACTU_SYSTEM_ID") ?? VERIFACTU_SOFTWARE_DEFAULTS.idSistema;
   if (idSistema.length !== VERIFACTU_SOFTWARE_LIMITS.idSistema) {
-    errors.push(
-      `IdSistemaInformatico (VERIFACTU_SYSTEM_ID) debe tener exactamente ${VERIFACTU_SOFTWARE_LIMITS.idSistema} caracteres (valor actual: "${idSistema}").`
-    );
+    errors.push(`El identificador del sistema debe tener exactamente ${VERIFACTU_SOFTWARE_LIMITS.idSistema} caracteres (valor actual: «${idSistema}»).`);
   }
 
   const version = readEnv(env, "VERIFACTU_SYSTEM_VERSION") ?? readEnv(env, "APP_VERSION") ?? VERIFACTU_SOFTWARE_DEFAULTS.version;
-  checkMaxLength(version, VERIFACTU_SOFTWARE_LIMITS.version, "La versión del sistema", "VERIFACTU_SYSTEM_VERSION", errors);
+  checkMaxLength(version, VERIFACTU_SOFTWARE_LIMITS.version, "La versión del sistema", errors);
 
   const installation = resolveNumeroInstalacion(env, options, errors);
 
-  const multiOT = readFlag(env, "VERIFACTU_MULTI_OT", VERIFACTU_SOFTWARE_DEFAULTS.multiOT, errors);
+  const multiOT = readFlag(env, "VERIFACTU_MULTI_OT", "El indicador de varios obligados tributarios", VERIFACTU_SOFTWARE_DEFAULTS.multiOT, errors);
 
   return {
     ok: errors.length === 0,

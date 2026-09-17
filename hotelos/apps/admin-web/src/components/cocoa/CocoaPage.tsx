@@ -28,9 +28,9 @@
 // hooks (§8 contract: data-cocoa root + c22-* classes + data-* variants).
 
 import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
-import { HostedHead } from "../../screens/tabs/tab-helpers";
 import { useHostedEyebrow, useTabHost } from "../../screens/tabs/TabHost";
 import { CocoaPageHeader, type CocoaPageHeaderProps } from "./CocoaPageHeader";
+import { HostedHead } from "./HostedHead";
 import { CocoaState, type CocoaStateProps } from "./CocoaState";
 import { commandsKey, registerPageCommands, resolvePageState, type CocoaPageCommand, type CocoaPageState } from "./cocoa-page-commands";
 

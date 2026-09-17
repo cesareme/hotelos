@@ -5,20 +5,15 @@
 // `useTabHost()`: null when rendered standalone, the host info inside a
 // container — the screen then hides its own eyebrow and H1 (no duplicated
 // title) and keeps subtitle, inner views and its actions row
-// (HOSTED_ACTIONS_ROW / HOSTED_TOOLBAR, or `HostedHead` of tab-helpers.tsx).
+// (HOSTED_ACTIONS_ROW / HOSTED_TOOLBAR, or `HostedHead` of components/cocoa,
+// which `CocoaPage` paints by itself when hosted).
 // The container passes nothing down: the context is the source of truth, so a
 // screen behaves the same whichever container hosts it.
 //
-// Bridge still in place (L1c): 10 screens branch on an `embedded` prop by hand
-// (`{embedded ? null : <h1>…}`) and their loaders wrap them with `embed()` of
-// tab-helpers.tsx — SetupCenterScreen, NotificationsScreen, ModuleHealthCenter,
-// PropertyAiScreen, AiToolRegistryScreen, AiPipelineStatusScreen,
-// AiGovernanceScreen, ApiReferenceScreen, FiscalDashboard and
-// SustainabilityDashboard (Modelo303/111/115/180/390Screen left it in lote
-// 8-B, Tanda 6). Migrating one = read
-// `useTabHost()` instead of the prop, drop the prop, and change its loader to
-// `{ default: m.Screen }`. Screens built on `pageHead(embedded)` are already on
-// the context (pageHead reads it) and only carry a dead prop.
+// Bridge of L1c retired (Cocoa 22 · ola 11): no screen takes an `embedded`
+// prop any more and no loader wraps its screen — every container hands the
+// screen over as it is (`{ default: m.Screen }`) and the screen reads
+// `useTabHost()`, directly or through `CocoaPage`.
 //
 // Eyebrow qualifier (Tanda 6b · L7, fix qa#12): the container paints the
 // category («Finanzas»); a hosted screen that knows more — the sociedad or

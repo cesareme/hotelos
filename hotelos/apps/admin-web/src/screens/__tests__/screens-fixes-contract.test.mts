@@ -77,7 +77,7 @@ describe("screens · cabeceras Cocoa con las etiquetas del árbol (browser-roles
     }
     const sustainability = read("screens/operations/SustainabilityDashboard.tsx");
     assert.match(sustainability, /treeHeaderFor\("SustainabilityDashboard"/);
-    assert.match(sustainability, /pageHead\(embedded\)/);
+    assert.match(sustainability, /<CocoaPage\b/);
   });
 
   it("Panel de revenue shows only real data (no sample KPIs, alerts or setup checks)", () => {

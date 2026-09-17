@@ -30,11 +30,9 @@ const SOURCE_EXTENSIONS = new Set([".ts", ".tsx"]);
 const FORMATTER_EXCEPTIONS = new Map([
   // (none today — add "screens/<path>": "reason" when a screen genuinely needs its own formatter)
 ]);
-// Screens excluded from the English-literal check (developer showcases of the
-// Cocoa kit render component states by their English prop names on purpose).
+// Screens excluded from the English-literal check.
 const COPY_EXCEPTIONS = new Map([
-  ["screens/developer/CocoaShowcaseScreen.tsx", "developer showcase of the Cocoa kit (dev-only route)"],
-  ["screens/preview/CocoaGalleryScreen.tsx", "developer gallery of the Cocoa kit (dev-only route)"]
+  // (ninguna hoy — añadir "screens/<ruta>": "motivo" solo para un muestrario dev)
 ]);
 
 // English literals from the dictionary (content/actions.ts) plus the ones the

@@ -205,10 +205,10 @@ function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSave
 }
 
 // Setup Center (Puesta en marcha): the single configuration hub of Tanda 5. Rendered
-// as the base tab of Configuración › Puesta en marcha (`embedded`) or standalone.
-export function SetupCenter({ initialTab = "overview", embedded = false }: { initialTab?: SetupView; embedded?: boolean }) {
-  // The host context decides the head (CocoaPage reads it); `embedded` is the L1c bridge the loader still passes.
-  const hosted = embedded || useTabHost() !== null;
+// as the base tab of Configuración › Puesta en marcha (host context) or standalone.
+export function SetupCenter({ initialTab = "overview" }: { initialTab?: SetupView } = {}) {
+  // The host context decides the head (CocoaPage reads it).
+  const hosted = useTabHost() !== null;
   const [tab, setTab] = useState<SetupView>(initialTab);
   const [options, setOptions] = useState<ManualSetupOptionView[]>(MANUAL_SETUP_OPTIONS);
   const [summary, setSummary] = useState<ManualSetupSummary>(() => buildSetupSummary(MANUAL_SETUP_OPTIONS));
@@ -397,6 +397,6 @@ export function SetupCenter({ initialTab = "overview", embedded = false }: { ini
   );
 }
 
-export function SetupCenterScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  return <SetupCenter initialTab="overview" embedded={embedded} />;
+export function SetupCenterScreen() {
+  return <SetupCenter initialTab="overview" />;
 }

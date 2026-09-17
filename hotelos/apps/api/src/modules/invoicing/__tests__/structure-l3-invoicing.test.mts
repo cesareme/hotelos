@@ -466,7 +466,9 @@ describe("resolveVerifactuSoftware — NumeroInstalacion from the declared insta
   it("real modes without installation → INSTALLATION_NOT_DECLARED error (never the env value as ok)", () => {
     const result = resolveVerifactuSoftware(COMPLETE_ENV, { installation: null, requireInstallation: true });
     assert.equal(result.ok, false);
-    assert.ok(result.errors.some((e) => e.startsWith(VERIFACTU_INSTALLATION_NOT_DECLARED_CODE)), result.errors.join(" "));
+    // Cocoa 22 · ola 11 (qa#14): the reason is a Spanish sentence (no code prefix); the code stays the errorCode of the parked send.
+    assert.ok(result.errors.some((e) => e.startsWith("El centro no tiene una instalación VeriFactu declarada.")), result.errors.join(" "));
+    assert.ok(!result.errors.some((e) => e.includes(VERIFACTU_INSTALLATION_NOT_DECLARED_CODE)), "the code never reaches the hotelier");
     assert.equal(result.installationSource, "env", "the env fills the field only so the block stays well-formed");
   });
 
@@ -486,7 +488,8 @@ describe("resolveVerifactuSoftware — NumeroInstalacion from the declared insta
   it("an installation number over 100 characters is reported against the table, not the env", () => {
     const result = resolveVerifactuSoftware(COMPLETE_ENV, { installation: { numeroInstalacion: "X".repeat(101) } });
     assert.equal(result.ok, false);
-    assert.ok(result.errors.some((e) => e.includes("verifactu_installations.numero_instalacion") && e.includes("100")));
+    assert.ok(result.errors.some((e) => e.startsWith("El número de instalación supera los 100 caracteres") && e.includes("(101)")), result.errors.join(" "));
+    assert.ok(!result.errors.some((e) => e.includes("VERIFACTU_INSTALL_NUMBER") || e.includes("verifactu_installations")), "neither the env variable nor the table is named");
   });
 });
 
@@ -525,7 +528,7 @@ describe("TicketBAI — NumSerieDispositivo from the declared installation", () 
     assert.equal(resolveTbaiSoftware({ ...env, TBAI_DEVICE_SERIAL: "" }).software.deviceSerial, "VPS-HOSTINGER-001");
     const production = resolveTbaiSoftware(env, { installation: null, requireInstallation: true });
     assert.equal(production.ok, false);
-    assert.ok(production.errors.some((e) => e.startsWith(VERIFACTU_INSTALLATION_NOT_DECLARED_CODE)));
+    assert.ok(production.errors.some((e) => e.startsWith("El centro no tiene una instalación VeriFactu declarada.")), production.errors.join(" "));
   });
 
   it("buildTbaiXml renders the device serial (legacy literal when none is passed)", () => {

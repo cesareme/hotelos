@@ -15,7 +15,6 @@ export default defineConfig({
       "@hotelos/onboarding": path.join(repoRoot, "packages/onboarding/src/index.ts"),
       "@hotelos/product": path.join(repoRoot, "packages/product/src/index.ts"),
       "@hotelos/revenue": path.join(repoRoot, "packages/revenue/src/index.ts"),
-      "@hotelos/ui/timeline": path.join(repoRoot, "packages/ui/src/components/timeline/index.ts"),
       "@hotelos/ui/panels": path.join(repoRoot, "packages/ui/src/components/panels/index.ts"),
       "@hotelos/ui": path.join(repoRoot, "packages/ui/src/index.ts"),
       "@hotelos/config": path.join(repoRoot, "packages/config/src/index.ts")
@@ -35,7 +34,6 @@ export default defineConfig({
       "@hotelos/product",
       "@hotelos/revenue",
       "@hotelos/ui",
-      "@hotelos/ui/timeline",
       "@hotelos/ui/panels",
       "@hotelos/config"
     ]

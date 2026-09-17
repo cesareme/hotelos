@@ -1,0 +1,160 @@
+/* ============================================================
+   Anfitorio Cocoa 22 — Shell: sidebar, drawer, velo e impresión
+   Geometría Y skin del <aside> de navigation/Sidebar.tsx y del cromo de
+   layouts/BackOfficeLayout.tsx (COCOA-22.md §2 tokens, §3.1 shell; R11: ni
+   el sidebar ni el layout inyectan <style>). Hoja SIN capa, importada tras
+   cocoa-22.css y antes de mobile.css (que eleva los objetivos táctiles y
+   añade el safe-area). Solo tokens --cocoa-*: cero literales, cero tokens
+   Aurora (--ink/--line/--surface/--accent/--radius/--space/--shadow…).
+
+     .c22-sidebar[.open]          <aside>; drawer fijo bajo 900 px
+                                  (COMPACT_BREAKPOINT_PX de navigation/viewport.ts)
+     .c22-scrim[.open]            velo del drawer (cierra al pulsar)
+     .c22-sidebar-close           cierre del drawer (visible solo abierto en móvil)
+     .c22-brand / .c22-brand-home marca y botón de inicio
+     .c22-role-switcher / .c22-role-select-wrap   «Ver como…» (administrador)
+     .c22-sidebar-search          buscador del menú
+     .c22-nav-group / -head / -title / -badge / -body   categorías plegables
+     .c22-nav-section / .c22-nav-item[.active|.locked] / -label / .c22-nav-unlock
+     .c22-nav-count / .c22-nav-chevron / .c22-nav-notice / .c22-nav-viewas-badge
+     .c22-nav-skeleton / .c22-nav-counts
+     .cocoa-shell .cocoa-sidebar-host   columna del CocoaSplitView (≥ 900 px)
+     .cocoa-shell .cocoa-toolbar-property / .cocoa-menu-item   cromo de la toolbar
+     @media print                 oculta sidebar, velo, toolbar y acciones
+   Foco: un único anillo de 3 px (--cocoa-focus-ring) en todos los controles.
+   ============================================================ */
+
+/* ---- <aside>: pegajoso a toda altura, con su propio scroll ---- */
+.c22-sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--cocoa-separator) transparent;
+  padding: var(--cocoa-space-5) var(--cocoa-space-3);
+  background: var(--cocoa-background-sidebar);
+  border-right: 1px solid var(--cocoa-separator);
+  color: var(--cocoa-label);
+  font-family: var(--cocoa-font);
+}
+.c22-sidebar::-webkit-scrollbar { width: 6px; }
+.c22-sidebar::-webkit-scrollbar-thumb { background: var(--cocoa-separator); border-radius: var(--cocoa-radius-full); }
+
+/* ---- marca (botón de inicio) ---- */
+.c22-sidebar .c22-brand-home { display: flex; width: 100%; padding: 0; border: none; border-radius: var(--cocoa-radius-md); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.c22-sidebar .c22-brand { display: flex; align-items: center; gap: var(--cocoa-space-3); margin-bottom: var(--cocoa-space-5); padding: 0 var(--cocoa-space-3); }
+.c22-sidebar .c22-brand span { display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--cocoa-radius-md); background: var(--cocoa-accent); color: var(--cocoa-accent-contrast); font-size: var(--cocoa-fs-title-2); font-weight: var(--cocoa-fw-bold); box-shadow: var(--cocoa-shadow-control); }
+.c22-sidebar .c22-brand strong { display: block; color: var(--cocoa-label); font-size: var(--cocoa-fs-title-3); font-weight: var(--cocoa-fw-bold); letter-spacing: var(--cocoa-tracking-tight); }
+.c22-sidebar .c22-brand small { display: block; color: var(--cocoa-label-secondary); font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-medium); }
+
+/* ---- «Ver como…» (solo administrador de plataforma) ---- */
+.c22-sidebar .c22-role-switcher { margin-bottom: var(--cocoa-space-3); }
+.c22-sidebar .c22-role-switcher label { display: block; margin-bottom: 4px; color: var(--cocoa-label-secondary); font-size: var(--cocoa-fs-caption); font-weight: var(--cocoa-fw-semibold); letter-spacing: var(--cocoa-tracking-wide); text-transform: uppercase; }
+.c22-sidebar .c22-role-select-wrap { position: relative; }
+.c22-sidebar .c22-role-select-wrap select { width: 100%; min-height: 32px; padding: 8px 30px 8px 11px; appearance: none; -webkit-appearance: none; border: 1px solid var(--cocoa-accent-border); border-radius: var(--cocoa-radius-md); background: var(--cocoa-accent-bg); color: var(--cocoa-label); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-body); font-weight: var(--cocoa-fw-semibold); cursor: pointer; }
+.c22-sidebar .c22-role-select-wrap select:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--cocoa-focus-ring); }
+.c22-sidebar .c22-role-select-wrap svg { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); color: var(--cocoa-tone-accent-text); pointer-events: none; }
+
+/* ---- buscador del menú ---- */
+.c22-sidebar .c22-sidebar-search { display: flex; align-items: center; gap: var(--cocoa-space-2); margin-bottom: var(--cocoa-space-4); padding: 6px 10px; border: 1px solid var(--cocoa-separator); border-radius: var(--cocoa-radius-md); background: var(--cocoa-background-control); transition: border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.c22-sidebar .c22-sidebar-search:focus-within { border-color: var(--cocoa-accent); box-shadow: 0 0 0 3px var(--cocoa-focus-ring); }
+.c22-sidebar .c22-sidebar-search input { flex: 1; min-width: 0; border: none; background: transparent; outline: none; color: var(--cocoa-label); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-body); }
+.c22-sidebar .c22-sidebar-search input::placeholder { color: var(--cocoa-label-secondary); }
+
+/* ---- categorías plegables ---- */
+.c22-sidebar .c22-nav-group { margin-bottom: var(--cocoa-space-1); }
+.c22-sidebar .c22-nav-group-head { display: flex; align-items: center; gap: var(--cocoa-space-2); width: 100%; padding: var(--cocoa-space-2) var(--cocoa-space-3); border: none; border-radius: var(--cocoa-radius-md); background: transparent; color: var(--cocoa-label-secondary); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-bold); letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out), color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.c22-sidebar .c22-nav-group-head:hover { background: var(--cocoa-fill-tertiary); color: var(--cocoa-label); }
+.c22-sidebar .c22-nav-group-title { flex: 1; text-align: left; }
+.c22-sidebar .c22-nav-group-badge { padding: 2px 6px; border-radius: var(--cocoa-radius-sm); background: var(--cocoa-accent-bg); color: var(--cocoa-tone-accent-text); font-size: var(--cocoa-fs-caption); font-weight: var(--cocoa-fw-semibold); letter-spacing: var(--cocoa-tracking-wide); text-transform: uppercase; }
+.c22-sidebar .c22-nav-count { margin-left: auto; padding: 1px 7px; border: 1px solid var(--cocoa-separator); border-radius: var(--cocoa-radius-full); background: var(--cocoa-background-control); color: var(--cocoa-label-secondary); font-size: var(--cocoa-fs-caption); font-weight: var(--cocoa-fw-semibold); font-variant-numeric: tabular-nums; }
+.c22-sidebar .c22-nav-chevron { color: var(--cocoa-label-tertiary); font-size: var(--cocoa-fs-caption); }
+.c22-sidebar .c22-nav-group-body { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 var(--cocoa-space-2); }
+.c22-sidebar .c22-nav-section { display: flex; flex-direction: column; gap: 1px; }
+
+/* ---- entradas ---- */
+.c22-sidebar .c22-nav-item { position: relative; display: flex; align-items: center; width: 100%; min-height: 38px; padding: 9px var(--cocoa-space-3); border: none; border-radius: var(--cocoa-radius-md); background: transparent; color: var(--cocoa-label); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-body); font-weight: var(--cocoa-fw-medium); text-align: left; cursor: pointer; transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out), color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.c22-sidebar .c22-nav-item:hover { background: var(--cocoa-fill-tertiary); color: var(--cocoa-label); }
+.c22-sidebar .c22-nav-item.active { background: var(--cocoa-accent-bg); color: var(--cocoa-tone-accent-text); font-weight: var(--cocoa-fw-semibold); }
+.c22-sidebar .c22-nav-item.active::before { content: ""; position: absolute; left: 0; top: 18%; bottom: 18%; width: 3px; border-radius: var(--cocoa-radius-full); background: var(--cocoa-accent); }
+.c22-sidebar .c22-nav-item.locked { justify-content: space-between; gap: var(--cocoa-space-2); opacity: 0.6; cursor: default; }
+.c22-sidebar .c22-nav-item.locked:hover { background: transparent; color: var(--cocoa-label); }
+.c22-sidebar .c22-nav-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c22-sidebar .c22-nav-unlock { flex: none; padding: 2px 8px; border: 1px solid var(--cocoa-separator); border-radius: var(--cocoa-radius-full); background: var(--cocoa-background-control); color: var(--cocoa-tone-accent-text); font: inherit; font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-semibold); cursor: pointer; }
+.c22-sidebar .c22-nav-unlock:hover { background: var(--cocoa-accent-bg); }
+
+/* ---- avisos, esqueleto, «Viendo como», recuento ---- */
+.c22-sidebar .c22-nav-notice { margin: 0 4px var(--cocoa-space-3); padding: 10px 12px; border-radius: var(--cocoa-radius-md); background: var(--cocoa-fill-quaternary); color: var(--cocoa-label-secondary); font-size: var(--cocoa-fs-callout); line-height: 1.4; }
+.c22-sidebar .c22-nav-notice strong { display: block; margin-bottom: 2px; color: var(--cocoa-label); }
+.c22-sidebar .c22-nav-notice button { margin-top: 6px; padding: 0; border: none; border-radius: var(--cocoa-radius-sm); background: transparent; color: var(--cocoa-tone-accent-text); font: inherit; font-size: var(--cocoa-fs-callout); font-weight: var(--cocoa-fw-semibold); cursor: pointer; }
+/* Las líneas las pinta CocoaSkeleton (components/cocoa/CocoaState.tsx, `.c22-skeleton-stack`). */
+.c22-sidebar .c22-nav-skeleton { padding: 4px 12px; }
+.c22-sidebar .c22-nav-viewas-badge { display: inline-flex; align-items: center; gap: 6px; margin: 0 4px var(--cocoa-space-3); padding: 4px 8px; border-radius: var(--cocoa-radius-full); background: var(--cocoa-accent-bg); color: var(--cocoa-tone-accent-text); font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-semibold); }
+.c22-sidebar .c22-nav-viewas-badge button { padding: 0; border: none; border-radius: var(--cocoa-radius-sm); background: transparent; color: inherit; font: inherit; font-size: var(--cocoa-fs-subheadline); text-decoration: underline; cursor: pointer; }
+.c22-sidebar .c22-nav-counts { margin: var(--cocoa-space-3) var(--cocoa-space-3) 0; color: var(--cocoa-label-secondary); font-size: var(--cocoa-fs-subheadline); font-variant-numeric: tabular-nums; }
+
+/* ---- cierre del drawer (solo tiene sentido en móvil) ---- */
+.c22-sidebar .c22-sidebar-close { display: none; position: absolute; top: var(--cocoa-space-4); right: var(--cocoa-space-4); align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--cocoa-separator); border-radius: var(--cocoa-radius-md); background: var(--cocoa-background-control); color: var(--cocoa-label); cursor: pointer; }
+
+/* ---- anillo de foco único ---- */
+.c22-sidebar :is(.c22-brand-home, .c22-nav-group-head, .c22-nav-item, .c22-nav-unlock, .c22-nav-notice button, .c22-nav-viewas-badge button, .c22-sidebar-close):focus-visible { outline: none; box-shadow: 0 0 0 3px var(--cocoa-focus-ring); }
+
+/* ------------------------------------------------------------
+   Layout ≥ 900 px: el sidebar vive en la columna del CocoaSplitView y
+   nunca está fuera de pantalla, sea cual sea el ancho.
+   ------------------------------------------------------------ */
+.cocoa-shell .cocoa-sidebar-host { display: flex; min-height: 0; height: 100%; }
+.cocoa-shell .cocoa-sidebar-host .c22-sidebar { position: relative; top: auto; left: auto; width: 100%; height: 100%; transform: none; box-shadow: none; z-index: auto; }
+.cocoa-shell .cocoa-sidebar-host .c22-sidebar-close { display: none; }
+/* El selector de propiedad trunca su nombre dentro del <span> hijo de CocoaButton. */
+.cocoa-shell .cocoa-toolbar-property > span { min-width: 0; overflow: hidden; }
+/* Filas crudas de los menús flotantes de la toolbar (role=menuitem / option). */
+.cocoa-shell .cocoa-menu-item { transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.cocoa-shell .cocoa-menu-item:hover { background: var(--cocoa-fill-tertiary); }
+
+/* ------------------------------------------------------------
+   Drawer < 900 px (COMPACT_BREAKPOINT_PX): el layout pinta el sidebar como
+   hijo directo de .cocoa-shell, fuera de pantalla hasta `.open`; el velo
+   cubre el contenido y lo cierra. Capas: --cocoa-z-sidebar y una menos.
+   ------------------------------------------------------------ */
+.c22-scrim { display: none; position: fixed; inset: 0; animation: c22-fade-in var(--cocoa-duration-base) var(--cocoa-ease-out); }
+.cocoa-shell > .c22-sidebar { z-index: var(--cocoa-z-sidebar); width: min(86vw, var(--cocoa-drawer-width)); box-shadow: var(--cocoa-shadow-modal); }
+.cocoa-shell > .c22-scrim { z-index: calc(var(--cocoa-z-sidebar) - 1); background: var(--cocoa-scrim); -webkit-backdrop-filter: var(--cocoa-scrim-blur); backdrop-filter: var(--cocoa-scrim-blur); }
+@keyframes c22-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (max-width: 899px) {
+  .c22-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: min(86vw, var(--cocoa-drawer-width));
+    height: 100vh;
+    z-index: var(--cocoa-z-sidebar);
+    box-shadow: var(--cocoa-shadow-modal);
+    transform: translateX(-100%);
+    transition: transform var(--cocoa-duration-base) var(--cocoa-ease-out);
+  }
+  .c22-sidebar.open { transform: translateX(0); }
+  .c22-sidebar.open .c22-sidebar-close { display: inline-flex; }
+  .c22-scrim.open { display: block; }
+}
+
+/* ------------------------------------------------------------
+   Impresión: solo el contenido. El shell deja de ser un marco de 100vh con
+   scroll interno para que el documento fluya en varias páginas.
+   ------------------------------------------------------------ */
+@media print {
+  .c22-sidebar,
+  .c22-scrim,
+  .cocoa-shell > [data-cocoa="toolbar"],
+  .cocoa-shell > .cocoa-toolbar,
+  .c22-page__actions,
+  .c22-actions-row,
+  .c22-action-bar,
+  button { display: none !important; }
+  .cocoa-shell { height: auto !important; }
+  .cocoa-content { overflow: visible !important; }
+}

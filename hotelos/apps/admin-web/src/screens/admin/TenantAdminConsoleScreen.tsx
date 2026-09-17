@@ -159,8 +159,8 @@ function openTenantDetail(organizationId: string) {
 // Main screen
 // ---------------------------------------------------------------------------
 
-export function TenantAdminConsoleScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  const hosted = useTabHost() !== null || embedded;
+export function TenantAdminConsoleScreen() {
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<ConsoleTab>("tenants");
   const [tenants, setTenants] = useState<TenantSummary[]>([]);

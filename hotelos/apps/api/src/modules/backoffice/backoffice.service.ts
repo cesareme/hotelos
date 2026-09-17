@@ -3294,21 +3294,24 @@ export type ComplianceApplicability = {
   usageCount: number;
   /**
    * Set only when the obligation applies by usage with the flag OFF, e.g.
-   * "activo por uso: 3 envíos; el flag sesHospedajesEnabled está desactivado".
+   * "activo por uso: 3 envíos; SES.HOSPEDAJES está desactivado en los ajustes del establecimiento".
    * Appended to every check message of that obligation so the operator sees why it applies.
+   * Cocoa 22 · ola 11 (qa#14): the note names the product switch in Spanish, never the flag.
    */
   usageNote: string | null;
 };
 
 /**
  * Pure rule: applies = flagEnabled || usageCount > 0. `usageLabel` is the plural noun of
- * the usage evidence ("envíos", "facturas emitidas"); `windowLabel` (optional) qualifies
- * the count ("últimos 180 días") without breaking the canonical note text.
+ * the usage evidence ("envíos", "facturas emitidas"); `switchLabel` is what the hotelier
+ * reads for the switch ("SES.HOSPEDAJES", "VeriFactu", "el módulo de facturación y
+ * cumplimiento"); `windowLabel` (optional) qualifies the count ("últimos 180 días")
+ * without breaking the canonical note text.
  */
 export function resolveComplianceApplicability(input: {
   flagEnabled: boolean;
   usageCount: number;
-  flagName: string;
+  switchLabel: string;
   usageLabel: string;
   windowLabel?: string;
 }): ComplianceApplicability {
@@ -3317,7 +3320,7 @@ export function resolveComplianceApplicability(input: {
   const byUsage = usageCount > 0;
   const usageNote =
     byUsage && !byFlag
-      ? `activo por uso: ${usageCount} ${input.usageLabel}; el flag ${input.flagName} está desactivado${input.windowLabel ? ` (${input.windowLabel})` : ""}`
+      ? `activo por uso: ${usageCount} ${input.usageLabel}; ${input.switchLabel} está desactivado en los ajustes del establecimiento${input.windowLabel ? ` (${input.windowLabel})` : ""}`
       : null;
   return { applies: byFlag || byUsage, byFlag, byUsage, usageCount, usageNote };
 }
@@ -3389,14 +3392,14 @@ async function computeReadiness(input: BackOfficeMutationInput) {
   const sesApplicability = resolveComplianceApplicability({
     flagEnabled: Boolean(complianceSettings?.sesHospedajesEnabled || property.sesHospedajesEnabled),
     usageCount: sesSubmissionCount,
-    flagName: "sesHospedajesEnabled",
+    switchLabel: "SES.HOSPEDAJES",
     usageLabel: "envíos",
     windowLabel: `últimos ${SES_USAGE_WINDOW_DAYS} días`
   });
   const verifactuApplicability = resolveComplianceApplicability({
     flagEnabled: Boolean(complianceSettings?.verifactuEnabled || property.verifactuEnabled),
     usageCount: issuedInvoiceCount,
-    flagName: "verifactuEnabled",
+    switchLabel: "VeriFactu",
     usageLabel: "facturas emitidas"
   });
   // Billing series (Tanda 4 · H3a): a property that already issues invoices is
@@ -3405,7 +3408,7 @@ async function computeReadiness(input: BackOfficeMutationInput) {
   const billingApplicability = resolveComplianceApplicability({
     flagEnabled: modules.includes("compliance_billing"),
     usageCount: issuedInvoiceCount,
-    flagName: "compliance_billing (módulo)",
+    switchLabel: "el módulo de facturación y cumplimiento",
     usageLabel: "facturas emitidas"
   });
   const sesEnabled = sesApplicability.applies;
@@ -3502,7 +3505,7 @@ async function computeReadiness(input: BackOfficeMutationInput) {
         ? `NIF/CIF de la sociedad emisora válido (${issuerTaxId}).`
         : issuerTaxId
           ? `El NIF/CIF de la sociedad emisora (${issuerTaxId}) no supera la validación (letra/dígito de control): ${spanishTaxIdValidationMessage(issuerTaxId) ?? ""}`.trim()
-          : "Falta el NIF/CIF de la sociedad emisora (Configuración › Estructura societaria › Datos fiscales): sin él las facturas salen con NIF de relleno (sandbox) o se bloquean (producción).",
+          : "Falta el NIF/CIF de la sociedad emisora (Configuración › Estructura societaria › Datos fiscales). El NIF del emisor es un valor provisional; sustitúyelo por el NIF real antes de emitir facturas: en producción la emisión se bloquea.",
       ...legalEntityRef
     },
     {
@@ -3512,7 +3515,7 @@ async function computeReadiness(input: BackOfficeMutationInput) {
       message:
         addressMissing.length === 0
           ? "Dirección fiscal completa (dirección, municipio, provincia y código postal)."
-          : `Dirección fiscal incompleta: faltan ${addressMissing.join(", ")}. ${fiscalAddressRequired ? `Obligatoria: ${fiscalAddressReasons.join(" y ")}.` : "Necesaria antes de activar SES.HOSPEDAJES o VeriFactu."}`,
+          : `Dirección fiscal incompleta: faltan ${addressMissing.map((key) => FISCAL_ADDRESS_FIELD_LABELS[key] ?? key).join(", ")}. ${fiscalAddressRequired ? `Obligatoria: ${fiscalAddressReasons.join(" y ")}.` : "Necesaria antes de activar SES.HOSPEDAJES o VeriFactu."}`,
       ...propertyRef
     },
     {
@@ -3527,10 +3530,10 @@ async function computeReadiness(input: BackOfficeMutationInput) {
       status: taxRegionConfigured ? "pass" : "fail",
       severity: "blocking",
       message: taxRegionConfigured
-        ? `Región fiscal ${taxProfile.taxRegion} (${taxProfile.figure}) con tipos vigentes para alojamiento, restauración y servicios.`
+        ? `Región fiscal ${taxRegionName(taxProfile.taxRegion)} (${taxProfile.figure}) con tipos vigentes para alojamiento, restauración y servicios.`
         : !taxRegionExplicit
-          ? `Región fiscal sin configurar (${taxProfile.taxRegion ? `derivada por defecto: ${taxProfile.taxRegion}` : "desconocida"}): elige Península y Baleares, Canarias, Ceuta o Melilla en el perfil del establecimiento.${taxProfile.warnings.length > 0 ? ` ${taxProfile.warnings.join(" ")}` : ""}`
-          : `Faltan tipos vigentes en la base de datos para ${missingCategories.join(", ")} (región ${taxProfile.taxRegion}): guarda el perfil o pulsa «Provisionar impuestos».`,
+          ? `Región fiscal sin configurar (${taxProfile.taxRegion ? `derivada por defecto: ${taxRegionName(taxProfile.taxRegion)}` : "desconocida"}): elige Península y Baleares, Canarias, Ceuta o Melilla en el perfil del establecimiento.${taxProfile.warnings.length > 0 ? ` ${taxProfile.warnings.join(" ")}` : ""}`
+          : `Faltan tipos vigentes en la base de datos para ${missingCategories.join(", ")} (región ${taxRegionName(taxProfile.taxRegion)}): guarda el perfil o pulsa «Provisionar impuestos».`,
       ...propertyRef
     },
     {
@@ -3620,7 +3623,7 @@ async function computeReadiness(input: BackOfficeMutationInput) {
         !sesEnabled
           ? "No aplica: SES.HOSPEDAJES desactivado para este establecimiento y sin envíos en los últimos 180 días."
           : sesEstablishment?.ok
-            ? `Bloque Establecimiento SES completo (registro ${sesEstablishment.establishment.registryNumber}, INE ${sesEstablishment.establishment.municipalityCode}).`
+            ? `Datos del establecimiento para SES.HOSPEDAJES completos (registro ${sesEstablishment.establishment.registryNumber}, INE ${sesEstablishment.establishment.municipalityCode}).`
             : `Datos del establecimiento incompletos para SES.HOSPEDAJES (nunca se envían valores por defecto): ${(sesEstablishment?.missing ?? []).map(describeSesEstablishmentIssue).join(" ")}`,
         sesApplicability
       ),
@@ -3634,12 +3637,12 @@ async function computeReadiness(input: BackOfficeMutationInput) {
         !sesEnabled
           ? "No aplica: SES.HOSPEDAJES desactivado para este establecimiento y sin envíos en los últimos 180 días."
           : !sesRealMode
-            ? `SES_HOSPEDAJES_MODE=${sesMode}: los partes se envían a un simulador, no al MIR. Configura preproduction/production con certificado antes del go-live.`
+            ? "SES.HOSPEDAJES en modo de pruebas: los partes van a un simulador, no al Ministerio del Interior. Configura el modo de preproducción o producción con certificado antes de la puesta en marcha."
             : !sesCert.configured
-              ? `SES en modo ${sesMode} sin certificado: ${sesCert.reason}.`
+              ? `SES.HOSPEDAJES en ${integrationModePhrase(sesMode)} sin certificado configurado: ${sesCert.reason}.`
               : !sesCert.exists
-                ? "SES_HOSPEDAJES_CERT_PATH apunta a un fichero inexistente."
-                : `SES.HOSPEDAJES en modo ${sesMode} con certificado configurado.`,
+                ? "La ruta del certificado de SES.HOSPEDAJES no existe."
+                : `SES.HOSPEDAJES en ${integrationModePhrase(sesMode)} con certificado configurado.`,
         sesApplicability
       ),
       ...envRef
@@ -3652,8 +3655,8 @@ async function computeReadiness(input: BackOfficeMutationInput) {
         !verifactuEnabled
           ? "No aplica: VeriFactu desactivado para este establecimiento y sin facturas emitidas."
           : software?.ok
-            ? `Bloque SistemaInformatico declarado (${software.software.nombreRazon} · NIF ${software.software.nif} · ${software.software.nombreSistema} ${software.software.version}).`
-            : `Bloque SistemaInformatico incompleto (${(software?.errors ?? []).join("; ")}). ${verifactuRealMode ? "Bloquea el envío real a AEAT." : "En sandbox se envía con valores de relleno."}`,
+            ? `Declaración del sistema informático de VeriFactu completa (${software.software.nombreRazon} · NIF ${software.software.nif} · ${software.software.nombreSistema} ${software.software.version}).`
+            : `Declaración del sistema informático de VeriFactu incompleta (${(software?.errors ?? []).join("; ")}). ${verifactuRealMode ? "Bloquea el envío real a la AEAT." : "En pruebas se envía con valores provisionales."}`,
         verifactuApplicability
       ),
       ...envRef
@@ -3664,8 +3667,8 @@ async function computeReadiness(input: BackOfficeMutationInput) {
       severity: "info",
       message:
         verifactuCert.configured || sesCert.configured
-          ? "El certificado configurado (VERIFACTU_CERT_PATH / SES_HOSPEDAJES_CERT_PATH) es de la plataforma, no del hotel: cada obligado tributario debe firmar con su propio certificado antes de emitir en producción."
-          : "Sin certificado configurado en el entorno: los envíos a AEAT/MIR se firman con un stub (solo sandbox).",
+          ? "El certificado configurado (VeriFactu / SES.HOSPEDAJES) es de la plataforma, no del hotel: cada obligado tributario debe firmar con su propio certificado antes de emitir en producción."
+          : "Certificado de plataforma no configurado (VeriFactu / SES.HOSPEDAJES): los envíos a la AEAT y al Ministerio del Interior se firman con una firma de pruebas, válida solo en modo de pruebas.",
       ...envRef
     }
   ];
@@ -3697,11 +3700,41 @@ function integrationModeFromEnv(raw: string | undefined): IntegrationEnvMode {
   return raw === "production" || raw === "preproduction" ? raw : "sandbox";
 }
 
+// Cocoa 22 · ola 11 (qa#14): readiness messages read in Spanish at the source —
+// no environment variable names, no «sandbox» / «stub», no English field keys,
+// no region codes. The front (lib/format readinessMessage) only normalises.
+const INTEGRATION_MODE_PHRASES: Record<IntegrationEnvMode, string> = {
+  sandbox: "modo de pruebas",
+  preproduction: "modo de preproducción",
+  production: "modo de producción"
+};
+
+/** integrationModePhrase("preproduction") → "modo de preproducción". */
+export function integrationModePhrase(mode: IntegrationEnvMode): string {
+  return INTEGRATION_MODE_PHRASES[mode];
+}
+
+/** Fiscal address keys of Property / propertyFiscalColumns → what the hotelier reads. */
+export const FISCAL_ADDRESS_FIELD_LABELS: Record<string, string> = {
+  address: "dirección",
+  municipality: "municipio",
+  province: "provincia",
+  postalCode: "código postal",
+  country: "país"
+};
+
+/** taxRegionName("ES_CANARIAS") → "Canarias"; an unknown code is returned as-is. */
+export function taxRegionName(code: string | null | undefined): string {
+  if (!code) return "desconocida";
+  const option = TAX_REGION_OPTIONS.find((candidate) => candidate.value === code);
+  return option ? option.label.replace(/ \([^)]*\)$/, "") : code;
+}
+
 /** Same rule as compliance-health.service checkCert: placeholder / blank env = not configured. */
 function certificateEnvStatus(pathEnv: string | undefined, passEnv: string | undefined): { configured: boolean; exists: boolean; reason?: string } {
   const placeholder = (value: string | undefined) => !value || value === "change-me";
-  if (placeholder(pathEnv)) return { configured: false, exists: false, reason: "variable de ruta del certificado no configurada" };
-  if (placeholder(passEnv)) return { configured: false, exists: false, reason: "passphrase del certificado no configurada" };
+  if (placeholder(pathEnv)) return { configured: false, exists: false, reason: "falta la ruta del certificado" };
+  if (placeholder(passEnv)) return { configured: false, exists: false, reason: "falta la contraseña del certificado" };
   return { configured: true, exists: existsSync(pathEnv!) };
 }
 
@@ -4592,16 +4625,16 @@ function getModuleSetupRequirements(moduleCode: HotelModuleCode) {
   return [
     {
       code: "room_inventory_exists",
-      label: "Room inventory exists",
-      description: "At least one active sellable room must exist.",
+      label: "Inventario de habitaciones",
+      description: "Debe existir al menos una habitación activa y vendible.",
       required: true,
       blocking: true,
       validator: (propertyId: string) => demoStore.rooms.some((room) => room.propertyId === propertyId && room.active !== false && room.sellable)
     },
     {
       code: "signature_template_configured",
-      label: "Signature template configured",
-      description: "Guest register signature template must be configured.",
+      label: "Plantilla de firma configurada",
+      description: "Hay que configurar la plantilla de firma del registro de viajeros.",
       required: moduleCode === "checkin_online",
       blocking: moduleCode === "checkin_online",
       validator: (propertyId: string) =>
@@ -4609,8 +4642,8 @@ function getModuleSetupRequirements(moduleCode: HotelModuleCode) {
     },
     {
       code: "ocr_provider_configured",
-      label: "OCR provider configured",
-      description: "OCR provider must be configured before assisted ID scan.",
+      label: "Proveedor de OCR configurado",
+      description: "Hay que configurar el proveedor de OCR antes del escaneo asistido de documentos.",
       required: moduleCode === "checkin_online",
       blocking: moduleCode === "checkin_online",
       validator: (propertyId: string) =>

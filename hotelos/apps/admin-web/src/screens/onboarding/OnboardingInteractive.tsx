@@ -15,14 +15,38 @@ import {
   type OnboardingFile,
   type OnboardingProject
 } from "../../services/onboardingApi";
-import { LoadingBlock } from "../../components/States";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaField,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaKpiStatus,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
+import { navigateTo, type ScreenKey } from "../../lib/navigate";
+import { number, percent, plural } from "../../lib/format";
 
-// ---- Sprint 53 — interactive AI Onboarding screens ----
-// Three real screens that drive the upload -> classify -> extract -> generate
-// mappings -> approve pipeline against the frozen onboarding contract. Aurora v2
-// styling (bo-card / rev-kpi / cm-table / cm-pill / dp-table). The screens are
-// resilient: if Sprint 52's backend hasn't reshaped responses yet, the helpers
-// normalise legacy shapes and errors render as a clear inline message.
+// ---- Sprint 53 — interactive AI Onboarding screens (Cocoa 22 · ola 11) ----
+// Two real screens that drive the upload -> classify -> extract -> generate
+// mappings -> approve pipeline against the frozen onboarding contract, painted
+// with the Cocoa primitives (CocoaPage / CocoaSection / CocoaKpi / CocoaTable /
+// CocoaBadge; no legacy `.bo-*` / `.cm-*` / `.rev-*` / `.dp-*` classes). The
+// screens are resilient: if Sprint 52's backend hasn't reshaped responses yet,
+// the helpers normalise legacy shapes and errors render as a CocoaCallout or a
+// CocoaState.
+
+const EYEBROW = "Alta y migración con IA";
 
 const SAMPLE_ROOM_CSV = `Room,Type,Floor,Status
 101,Double Standard,1,Clean
@@ -32,63 +56,56 @@ const SAMPLE_ROOM_CSV = `Room,Type,Floor,Status
 202,,2,Dirty
 203,Double Superior,2,Out of Order`;
 
-function navigate(screen: string): void {
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
+// ---- Confidence helpers (consistent across the pipeline) ----
+
+function confidenceTone(confidence: number): CocoaTone {
+  if (confidence >= 0.8) return "success";
+  if (confidence >= 0.5) return "warning";
+  return "danger";
 }
 
-// ---- Confidence / status pill helpers (consistent across the pipeline) ----
-
-function confidencePillClass(confidence: number): string {
-  if (confidence >= 0.8) return "cm-pill-ok";
-  if (confidence >= 0.5) return "cm-pill-warn";
-  return "cm-pill-error";
+function confidenceStatus(confidence: number): CocoaKpiStatus {
+  if (confidence >= 0.8) return "ok";
+  if (confidence >= 0.5) return "warning";
+  return "critical";
 }
 
-function ConfidencePill({ confidence }: { confidence: number }) {
-  const pct = Math.round((confidence ?? 0) * 100);
-  return <span className={`cm-pill ${confidencePillClass(confidence)}`}>{pct}%</span>;
+/** 0.83 → "83 %" (lib/format, es-ES). */
+function formatConfidence(confidence: number | undefined): string {
+  return percent(confidence ?? 0, { ratio: true, maximumFractionDigits: 0 });
 }
 
-function statusPillClass(status: string): string {
-  switch (status) {
-    case "approved":
-    case "applied":
-      return "cm-pill-ok";
-    case "rejected":
-      return "cm-pill-error";
-    case "edited":
-      return "cm-pill-warn";
-    default:
-      return "cm-pill-warn"; // pending
-  }
-}
-
-const STATUS_LABELS_ES: Record<string, string> = {
-  pending: "pendiente",
-  approved: "aprobado",
-  applied: "aplicado",
-  rejected: "rechazado",
-  edited: "editado"
-};
-
-function StatusPill({ status }: { status: string }) {
-  return <span className={`cm-pill ${statusPillClass(status)}`}>{STATUS_LABELS_ES[status] ?? status}</span>;
+function ConfidenceBadge({ confidence }: { confidence: number }) {
+  return (
+    <CocoaBadge tone={confidenceTone(confidence ?? 0)} variant="tinted" size="small">
+      {formatConfidence(confidence)}
+    </CocoaBadge>
+  );
 }
 
 function Warnings({ warnings }: { warnings: string[] }) {
-  if (!warnings.length) return <span className="bo-muted">—</span>;
+  if (!Array.isArray(warnings) || warnings.length === 0) return <span className="cocoa-note">—</span>;
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+    <span className="cocoa-cluster" data-gap="1">
       {warnings.map((w, i) => (
-        <span
-          key={`${w}-${i}`}
-          className="cm-pill cm-pill-warn"
-          style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}
-          title={w}
-        >
-          {w}
-        </span>
+        <CocoaBadge key={`${w}-${i}`} tone="warning" size="small" title={w}>
+          <span className="cocoa-truncate" style={{ maxWidth: 220 }}>
+            {w}
+          </span>
+        </CocoaBadge>
       ))}
+    </span>
+  );
+}
+
+/** Caption + monospace value (the classification facts). */
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="cocoa-row" data-gap="3" data-align="baseline">
+      <span className="cocoa-caption" style={{ minWidth: 160 }}>
+        {label}
+      </span>
+      <span className="cocoa-mono">{value}</span>
     </div>
   );
 }
@@ -121,25 +138,25 @@ function isForbidden(message: string): boolean {
   return /403|forbidden|permission/i.test(message);
 }
 
+/** A 403 reads as a permission problem of the onboarding.* keys, anything else verbatim. */
+function actionErrorMessage(err: unknown): string {
+  const message = errorMessage(err);
+  return isForbidden(message) ? `Sin permiso (onboarding.*): ${message}` : message;
+}
+
 // Shared "Continue the journey" nav strip kept at the bottom of every screen so
 // the pipeline stays traversable.
-function NavCards({ actions }: { actions: Array<{ label: string; screen: string }> }) {
+function NavCards({ actions }: { actions: Array<{ label: string; screen: ScreenKey }> }) {
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Continúa el proceso</p>
-          <h3>Siguientes pasos</h3>
-        </div>
-      </div>
-      <div className="bo-actions">
+    <CocoaSection title="Siguientes pasos" meta="Continúa el proceso">
+      <div className="cocoa-row" data-gap="2">
         {actions.map((a) => (
-          <button key={a.screen} type="button" onClick={() => navigate(a.screen)}>
+          <CocoaButton key={a.screen} variant="bordered" tone="neutral" onClick={() => navigateTo(a.screen)}>
             {a.label}
-          </button>
+          </CocoaButton>
         ))}
       </div>
-    </section>
+    </CocoaSection>
   );
 }
 
@@ -158,43 +175,33 @@ function ProjectBanner({
   creating: boolean;
   error: string | null;
 }) {
+  const options = projects.map((p) => ({ value: p.id, label: String(p.name ?? p.id) }));
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Proyecto activo</p>
-          <h3>Proyecto de alta y migración</h3>
+    <CocoaSection title="Proyecto de alta y migración" meta={plural(projects.length, "proyecto", "proyectos")}>
+      <div className="cocoa-stack" data-gap="3">
+        <div className="cocoa-row" data-gap="3" data-align="end">
+          {projects.length > 0 ? (
+            <CocoaField label="Proyecto activo" style={{ flex: "1 1 260px", maxWidth: 420 }}>
+              <CocoaSelect value={activeId ?? ""} onChange={onSelect} options={options} placeholder="Selecciona un proyecto…" />
+            </CocoaField>
+          ) : (
+            <span className="cocoa-note">Aún no hay proyectos de alta/migración.</span>
+          )}
+          <CocoaButton variant="bordered" tone="neutral" onClick={onCreate} disabled={creating} loading={creating}>
+            {creating ? "Creando…" : "Crear proyecto de demostración"}
+          </CocoaButton>
         </div>
-        <span className="bo-chip">{projects.length} proyecto(s)</span>
+        {error ? (
+          <CocoaCallout tone="danger" role="alert">
+            {error}
+          </CocoaCallout>
+        ) : null}
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
-        {projects.length > 0 ? (
-          <label>
-            <span className="bo-muted" style={{ marginRight: "0.4rem" }}>Proyecto</span>
-            <select value={activeId ?? ""} onChange={(e) => onSelect(e.target.value)}>
-              <option value="" disabled>
-                Selecciona un proyecto…
-              </option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {(p.name as string) ?? p.id}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <span className="bo-muted">Aún no hay proyectos de alta/migración.</span>
-        )}
-        <button type="button" className="ghost" onClick={onCreate} disabled={creating}>
-          {creating ? "Creando…" : "Crear proyecto de demostración"}
-        </button>
-      </div>
-      {error ? <p style={{ color: "var(--danger-ink)", marginTop: "0.5rem" }}>{error}</p> : null}
-    </section>
+    </CocoaSection>
   );
 }
 
-// Shared project-selection hook used by all three screens.
+// Shared project-selection hook used by both screens.
 function useActiveProject() {
   const [projects, setProjects] = useState<OnboardingProject[]>([]);
   const [activeId, setActiveId] = useState<string | null>(() => getActiveProjectId());
@@ -295,8 +302,7 @@ export function FileUploadAndClassificationScreen() {
       const classifiedFile = await classifyFile(file.id);
       setUploadedFile(classifiedFile);
     } catch (err) {
-      const message = errorMessage(err);
-      setActionError(isForbidden(message) ? `Permiso denegado (onboarding.*): ${message}` : message);
+      setActionError(actionErrorMessage(err));
     } finally {
       setBusy(null);
     }
@@ -310,11 +316,15 @@ export function FileUploadAndClassificationScreen() {
       const result = await extractFile(uploadedFile.id);
       setExtractResult(result);
     } catch (err) {
-      const message = errorMessage(err);
-      setActionError(isForbidden(message) ? `Permiso denegado (onboarding.*): ${message}` : message);
+      setActionError(actionErrorMessage(err));
     } finally {
       setBusy(null);
     }
+  }
+
+  function loadSample() {
+    setFileName("room-list.csv");
+    setContent(SAMPLE_ROOM_CSV);
   }
 
   // Derive an extraction summary even if the backend doesn't return one yet.
@@ -330,18 +340,15 @@ export function FileUploadAndClassificationScreen() {
   }, [extractResult]);
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Alta y migración con IA</div>
-          <h1 className="bo-page-title">Subida y clasificación de ficheros</h1>
-          <p className="bo-page-subtitle">
-            Pega una lista de habitaciones, un tarifario, un mapeo de canales, reservas o una exportación de Histórico y Previsión. La IA
-            clasifica el tipo de documento y luego ejecuta la extracción. No se aplica nada sin revisión humana.
-          </p>
-        </div>
-      </div>
-
+    <CocoaPage
+      eyebrow={EYEBROW}
+      title="Subida y clasificación de ficheros"
+      subtitle="Pega una lista de habitaciones, un tarifario, un mapeo de canales, reservas o una exportación de Histórico y Previsión. La IA clasifica el tipo de documento y luego ejecuta la extracción. No se aplica nada sin revisión humana."
+      commands={[
+        { id: "onboarding-upload-classify", label: "Subir y clasificar el fichero", run: () => { void handleUploadAndClassify(); } },
+        { id: "onboarding-extract", label: "Ejecutar la extracción", run: () => { void handleExtract(); } }
+      ]}
+    >
       <ProjectBanner
         projects={projects}
         activeId={activeId}
@@ -351,129 +358,98 @@ export function FileUploadAndClassificationScreen() {
         error={projectError}
       />
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Paso 1</p>
-            <h3>Subir contenido</h3>
-          </div>
-          {classified ? (
-            <span className="bo-chip">
-              {detectedType} · <ConfidencePill confidence={uploadedFile?.confidence ?? 0} />
+      <CocoaSection
+        title="Subir contenido"
+        meta="Paso 1"
+        action={
+          classified ? (
+            <span className="cocoa-cluster" data-gap="2">
+              <CocoaBadge tone="neutral" size="small">
+                {detectedType}
+              </CocoaBadge>
+              <ConfidenceBadge confidence={uploadedFile?.confidence ?? 0} />
             </span>
-          ) : null}
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <label>
-            <span className="bo-muted" style={{ display: "block", marginBottom: 4 }}>Nombre del fichero</span>
-            <input
-              type="text"
-              value={fileName}
-              onChange={(e) => setFileName(e.target.value)}
-              style={{ width: "100%", maxWidth: 360 }}
-              placeholder="room-list.csv"
-            />
-          </label>
-          <label>
-            <span className="bo-muted" style={{ display: "block", marginBottom: 4 }}>Contenido pegado (CSV / JSON)</span>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              rows={10}
-              style={{ width: "100%", fontFamily: "var(--font-mono, monospace)", fontSize: "var(--fs-sm)" }}
-              placeholder="Room,Type,Floor,Status…"
-            />
-          </label>
-          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-            <button type="button" className="ghost" onClick={() => { setFileName("room-list.csv"); setContent(SAMPLE_ROOM_CSV); }}>
+          ) : undefined
+        }
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaField label="Nombre del fichero" style={{ maxWidth: 360 }}>
+            <CocoaInput value={fileName} onChange={setFileName} placeholder="room-list.csv" />
+          </CocoaField>
+          <CocoaField label="Contenido pegado (CSV / JSON)">
+            <CocoaInput multiline rows={10} value={content} onChange={setContent} placeholder="Room,Type,Floor,Status…" />
+          </CocoaField>
+          <div className="cocoa-row" data-gap="2">
+            <CocoaButton variant="bordered" tone="neutral" onClick={loadSample}>
               Cargar lista de habitaciones de ejemplo
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={handleUploadAndClassify}
+            </CocoaButton>
+            <CocoaButton
+              variant="filled"
+              tone="accent"
+              onClick={() => { void handleUploadAndClassify(); }}
               disabled={busy !== null || !activeId}
+              loading={busy === "upload"}
             >
               {busy === "upload" ? "Subiendo…" : "Subir y clasificar"}
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={handleExtract}
+            </CocoaButton>
+            <CocoaButton
+              variant="bordered"
+              tone="neutral"
+              onClick={() => { void handleExtract(); }}
               disabled={busy !== null || !classified || uploadBlocked}
+              loading={busy === "extract"}
               title={!classified ? "Clasifica un fichero primero" : undefined}
             >
               {busy === "extract" ? "Extrayendo…" : "Ejecutar extracción"}
-            </button>
+            </CocoaButton>
           </div>
-          {actionError ? <p style={{ color: "var(--danger-ink)" }}>{actionError}</p> : null}
+          {actionError ? (
+            <CocoaCallout tone="danger" role="alert">
+              {actionError}
+            </CocoaCallout>
+          ) : null}
         </div>
-      </section>
+      </CocoaSection>
 
       {classified && !uploadBlocked ? (
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Paso 2 · Clasificación</p>
-              <h3>Tipo de documento detectado</h3>
-            </div>
-            <ConfidencePill confidence={uploadedFile?.confidence ?? 0} />
+        <CocoaSection title="Tipo de documento detectado" meta="Paso 2 · Clasificación" action={<ConfidenceBadge confidence={uploadedFile?.confidence ?? 0} />}>
+          <div className="cocoa-stack" data-gap="2">
+            <Fact label="Nombre del fichero" value={uploadedFile?.fileName ?? "—"} />
+            <Fact label="Tipo detectado" value={detectedType ?? "—"} />
+            <Fact label="Confianza" value={formatConfidence(uploadedFile?.confidence)} />
+            <Fact label="Estado" value={uploadedFile?.status ?? "—"} />
           </div>
-          <div className="dp-table">
-            <div className="dp-row"><span className="dp-key">fileName</span><span className="dp-val">{uploadedFile?.fileName ?? "—"}</span></div>
-            <div className="dp-row"><span className="dp-key">detectedDocumentType</span><span className="dp-val">{detectedType}</span></div>
-            <div className="dp-row"><span className="dp-key">confidence</span><span className="dp-val">{Math.round((uploadedFile?.confidence ?? 0) * 100)}%</span></div>
-            <div className="dp-row"><span className="dp-key">status</span><span className="dp-val">{uploadedFile?.status ?? "—"}</span></div>
-          </div>
-        </section>
+        </CocoaSection>
       ) : null}
 
       {summary ? (
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Paso 3 · Extracción completada</p>
-              <h3>Resumen de la extracción</h3>
-            </div>
-            <span className="bo-status ok">extraído</span>
-          </div>
-          <div className="rev-kpi-grid">
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Entidades totales</span></div>
-              <div className="rev-kpi-value">{summary.totalEntities}</div>
-            </article>
-            <article className={`rev-kpi rev-kpi-${summary.avgConfidence >= 0.8 ? "ok" : summary.avgConfidence >= 0.5 ? "warn" : "error"}`}>
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Confianza media</span></div>
-              <div className="rev-kpi-value">{Math.round(summary.avgConfidence * 100)}%</div>
-            </article>
-            <article className={`rev-kpi rev-kpi-${summary.warnings > 0 ? "warn" : "ok"}`}>
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Avisos</span></div>
-              <div className="rev-kpi-value">{summary.warnings}</div>
-            </article>
-          </div>
-          <div className="bo-actions" style={{ marginTop: "1rem" }}>
-            <button type="button" className="primary" onClick={() => navigate("AIExtractionReview")}>
-              Revisar entidades extraídas →
-            </button>
-          </div>
-        </section>
+        <CocoaSection
+          title="Resumen de la extracción"
+          meta="Paso 3 · Extracción completada"
+          action={
+            <CocoaBadge tone="success" variant="tinted" size="small">
+              extraído
+            </CocoaBadge>
+          }
+          footer={
+            <CocoaButton variant="filled" tone="accent" onClick={() => navigateTo("AIExtractionReview")}>
+              Revisar entidades extraídas
+            </CocoaButton>
+          }
+        >
+          <CocoaKpiStrip aria-label="Resumen de la extracción">
+            <CocoaKpi label="Entidades totales" value={number(summary.totalEntities)} polarity="neutral" status="ok" />
+            <CocoaKpi label="Confianza media" value={formatConfidence(summary.avgConfidence)} polarity="neutral" status={confidenceStatus(summary.avgConfidence)} />
+            <CocoaKpi label="Avisos" value={number(summary.warnings)} polarity="neutral" status={summary.warnings > 0 ? "warning" : "ok"} />
+          </CocoaKpiStrip>
+        </CocoaSection>
       ) : null}
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Seguridad y transparencia</p>
-            <h3>Se requiere revisión humana</h3>
-          </div>
-          <span className="bo-status warn">aviso</span>
-        </div>
-        <p>
-          Las sugerencias de la IA quedan pendientes hasta que una persona las aprueba, rechaza o edita: la IA no puede aplicar
-          la migración directamente. Los ficheros subidos se cifran, los datos de tarjeta de pago en bruto se rechazan y las
-          vistas previas sensibles requieren permiso.
-        </p>
-      </section>
+      <CocoaCallout tone="warning" role="note" title="Se requiere revisión humana">
+        Las sugerencias de la IA quedan pendientes hasta que una persona las aprueba, rechaza o edita: la IA no puede aplicar la
+        migración directamente. Los ficheros subidos se cifran, los datos de tarjeta de pago en bruto se rechazan y las vistas
+        previas sensibles requieren permiso.
+      </CocoaCallout>
 
       <NavCards
         actions={[
@@ -481,7 +457,7 @@ export function FileUploadAndClassificationScreen() {
           { label: "Mapear propiedad desde documentos", screen: "PropertyMapper" }
         ]}
       />
-    </>
+    </CocoaPage>
   );
 }
 
@@ -507,8 +483,7 @@ export function AIExtractionReviewScreen() {
       const items = await listExtractedEntities(projectId);
       setEntities(items);
     } catch (err) {
-      const message = errorMessage(err);
-      setError(isForbidden(message) ? `Permiso denegado (onboarding.*): ${message}` : message);
+      setError(actionErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -517,6 +492,10 @@ export function AIExtractionReviewScreen() {
   useEffect(() => {
     if (activeId) void load(activeId);
     else setEntities([]);
+  }, [activeId, load]);
+
+  const reload = useCallback(() => {
+    if (activeId) void load(activeId);
   }, [activeId, load]);
 
   async function handleGenerate() {
@@ -535,8 +514,7 @@ export function AIExtractionReviewScreen() {
         setMappingCount(list.length);
       }
     } catch (err) {
-      const message = errorMessage(err);
-      setGenerateError(isForbidden(message) ? `Permission denied (onboarding.*): ${message}` : message);
+      setGenerateError(actionErrorMessage(err));
     } finally {
       setGenerating(false);
     }
@@ -551,24 +529,32 @@ export function AIExtractionReviewScreen() {
     return { total, byType: [...byType.entries()], avgConfidence, needsReview };
   }, [entities]);
 
-  return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Alta y migración con IA</div>
-          <h1 className="bo-page-title">Revisión de extracción (IA)</h1>
-          <p className="bo-page-subtitle">
-            Revisa las entidades extraídas, sus referencias de origen, la confianza y los avisos antes del mapeo de esquema. Las filas
-            con baja confianza se marcan para revisión humana.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => activeId && load(activeId)} disabled={!activeId || loading}>
-            ↻ Actualizar
-          </button>
-        </div>
-      </div>
+  const columns = useMemo<CocoaTableColumn<ExtractedEntity>[]>(
+    () => [
+      { key: "entityType", label: "Tipo de entidad", fit: true, render: (e) => <strong>{e.entityType}</strong> },
+      { key: "sourceRef", label: "Referencia de origen", truncate: 220, render: (e) => e.sourceRef },
+      { key: "confidence", label: "Confianza", fit: true, render: (e) => <ConfidenceBadge confidence={e.confidence} /> },
+      { key: "fields", label: "Campos clave", minWidth: 240, truncate: 360, render: (e) => compactFields(e.fields) },
+      { key: "warnings", label: "Avisos", minWidth: 160, render: (e) => <Warnings warnings={e.warnings} /> }
+    ],
+    []
+  );
 
+  return (
+    <CocoaPage
+      eyebrow={EYEBROW}
+      title="Revisión de extracción (IA)"
+      subtitle="Revisa las entidades extraídas, sus referencias de origen, la confianza y los avisos antes del mapeo de esquema. Las filas con baja confianza se marcan para revisión humana."
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={reload} disabled={!activeId || loading} loading={loading}>
+          Actualizar
+        </CocoaButton>
+      }
+      commands={[
+        { id: "ai-extraction-refresh", label: "Actualizar las entidades extraídas", run: reload },
+        { id: "ai-extraction-generate", label: "Generar mapeos", run: () => { void handleGenerate(); } }
+      ]}
+    >
       <ProjectBanner
         projects={projects}
         activeId={activeId}
@@ -578,92 +564,108 @@ export function AIExtractionReviewScreen() {
         error={projectError}
       />
 
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Entidades totales</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : kpis.total}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tipos de entidad</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : kpis.byType.length}</div>
-          <div className="rev-kpi-delta">{kpis.byType.map(([t, c]) => `${t}: ${c}`).join(" · ") || "—"}</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${kpis.avgConfidence >= 0.8 ? "ok" : kpis.avgConfidence >= 0.5 ? "warn" : "error"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Confianza media</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : `${Math.round(kpis.avgConfidence * 100)}%`}</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${kpis.needsReview > 0 ? "error" : "ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Requiere revisión</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : kpis.needsReview}</div>
-          <div className="rev-kpi-delta">Confianza &lt; 50%</div>
-        </article>
-      </section>
+      <CocoaKpiStrip aria-label="Resumen de las entidades extraídas">
+        <CocoaKpi label="Entidades totales" value={loading ? "…" : number(kpis.total)} polarity="neutral" status="ok" />
+        <CocoaKpi
+          label="Tipos de entidad"
+          value={loading ? "…" : number(kpis.byType.length)}
+          caption={kpis.byType.map(([t, c]) => `${t}: ${number(c)}`).join(" · ") || "—"}
+          polarity="neutral"
+          status="ok"
+        />
+        <CocoaKpi label="Confianza media" value={loading ? "…" : formatConfidence(kpis.avgConfidence)} polarity="neutral" status={confidenceStatus(kpis.avgConfidence)} />
+        <CocoaKpi
+          label="Requiere revisión"
+          value={loading ? "…" : number(kpis.needsReview)}
+          caption="Confianza por debajo del 50 %"
+          polarity="neutral"
+          status={kpis.needsReview > 0 ? "critical" : "ok"}
+        />
+      </CocoaKpiStrip>
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Entidades extraídas</p>
-            <h3>Cola de revisión</h3>
+      <CocoaSection
+        title="Cola de revisión"
+        meta="Entidades extraídas"
+        action={
+          <CocoaBadge tone="neutral" size="small">
+            {plural(entities.length, "fila", "filas")}
+          </CocoaBadge>
+        }
+        footer={
+          <div className="cocoa-stack" data-gap="2">
+            <div className="cocoa-row" data-gap="2">
+              <CocoaButton variant="filled" tone="accent" onClick={() => { void handleGenerate(); }} disabled={!activeId || generating} loading={generating}>
+                {generating ? "Generando mapeos…" : "Generar mapeos"}
+              </CocoaButton>
+              {mappingCount !== null ? (
+                <CocoaBadge tone="success" variant="tinted">
+                  {plural(mappingCount, "mapeo generado", "mapeos generados")}
+                </CocoaBadge>
+              ) : null}
+            </div>
+            {generateError ? (
+              <CocoaCallout tone="danger" role="alert">
+                {generateError}
+              </CocoaCallout>
+            ) : null}
           </div>
-          <span className="bo-chip">{entities.length} filas</span>
-        </div>
-
+        }
+      >
         {error ? (
-          <p style={{ color: "var(--danger-ink)" }}>{error}</p>
+          <CocoaState kind="error" inline title="No se pudieron cargar las entidades extraídas" message={error} onRetry={reload} />
         ) : loading ? (
-          <LoadingBlock label="Cargando entidades extraídas…" />
+          <CocoaState kind="loading" title="Cargando entidades extraídas…" />
         ) : entities.length === 0 ? (
-          <p className="bo-muted">
-            Aún no hay entidades extraídas. Sube y extrae un fichero desde «Subida y clasificación de ficheros» primero.
-          </p>
+          <CocoaState
+            kind="empty"
+            dashed
+            title="Aún no hay entidades extraídas"
+            message="Sube y extrae un fichero desde «Subida y clasificación de ficheros» primero."
+            primaryAction={{ label: "Ir a la subida de ficheros", onClick: () => navigateTo("FileUploadAndClassification") }}
+          />
         ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Tipo de entidad</th>
-                  <th>Referencia de origen</th>
-                  <th>Confianza</th>
-                  <th>Campos clave</th>
-                  <th>Avisos</th>
-                </tr>
-              </thead>
-              <tbody>
-                {entities.map((e) => (
-                  <tr key={e.id} className={e.confidence < 0.5 ? "cm-row-error" : e.confidence < 0.8 ? "cm-row-warn" : undefined}>
-                    <td><strong>{e.entityType}</strong></td>
-                    <td>{e.sourceRef}</td>
-                    <td><ConfidencePill confidence={e.confidence} /></td>
-                    <td style={{ maxWidth: 360 }}>{compactFields(e.fields)}</td>
-                    <td><Warnings warnings={e.warnings} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CocoaTable<ExtractedEntity>
+            columns={columns}
+            rows={entities}
+            rowKey="id"
+            rowTone={(e) => (e.confidence < 0.5 ? "danger" : e.confidence < 0.8 ? "warning" : undefined)}
+            caption="Cola de revisión de entidades extraídas"
+          />
         )}
+      </CocoaSection>
 
-        <div className="bo-actions" style={{ marginTop: "1rem" }}>
-          <button type="button" className="primary" onClick={handleGenerate} disabled={!activeId || generating}>
-            {generating ? "Generando mapeos…" : "Generar mapeos"}
-          </button>
-          {mappingCount !== null ? (
-            <span className="bo-chip">{mappingCount} mapeos generados</span>
-          ) : null}
-        </div>
-        {generateError ? <p style={{ color: "var(--danger-ink)" }}>{generateError}</p> : null}
-      </section>
-
-      <div className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head"><h3>Enmascarado de PII en vistas previas</h3><span className="bo-status ok">ok</span></div>
-          <p>Los números de documento, teléfono, correo, dirección, pago e identidad se enmascaran salvo que se conceda onboarding.view_sensitive.</p>
-        </article>
-        <article className="bo-card">
-          <div className="bo-card-head"><h3>Protección de datos en bruto</h3><span className="bo-status error">bloqueado</span></div>
-          <p>El CVV, el PAN/número de tarjeta completo en bruto y las imágenes de DNI/pasaporte se bloquean antes de la extracción.</p>
-        </article>
-      </div>
+      <CocoaGrid gap={3} align="start">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Enmascarado de PII en vistas previas"
+            action={
+              <CocoaBadge tone="success" variant="tinted" size="small">
+                ok
+              </CocoaBadge>
+            }
+          >
+            <p className="cocoa-note">
+              Los números de documento, teléfono, correo, dirección, pago e identidad se enmascaran salvo que se conceda
+              onboarding.view_sensitive.
+            </p>
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Protección de datos en bruto"
+            action={
+              <CocoaBadge tone="danger" variant="tinted" size="small">
+                bloqueado
+              </CocoaBadge>
+            }
+          >
+            <p className="cocoa-note">
+              El CVV, el PAN/número de tarjeta completo en bruto y las imágenes de DNI/pasaporte se bloquean antes de la
+              extracción.
+            </p>
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
       <NavCards
         actions={[
@@ -671,6 +673,6 @@ export function AIExtractionReviewScreen() {
           { label: "Volver a subir ficheros", screen: "FileUploadAndClassification" }
         ]}
       />
-    </>
+    </CocoaPage>
   );
 }

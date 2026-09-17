@@ -18,7 +18,7 @@ const stylesDir = join(srcDir, "styles");
 const sourceFiles = readdirSync(cocoaDir)
   .filter((name) => /\.(tsx?|mts)$/.test(name) && !name.endsWith(".d.ts"))
   .map((name) => join(cocoaDir, name))
-  .concat([join(srcDir, "components/cocoa-director/DirectorForwardPaceChart.tsx"), join(srcDir, "components/ConfirmDialog.tsx"), join(srcDir, "components/Toast.tsx")]);
+  .concat([join(srcDir, "components/cocoa-director/DirectorForwardPaceChart.tsx"), join(srcDir, "components/Toast.tsx")]);
 
 const styleFiles = readdirSync(stylesDir)
   .filter((name) => name.endsWith(".css"))

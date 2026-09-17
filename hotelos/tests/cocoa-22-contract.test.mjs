@@ -44,22 +44,16 @@ const toPosix = (p) => p.split(sep).join("/");
  * Migrating one = deleting its line here (and lowering ALLOWLIST_CEILING).
  * Pilot lot (2026-09-15): GeneralManagerScreen (canon), GuestsListScreen,
  * PropertySetupForms, ShiftManagerScreen and LoginScreen (shell lot) are out.
- * Olas 8 · 10 (2026-09-16): 68 → 10; what is left is the ola 11 (shared, dev, cleanup).
+ * Olas 8 · 10 (2026-09-16): 68 → 10; what was left was the ola 11 (shared, dev, cleanup).
+ * Ola 11 (2026-09-16): 10 → 0 — the migration is closed: every screen file under
+ * screens/ obeys rules 1–12 (developer/CocoaShowcaseScreen.tsx and
+ * preview/CocoaGalleryScreen.tsx were dead and retired). The list stays as the
+ * mechanism (a screen born outside Cocoa would have to be listed here, and the
+ * ceiling forbids it).
  */
-export const ALLOWLIST_CEILING = 10;
+export const ALLOWLIST_CEILING = 0;
 
-export const NOT_MIGRATED = [
-  "ModuleSettingsPlaceholder.tsx",
-  "ScreenScaffold.tsx",
-  "dev/StyleGuideScreen.tsx",
-  "developer/CocoaShowcaseScreen.tsx",
-  "onboarding/OnboardingInteractive.tsx",
-  "onboarding/OnboardingScreens.tsx",
-  "preview/CocoaGalleryScreen.tsx",
-  "tabs/NavItemTabs.tsx",
-  "tabs/TabHost.tsx",
-  "tabs/tab-helpers.tsx"
-];
+export const NOT_MIGRATED = [];
 
 /**
  * Rule 6 budgets of `style={` per migrated screen by archetype (§9):
@@ -153,8 +147,9 @@ const STYLE_BUDGET = {
   "admin/TenantDetailScreen.tsx": 15,
   "admin/NewTenantWizardDialog.tsx": 15,
   "admin/TenantAdminConsoleScreen.tsx": 15,
-  "admin/InviteUserDialog.tsx": 15,
-  "admin/ResetPasswordConfirmDialog.tsx": 15,
+  // Cocoa 22 · ola 11 · lote 11-A (Compartido y desarrollo: la guía de estilo es un workspace de muestras, 40; la fábrica de placeholders es formulario, 15; OnboardingInteractive, OnboardingScreens y ScreenScaffold son asistente/otro, 25 por defecto). admin/InviteUserDialog.tsx y admin/ResetPasswordConfirmDialog.tsx se retiraron (barrel sin importador).
+  "dev/StyleGuideScreen.tsx": 40,
+  "ModuleSettingsPlaceholder.tsx": 15,
   // Cocoa 22 · ola 10 · lote 10-D (Configuración › Contabilidad y fiscal · Facturación y pagos: formularios / ajustes)
   "TaxComplianceSettings.tsx": 15,
   "BillingSettings.tsx": 15,
@@ -177,8 +172,8 @@ const STYLE_BUDGET = {
 };
 const DEFAULT_STYLE_BUDGET = 25;
 
-/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223; olas 3 · 5 · 7 integradas el 2026-09-16, lotes 3-A/3-B/3-C/5-A/5-B/5-C/7-A/7-B/7-C: 589/419/91/409/402/3223 → 307/203/40/158/70/1833; cierre de la Tanda B con las correcciones fix:* del 2026-09-16: sin cambio, los seis techos igualan los totales regenerados; Tanda 6b · L6/L7 (Estructura societaria y ámbito único) integradas el 2026-09-16: inlineStyles 1833 → 1832, el resto sin cambio; olas 8 · 10 integradas el 2026-09-16, lotes 8-A/8-B/8-C/10-A/10-B/10-C/10-D: 307/203/40/158/70/1832 → 26/12/3/4/2/801 — desde esta tanda el inventario exime los `<input type="file|hidden">` como la regla 4). */
-const GLOBAL_CEILING = { boCard: 26, rawButtons: 12, rawTables: 3, rawInputs: 4, colourLiterals: 2, inlineStyles: 801 };
+/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223; olas 3 · 5 · 7 integradas el 2026-09-16, lotes 3-A/3-B/3-C/5-A/5-B/5-C/7-A/7-B/7-C: 589/419/91/409/402/3223 → 307/203/40/158/70/1833; cierre de la Tanda B con las correcciones fix:* del 2026-09-16: sin cambio, los seis techos igualan los totales regenerados; Tanda 6b · L6/L7 (Estructura societaria y ámbito único) integradas el 2026-09-16: inlineStyles 1833 → 1832, el resto sin cambio; olas 8 · 10 integradas el 2026-09-16, lotes 8-A/8-B/8-C/10-A/10-B/10-C/10-D: 307/203/40/158/70/1832 → 26/12/3/4/2/801 — desde esta tanda el inventario exime los `<input type="file|hidden">` como la regla 4; ola 11 integrada el 2026-09-16, lote 11-A + limpieza (hoja puente, `@layer cocoa-legacy`, componentes sin importador, puente L1c, dev y muertas): 26/12/3/4/2/801 → 0/0/2/0/0/682 — cierre de la migración: las dos `<table>` que quedan son las parrillas de `operations/RoomBlockGridDialog.tsx` y `timeline/LiveTimelineWorkspace.tsx` envueltas en `CocoaScrollArea` con `data-cocoa-grid-table` (excepción de la regla 3), y los 682 `style={` son layout o objetos con nombre con valores del sistema (regla 6)). */
+const GLOBAL_CEILING = { boCard: 0, rawButtons: 0, rawTables: 2, rawInputs: 0, colourLiterals: 0, inlineStyles: 682 };
 
 // ----------------------------------------------------------------- helpers
 
@@ -476,8 +471,10 @@ function definedTokens() {
 // Sub-views without a head of their own (plan §2.3): FrontDeskActionQueue is painted inside /hoy;
 // fiscal/ReportErrorCard is the error card the AEAT report screens paint inside their body (lote 8-B);
 // operations/GroupsPickupCard is the pickup card GroupsEventsDashboard paints on /recepcion/grupos (lote 3-B).
-const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$|operations\/GroupsPickupCard\.tsx$)/;
-const COLOUR_EXEMPT = /^(auth|preview|developer)\//;
+// ModuleSettingsPlaceholder.tsx left the list in ola 11: the placeholder factory paints <CocoaPage> itself.
+const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$|operations\/GroupsPickupCard\.tsx$)/;
+// preview/ disappeared with its dead gallery in ola 11; auth/ keeps the tokenised login gradients and developer/ its API samples.
+const COLOUR_EXEMPT = /^(auth|developer)\//;
 
 // ----------------------------------------------------------------- data
 
@@ -558,14 +555,17 @@ describe("cocoa-22 · migrated screens obey §9", () => {
     );
   });
 
-  it("7 · paints a Cocoa header (CocoaPage / CocoaPageHeader / pageHead / HostedHead / useTabHost)", () => {
+  it("7 · paints a Cocoa header (CocoaPage / CocoaPageHeader / HostedHead / useTabHost)", () => {
+    // `pageHead(embedded)` (the L1c bridge of tabs/tab-helpers.tsx) was retired in ola 11: it no longer counts as a header.
     assert.deepEqual(
-      offenders((rel, src) => (HEADER_EXEMPT.test(rel) || /<CocoaPage\b|<CocoaPageHeader\b|pageHead\(|<HostedHead\b|useTabHost\(/.test(src) ? [] : ["sin cabecera Cocoa"])),
+      offenders((rel, src) => (HEADER_EXEMPT.test(rel) || /<CocoaPage\b|<CocoaPageHeader\b|<HostedHead\b|useTabHost\(/.test(src) ? [] : ["sin cabecera Cocoa"])),
       []
     );
   });
 
   it("8 · no raw <h1>", () => {
+    // No exemption for tabs/TabHost.tsx or tabs/tab-helpers.tsx (R18): since ola 11 the hosted <h1> lives in
+    // components/cocoa/HostedHead.tsx and screens/tabs/** paints no <h1> of its own.
     assert.deepEqual(offenders((_, src) => matchesWithLines(src, /<h1\b/g)), []);
   });
 

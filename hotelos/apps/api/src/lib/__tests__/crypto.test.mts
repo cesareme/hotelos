@@ -7,6 +7,13 @@ import {
   encryptField,
   isCiphertext
 } from "../crypto.service.js";
+// decryptResultForModel is consumed by the Prisma extension only and is not part of the
+// API facade: the test reads it from the package source (same module instance under tsx).
+import {
+  __resetCryptoWarningForTests as resetDatabaseWarnings,
+  decryptResultForModel,
+  encryptField as encryptDatabaseField
+} from "../../../../../packages/database/src/crypto-fields.js";
 
 function setRandomKey(): string {
   const key = randomBytes(32).toString("base64");
@@ -148,5 +155,63 @@ describe("crypto.service — invalid env values fall back safely", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+});
+
+describe("crypto-fields — decryptResultForModel with a wrong key (Cocoa 22 · ola 11 · grr_e86d63b9)", () => {
+  beforeEach(() => {
+    __resetCryptoWarningForTests();
+    resetDatabaseWarnings();
+  });
+  afterEach(clearKey);
+
+  it("returns null in the field and never the v1. envelope, warning once per model and field", () => {
+    setRandomKey();
+    resetDatabaseWarnings();
+    const envelope = encryptDatabaseField("12345678Z") as string;
+    assert.ok(isCiphertext(envelope));
+    // Rotate the key in-place — the stored envelope is now undecryptable.
+    process.env.HOTELOS_FIELD_KEY = randomBytes(32).toString("base64");
+    __resetCryptoWarningForTests();
+    resetDatabaseWarnings();
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (message: unknown) => {
+      warnings.push(String(message));
+    };
+    try {
+      const rows = decryptResultForModel("GuestRegisterRecord", [
+        { id: "grr_1", documentNumber: envelope, email: envelope, phoneMobile: null },
+        { id: "grr_2", documentNumber: envelope, email: "plain@example.com", phoneMobile: undefined }
+      ]);
+      for (const row of rows) {
+        assert.equal(row.documentNumber, null, "the undecryptable field reads as null");
+        assert.ok(!JSON.stringify(row).includes("v1."), "the envelope never leaves the extension");
+      }
+      assert.equal(rows[0]!.email, null);
+      assert.equal(rows[1]!.email, "plain@example.com", "legacy plaintext passes through");
+      assert.equal(rows[1]!.id, "grr_2");
+      assert.equal(warnings.length, 2, "one warning per (model, field): documentNumber and email");
+      for (const warning of warnings) {
+        assert.match(warning, /GuestRegisterRecord\.(documentNumber|email)/);
+        assert.ok(!warning.includes(envelope) && !warning.includes("v1."), "the warning never carries the envelope");
+        assert.ok(!warning.includes(process.env.HOTELOS_FIELD_KEY!), "the warning never carries the key");
+      }
+      // Same field again: no new warning.
+      decryptResultForModel("GuestRegisterRecord", { id: "grr_3", documentNumber: envelope });
+      assert.equal(warnings.length, 2);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it("decrypts normally with the right key and leaves models without PII fields untouched", () => {
+    setRandomKey();
+    resetDatabaseWarnings();
+    const envelope = encryptDatabaseField("12345678Z") as string;
+    const row = decryptResultForModel("GuestRegisterRecord", { id: "grr_1", documentNumber: envelope });
+    assert.equal(row.documentNumber, "12345678Z");
+    const untouched = { id: "x", documentNumber: envelope };
+    assert.equal(decryptResultForModel("Building", untouched), untouched);
   });
 });

@@ -104,7 +104,7 @@ interface NotificationsContextValue {
   openCenter: () => void;
 }
 
-/** Event any screen can dispatch to open the notification center (legacy TopBar, ⌘K). */
+/** Event any screen can dispatch to open the notification center (toolbar bell, ⌘K). */
 export const OPEN_NOTIFICATIONS_EVENT = "hotelos-open-notifications";
 
 // Server notification types → Cocoa severities.

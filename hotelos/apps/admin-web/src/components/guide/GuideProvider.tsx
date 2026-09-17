@@ -4,28 +4,30 @@ import { HelpCenter } from "./HelpCenter";
 import { WELCOME_TOUR_ID, getTourById, tourStepsFor } from "./guideContent";
 import { GUIDE_EVENTS, getGuideState, setGuideState } from "./guideStore";
 import { useNavAudience } from "../../navigation/useEnabledModules";
+import { CocoaButton } from "../cocoa/CocoaButton";
 
 type WelcomeOffer = { tourId: string; title: string; body: string };
 
 /**
  * Non-blocking corner card that offers a tour. Deferential by design.
+ * Skin: styles/cocoa-22-guide.css (`c22-guide-welcome*`).
  */
 function WelcomeCard(props: { offer: WelcomeOffer; onStart: () => void; onDismiss: () => void }) {
   return (
-    <div className="guide-welcome" role="dialog" aria-label="Recorrido guiado">
-      <div className="guide-welcome-icon" aria-hidden>
+    <div className="c22-guide-welcome" role="dialog" aria-label="Recorrido guiado">
+      <div className="c22-guide-welcome-icon" aria-hidden>
         <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
           <path d="M11 2.5l2.4 4.86 5.36.78-3.88 3.78.92 5.34L11 14.96 6.2 17.24l.92-5.34L3.24 8.12l5.36-.78L11 2.5Z"
             stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
         </svg>
       </div>
-      <div className="guide-welcome-text">
+      <div className="c22-guide-welcome-text">
         <strong>{props.offer.title}</strong>
         <p>{props.offer.body}</p>
       </div>
-      <div className="guide-welcome-actions">
-        <button type="button" className="ghost" onClick={props.onDismiss}>Ahora no</button>
-        <button type="button" className="primary" onClick={props.onStart}>Empezar recorrido</button>
+      <div className="c22-guide-welcome-actions">
+        <CocoaButton variant="plain" tone="neutral" onClick={props.onDismiss}>Ahora no</CocoaButton>
+        <CocoaButton onClick={props.onStart}>Empezar recorrido</CocoaButton>
       </div>
     </div>
   );

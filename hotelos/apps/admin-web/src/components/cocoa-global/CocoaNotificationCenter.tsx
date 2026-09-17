@@ -17,7 +17,7 @@
 //
 // Accessibility notes:
 //   - Rendered as role="dialog" with aria-modal so screen readers announce it.
-//   - Esc closes consistent with SidePanel / CommandPalette in this codebase.
+//   - Esc closes consistent with CocoaDrawer / CommandPalette in this codebase.
 //   - Icons inside notification cards are decorative (aria-hidden) because the
 //     `type` is already conveyed via the title text.
 
@@ -152,7 +152,7 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
   const { open, onClose, notifications, onMarkAllAsRead, onMarkAsRead, status } = props;
   const headingId = useId();
 
-  // Esc closes the panel — parity with SidePanel and CommandPalette so keyboard
+  // Esc closes the panel — parity with CocoaDrawer and CommandPalette so keyboard
   // users have a uniform exit across the app's overlays.
   useEffect(() => {
     if (!open) return;

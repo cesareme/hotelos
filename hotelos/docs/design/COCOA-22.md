@@ -121,7 +121,7 @@ Cifras: `font-variant-numeric: tabular-nums` + `font-feature-settings: "tnum"` e
   <tabs>                         CocoaSegmentedControl (opcional) margin-top 8
 ```
 
-Reglas: un solo `h1` por página; en pantallas alojadas (`useTabHost() !== null`) la pantalla **no** pinta eyebrow/título — pinta `HostedHead` (subtítulo + vistas internas + acciones, `HOSTED_TOOLBAR`) o solo `HOSTED_ACTIONS_ROW` (flex-end, gap 8, wrap). El eyebrow siempre es «Categoría · Propiedad» o la categoría del árbol (`treeHeaderFor`).
+Reglas: un solo `h1` por página; en pantallas alojadas (`useTabHost() !== null`) la pantalla **no** pinta eyebrow/título — `CocoaPage` pinta `HostedHead` (`components/cocoa/HostedHead.tsx`: subtítulo + vistas internas + acciones, `HOSTED_TOOLBAR`) o la pantalla pinta solo `HOSTED_ACTIONS_ROW` (flex-end, gap 8, wrap). El eyebrow siempre es «Categoría · Propiedad» o la categoría del árbol (`treeHeaderFor`).
 
 ### 3.3 Pestañas (medido)
 
@@ -277,7 +277,7 @@ Lo que §8 no dice por sí solo y que ha roto (o casi) los pilotos. Cada regla c
 
 **D · Layout y comportamiento (medido en los pilotos)**
 
-20. **Alojada** (`useTabHost() !== null`): el contenedor pinta eyebrow + H1; la página aporta acciones y vistas internas (`tabs`). **No pases `subtitle` alojada** (los pilotos usan `subtitle={hosted ? undefined : …}`): `screens/tabs/tab-helpers.tsx:42` ya lleva `flex: "0 0 auto"` en `subtitleStyle` (`leadStyle` conserva `1 1 320px` en el contenedor), pero la regla sigue vigente hasta que la QA visual de la Tanda 6 mida un `HostedHead` con subtítulo; la acción «Nuevo…» que ya pinta el contenedor tampoco se repite (`actions={hosted ? undefined : …}`). Una página alojada sin subtítulo, acciones ni `tabs` no pinta cabecera alguna.
+20. **Alojada** (`useTabHost() !== null`): el contenedor pinta eyebrow + H1; la página aporta acciones y vistas internas (`tabs`). **No pases `subtitle` alojada** (los pilotos usan `subtitle={hosted ? undefined : …}`): `components/cocoa/HostedHead.tsx` ya lleva `flex: "0 0 auto"` en `subtitleStyle` (`leadStyle` conserva `1 1 auto` con mínimo 320 px), pero la regla sigue vigente hasta que la QA visual de la Tanda 6 mida un `HostedHead` con subtítulo; la acción «Nuevo…» que ya pinta el contenedor tampoco se repite (`actions={hosted ? undefined : …}`). Una página alojada sin subtítulo, acciones ni `tabs` no pinta cabecera alguna.
 21. **`CocoaSection` es flex column** (raíz `display:flex; flex-direction:column; height:100%`, cuerpo `.c22-section__body` flex column con gap 8): los hijos se apilan y se estiran a lo ancho; dos controles en fila necesitan `<div className="cocoa-row" data-gap="2">`; `<p>` y `<ul className="c22-section__list">` no llevan márgenes propios. Una celda `CocoaSpan` estira su sección a `height: 100%` (filas alineadas); si el contenido debe quedar arriba, `CocoaGrid align="start"`.
 22. **`CocoaGrid/CocoaSpan`**: 12 columnas, gap 12; `min` se redondea al bucket 200/240/320/480 (`minBucket`); < 600 px → 1 columna; 600–899 → spans < 6 pasan a 6; rejilla < 912 px → un `min` que no cabe promociona a 6 y luego a 12; ≥ 912 spans reales (el canon 8/2/2 a 1120 px se conserva). Todo por clase (`c22-span-N`, `c22-min-B`), nunca `grid-column` inline.
 23. **`CocoaKpiStrip`**: `min` 180 (canon), 200 (ops) y 240 (callouts) los resuelve la hoja; otros valores viajan como `--c22-kpi-min` inline; < 600 una columna. Los KPI dentro de una `CocoaSection` anidan sombra de tarjeta sobre tarjeta (aceptado, como el canon).
@@ -789,7 +789,7 @@ export function ListaTablaScreen() {
 // file: screens/ejemplos/Detalle.tsx
 // Detalle (FolioDetail, InvoiceDetail…): cabecera con badge de estado y
 // acciones, vistas internas con `tabs` (segmented en la cabecera; alojada las
-// pinta HostedHead), rejilla 8/4 (cuerpo + aside con CocoaStat) y un diálogo
+// pinta CocoaPage vía HostedHead), rejilla 8/4 (cuerpo + aside con CocoaStat) y un diálogo
 // destructivo con `busy`. Standalone en /finanzas/folios/:id; alojada como
 // pestaña `:id` de un contenedor (useRouteParam de tab-helpers).
 import { useState } from "react";
@@ -1589,7 +1589,7 @@ Ubicación: `apps/admin-web/src/components/cocoa/` (39 ficheros + barrel `index.
 | ⌘K: registro de comandos de página | `registerPageCommands` / `resolvePageState` | `cocoa-page-commands.ts` | — |
 | Geometría de gráficos (umbral → tono, gauge, donut, línea) | `thresholdTone` / `gaugeGeometry` / `donutSegments` / `lineGeometry` | `cocoa-chart-math.ts` | — |
 | Degradados («—» honesto) | `DegradedValue` / `DegradedNote` / `DegradedCard` / `DegradedBanner` / `isDegraded` | re-export de `cocoa-extras/DegradedValue.tsx` | `label`, `degraded` |
-| Vacío legacy | `CocoaEmptyState` (usa `CocoaState kind="empty"`) | re-export de `cocoa-empty-state/` | `title` |
+| Vacío legacy | — (`CocoaEmptyState` y `cocoa-empty-state/` retirados en la ola 11: todo vacío es `CocoaState kind="empty"`) | — | — |
 
 ### 8.2 Declaraciones exportadas (generado)
 
@@ -1640,7 +1640,6 @@ export * from "./CocoaChart";
 export * from "./CocoaSplitView";
 export * from "./CocoaSidebar";
 export * from "./CocoaRouteTabs";
-export { CocoaEmptyState, type CocoaEmptyStateProps, type CocoaEmptyStateAction } from "../cocoa-empty-state/CocoaEmptyState";
 export { DegradedValue, DegradedNote, DegradedCard, DegradedBanner, isDegraded, DEGRADED_HINT, type DegradedLabel, type DegradedList } from "../cocoa-extras/DegradedValue";
 ```
 
@@ -3492,11 +3491,11 @@ export function CocoaRouteTabs(props: CocoaRouteTabsProps)
 ### 8.3 Fuera del barrel
 
 - **Toast**: `useToast()` de `components/Toast.tsx` → `showToast(message: string, { variant?: "success" | "error" | "info" | "warning", duration?: number })`; el render es `CocoaToast` (§3.9). No hay `CocoaMoney` ni `DeltaChip`: son `CocoaStat` (`suffix`) y `CocoaDelta`.
-- **Alojamiento**: `useTabHost(): TabHostInfo | null` (`{ screenKey, basePath, title }`) y `HOSTED_ACTIONS_ROW` de `screens/tabs/TabHost.tsx`; `HostedHead`, `pageHead(embedded?)`, `useRouteParam(pattern, name)`, `treeHeaderFor(screenKey, fallback)` de `screens/tabs/tab-helpers.tsx`.
+- **Alojamiento**: `useTabHost(): TabHostInfo | null` (`{ screenKey, basePath, title }`) y `HOSTED_ACTIONS_ROW` / `HOSTED_TOOLBAR` de `screens/tabs/TabHost.tsx`; `HostedHead` de `components/cocoa/HostedHead.tsx` (fuera del barrel: `CocoaPage` la pinta por sí sola cuando está alojada); `useRouteParam(pattern, name)`, `treeHeaderFor(screenKey, fallback)` y `shellNavigate(screen)` de `screens/tabs/tab-helpers.tsx` (ola 11: sin `embed()` ni `pageHead()`).
 - **Iconos**: `components/cocoa-icons/{ActionIcons,NavigationIcons,StatusIcons}.tsx` (`PlusIcon`, `SearchIcon`, `TrashIcon`, `CheckCircleIcon`, `ExclamationCircleIcon`, `XCircleIcon`, `SparkleIcon`, …; prop `size`).
 - **Copy y formato**: `content/actions.ts` (`ACTIONS`, `STATUS_LABELS`, `FIELD_LABELS`, `A11Y_LABELS`, `newLabel`, `emptyStateFor`, `errorStateFor`, `confirmDelete`, `confirmDiscard`) y `lib/format.ts` (`money`, `number`, `percent`, `date`, `time`, `dateTime`, `dateRange`, `plural`, `relativeTime`, `toNumber`, `EMPTY`).
 - **Utilidades CSS** (`styles/cocoa-base.css`): `.cocoa-stack[data-gap="1…6"]` (columna, 4…32 px, por defecto 12), `.cocoa-row[data-gap="1|2|4"][data-align="start|end|baseline"][data-justify="between|end"][data-wrap="nowrap"]` (fila centrada que envuelve), `.cocoa-cluster` (chips, 8 px), `.cocoa-sr-only`, `.cocoa-scroll-x`, `.cocoa-truncate`, `.cocoa-clamp-2`, `.cocoa-tabular`, `.cocoa-caption` (etiqueta CORTA de un grupo: caption 10 px 600 mayúsculas) y `.cocoa-note` (nota en prosa de una sección o un diálogo: callout 12 px secundario sin mayúsculas; nunca un pie de 200 caracteres en `.cocoa-caption`, qa#5 L6); listas `ul/ol.c22-section__list` (hairlines entre `li`, `strong` tabular a la derecha) de `cocoa-22-layout.css`.
-- **Legacy fuera del barrel**: `CocoaAlert` y `CocoaFormFieldset` (`components/cocoa-extras`) siguen existiendo pero no se usan en pantallas migradas (→ `CocoaCallout`, `CocoaFormSection`); `CocoaColorWell` queda solo en el showcase (la preferencia de acento está prohibida, §6).
+- **Legacy fuera del barrel**: `CocoaAlert` y `CocoaFormFieldset` (`components/cocoa-extras`) siguen existiendo pero no se usan en pantallas migradas (→ `CocoaCallout`, `CocoaFormSection`); `CocoaColorWell` se retiró en la ola 11 junto con el showcase que lo montaba (la preferencia de acento está prohibida, §6).
 - **Tokens** (`cocoa-tokens.css`, lote css): `--cocoa-background-window: var(--canvas)`, `--cocoa-background-sidebar: var(--surface)`, `--cocoa-label-secondary` claro `.62`, `--cocoa-fs-kpi: 32px` / `-compact: 24px`, `--cocoa-tone-{success,warning,danger,info,neutral,accent,ai}[-text|-bg|-border]`, `--cocoa-density-*` (por `[data-cocoa-density]`), `--cocoa-content-padding` (24 → 16 en < 600; el gutter real: no existe `--cocoa-content-inset`), `--cocoa-scrim`, `--cocoa-z-*`, alias `--cocoa-accent-soft: var(--cocoa-accent-bg)`.
 
 ---
@@ -3511,9 +3510,9 @@ Estilo: como `tests/admin-web-no-raw-fetch.test.mjs` (node:test, lectura de fich
 | 2 | 0 `<button>` crudos | `/<button\b/` | ninguna (iconos → `CocoaButton variant="plain" aria-label`) |
 | 3 | 0 `<table>` crudas | `/<table\b/` | parrillas envueltas en `CocoaScrollArea` con `data-cocoa-grid-table` (RateGridEditor, RoomRack, LiveTimeline) |
 | 4 | 0 `<input>/<select>/<textarea>` crudos | `/<(input|select|textarea)\b[^>]*>/` | `type="file"` y `type="hidden"` (en cualquier sitio) |
-| 5 | 0 colores literales | `#hex` (solo en contexto de color en su línea), `rgb()/hsl()`, y `var(--x, #…)` | carpetas `auth/` (gradientes del login, tokenizados en ola 10), `preview/`, `developer/`; pendiente `dev/` (guía de estilo, handoff) |
+| 5 | 0 colores literales | `#hex` (solo en contexto de color en su línea), `rgb()/hsl()`, y `var(--x, #…)` | carpetas `auth/` (gradientes del login, tokenizados en ola 10) y `developer/` (muestras de la referencia del API); `preview/` desapareció con su galería muerta en la ola 11; `dev/` (guía de estilo) cumple sin exención: la muestra de color viaja como custom property `--c22-guide-swatch` (`.c22-guide-swatch`, `cocoa-22-guide.css`) desde un objeto de estilo con nombre |
 | 6 | ≤ N `style={` por pantalla, solo layout | N por `STYLE_BUDGET`: 25 (dashboard, y por defecto) · 15 (lista/detalle/form) · 40 (calendario/workspace); dentro de literales `style={{…}}` solo `LAYOUT_PROP` = `display grid* flex* gap rowGap columnGap align* justify* min* max* width height margin* padding* overflow* position inset* top right bottom left order place* boxSizing visibility pointerEvents` | constantes `CSSProperties` (no se inspeccionan; el color literal sigue prohibido por la 5) |
-| 7 | Cabecera obligatoria | `<CocoaPage` \| `<CocoaPageHeader` \| `pageHead(` \| `<HostedHead` \| `useTabHost(` | `tabs/**` (contenedores), `*Dialog.tsx`, `*Drawer.tsx`, `ScreenScaffold.tsx`, `ModuleSettingsPlaceholder.tsx` (`HEADER_EXEMPT`) |
+| 7 | Cabecera obligatoria | `<CocoaPage` \| `<CocoaPageHeader` \| `<HostedHead` \| `useTabHost(` | `tabs/**` (contenedores), `*Dialog.tsx`, `*Drawer.tsx`, `ScreenScaffold.tsx`, `ModuleSettingsPlaceholder.tsx` (`HEADER_EXEMPT`) |
 | 8 | 0 `<h1>` crudos | `/<h1\b/` | ninguna |
 | 9 | 0 `position: "fixed"` / `zIndex` numérico | `/position:\s*["']fixed["']\|zIndex:\s*\d/` en pantallas | componentes `CocoaDrawer`, `CocoaDialog`, `CocoaSheet`, `CocoaToast`, `CocoaPopover`, `CocoaSplitView` (drawer móvil), `CocoaActionBar` (fuera del alcance de la regla) |
 | 10 | 0 emoji en JSX | rango `\p{Extended_Pictographic}` | `content/*.ts` de microcopys si los hubiera (hoy ninguno) |
@@ -3542,7 +3541,7 @@ Datos del inventario (`scripts/cocoa-22-inventory.mjs --summary`, 2026-09-15): 2
 | 5 | **Revenue** (RevenueHistoryForecast M/49, RatePlans M/47, CancellationPolicies M/46, RateShopperSettings M/35, RateGridEditor XL/18) | 15 | 6.365 | 390 | S 3 · M 11 · XL 1 | RateGridEditor es limpio (18 pts) pero enorme: solo `CocoaPage fullBleed` + `CocoaActionBar` |
 | 6 | **Finanzas** (BillingCenter XL/71, FolioRouting L/60, BankingSpain M/59, Payroll M/55, Folio/Invoice detail) | 21 | 8.584 | 648 | S 4 · M 13 · L 3 · XL 1 | Cifras: `CocoaStat/Money`, tablas con `footer` |
 | 7 | **Comercial** (ChannelAggregatorHub XL/137, LoyaltyProgram M/59, ChannelMappings M/53, Surveys M/39…) | 18 | 5.997 | 606 | S 4 · M 13 · XL 1 | ChannelAggregatorHub es la 2.ª pantalla con más deuda |
-| 8 | **Cumplimiento** (ComplianceCenter L/148 —máxima deuda—, FiscalDashboard L/68, GuestRegisterSettings L/66, TouristTax L/62, modelos AEAT) | 25 | 6.975 | 812 | S 9 · M 11 · L 5 | Formularios y listas fiscales; 15 pantallas aún con prop `embedded` (TabHost.tsx) |
+| 8 | **Cumplimiento** (ComplianceCenter L/148 —máxima deuda—, FiscalDashboard L/68, GuestRegisterSettings L/66, TouristTax L/62, modelos AEAT) | 25 | 6.975 | 812 | S 9 · M 11 · L 5 | Formularios y listas fiscales; 15 pantallas aún con prop `embedded` (TabHost.tsx) — puente L1c cerrado en la ola 11 (2026-09-16/17): ninguna pantalla conserva la prop |
 | 9 | **Informes** (PropertyDetail M/36, RevenueExportCenter M/35, ChannelPerformance M/30, RoomProfitability M/28) | 9 | 2.548 | 218 | S 2 · M 7 | Rápida: dashboards + tablas |
 | 10 | **Configuración** (AiGovernance L/121, AiPipelineStatus L/61, OnboardingInteractive L/60, Notifications M/56, ModuleManager, Setup, wizards) | 42 | 14.370 | 1.179 | S 17 · M 20 · L 5 | Mayor volumen; mayoritariamente formularios → rendimiento alto de `CocoaField/FormSection` |
 | 11 | **Compartido / desarrollo** (`ScreenScaffold`, `ModuleSettingsPlaceholder`, `NavItemTabs`/helpers, showcase y galería) + limpieza: borrar las 276 reglas `.bo-*` de `styles.css`, `components/v2/*`, `FormComponents` legacy, `mobile.css .gm-grid` | 8 | 2.532 | 69 | S 5 · M 2 · L 1 | Cierre: `styles.css` queda con Aurora tokens + shell; presupuesto §9 a 0 |
@@ -3560,7 +3559,7 @@ Pantalla viva de referencia, **solo en modo desarrollo** (`?dev=1` o `localStora
 | Bloque | Qué muestra |
 |---|---|
 | Página | La propia pantalla es el primer `CocoaPage` (eyebrow · h1 · subtítulo · acciones · densidad · comandos en ⌘K); selector de tema (Sistema / Claro / Oscuro) y de densidad (Cómoda / Compacta) en la fila de acciones. |
-| Tokens · Color | Tabla por grupos (superficies, texto, separadores, acento, 7 tonos × base/-text/-bg/-border, gráficos) con muestra y valor **declarado en claro y en oscuro** (leídos en tiempo de ejecución del CSSOM de `cocoa-tokens.css`) y el valor pintado ahora; sin un solo literal de color en el fichero. |
+| Tokens · Color | Tabla por grupos (superficies, texto, separadores, acento, 7 tonos × base/-text/-bg/-border, gráficos) con muestra y valor **declarado en claro y en oscuro** (leídos en tiempo de ejecución del CSSOM de `cocoa-tokens.css`) y el valor pintado ahora; sin un solo literal de color en el fichero (la muestra es `.c22-guide-swatch` de `cocoa-22-guide.css` y recibe el valor por la custom property `--c22-guide-swatch` desde un objeto de estilo con nombre, regla 6). |
 | Tokens · Tipografía, espacio, radios, shell, sombras, motion, capas | Escala completa renderizada con sus tokens (`--cocoa-fs-*`, `--cocoa-lh-*`, pesos, tracking), barras de `--cocoa-space-1…8`, radios 4/8/12/full, métricas del shell, las 7 sombras, tokens de duración/curvas con «Reproducir entrada» (stagger) y la escala `--cocoa-z-*`. |
 | Botones | 4 variantes × 3 tonos × 3 tamaños; icono, carga, deshabilitado, solo icono con `aria-label`, `CocoaKbd`. |
 | Campos y formulario | `CocoaField` con ayuda / error / hint / inline / fullWidth; `CocoaInput` (tamaños, icono, rightSlot, readOnly, disabled, multiline), `CocoaSelect`, `CocoaSwitch`, `CocoaDatePicker`, `CocoaStepper`, `CocoaSearchInput`, `CocoaSegmentedControl`; arquetipo formulario con `CocoaFormSection` + `CocoaFormRow` + validación + `CocoaActionBar` (Ctrl/⌘ + Enter). |

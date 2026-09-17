@@ -4,7 +4,6 @@ import { devQueryFrom, findByScreen } from "../navigation/nav-tree";
 import { useNavGate } from "../navigation/useEnabledModules";
 import { useIsCompactViewport } from "../navigation/viewport";
 import { itemUrlForScreen, pathForScreen, urlForScreenWithParams } from "../routes/backoffice.routes";
-import { TopBar } from "../components/TopBar";
 import { CommandPalette } from "../components/CommandPalette";
 import type { SearchHit } from "../services/searchApi";
 import { GuideProvider } from "../components/guide/GuideProvider";
@@ -41,36 +40,20 @@ import { openHelpCenter } from "../components/guide/guideStore";
 import { fetchPropertyReadiness, type PropertyReadiness } from "../services/billingApi";
 import { PROPERTY_KIND_LABELS, type StructuredPropertyRow } from "../services/financeScope";
 
-// Feature flag: keep the legacy chrome reachable in case the migrated shell
-// breaks a specific workflow. Flip to false to fall back to TopBar + Sidebar.
-const USE_COCOA_LAYOUT = true;
-
 /** Screen the «Nueva reserva» quick action opens (pilots/tanda5-nav-tree.md §11 #5: one click from anywhere). */
 export const NEW_RESERVATION_SCREEN = "ReservationCreate";
 
 /** Public login URL the explicit logout lands on (a 401 keeps the deep link; «Cerrar sesión» does not). */
 const LOGIN_PATH = pathForScreen("LoginScreen") ?? "/acceso";
 
-// Layout chrome (Tanda 5 · L1c). Inside the split view column the sidebar is
-// never off-canvas, whatever the width (styles.css moves `.bo-sidebar` off
-// screen under 900px for the drawer); under COMPACT_BREAKPOINT_PX the layout
-// renders the Sidebar as a drawer of its own (`.bo-sidebar.open` + `.bo-scrim`)
-// instead of the empty drawer of CocoaSplitView.
-// Cocoa 22 (COCOA-22.md §2.3, §3.1): the phone drawer and its scrim take the
-// z-index / scrim / shadow / width tokens (styles.css still positions them
-// off-canvas in @layer cocoa-legacy, so these unlayered rules win); the
-// property switcher truncates its name inside CocoaButton's child span; the
-// raw menu / listbox rows get their hover wash here.
-const LAYOUT_CSS = `
-.cocoa-shell .cocoa-sidebar-host { display: flex; min-height: 0; height: 100%; }
-.cocoa-shell .cocoa-sidebar-host .bo-sidebar { position: relative; top: auto; left: auto; width: 100%; height: 100%; transform: none; box-shadow: none; z-index: auto; }
-.cocoa-shell .cocoa-sidebar-host .bo-sidebar-close { display: none; }
-.cocoa-shell > .bo-sidebar { z-index: var(--cocoa-z-sidebar); width: min(86vw, var(--cocoa-drawer-width)); box-shadow: var(--cocoa-shadow-modal); }
-.cocoa-shell > .bo-scrim { z-index: calc(var(--cocoa-z-sidebar) - 1); background: var(--cocoa-scrim); -webkit-backdrop-filter: var(--cocoa-scrim-blur); backdrop-filter: var(--cocoa-scrim-blur); }
-.cocoa-shell .cocoa-toolbar-property > span { min-width: 0; overflow: hidden; }
-.cocoa-shell .cocoa-menu-item { transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
-.cocoa-shell .cocoa-menu-item:hover { background: var(--cocoa-fill-tertiary); }
-`;
+// Layout chrome (Tanda 5 · L1c · Cocoa 22 ola 11, R11): the sidebar geometry
+// lives in styles/cocoa-22-shell.css — inside the split view column
+// (`.cocoa-sidebar-host`) it is never off-canvas, whatever the width; under
+// COMPACT_BREAKPOINT_PX the layout renders the Sidebar as a drawer of its own
+// (`.c22-sidebar.open` + `.c22-scrim`, z-index / scrim / shadow / width
+// tokens) instead of the empty drawer of CocoaSplitView. The property
+// switcher truncates its name inside CocoaButton's child span and the raw
+// menu / listbox rows get their hover wash from that same sheet.
 
 // --- Toolbar chrome tokens -----------------------------------------------------
 
@@ -120,7 +103,7 @@ const dropdownSurfaceStyle: CSSProperties = {
 
 // Rows of those menus stay raw <button>s (role="menuitem" / "option" and
 // aria-selected are not props of CocoaButton yet); they share the focus ring
-// class and the hover wash of LAYOUT_CSS.
+// class and the hover wash of styles/cocoa-22-shell.css (`.cocoa-menu-item`).
 const menuItemStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -209,10 +192,10 @@ function buildHitPath(hit: SearchHit): string | null {
 // --- Cocoa right-slot inline components ------------------------------------
 
 function PropertySwitcher({ compact = false }: { compact?: boolean }) {
-  // Mirrors the property dropdown in the legacy TopBar but rendered inside the
-  // CocoaToolbar leftSlot. The list comes from the memoized
-  // loadSwitchableProperties() (shared with AuthGate and TopBar, one request
-  // per session) and we persist via setActiveProperty, which reloads on change.
+  // Property dropdown rendered inside the CocoaToolbar leftSlot. The list
+  // comes from the memoized loadSwitchableProperties() (shared with AuthGate,
+  // one request per session) and we persist via setActiveProperty, which
+  // reloads on change.
   // `compact` (phone toolbar): the button shrinks with the row and the name is
   // truncated with an ellipsis instead of overlapping its neighbours.
   const active = getActiveProperty();
@@ -1056,41 +1039,6 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
     }
   }
 
-  // --- Legacy fallback ------------------------------------------------------
-  // Kept around so we can flip USE_COCOA_LAYOUT to false if the migrated shell
-  // regresses on a flow we missed. The behaviour matches the pre-migration
-  // version of this file byte-for-byte.
-  if (!USE_COCOA_LAYOUT) {
-    return (
-      <main className="bo-shell" data-route-base="/backoffice">
-        <Sidebar
-          activeScreen={props.activeScreen}
-          onSelect={selectAndClose}
-          open={navOpen}
-          onClose={() => setNavOpen(false)}
-        />
-        <div
-          className={`bo-scrim${navOpen ? " open" : ""}`}
-          onClick={() => setNavOpen(false)}
-          aria-hidden
-        />
-        <TopBar onOpenCommandPalette={() => openPaletteWith("")} onOpenNav={() => setNavOpen(true)} />
-        <ActivePropertyInvalidBanner />
-        <OfficeCentreBanner onOpenFinance={() => selectAndClose("FinancePositionDashboard")} />
-        <SetupPendingBanner activeScreen={props.activeScreen} />
-        <section className="bo-workspace">{props.children}</section>
-        <CommandPalette
-          open={cmdkOpen}
-          initialQuery={cmdkQuery}
-          onClose={() => setCmdkOpen(false)}
-          onSelect={(screen) => selectAndClose(screen)}
-          onSelectHit={(hit) => selectHit(hit)}
-        />
-        <GuideProvider />
-      </main>
-    );
-  }
-
   // --- Cocoa-migrated shell -------------------------------------------------
   // The toolbar search field is a launcher for ⌘K (Tanda 5: it used to be a
   // dead end). The first character typed — or Enter — opens the CommandPalette
@@ -1124,7 +1072,6 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
 
   return (
     <div className="cocoa-shell" data-route-base="/backoffice">
-      <style>{LAYOUT_CSS}</style>
       {compact ? (
         <CompactToolbar
           navOpen={navOpen}
@@ -1183,10 +1130,10 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
       <SetupPendingBanner activeScreen={props.activeScreen} />
       {compact ? (
         <>
-          {/* Drawer of the layout: `.bo-sidebar` is off-canvas under 900px and
-              `.open` slides it in (styles.css); the scrim closes it. */}
+          {/* Drawer of the layout: `.c22-sidebar` is off-canvas under 900px and
+              `.open` slides it in (styles/cocoa-22-shell.css); the scrim closes it. */}
           {sidebar}
-          <div className={`bo-scrim${navOpen ? " open" : ""}`} onClick={() => setNavOpen(false)} aria-hidden />
+          <div className={`c22-scrim${navOpen ? " open" : ""}`} onClick={() => setNavOpen(false)} aria-hidden />
         </>
       ) : null}
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>

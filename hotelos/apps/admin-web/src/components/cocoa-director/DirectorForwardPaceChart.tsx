@@ -30,8 +30,7 @@
 
 import { useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { CocoaCard } from "../cocoa/CocoaCard";
-import { CocoaEmptyState } from "../cocoa-empty-state/CocoaEmptyState";
-import { EmptyStateBox } from "../cocoa-illustrations";
+import { CocoaState } from "../cocoa/CocoaState";
 import { MIN_LINE_WIDTH, lineViewBoxWidth } from "../cocoa/CocoaChart";
 import { LINE_DEFAULT_WIDTH, LINE_PADDING, buildPathD, formatChartValue, formatYTick, lineGeometry } from "../cocoa/cocoa-chart-math";
 import { useElementWidth } from "../cocoa/cocoa-viewport";
@@ -198,7 +197,7 @@ export function DirectorForwardPaceChart({ data, days = 30, valueLabel = "Ocupac
   if (slice.length === 0 || !geometry) {
     return (
       <CocoaCard variant="bordered" padding="md">
-        <CocoaEmptyState illustration={<EmptyStateBox tone="accent" size={160} />} title="Sin datos de pickup todavía" />
+        <CocoaState kind="empty" illustration="box" title="Sin datos de pickup todavía" />
       </CocoaCard>
     );
   }

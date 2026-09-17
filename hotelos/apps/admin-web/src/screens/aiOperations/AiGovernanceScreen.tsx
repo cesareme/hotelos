@@ -1102,9 +1102,9 @@ const VIEWS: Array<{ value: TabId; label: string }> = [
   { value: "cost", label: "Coste" }
 ];
 
-export function AiGovernanceScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
-  const hosted = useTabHost() !== null || embedded;
+export function AiGovernanceScreen() {
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1.
+  const hosted = useTabHost() !== null;
   const [tab, setTab] = useState<TabId>("policies");
   const { showToast } = useToast();
   const notify = useCallback<Notify>((message, variant = "success") => showToast(message, { variant }), [showToast]);

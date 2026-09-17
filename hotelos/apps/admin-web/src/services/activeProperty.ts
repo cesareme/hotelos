@@ -39,7 +39,7 @@ export const ACTIVE_PROPERTY_EVENT = "hotelos-active-property-changed";
  */
 export const ACTIVE_PROPERTY_INVALID_EVENT = "hotelos-active-property-invalid";
 
-/** Asks the mounted property switcher (Cocoa toolbar or legacy TopBar) to open. */
+/** Asks the mounted property switcher (Cocoa toolbar of the shell) to open. */
 export const OPEN_PROPERTY_SWITCHER_EVENT = "hotelos-open-property-switcher";
 
 /** Message of the opaque tenancy 404 emitted by the API preHandler (server.ts grantPropertyAccess). */

@@ -1,0 +1,156 @@
+// Cocoa 22 · ola 11 · lote api-datos (qa#17): the public API reference reads
+// in Spanish. The manifest is built with the real service (no database); the
+// assertions compute their expectations from the manifest instead of pinning
+// endpoint counts, so a new route never breaks them.
+// Run from apps/api with
+//   node --import tsx --test src/modules/developer/__tests__/api-reference.test.mts
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { routePermissionManifest } from "../../../security/route-permissions.js";
+import { ACTION_LABELS, SEGMENT_LABELS, SINGLETON_LABELS, buildApiReference, describeEndpoint, pluralizePhrase, resourceLabel } from "../api-reference.service.js";
+
+const reference = buildApiReference();
+const endpoints = reference.categories.flatMap((group) => group.endpoints);
+
+/** Effective last segment of a path: the resource before a trailing `:param`. */
+function effectiveLastSegment(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  const last = parts[parts.length - 1] ?? "";
+  return last.startsWith(":") ? (parts[parts.length - 2] ?? "") : last;
+}
+
+describe("api-reference · manifest counters", () => {
+  it("lists every manifest endpoint once and byMethod (with PUT) adds up to totalEndpoints", () => {
+    assert.equal(reference.totalEndpoints, routePermissionManifest.length);
+    assert.equal(endpoints.length, reference.totalEndpoints);
+    const sum = Object.values(reference.byMethod).reduce((total, count) => total + count, 0);
+    assert.equal(sum, reference.totalEndpoints, `byMethod ${JSON.stringify(reference.byMethod)} no suma ${reference.totalEndpoints}`);
+    assert.equal(reference.byMethod.PUT, routePermissionManifest.filter((route) => route.method === "PUT").length);
+    assert.ok(reference.byMethod.PUT >= 1, "el manifest declara rutas PUT");
+  });
+});
+
+describe("api-reference · descriptions in Spanish (qa#17)", () => {
+  it("never echoes «METHOD /path» and never shows a route parameter", () => {
+    const echoes = endpoints.filter((endpoint) => /^[A-Z]+ \//.test(endpoint.description));
+    assert.deepEqual(echoes.map((endpoint) => `${endpoint.method} ${endpoint.path}`), []);
+    const withParams = endpoints.filter((endpoint) => /:[A-Za-z]/.test(endpoint.description));
+    assert.deepEqual(withParams.map((endpoint) => `${endpoint.method} ${endpoint.path} → ${endpoint.description}`), []);
+  });
+
+  it("every description is a sentence: capitalised, ends with a period, no «de el»", () => {
+    for (const endpoint of endpoints) {
+      assert.match(endpoint.description, /^[A-ZÁÉÍÓÚ«].*\.$/, `${endpoint.method} ${endpoint.path} → «${endpoint.description}»`);
+      assert.doesNotMatch(endpoint.description, /\bde el\b/, `${endpoint.method} ${endpoint.path} → «${endpoint.description}»`);
+    }
+  });
+
+  it("at least 95 % of the descriptions carry none of the 30 most frequent English segments", () => {
+    const frequency = new Map<string, number>();
+    for (const route of routePermissionManifest) {
+      const segment = effectiveLastSegment(route.path);
+      if (segment) frequency.set(segment, (frequency.get(segment) ?? 0) + 1);
+    }
+    const blacklist = [...frequency.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 30)
+      .map(([segment]) => new RegExp(`\\b${segment.replace(/-/g, " ")}\\b`, "i"));
+    const leaking = endpoints.filter((endpoint) => blacklist.some((pattern) => pattern.test(endpoint.description)));
+    const share = leaking.length / endpoints.length;
+    assert.ok(share <= 0.05, `${leaking.length}/${endpoints.length} descripciones con segmento inglés: ${leaking.slice(0, 5).map((e) => e.description).join(" · ")}`);
+  });
+
+  it("translates at least 95 % of the effective last segments (eco ≤ 5 %)", () => {
+    const untranslated = routePermissionManifest.filter((route) => {
+      const segment = effectiveLastSegment(route.path);
+      return segment !== "" && !resourceLabel(segment).translated && !(segment in ACTION_LABELS);
+    });
+    assert.ok(untranslated.length / routePermissionManifest.length <= 0.05, `${untranslated.length} rutas sin traducir: ${untranslated.slice(0, 8).map((r) => r.path).join(", ")}`);
+  });
+
+  it("fixed cases: list, detail, PUT, token parameter and specific actions", () => {
+    assert.equal(describeEndpoint("GET", "/reservations"), "Listar reservas.");
+    assert.equal(describeEndpoint("GET", "/reservations/:id"), "Obtener el detalle de la reserva.");
+    assert.equal(describeEndpoint("GET", "/guests/:id"), "Obtener el detalle del huésped.");
+    assert.equal(describeEndpoint("POST", "/reservations"), "Crear o registrar una reserva.");
+    assert.equal(describeEndpoint("PATCH", "/reservations/:id"), "Actualizar la reserva.");
+    assert.equal(describeEndpoint("DELETE", "/webhooks/subscriptions/:id"), "Eliminar la suscripción.");
+    assert.ok(describeEndpoint("PUT", "/fiscal/vat-settings").startsWith("Sustituir"));
+    assert.equal(describeEndpoint("PUT", "/fiscal/vat-settings"), "Sustituir los ajustes del IVA.");
+    assert.equal(describeEndpoint("PUT", "/backoffice/properties/:propertyId/taxes/rates"), "Sustituir las tarifas.");
+    const invitation = describeEndpoint("GET", "/auth/invitations/:token");
+    assert.ok(!invitation.includes(":token"), invitation);
+    assert.equal(invitation, "Obtener el detalle de la invitación.");
+    assert.equal(describeEndpoint("GET", "/reservations/:id/folio"), "Obtener el folio de la reserva.");
+    assert.equal(describeEndpoint("POST", "/reservations/:id/cancel"), "Cancelar la reserva (aplica política de cancelación).");
+    assert.equal(describeEndpoint("POST", "/invoices/:id/cancel"), "Cancelar la factura.");
+    assert.equal(describeEndpoint("POST", "/reservations/:id/no-show"), "Marcar la reserva como no presentado.");
+    assert.match(describeEndpoint("POST", "/reservations/:id/check-out"), /tarea de limpieza de salida/);
+    assert.match(describeEndpoint("POST", "/developer/apps/:appId/rotate-secret"), /aplicación de desarrollador/);
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/housekeeping-settings"), "Obtener los ajustes de limpieza.");
+    assert.equal(describeEndpoint("POST", "/channel-manager/channels/:channelId/ingest"), "Cargar los datos del canal.");
+  });
+
+  it("ola 11 · R6: the segments that still echoed English read in Spanish and a DELETE on a match undoes it", () => {
+    assert.equal(describeEndpoint("DELETE", "/banking/lines/:bankLineId/match"), "Deshacer la conciliación de la línea.");
+    assert.equal(describeEndpoint("DELETE", "/treasury/bank-lines/:bankLineId/reconcile"), "Deshacer la conciliación de la línea bancaria.");
+    assert.equal(describeEndpoint("POST", "/treasury/bank-lines/:bankLineId/reconcile"), "Conciliar la línea bancaria.");
+    assert.equal(describeEndpoint("GET", "/treasury/bank-lines/:bankLineId/suggestions"), "Listar sugerencias de la línea bancaria.");
+    assert.equal(describeEndpoint("POST", "/commissions/accrue"), "Devengar las comisiones.");
+    assert.equal(describeEndpoint("GET", "/accounting/usali/compare"), "Comparar el informe USALI.");
+    assert.equal(describeEndpoint("POST", "/mobile-keys/:serial/revoke"), "Revocar la llave móvil.");
+    assert.equal(describeEndpoint("POST", "/invoices/:id/tbai/submit"), "Enviar la factura a TicketBAI.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/tbai/chain/:territory/verify"), "Verificar la cadena de TicketBAI.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/banking/csb43/import"), "Importar el extracto CSB43.");
+    assert.equal(describeEndpoint("POST", "/banking/iban/validate"), "Validar el IBAN.");
+    assert.equal(describeEndpoint("POST", "/onboarding/projects/:projectId/ai/analyze"), "Analizar el proyecto con IA.");
+    assert.equal(describeEndpoint("POST", "/onboarding/projects/:projectId/room-walk/parse"), "Interpretar el recorrido de habitaciones.");
+    assert.equal(describeEndpoint("POST", "/revenue/properties/:propertyId/export-center/generate"), "Generar la exportación.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/email/ingest"), "Cargar los datos del correo.");
+    assert.equal(describeEndpoint("POST", "/channel-manager/parity/check"), "Comprobar la paridad de tarifas.");
+    assert.equal(describeEndpoint("GET", "/backoffice/properties/:propertyId/property-map/export"), "Exportar el mapa de la propiedad.");
+    assert.equal(describeEndpoint("POST", "/offline/sync"), "Sincronizar los cambios sin conexión.");
+    assert.equal(describeEndpoint("POST", "/folio-lines/:lineId/transfer"), "Transferir la línea de folio.");
+    assert.equal(describeEndpoint("POST", "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/submit"), "Enviar el lote.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/mapper/apply"), "Aplicar el mapeador.");
+    assert.equal(describeEndpoint("POST", "/ai/confirmations/:confirmationId/execute"), "Ejecutar la confirmación.");
+    // No description of the manifest echoes a raw (untranslated) segment of its own path any more,
+    // except «marketplace» and «OAuth», which are Spanish usage.
+    const echo = routePermissionManifest.filter((route) => {
+      const description = describeEndpoint(route.method, route.path);
+      return route.path.split("/").filter((p) => p && !p.startsWith(":")).some((segment) => {
+        if (segment === "marketplace" || segment === "oauth") return false;
+        if (resourceLabel(segment).translated || segment in ACTION_LABELS) return false;
+        return new RegExp(`\\b${segment.replace(/-/g, " ")}\\b`, "i").test(description);
+      });
+    });
+    assert.deepEqual(echo.map((r) => `${r.method} ${r.path}`), []);
+  });
+
+  it("the -settings suffix reads «los ajustes de …» even for an unlisted owner", () => {
+    assert.equal(resourceLabel("housekeeping-settings").singular, "los ajustes de limpieza");
+    const derived = resourceLabel("reservations-settings");
+    assert.equal(derived.singular, "los ajustes de la reserva");
+    assert.equal(derived.singleton, true);
+  });
+
+  it("pluralises Spanish noun phrases on the head noun and its adjectives", () => {
+    assert.equal(pluralizePhrase("la reserva"), "las reservas");
+    assert.equal(pluralizePhrase("la habitación"), "las habitaciones");
+    assert.equal(pluralizePhrase("la orden de trabajo"), "las órdenes de trabajo");
+    assert.equal(pluralizePhrase("el plan de tarifas"), "los planes de tarifas");
+    assert.equal(pluralizePhrase("el campo personalizado"), "los campos personalizados");
+    assert.equal(pluralizePhrase("el área de mantenimiento"), "las áreas de mantenimiento");
+    assert.equal(pluralizePhrase("el KPI"), "los KPI");
+    assert.equal(pluralizePhrase("los ajustes"), "los ajustes");
+  });
+
+  it("dictionary hygiene: every label starts with an article and no segment is both singleton and countable", () => {
+    for (const [segment, label] of [...Object.entries(SEGMENT_LABELS), ...Object.entries(SINGLETON_LABELS)]) {
+      assert.match(label, /^(el|la|los|las) /, `${segment} → «${label}»`);
+      assert.doesNotMatch(label, /[A-Z]{2,}_/, `${segment} → «${label}» no debe llevar claves de entorno`);
+    }
+    const overlap = Object.keys(SEGMENT_LABELS).filter((segment) => segment in SINGLETON_LABELS);
+    assert.deepEqual(overlap, []);
+  });
+});

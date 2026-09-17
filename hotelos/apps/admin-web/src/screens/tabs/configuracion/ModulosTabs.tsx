@@ -15,11 +15,10 @@
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
-import { embed } from "../tab-helpers";
 
 export const loaders: TabLoaders = {
   ModuleManager: () => import("../../ModuleManager").then((m) => ({ default: m.ModuleManager })),
-  ModuleHealthCenter: () => import("../../ModuleHealthCenter").then((m) => embed(m.ModuleHealthCenter)),
+  ModuleHealthCenter: () => import("../../ModuleHealthCenter").then((m) => ({ default: m.ModuleHealthCenter })),
   MarketplaceCatalog: () => import("../../marketplace/MarketplaceCatalogScreen").then((m) => ({ default: m.MarketplaceCatalogScreen }))
 };
 

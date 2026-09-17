@@ -12,6 +12,7 @@ const src = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.
 
 const layout = src("layouts/BackOfficeLayout.tsx");
 const sidebar = src("navigation/Sidebar.tsx");
+const shellSheet = src("styles/cocoa-22-shell.css");
 const provider = src("providers/CocoaGlobalProvider.tsx");
 const sheet = src("components/cocoa-global/CocoaPreferencesSheet.tsx");
 const login = src("screens/auth/LoginScreen.tsx");
@@ -97,9 +98,10 @@ describe("§2 tokens · no literal colours, no numeric z-index in the shell", ()
     assert.match(layout, /background: "var\(--cocoa-warning-bg\)"/);
   });
 
-  it("the sidebar skin and the layout chrome consume --cocoa-* tokens only (no Aurora --ink/--line/--surface/--accent)", () => {
-    const sidebarCss = sidebar.slice(sidebar.indexOf("const SIDEBAR_CSS"), sidebar.indexOf("`;", sidebar.indexOf("const SIDEBAR_CSS")));
-    assert.doesNotMatch(sidebarCss, /var\(--(?:ink|line|surface|accent|radius|space|shadow|duration|ease)\b[^)]*\)/);
+  it("the shell sheet (sidebar skin + layout chrome) and the layout consume --cocoa-* tokens only (no Aurora --ink/--line/--surface/--accent)", () => {
+    assert.doesNotMatch(shellSheet, /var\(--(?:ink|line|surface|accent|radius|space|shadow|duration|ease|sidebar-w|topbar-h)\b[^)]*\)/);
+    assert.doesNotMatch(sidebar, /<style\b|SIDEBAR_CSS/, "R11: the sidebar injects no inline style element");
+    assert.doesNotMatch(layout, /<style\b|LAYOUT_CSS/, "R11: the layout injects no inline style element");
     assert.doesNotMatch(layout, /var\(--(?:ink|line|surface|radius|space|shadow)\b/);
   });
 });
@@ -130,8 +132,8 @@ describe("§3.1 shell · toolbar controls are CocoaButtons with tap targets", ()
     assert.match(layout, /data-cocoa="toolbar" data-variant="window"/);
     assert.match(layout, /zIndex: "var\(--cocoa-z-toolbar\)"/);
     assert.match(layout, /paddingTop: "env\(safe-area-inset-top\)"/);
-    assert.match(layout, /\.cocoa-shell > \.bo-sidebar \{ z-index: var\(--cocoa-z-sidebar\);/);
-    assert.match(layout, /\.cocoa-shell > \.bo-scrim \{ z-index: calc\(var\(--cocoa-z-sidebar\) - 1\); background: var\(--cocoa-scrim\);/);
+    assert.match(shellSheet, /\.cocoa-shell > \.c22-sidebar \{ z-index: var\(--cocoa-z-sidebar\);/);
+    assert.match(shellSheet, /\.cocoa-shell > \.c22-scrim \{ z-index: calc\(var\(--cocoa-z-sidebar\) - 1\); background: var\(--cocoa-scrim\);/);
     assert.match(layout, /boxShadow: "var\(--cocoa-shadow-popover\)"/, "dropdown menus use the popover shadow");
   });
 });

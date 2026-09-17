@@ -205,33 +205,41 @@ const preStyle: CSSProperties = {
   borderRadius: "var(--cocoa-radius-md)",
   color: "var(--cocoa-label)",
   overflowX: "auto",
-  whiteSpace: "pre",
-  tabSize: 2
+  whiteSpace: "pre"
 };
 
-const captionStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-caption)",
-  lineHeight: "var(--cocoa-lh-caption)",
-  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
-  letterSpacing: "var(--cocoa-tracking-wide)",
-  textTransform: "uppercase",
-  color: "var(--cocoa-label-secondary)"
-};
+/** Name of a token without its `--cocoa-` prefix: the guide never paints anything outside the namespace, so its style objects spell `var(--cocoa-…)` in full. */
+function tokenSuffix(token: string): string {
+  return token.replace(/^--cocoa-/, "");
+}
+
+/** `<ul>` without bullets nor margins (a list the section paints as rows). */
+const listResetStyle: CSSProperties = { listStyle: "none", margin: 0, padding: 0 };
+
+/** Row of such a list: 8 px rhythm and a hairline. */
+const listRowStyle: CSSProperties = { padding: "var(--cocoa-space-2) 0", borderBottom: "1px solid var(--cocoa-separator)" };
+
+/** Dashed frame around a demo that must keep its own padding (the toolbar). */
+const dashedFrameStyle: CSSProperties = { border: "1px dashed var(--cocoa-separator)", borderRadius: "var(--cocoa-radius-md)" };
+
+/** Accent bar of the spacing scale; the demo spreads it and sets the width from the token (layout only). */
+const spaceBarStyle: CSSProperties = { height: 12, background: "var(--cocoa-accent)", borderRadius: "var(--cocoa-radius-sm)", flexShrink: 0 };
+
+/** Swatch of a radius token on the content surface. */
+function radiusSwatchStyle(token: string): CSSProperties {
+  return { width: 56, height: 40, background: "var(--cocoa-background-content)", boxShadow: "var(--cocoa-shadow-control)", border: "1px solid var(--cocoa-separator)", borderRadius: `var(--cocoa-${tokenSuffix(token)})` };
+}
+
+/** Swatch of a shadow token on the content surface. */
+function shadowSwatchStyle(token: string): CSSProperties {
+  return { height: 72, borderRadius: "var(--cocoa-radius-lg)", background: "var(--cocoa-background-content)", boxShadow: `var(--cocoa-${tokenSuffix(token)})` };
+}
 
 const secondaryTextStyle: CSSProperties = {
   margin: 0,
   fontSize: "var(--cocoa-fs-callout)",
   lineHeight: "var(--cocoa-lh-callout)",
   color: "var(--cocoa-label-secondary)"
-};
-
-const swatchStyle: CSSProperties = {
-  display: "inline-block",
-  width: 28,
-  height: 20,
-  borderRadius: "var(--cocoa-radius-sm)",
-  boxShadow: "inset 0 0 0 1px var(--cocoa-separator)",
-  flexShrink: 0
 };
 
 const demoBoxStyle: CSSProperties = {
@@ -246,9 +254,13 @@ const demoBoxStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-callout)"
 };
 
-/** Caption label of every block (10 px, uppercase, secondary). */
+/** Caption label of every block (`.cocoa-caption`: 10 px, uppercase, secondary). */
 function Caption({ children, minWidth }: { children: ReactNode; minWidth?: number }) {
-  return <span style={minWidth ? { ...captionStyle, minWidth } : captionStyle}>{children}</span>;
+  return (
+    <span className="cocoa-caption" style={{ minWidth }}>
+      {children}
+    </span>
+  );
 }
 
 /** Secondary text (callout size); `as="span"` for inline uses. */
@@ -274,9 +286,14 @@ function Mono({ children, minWidth, tertiary = false, wrap = false }: { children
   return <code style={style}>{children}</code>;
 }
 
+/** Variant of `demoBoxStyle`: `surface` paints it on content, `fill` stretches it inside its cell. */
+function demoBoxStyleFor(surface: boolean, fill: boolean): CSSProperties {
+  return { ...demoBoxStyle, background: surface ? "var(--cocoa-background-content)" : undefined, flex: fill ? "1 1 auto" : undefined };
+}
+
 /** Dashed placeholder of the grid demos; `surface` paints it on content, `fill` stretches it inside its cell. */
 function DemoBox({ children, surface = false, fill = false }: { children: ReactNode; surface?: boolean; fill?: boolean }) {
-  return <div style={{ ...demoBoxStyle, background: surface ? "var(--cocoa-background-content)" : undefined, flex: fill ? "1 1 auto" : undefined }}>{children}</div>;
+  return <div style={demoBoxStyleFor(surface, fill)}>{children}</div>;
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -328,11 +345,22 @@ function CodeSample({ code, label = "Código de ejemplo" }: { code: string; labe
   );
 }
 
+// The swatch paints the DECLARED light / dark value of a token read from the
+// CSSOM (a string the design system owns, never a literal of this file), which
+// no class or token reference can express while the other theme is active. The
+// colour travels as the `--c22-guide-swatch` custom property that
+// `.c22-guide-swatch` (styles/cocoa-22-guide.css) paints as its background,
+// written from a named style object: rule 6 admits custom properties there and
+// never a colour inside an inline object literal (COCOA-22.md §9).
+function swatchStyleFor(value: string | null, fallbackToken: string): CSSProperties {
+  return { "--c22-guide-swatch": value ?? `var(${fallbackToken})` } as CSSProperties;
+}
+
 function Swatch({ value, fallbackToken }: { value: string | null; fallbackToken: string }) {
   const isReference = value !== null && /^(var|color-mix)\(/.test(value);
   return (
     <span className="cocoa-cluster" data-gap="2">
-      <span aria-hidden="true" style={{ ...swatchStyle, background: value ?? `var(${fallbackToken})` }} />
+      <span aria-hidden="true" className="c22-guide-swatch" style={swatchStyleFor(value, fallbackToken)} />
       <Mono>{value ?? "—"}</Mono>
       {isReference ? <CocoaBadge tone="neutral" size="small">ref.</CocoaBadge> : null}
     </span>
@@ -501,7 +529,7 @@ const COLOUR_TOKENS: TokenRow[] = [
 const COLOUR_TOKEN_NAMES = COLOUR_TOKENS.map((row) => row.token);
 
 const COLOUR_SAMPLE = `// Nunca un color literal en pantallas: todo sale de var(--cocoa-*)
-<span style={{ color: "var(--cocoa-label-secondary)" }}>Subtítulo</span>
+<span className="cocoa-note">Subtítulo</span>            // secundario por clase (.cocoa-note / .cocoa-caption), nunca un color en un estilo en línea
 <CocoaBadge tone="success" variant="tinted">Confirmada</CocoaBadge>
 // Texto de tono ≤ 13 px → tinta AA: var(--cocoa-tone-success-text)`;
 
@@ -591,11 +619,32 @@ const TYPE_SCALE: TypeRow[] = [
 
 const TYPE_TOKEN_NAMES = Array.from(new Set(TYPE_SCALE.flatMap((row) => [row.fs, row.lh, row.weight, row.tracking])));
 
-const TYPE_SAMPLE = `<h3 style={{ font: "var(--cocoa-fw-semibold) var(--cocoa-fs-title-3)/var(--cocoa-lh-title-3) var(--cocoa-font-display)", letterSpacing: "var(--cocoa-tracking-tight)" }}>
-  Pace próximos 30 días
-</h3>
+/** Live specimen of a row of the scale: every metric is a `--cocoa-*` token of the row. */
+function typeSpecimenStyle(row: TypeRow): CSSProperties {
+  return {
+    flex: "1 1 240px",
+    minWidth: 0,
+    fontFamily: row.display ? "var(--cocoa-font-display)" : "var(--cocoa-font)",
+    fontSize: `var(--cocoa-${tokenSuffix(row.fs)})`,
+    lineHeight: `var(--cocoa-${tokenSuffix(row.lh)})`,
+    fontWeight: `var(--cocoa-${tokenSuffix(row.weight)})` as CSSProperties["fontWeight"],
+    letterSpacing: `var(--cocoa-${tokenSuffix(row.tracking)})`,
+    color: "var(--cocoa-label)",
+    overflowWrap: "anywhere"
+  };
+}
+
+/** Specimen text: figures for the tabular rows; the caption row is uppercase by content (no text-transform in a style). */
+function typeSpecimenText(row: TypeRow): string {
+  const text = row.tabular ? `${percent(67.4)} · ${money(1234.5)}` : "Mi día · Rías Altas";
+  return row.uppercase ? text.toUpperCase() : text;
+}
+
+const TYPE_SAMPLE = `// Objeto con nombre y solo valores del sistema (regla 6): nunca font ni color en un literal de estilo en línea
+const titleStyle: CSSProperties = { font: "var(--cocoa-fw-semibold) var(--cocoa-fs-title-3)/var(--cocoa-lh-title-3) var(--cocoa-font-display)", letterSpacing: "var(--cocoa-tracking-tight)" };
+<h3 style={titleStyle}>Pace próximos 30 días</h3>
 <span className="cocoa-tabular">{money(1234.5)}</span>   // "1.234,50 €" · lib/format
-<span style={captionStyle}>Ocupación</span>               // 10 px 600 uppercase +0,012em`;
+<span className="cocoa-caption">Ocupación</span>          // 10 px 600 uppercase +0,012em`;
 
 function TypographySection() {
   const version = useThemeVersion();
@@ -604,26 +653,12 @@ function TypographySection() {
   return (
     <CocoaSection id="guia-tokens-tipografia" headingLevel={2} title="Tokens · Tipografía" meta="Inter Variable · cifras tabulares · formato es-ES vía lib/format">
       <div className="cocoa-stack" data-gap="4">
-        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column" }}>
+        <ul style={{ ...listResetStyle, display: "flex", flexDirection: "column" }}>
           {TYPE_SCALE.map((row) => (
-            <li key={row.name} className="cocoa-row" data-align="baseline" data-gap="4" style={{ padding: "var(--cocoa-space-2) 0", borderBottom: "1px solid var(--cocoa-separator)" }}>
+            <li key={row.name} className="cocoa-row" data-align="baseline" data-gap="4" style={listRowStyle}>
               <Caption minWidth={96}>{row.name}</Caption>
-              <span
-                className={row.tabular ? "cocoa-tabular" : undefined}
-                style={{
-                  flex: "1 1 240px",
-                  minWidth: 0,
-                  fontFamily: row.display ? "var(--cocoa-font-display)" : "var(--cocoa-font)",
-                  fontSize: `var(${row.fs})`,
-                  lineHeight: `var(${row.lh})`,
-                  fontWeight: `var(${row.weight})` as CSSProperties["fontWeight"],
-                  letterSpacing: `var(${row.tracking})`,
-                  textTransform: row.uppercase ? "uppercase" : undefined,
-                  color: "var(--cocoa-label)",
-                  overflowWrap: "anywhere"
-                }}
-              >
-                {row.tabular ? `${percent(67.4)} · ${money(1234.5)}` : "Mi día · Rías Altas"}
+              <span className={row.tabular ? "cocoa-tabular" : undefined} style={typeSpecimenStyle(row)}>
+                {typeSpecimenText(row)}
               </span>
               <Note as="span" flex="0 1 auto">
                 {row.use} · <Mono>{valueOf(row.fs)}</Mono> / <Mono>{valueOf(row.lh)}</Mono> · {valueOf(row.weight)} · {valueOf(row.tracking)}
@@ -683,7 +718,7 @@ function SpacingSection() {
             {SPACE_TOKENS.map((token) => (
               <div key={token} className="cocoa-row" data-gap="3" data-wrap="nowrap">
                 <Mono minWidth={150}>{token}</Mono>
-                <span aria-hidden="true" style={{ height: 12, width: `var(${token})`, background: "var(--cocoa-accent)", borderRadius: "var(--cocoa-radius-sm)", flexShrink: 0 }} />
+                <span aria-hidden="true" style={{ ...spaceBarStyle, width: `var(${token})` }} />
                 <Note as="span">{valueOf(token)}</Note>
               </div>
             ))}
@@ -696,7 +731,7 @@ function SpacingSection() {
               <div className="cocoa-row" data-gap="4">
                 {RADIUS_TOKENS.map((token) => (
                   <div key={token} className="cocoa-stack" data-gap="1" style={{ alignItems: "center" }}>
-                    <span aria-hidden="true" style={{ width: 56, height: 40, background: "var(--cocoa-background-content)", boxShadow: "var(--cocoa-shadow-control)", border: "1px solid var(--cocoa-separator)", borderRadius: `var(${token})` }} />
+                    <span aria-hidden="true" style={radiusSwatchStyle(token)} />
                     <Mono>{token.replace("--cocoa-radius-", "")}</Mono>
                     <Note as="span">{valueOf(token)}</Note>
                   </div>
@@ -732,7 +767,7 @@ function ShadowsSection() {
         <div className="cocoa-row" data-align="start" data-gap="4">
           {SHADOW_TOKENS.map((row) => (
             <div key={row.token} className="cocoa-stack" data-gap="2" style={{ flex: "1 1 160px", maxWidth: 240 }}>
-              <div aria-hidden="true" style={{ height: 72, borderRadius: "var(--cocoa-radius-lg)", background: "var(--cocoa-background-content)", boxShadow: `var(${row.token})` }} />
+              <div aria-hidden="true" style={shadowSwatchStyle(row.token)} />
               <Mono>{row.token.replace("--cocoa-shadow-", "shadow-")}</Mono>
               <Note as="span">{row.use}</Note>
               <Mono tertiary wrap>{declarations.get(row.token)?.computed || "—"}</Mono>
@@ -1377,13 +1412,13 @@ function CardsSection() {
               }
               footer={<Note as="span">Pie de sección: totales o enlace secundario.</Note>}
             >
-              <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              <ul style={listResetStyle}>
                 {[
                   ["Llegadas", number(23)],
                   ["Salidas", number(19)],
                   ["En casa", number(64)]
                 ].map(([label, value]) => (
-                  <li key={label} className="cocoa-row" data-justify="between" style={{ padding: "var(--cocoa-space-2) 0", borderBottom: "1px solid var(--cocoa-separator)" }}>
+                  <li key={label} className="cocoa-row" data-justify="between" style={listRowStyle}>
                     <span>{label}</span>
                     <strong className="cocoa-tabular">{value}</strong>
                   </li>
@@ -1393,9 +1428,9 @@ function CardsSection() {
           </CocoaSpan>
           <CocoaSpan cols={6} min={320}>
             <CocoaSection title="Sección con scroll vertical" meta="maxHeight 160" scroll="y" maxHeight={160}>
-              <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              <ul style={listResetStyle}>
                 {Array.from({ length: 12 }, (_, index) => (
-                  <li key={index} className="cocoa-row" data-justify="between" style={{ padding: "var(--cocoa-space-2) 0", borderBottom: "1px solid var(--cocoa-separator)" }}>
+                  <li key={index} className="cocoa-row" data-justify="between" style={listRowStyle}>
                     <span>Anomalía {number(index + 1)}</span>
                     <CocoaBadge tone={index % 4 === 0 ? "danger" : index % 3 === 0 ? "warning" : "neutral"} size="small">
                       {index % 4 === 0 ? "alta" : index % 3 === 0 ? "media" : "baja"}
@@ -1775,7 +1810,7 @@ function TabsSection() {
         <CocoaField label="Nivel de automatización" help="Un CocoaField puede envolver la tira: su etiqueta apunta al tablist (id) y la ayuda llega por aria-describedby.">
           <CocoaSegmentedControl size="small" value={level} onChange={setLevel} options={[{ value: "sugerir", label: "Sugerir" }, { value: "borrador", label: "Borrador" }, { value: "auto", label: "Automático" }]} aria-label="Nivel de automatización de ejemplo" />
         </CocoaField>
-        <div style={{ border: "1px dashed var(--cocoa-separator)", borderRadius: "var(--cocoa-radius-md)" }}>
+        <div style={dashedFrameStyle}>
           <CocoaToolbar
             variant="content"
             aria-label="Filtros de ejemplo"
@@ -1859,7 +1894,7 @@ function OverlaysSection() {
     }, 700);
   };
   return (
-    <CocoaSection id="guia-capas" headingLevel={2} title="Drawer, diálogo, sheet y popover" meta="Focus trap, Esc, scrim por token, scroll bloqueado; nunca un position: fixed propio">
+    <CocoaSection id="guia-capas" headingLevel={2} title="Drawer, diálogo, sheet y popover" meta="Focus trap, Esc, scrim por token, scroll bloqueado; nunca un posicionamiento fixed propio">
       <div className="cocoa-stack" data-gap="4">
         <div className="cocoa-row" data-gap="3">
           <Caption minWidth={72}>drawer</Caption>
@@ -2285,7 +2320,7 @@ const CHECKLIST: ChecklistItem[] = [
   { id: "r6", scope: "contrato", rule: "style={} solo de layout y acotado", detail: "≤ 25 (dashboard) · ≤ 15 (lista / detalle / formulario) · ≤ 40 (calendario / workspace); solo display, gap, flex, grid, min/max, margin, padding, overflow, position" },
   { id: "r7", scope: "contrato", rule: "Cabecera obligatoria", detail: "CocoaPage (o CocoaPageHeader / HostedHead / useTabHost en pantallas alojadas)" },
   { id: "r8", scope: "contrato", rule: "0 encabezados h1 crudos", detail: "El h1 lo pinta CocoaPageHeader; uno por página" },
-  { id: "r9", scope: "contrato", rule: "0 position: fixed ni zIndex numérico", detail: "Drawer, diálogo, toast y action bar consumen --cocoa-z-*" },
+  { id: "r9", scope: "contrato", rule: "0 posicionamiento fixed ni zIndex numérico", detail: "Drawer, diálogo, toast y action bar consumen --cocoa-z-*" },
   { id: "r10", scope: "contrato", rule: "0 emoji en JSX", detail: "Iconos de cocoa-icons con aria-hidden + texto" },
   { id: "r11", scope: "contrato", rule: "0 transition: all · 0 animation infinite", detail: "Excepciones: shimmer del skeleton y spinner del botón" },
   { id: "r12", scope: "contrato", rule: "Todos los tokens --cocoa-* existen", detail: "Definidos en cocoa-tokens.css o cocoa-base.css" },
@@ -2322,7 +2357,7 @@ function ChecklistSection() {
       render: (item) => <CocoaSwitch size="small" checked={Boolean(done[item.id])} onChange={(value) => setDone((current) => ({ ...current, [item.id]: value }))} aria-label={`Marcar «${item.rule}»`} />
     },
     { key: "scope", label: "Ámbito", width: "110px", hideOnNarrow: true, render: (item) => <CocoaBadge tone={item.scope === "contrato" ? "accent" : "neutral"} size="small">{item.scope === "contrato" ? "Contrato §9" : "Hecho §10"}</CocoaBadge> },
-    { key: "rule", label: "Regla", minWidth: 200, render: (item) => <strong style={{ textDecoration: done[item.id] ? "line-through" : undefined, color: done[item.id] ? "var(--cocoa-label-secondary)" : undefined }}>{item.rule}</strong> },
+    { key: "rule", label: "Regla", minWidth: 200, render: (item) => (done[item.id] ? <s><Note as="span">{item.rule}</Note></s> : <strong>{item.rule}</strong>) },
     { key: "detail", label: "Cómo se cumple", minWidth: 280, render: (item) => <Note as="span">{item.detail}</Note> }
   ];
   return (

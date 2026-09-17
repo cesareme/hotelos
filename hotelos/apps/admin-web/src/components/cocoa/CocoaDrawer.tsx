@@ -1,6 +1,7 @@
-// CocoaDrawer — side panel of Cocoa 22 (COCOA-22.md §3.9; replaces
-// `SidePanel`, the `*Drawer.tsx` built on `position:fixed` and CocoaSheet used
-// as a lateral panel; CocoaSheet stays for import/preview sheets).
+// CocoaDrawer — side panel of Cocoa 22 (COCOA-22.md §3.9; replaces the legacy
+// fixed side panel (retired in ola 11), the `*Drawer.tsx` built on
+// `position:fixed` and CocoaSheet used as a lateral panel; CocoaSheet stays for
+// import/preview sheets).
 //
 //   side="right" (default) / "left": 360 · 480 · 640 px, translateX 400 ms ease-out
 //   side="bottom" and every side on a phone (< 600): full width, max 90 dvh,

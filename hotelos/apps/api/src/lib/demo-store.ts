@@ -2102,7 +2102,7 @@ export const demoStore: DemoStore = {
       checkCode: "legal_profile_complete",
       status: "pass",
       severity: "info",
-      message: "Property legal name, tax ID, address and timezone are configured.",
+      message: "Razón social, NIF, dirección y zona horaria del establecimiento configurados.",
       createdAt: "2026-05-14T08:00:00.000Z",
       updatedAt: "2026-05-14T08:00:00.000Z"
     },
@@ -2112,7 +2112,7 @@ export const demoStore: DemoStore = {
       checkCode: "invoice_sequence_configured",
       status: "fail",
       severity: "blocking",
-      message: "No invoice sequence configured for Compliance Billing.",
+      message: "No hay ninguna serie de facturación configurada para el módulo de facturación.",
       createdAt: "2026-05-14T08:00:00.000Z",
       updatedAt: "2026-05-14T08:00:00.000Z"
     },
@@ -2122,7 +2122,7 @@ export const demoStore: DemoStore = {
       checkCode: "ses_hospedajes_credentials",
       status: "fail",
       severity: "blocking",
-      message: "SES.HOSPEDAJES credentials are missing.",
+      message: "Faltan las credenciales de SES.HOSPEDAJES.",
       createdAt: "2026-05-14T08:00:00.000Z",
       updatedAt: "2026-05-14T08:00:00.000Z"
     },
@@ -2132,7 +2132,7 @@ export const demoStore: DemoStore = {
       checkCode: "room_inventory_exists",
       status: "pass",
       severity: "info",
-      message: "At least one active sellable room exists.",
+      message: "Existe al menos una habitación activa y vendible.",
       createdAt: "2026-05-14T08:00:00.000Z",
       updatedAt: "2026-05-14T08:00:00.000Z"
     }
@@ -2145,7 +2145,7 @@ export const demoStore: DemoStore = {
       checkCode: "ocr_provider_configured",
       status: "needs_configuration",
       severity: "blocking",
-      message: "OCR provider must be configured before assisted ID scan.",
+      message: "Hay que configurar el proveedor de OCR antes del escaneo asistido de documentos.",
       metadataJson: {},
       updatedAt: "2026-05-14T08:00:00.000Z"
     },
@@ -2156,7 +2156,7 @@ export const demoStore: DemoStore = {
       checkCode: "room_inventory_exists",
       status: "ok",
       severity: "info",
-      message: "Room inventory exists.",
+      message: "El inventario de habitaciones existe.",
       metadataJson: {},
       updatedAt: "2026-05-14T08:00:00.000Z"
     }

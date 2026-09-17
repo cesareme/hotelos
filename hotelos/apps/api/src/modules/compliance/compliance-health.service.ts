@@ -13,6 +13,9 @@
 //
 // El endpoint NO devuelve secretos: solo si la variable existe y tiene
 // contenido distinto al placeholder "change-me".
+//
+// Cocoa 22 · ola 11 (qa#14): las notas y motivos se redactan en español sin
+// nombres de variables de entorno ni «sandbox»/«stub»; el front no traduce.
 
 import { existsSync } from "node:fs";
 import { normalizeTaxRegion, resolveVerifactuSoftware, TAX_REGIONS } from "@hotelos/compliance";
@@ -66,10 +69,10 @@ function isPlaceholder(value: string | undefined): boolean {
 
 function checkCert(pathEnv: string | undefined, passEnv: string | undefined): CertStatus {
   if (isPlaceholder(pathEnv)) {
-    return { configured: false, reason: "Variable de path del certificado no configurada." };
+    return { configured: false, reason: "Falta la ruta del certificado." };
   }
   if (isPlaceholder(passEnv)) {
-    return { configured: false, reason: "Passphrase del certificado no configurada." };
+    return { configured: false, reason: "Falta la contraseña del certificado." };
   }
   const exists = existsSync(pathEnv!);
   return { configured: true, certPathExists: exists };
@@ -92,9 +95,9 @@ function getVerifactuHealth(): IntegrationHealth {
   const readyForReal = mode !== "sandbox" && cert.configured && cert.certPathExists && software.ok;
   const notes = [
     mode === "sandbox"
-      ? "Modo sandbox: no se llama a AEAT. Cambia VERIFACTU_MODE=preproduction + cert para validar contra AEAT pre-producción."
+      ? "Modo de pruebas: no se llama a la AEAT. Cambia a preproducción con certificado para validar contra la AEAT de preproducción."
       : null,
-    software.ok ? null : `Bloque SistemaInformatico incompleto: ${software.errors.join(" ")}`
+    software.ok ? null : `Declaración del sistema informático de VeriFactu incompleta: ${software.errors.join(" ")}`
   ].filter((note): note is string => Boolean(note));
   return {
     integration: "verifactu",
@@ -129,8 +132,8 @@ function getSesHospedajesHealth(): IntegrationHealth {
     cert,
     endpoint: endpoints[mode],
     notes: hasBasicAuth
-      ? "Credenciales Basic auth (client_id/secret) presentes. El establecimiento de cada propiedad se comprueba en organization.sesEstablishmentIncomplete."
-      : "Sin credenciales Basic auth — sólo se usa mTLS. Si el MIR las exige, configura SES_HOSPEDAJES_CLIENT_ID/SECRET. El establecimiento de cada propiedad se comprueba en organization.sesEstablishmentIncomplete."
+      ? "Credenciales de acceso básico (usuario y secreto) presentes. Los datos del establecimiento se comprueban por propiedad."
+      : "Sin credenciales de acceso básico: solo se usa el certificado de cliente. Si el Ministerio del Interior las exige, configura el usuario y el secreto de SES.HOSPEDAJES. Los datos del establecimiento se comprueban por propiedad."
   };
 }
 
@@ -157,8 +160,8 @@ function getTbaiHealth(foralPropertyIds: string[]): IntegrationHealth {
     cert,
     endpoint: endpoints[tbaiMode],
     notes: enabled
-      ? `TicketBAI activo: ${foralPropertyIds.length} propiedad(es) con territorio foral (Property.fiscalTerritory).`
-      : "TicketBAI no aplica: ninguna propiedad declara territorio foral (Property.fiscalTerritory = bizkaia | gipuzkoa | araba | navarra)."
+      ? `TicketBAI activo: ${foralPropertyIds.length} propiedad(es) con territorio foral.`
+      : "TicketBAI no aplica: ninguna propiedad declara territorio foral (Bizkaia, Gipuzkoa, Araba o Navarra)."
   };
 }
 

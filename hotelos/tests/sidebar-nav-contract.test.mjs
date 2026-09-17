@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
 const sidebar = read("apps/admin-web/src/navigation/Sidebar.tsx");
+const shellSheet = read("apps/admin-web/src/styles/cocoa-22-shell.css");
 const navTree = read("apps/admin-web/src/navigation/nav-tree.ts");
 const roleTokens = read("apps/admin-web/src/navigation/role-tokens.ts");
 const gateHook = read("apps/admin-web/src/navigation/useEnabledModules.ts");
@@ -73,7 +74,7 @@ describe("Sidebar (L1b) · rendered from the navigation tree", () => {
     assert.match(devMode, /export function useDevMode\(\): boolean/);
     assert.match(devMode, /import \{ DEV_MODE_QUERY_PARAM, DEV_MODE_STORAGE_KEY, isDevModeEnabled \} from "\.\/nav-tree"/);
     assert.match(sidebar, /UI_STATES\.noRole/);
-    assert.match(sidebar, /bo-skeleton/);
+    assert.match(sidebar, /CocoaSkeleton|c22-skeleton/);
     assert.doesNotMatch(sidebar, /localStorage\.(setItem|getItem)/, "«Ver como…» lives in memory (view-as.ts); group toggles go through nav-preferences.ts");
   });
 
@@ -231,13 +232,13 @@ describe("Shell chrome and routing (L1c · fix:admin-web-nav)", () => {
     assert.match(layout, /function CompactToolbar\(/);
     assert.match(layout, /aria-label="Abrir el menú"/);
     assert.match(layout, /aria-controls=\{SIDEBAR_ELEMENT_ID\}/);
-    assert.match(sidebar, /export const SIDEBAR_ELEMENT_ID = "bo-sidebar"/);
+    assert.match(sidebar, /export const SIDEBAR_ELEMENT_ID = "c22-sidebar"/);
     assert.match(sidebar, /id=\{SIDEBAR_ELEMENT_ID\}/);
     assert.match(layout, /const compact = useIsCompactViewport\(\);/);
     assert.match(layout, /sidebar=\{compact \? null : <div className="cocoa-sidebar-host">\{sidebar\}<\/div>\}/);
     assert.match(layout, /collapsibleSidebar=\{!compact\}/);
-    assert.match(layout, /className=\{`bo-scrim\$\{navOpen \? " open" : ""\}`\}/);
-    assert.match(layout, /\.cocoa-shell \.cocoa-sidebar-host \.bo-sidebar \{ position: relative;[^}]*transform: none;/);
+    assert.match(layout, /className=\{`c22-scrim\$\{navOpen \? " open" : ""\}`\}/);
+    assert.match(shellSheet, /\.cocoa-shell \.cocoa-sidebar-host \.c22-sidebar \{ position: relative;[^}]*transform: none;/);
     assert.match(layout, /export const NEW_RESERVATION_SCREEN = "ReservationCreate"/);
     assert.match(layout, /function NewReservationButton\(/);
     assert.match(layout, /<PropertySwitcher compact \/>/);

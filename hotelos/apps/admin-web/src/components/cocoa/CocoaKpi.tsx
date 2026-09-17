@@ -1,6 +1,6 @@
 // CocoaKpi + CocoaKpiStrip + CocoaDelta — the KPI tile of the canon
 // (COCOA-22.md §3.6), its auto-fit strip (§3.4) and the delta chip
-// («▲ 100 % vs LY», §6 «Cifras»). `DirectorKpiTile` becomes a deprecated alias.
+// («▲ 100 % vs LY», §6 «Cifras»). The former director KPI tile alias was retired in ola 11.
 //
 //   ┌─ 3 px tone bar (padding-left 9) ───────────────┐  radius 12 · shadow card · padding 12 · gap 8 · min-height 44
 //   │ OCUPACIÓN            caption 500 uppercase +0.012em secondary

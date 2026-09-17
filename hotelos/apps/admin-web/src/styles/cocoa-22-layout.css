@@ -22,9 +22,6 @@
      .c22-action-bar      sticky bottom action bar; fixed with safe-area < 600
      .c22-toolbar         content toolbar (CocoaToolbar variant="content")
      .c22-scroll-area     wide grids/calendars: x-scroll + sticky first column
-     .gm-grid             LEGACY alias of the canon (inline gridRowStyle):
-                          stacks like .c22-grid until GeneralManagerScreen
-                          moves to CocoaGrid/CocoaSpan (wave 2)
 
    Breakpoints (§5.1): phone < 600 · tablet 600–899 · laptop 900–1199 ·
    desktop ≥ 1200. Layout only: no colours here (tokens carry them).
@@ -284,17 +281,6 @@
   .c22-grid[data-columns="4"] > * { grid-column: auto; }
   .c22-grid[data-columns="6"] > :is(.c22-span-1, .c22-span-2) { grid-column: span 3 / span 3; }
   .c22-grid[data-columns="6"] > :is(.c22-span-3, .c22-span-4, .c22-span-5, .c22-span-6) { grid-column: 1 / -1; }
-
-  /* Legacy canon alias (inline `grid-column: span N`): two columns, wide spans full. */
-  .gm-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-  }
-  .gm-grid > * {
-    grid-column: auto !important;
-  }
-  .gm-grid > :is([style*="span 6"], [style*="span 7"], [style*="span 8"], [style*="span 9"], [style*="span 10"], [style*="span 11"], [style*="span 12"]) {
-    grid-column: 1 / -1 !important;
-  }
 }
 @media (min-width: 600px) and (max-width: 699px) {
   .c22-grid > .c22-min-320 { grid-column: 1 / -1; }
@@ -304,14 +290,12 @@
 @media (max-width: 599px) {
   .c22-grid,
   .cocoa-grid,
-  [data-cocoa="grid"],
-  .gm-grid {
+  [data-cocoa="grid"] {
     grid-template-columns: minmax(0, 1fr) !important;
   }
   .c22-grid > *,
   .cocoa-grid > *,
-  [data-cocoa="grid"] > *,
-  .gm-grid > * {
+  [data-cocoa="grid"] > * {
     grid-column: 1 / -1 !important;
     grid-row: auto !important;
   }

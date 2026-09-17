@@ -80,8 +80,6 @@ const CHAIN_SCOPE_OPTIONS = (Object.keys(CHAIN_SCOPE_LABELS) as VerifactuChainSc
 export interface TenantDetailScreenProps {
   orgId: string;
   onClose?: () => void;
-  /** Kept for the SistemaTabs loader (legacy bridge); the host context decides the header. */
-  embedded?: boolean;
 }
 
 type Tab = "general" | "properties" | "users" | "modules" | "audit";
@@ -195,8 +193,8 @@ const AUDIT_COLUMNS: CocoaTableColumn<Record<string, unknown>>[] = [
   { key: "summary", label: "Resumen", hideOnNarrow: true, render: (row) => getString(row, "summary") || getString(row, "description") || "" }
 ];
 
-export function TenantDetailScreen({ orgId, onClose, embedded = false }: TenantDetailScreenProps) {
-  const hosted = useTabHost() !== null || embedded;
+export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) {
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
 
   const [tenant, setTenant] = useState<TenantDetail | null>(null);

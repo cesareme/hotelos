@@ -4,21 +4,20 @@
 //
 // Read only over GET /compliance/spain/properties/:id/guest-register/settings
 // (routingRules). The rules live on the server as a global policy (no PATCH per
-// tenant): the screen says so instead of faking an editor. The head keeps
-// `pageHead(embedded)` (host context inside the container, CocoaPageHeader
-// standalone; the `embedded` prop is the L1c bridge the tabs contract still
-// asserts); the body is Cocoa 22: a callout and the table of rules.
+// tenant): the screen says so instead of faking an editor. The frame is
+// CocoaPage on the host context (hosted, the container paints eyebrow and H1;
+// the ⌘K command is the page's); the body is Cocoa 22: a callout and the table
+// of rules, whose loading / error / empty states stay inside its section.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { fetchSesSettings } from "../../services/sesApi";
-import { pageHead } from "../tabs/tab-helpers";
 import { useTabHost } from "../tabs/TabHost";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
 import { number, plural } from "../../lib/format";
 import { STATUS_LABELS } from "../../content/actions";
-import { CocoaBadge, CocoaButton, CocoaCallout, CocoaSection, CocoaState, CocoaTable, type CocoaTableColumn } from "../../components/cocoa";
+import { CocoaBadge, CocoaButton, CocoaCallout, CocoaPage, CocoaSection, CocoaState, CocoaTable, type CocoaTableColumn } from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -67,11 +66,9 @@ const COLUMNS: CocoaTableColumn<RoutingRule>[] = [
   }
 ];
 
-export function AuthorityRoutingSettingsScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container the page header belongs to the container: render a section head instead.
-  const Head = pageHead(embedded);
-  const host = useTabHost();
-  const hosted = embedded || host !== null;
+export function AuthorityRoutingSettingsScreen() {
+  // Inside a tab container the page header belongs to the container (CocoaPage reads the host context).
+  const hosted = useTabHost() !== null;
   const [rules, setRules] = useState<RoutingRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -97,23 +94,22 @@ export function AuthorityRoutingSettingsScreen({ embedded = false }: { embedded?
   const showTable = (loading && rules.length === 0 && !error) || rows.length > 0;
 
   return (
-    <div className="cocoa-stack" data-gap="4">
-      <Head
-        eyebrow="Cumplimiento · Registro de viajeros"
-        title="Enrutamiento a autoridades"
-        subtitle={hosted ? undefined : "A qué autoridad se envían los partes de viajeros según país y región."}
-        actions={
-          <>
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("SesHospedajesSettings")}>
-              Conector SES.HOSPEDAJES
-            </CocoaButton>
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("GuestRegisterSettings")}>
-              Ajustes del registro
-            </CocoaButton>
-          </>
-        }
-      />
-
+    <CocoaPage
+      eyebrow="Cumplimiento · Registro de viajeros"
+      title="Enrutamiento a autoridades"
+      subtitle={hosted ? undefined : "A qué autoridad se envían los partes de viajeros según país y región."}
+      actions={
+        <>
+          <CocoaButton variant="plain" size="small" onClick={() => navigateTo("SesHospedajesSettings")}>
+            Conector SES.HOSPEDAJES
+          </CocoaButton>
+          <CocoaButton variant="plain" size="small" onClick={() => navigateTo("GuestRegisterSettings")}>
+            Ajustes del registro
+          </CocoaButton>
+        </>
+      }
+      commands={[{ id: "autoridades-actualizar", label: "Actualizar el enrutamiento", run: () => void load() }]}
+    >
       <CocoaCallout tone="info" title="Política fija, no configurable todavía">
         Las reglas se evalúan de mayor a menor prioridad: la primera regla activa cuyo país y región coinciden con el establecimiento decide la autoridad. La regla
         por defecto para España es SES.HOSPEDAJES (RD 933/2021). Las reglas se gestionan por soporte: contacta con soporte para añadir una autoridad regional.
@@ -135,7 +131,7 @@ export function AuthorityRoutingSettingsScreen({ embedded = false }: { embedded?
           <CocoaTable columns={COLUMNS} rows={rows} rowKey="id" density="compact" caption="Reglas de enrutamiento" aria-label="Reglas de enrutamiento" />
         )}
       </CocoaSection>
-    </div>
+    </CocoaPage>
   );
 }
 

@@ -155,9 +155,9 @@ const WINDOW_OPTIONS = [
 
 // ---- screen ----
 
-export function NotificationsScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Hosted (ComunicacionesTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
-  const hosted = useTabHost() !== null || embedded;
+export function NotificationsScreen() {
+  // Hosted (ComunicacionesTabs): the container paints eyebrow + H1.
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const [tab, setTab] = useState<TabKey>("templates");
   const [busy, setBusy] = useState<string | null>(null);

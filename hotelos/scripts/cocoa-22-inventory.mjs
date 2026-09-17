@@ -103,11 +103,12 @@ function measure(src) {
     colourLiterals: colours.all,
     colourFallbacks: colours.fallback,
     rawH1: count(src, /<h1\b/g),
-    hasCocoaPageHeader: /<CocoaPage\b|<CocoaPageHeader\b|pageHead\(|<HostedHead\b|<Head\b|<NavItemTabs\b/.test(src),
+    // `pageHead(embedded)` (L1c bridge) and its `<Head>` were retired in ola 11 and no longer count as a Cocoa header (mirror of rule 7).
+    hasCocoaPageHeader: /<CocoaPage\b|<CocoaPageHeader\b|<HostedHead\b|<NavItemTabs\b/.test(src),
     usesTabHost: /useTabHost\(/.test(src),
-    usesSplitView: /<CocoaSplitView\b|<SidePanel\b/.test(src),
+    // components/SidePanel.tsx was retired in ola 11: a split workspace is a <CocoaSplitView>.
+    usesSplitView: /<CocoaSplitView\b/.test(src),
     usesStepper: /<CocoaStepper\b/.test(src),
-    usesGmGrid: /gm-grid|spanStyle\(/.test(src),
     emoji: count(src, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu)
   };
 }
@@ -169,8 +170,9 @@ function classify(relPath, src, m) {
 // Files that never paint a page head of their own: dialogs, drawers, the tab
 // containers and the sub-views the contract exempts (mirror of HEADER_EXEMPT
 // in tests/cocoa-22-contract.test.mjs, rule 7) — the «sin cabecera» penalty
-// does not apply to them.
-const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$|operations\/GroupsPickupCard\.tsx$)/;
+// does not apply to them. ModuleSettingsPlaceholder.tsx left the list in
+// ola 11: the placeholder factory paints <CocoaPage> itself.
+const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$|operations\/GroupsPickupCard\.tsx$)/;
 
 function debtPoints(m, headerExempt = false) {
   return Math.round(

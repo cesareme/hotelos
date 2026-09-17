@@ -144,9 +144,9 @@ const MODULE_COLUMNS: CocoaTableColumn<BackOfficeModule>[] = [
   { key: "recommendedNextAction", label: "Acción recomendada", showFrom: "desktop", render: (module) => module.recommendedNextAction ?? EMPTY }
 ];
 
-function ModuleHealthPage({ embedded }: { embedded: boolean }) {
-  // The host context decides the head (CocoaPage reads it); `embedded` is the L1c bridge the loader still passes.
-  const hosted = embedded || useTabHost() !== null;
+function ModuleHealthPage() {
+  // The host context decides the head (CocoaPage reads it).
+  const hosted = useTabHost() !== null;
   const propertyId = useMemo(() => getActivePropertyId(), []);
   const { showToast } = useToast();
   const modulesState = useApiData<BackOfficeModule[]>(`/backoffice/properties/${propertyId}/modules`);
@@ -336,7 +336,7 @@ function ModuleHealthPage({ embedded }: { embedded: boolean }) {
   );
 }
 
-// Bridge of L1c (TabHost.tsx): the loader still passes `embedded`; the page reads the host context.
-export function ModuleHealthCenter({ embedded = false }: { embedded?: boolean } = {}) {
-  return <ModuleHealthPage embedded={embedded} />;
+// The page reads the host context (TabHost.tsx); the loader hands it over as it is.
+export function ModuleHealthCenter() {
+  return <ModuleHealthPage />;
 }

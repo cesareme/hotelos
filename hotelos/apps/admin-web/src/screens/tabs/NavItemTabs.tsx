@@ -22,8 +22,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
 import { CocoaRouteTabs, CocoaTabSkeleton, type CocoaRouteTab } from "../../components/cocoa/CocoaRouteTabs";
 import { CocoaState } from "../../components/cocoa/CocoaState";
-import { ErrorState } from "../../components/States";
-import { errorStateFor } from "../../content/actions";
+import { ACTIONS, errorStateFor } from "../../content/actions";
 import { navigateTo } from "../../lib/navigate";
 import { useNavGate } from "../../navigation/useEnabledModules";
 // Kept apart from the line above: tests/sidebar-nav-contract asserts the gate import literally (L1c).
@@ -93,7 +92,7 @@ export function NavItemTabs(props: NavItemTabsProps) {
         <style>{STRIP_CSS}</style>
         <CocoaPageHeader eyebrow={eyebrow} title={item.label} subtitle={subtitle} actions={actions} />
         {modulesError ? (
-          <ErrorState title={modulesError.title} message={modulesError.message} onRetry={gate.refresh} retryLabel={modulesError.cta} />
+          <CocoaState kind="error" title={modulesError.title} message={modulesError.message} primaryAction={{ label: modulesError.cta ?? ACTIONS.retry, onClick: gate.refresh }} inline />
         ) : null}
         {gate.loading ? (
           <CocoaTabSkeleton />
