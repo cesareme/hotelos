@@ -25,6 +25,11 @@ import { structureRoutePermissions } from "../modules/structure/route-permission
 // /payroll/cost-report (modules/payroll/cost-import.routes.ts). payroll.read /
 // payroll.manage only (never accounting.read), so the remap below is a no-op.
 import { payrollRoutePermissions } from "../modules/payroll/route-permissions.partial.js";
+// Importación masiva de reservas (Tanda 7 · L3): /properties/:propertyId/
+// reservations/imports* (modules/pms/reservation-import.routes.ts). Claves
+// pms.reservation.read / create / modify ya existentes (sin rbac:sync); el
+// remap de accounting.reports.read no las toca.
+import { reservationImportRoutePermissions } from "../modules/pms/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -123,6 +128,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...structureRoutePermissions,
   // Coste de personal importado (Tanda 6c): 7 entries, see modules/payroll/route-permissions.partial.ts.
   ...payrollRoutePermissions,
+  // Importación masiva de reservas (Tanda 7): 6 entradas, ver modules/pms/route-permissions.partial.ts.
+  ...reservationImportRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },

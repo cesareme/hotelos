@@ -14,7 +14,8 @@ describe("Reservas › Detalle · id de la URL", () => {
   });
 
   it("never mistakes a sibling tab or item of the tree for an id", () => {
-    for (const tab of ["lista", "cronograma", "tablero", "nueva"]) {
+    // Tanda 7: «importar» is the Importar tab of Reservas, never a reservation id.
+    for (const tab of ["lista", "cronograma", "tablero", "importar", "nueva"]) {
       assert.equal(reservationIdFromPathname(`/recepcion/reservas/${tab}`), "", tab);
     }
     assert.equal(reservationIdFromPathname("/recepcion/reservas"), "");

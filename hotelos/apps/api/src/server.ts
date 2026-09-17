@@ -94,6 +94,10 @@ import { listSwitchableProperties } from "./modules/structure/legal-entity.servi
 // /payroll/cost-report (modules/payroll/cost-import.routes.ts; permisos en su
 // route-permissions.partial.ts).
 import { registerPayrollCostRoutes } from "./modules/payroll/cost-import.routes.js";
+// Importación masiva de reservas (Tanda 7 · L3): /properties/:propertyId/
+// reservations/imports* (modules/pms/reservation-import.routes.ts; permisos en
+// modules/pms/route-permissions.partial.ts).
+import { registerReservationImportRoutes } from "./modules/pms/reservation-import.routes.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport, parseReportWindow } from "./modules/revenue/forecast.service.js";
 import { getHistoryForecastBoard, parseBoardWindow, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
@@ -2715,6 +2719,10 @@ export async function buildApiServer() {
   // contabilizar el informe de RRHH agregado, revertir lotes e informe
   // centros × meses (GET /payroll/cost-report).
   registerPayrollCostRoutes(app);
+  // Importación masiva de reservas (Tanda 7 · L3): previsualizar, importar,
+  // listar, ver un lote, descargar la plantilla y deshacer
+  // (/properties/:propertyId/reservations/imports*).
+  registerReservationImportRoutes(app); // Importación masiva de reservas (Tanda 7 · L3)
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to

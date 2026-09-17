@@ -11,31 +11,31 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 223,
-    "lines": 90339,
+    "files": 224,
+    "lines": 91375,
     "boClasses": 78,
     "boCard": 26,
     "boPageTitle": 3,
     "rawButtons": 12,
-    "cocoaButtons": 1041,
+    "cocoaButtons": 1052,
     "rawTables": 3,
-    "cocoaTables": 285,
+    "cocoaTables": 289,
     "rawInputs": 4,
-    "cocoaInputs": 1048,
+    "cocoaInputs": 1055,
     "inlineStyles": 801,
     "cocoaCards": 35,
     "colourLiterals": 2,
     "colourFallbacks": 0,
     "rawH1": 6,
     "emoji": 0,
-    "withPageHeader": 196,
-    "withTabHost": 86,
+    "withPageHeader": 197,
+    "withTabHost": 87,
     "debtPoints": 313
   },
   "bySize": {
     "S": 95,
     "M": 105,
-    "L": 20,
+    "L": 21,
     "XL": 3
   },
   "byArchetype": {
@@ -43,7 +43,7 @@
     "lista": 15,
     "detalle": 3,
     "formulario": 19,
-    "asistente": 11,
+    "asistente": 12,
     "workspace": 5,
     "calendario": 6,
     "chat": 1,
@@ -237,13 +237,13 @@
     },
     "recepcion": {
       "label": "Recepción",
-      "files": 18,
-      "lines": 8827,
+      "files": 19,
+      "lines": 9863,
       "debtPoints": 26,
       "sizes": {
         "S": 6,
         "M": 9,
-        "L": 3,
+        "L": 4,
         "XL": 0
       },
       "archetypes": {
@@ -251,7 +251,7 @@
         "workspace": 3,
         "lista": 1,
         "calendario": 3,
-        "asistente": 2,
+        "asistente": 3,
         "contenedor": 4
       }
     },
@@ -6356,6 +6356,45 @@
       "size": "L"
     },
     {
+      "path": "apps/admin-web/src/screens/reservations/ReservationImportScreen.tsx",
+      "name": "ReservationImportScreen",
+      "screenKeys": [
+        "ReservationImportScreen"
+      ],
+      "category": "recepcion",
+      "categories": [
+        "recepcion"
+      ],
+      "archetype": "asistente",
+      "lines": 999,
+      "metrics": {
+        "lines": 999,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 9,
+        "rawTables": 0,
+        "cocoaTables": 4,
+        "rawInputs": 0,
+        "cocoaInputs": 7,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
+    },
+    {
       "path": "apps/admin-web/src/screens/reservations/ReservationsListScreen.tsx",
       "name": "ReservationsListScreen",
       "screenKeys": [
@@ -6366,14 +6405,14 @@
         "recepcion"
       ],
       "archetype": "dashboard",
-      "lines": 502,
+      "lines": 517,
       "metrics": {
-        "lines": 502,
+        "lines": 517,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 3,
+        "cocoaButtons": 4,
         "rawTables": 0,
         "cocoaTables": 2,
         "rawInputs": 0,
@@ -8391,14 +8430,14 @@
       "category": "recepcion",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 47,
+      "lines": 69,
       "metrics": {
-        "lines": 47,
+        "lines": 69,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 1,
+        "cocoaButtons": 2,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,

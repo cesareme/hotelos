@@ -8,6 +8,13 @@ export const CSV_SEPARATOR = ";";
 
 export type CsvCell = string | number | null | undefined;
 
+// Solo escribe valores PROPIOS (plantillas, estados financieros, exportaciones
+// de gestoría): nunca texto de un fichero de terceros. Por eso no neutraliza
+// los inicios de fórmula (`=` `+` `-` `@`): la plantilla oficial de reservas
+// lleva teléfonos «+34 …» que deben llegar tal cual. Lo que sí procede de un
+// fichero ajeno (referencia_externa del informe de importación) se escribe
+// desde apps/admin-web/src/screens/reservations/reservation-import-helpers.ts
+// `csvCell`, que sí lo neutraliza (SEC-T7-02).
 function escapeCsvField(value: CsvCell): string {
   if (value === null || value === undefined) return "";
   const text = typeof value === "number" ? String(value) : value;

@@ -34,7 +34,7 @@ import { guestFullName, pendingGuestIds, reservationGuestLabel } from "./reserva
 import { useTabHost } from "../tabs/TabHost";
 import { navigateTo } from "../../lib/navigate";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
-import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
+import { PlusIcon, UploadIcon } from "../../components/cocoa-icons/ActionIcons";
 import { RESERVATIONS_INSTRUCTIONS } from "../../content/screen-instructions/reservations";
 import { date, money, number } from "../../lib/format";
 import { ACTIONS, FIELD_LABELS, newLabel } from "../../content/actions";
@@ -58,6 +58,13 @@ import {
 } from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+// Tanda 7: «Importar reservas» opens the Importar tab of Reservas (CSV / XLSX wizard).
+const IMPORT_PATH = urlForScreen("ReservationImportScreen") ?? "/recepcion/reservas/importar";
+const IMPORT_LABEL = "Importar reservas";
+
+function openImport() {
+  openTabPath(IMPORT_PATH);
+}
 
 // Rows fetched per page. The API clamps at 500; 100 keeps the first paint
 // light and "Cargar más" walks the cursor for the rest.
@@ -406,12 +413,20 @@ export function ReservationsListScreen() {
       subtitle={hosted ? undefined : "Búsqueda, filtros operativos y acceso al espacio de cada reserva."}
       actions={
         hosted ? undefined : (
-          <CocoaButton variant="filled" tone="accent" icon={<PlusIcon />} onClick={() => navigateTo("ReservationCreate")}>
-            {newReservationLabel}
-          </CocoaButton>
+          <>
+            <CocoaButton variant="bordered" tone="neutral" icon={<UploadIcon />} onClick={openImport}>
+              {IMPORT_LABEL}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" icon={<PlusIcon />} onClick={() => navigateTo("ReservationCreate")}>
+              {newReservationLabel}
+            </CocoaButton>
+          </>
         )
       }
-      commands={[{ id: "reservas-nueva", label: newReservationLabel, run: () => navigateTo("ReservationCreate") }]}
+      commands={[
+        { id: "reservas-nueva", label: newReservationLabel, run: () => navigateTo("ReservationCreate") },
+        { id: "reservas-importar", label: IMPORT_LABEL, run: openImport }
+      ]}
     >
       <CocoaScreenInstructionsCard
         title="Reservas"

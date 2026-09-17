@@ -189,6 +189,7 @@ const SCREEN_COMPONENTS = {
   RoomRackScreen: ReservasTabs,
   ReservationDetailWorkspace: ReservasTabs,
   GuestJourneyWorkspace: ReservasTabs,
+  ReservationImportScreen: ReservasTabs,
   ReservationCreate: NuevaReservaTabs,
   ReservationAgent: NuevaReservaTabs,
   GuestsList: HuespedesTabs,

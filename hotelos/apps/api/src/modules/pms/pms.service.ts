@@ -107,12 +107,45 @@ function daysBetween(fromIso: string, toIso: string): number {
   return Math.round((dateOnly(toIso).getTime() - dateOnly(fromIso).getTime()) / 86_400_000);
 }
 
-/** `YYYY-MM-DD` of "today" in an IANA timezone (UTC when invalid). Mirrors night-audit.service. */
-function todayInTimezone(timezone: string): string {
+/**
+ * `YYYY-MM-DD` of "today" in an IANA timezone (UTC when invalid). Mirrors
+ * night-audit.service. Exported for the reservation importer (Tanda 7), whose
+ * «llegada pasada» frontier must be the same one as the `historical` guard below.
+ */
+export function todayInTimezone(timezone: string): string {
   try {
     return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   } catch {
     return isoDate(new Date());
+  }
+}
+
+/**
+ * Instante UTC de «<fecha> a las HH:MM» en la zona horaria de la propiedad
+ * (Tanda 7 · reservas históricas importadas: `Stay.checkinAt` = llegada 15:00 y
+ * `Stay.checkoutAt` = salida 11:00 hora local). Se calcula el desfase de la zona
+ * en ese instante con Intl y, si la zona no es válida, se toma UTC.
+ */
+function zonedDateTimeToUtc(iso: string, hour: number, minute: number, timezone: string): Date {
+  const [year, month, day] = iso.split("-").map(Number) as [number, number, number];
+  const guess = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    }).formatToParts(new Date(guess));
+    const part = (type: string): number => Number(parts.find((p) => p.type === type)?.value ?? "0");
+    const wallAsUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+    // wallAsUtc − guess = desfase de la zona en ese instante (positivo al este de UTC).
+    return new Date(guess - (wallAsUtc - guess));
+  } catch {
+    return new Date(guess);
   }
 }
 
@@ -564,6 +597,26 @@ export async function createReservation(input: {
   dietaryRequirements?: string;
   groupBookingId?: string;
   primaryGuest?: GuestIdentityFields;
+  /**
+   * Tanda 7 · importación masiva: huésped EXISTENTE de la organización como
+   * huésped principal. Si viene, `primaryGuest` se ignora y no se crea ni se
+   * actualiza ninguna ficha; un id ajeno a la organización → 400.
+   */
+  primaryGuestId?: string;
+  /**
+   * Tanda 7 · importación masiva: crear por encima del cupo del tipo (no lanza
+   * el 409 de disponibilidad). Queda rastro en `afterJson.overbooking` de la
+   * auditoría RESERVATION_CREATED. Nunca por defecto.
+   */
+  allowOverbooking?: boolean;
+  /**
+   * Tanda 7 · importación masiva: reserva histórica (llegada pasada) creada como
+   * estancia cerrada en la MISMA transacción: estado `checked_out`, folio
+   * `closed` y, si hay `assignedRoomId`, un `Stay` cerrado (llegada 15:00 →
+   * salida 11:00, hora de la propiedad). Exige salida ≤ hoy en la zona de la
+   * propiedad. No bloquea inventario ni deja folios abiertos.
+   */
+  historical?: boolean;
   correlationId: string;
 }): Promise<ReservationRecord> {
   requirePermissions(input.context, ["pms.reservation.create"]);
@@ -585,11 +638,17 @@ export async function createReservation(input: {
     // (not 403) avoids leaking the existence of other tenants' properties.
     const property = await tx.property.findUnique({
       where: { id: input.propertyId },
-      select: { organizationId: true }
+      select: { organizationId: true, timezone: true }
     });
     if (!property || property.organizationId !== input.context.organizationId) {
       // SEC-2: generic message — never echo the id or hint at its owner.
       throw new NotFoundError("Propiedad no encontrada.");
+    }
+    // Tanda 7: una reserva histórica nace ya cerrada, así que la estancia debe
+    // haber terminado en la fecha local de la propiedad (una estancia en curso
+    // se crea por recepción y se le hace el check-in).
+    if (input.historical && input.departureDate > todayInTimezone(property.timezone)) {
+      throw new BadRequestError("Una reserva histórica debe haber terminado.");
     }
     // roomType / ratePlan must belong to the same property (and therefore the
     // same tenant) — prevents grafting another property's inventory/pricing.
@@ -618,6 +677,9 @@ export async function createReservation(input: {
     // (property, roomType) so the sum below cannot race with a parallel
     // create; the lock releases automatically when the transaction ends and
     // only serializes bookings for the SAME room type.
+    // Tanda 7: con `allowOverbooking` el exceso de cupo no se rechaza; se
+    // registra aquí y viaja a la auditoría RESERVATION_CREATED.
+    let overbooking: { totalRooms: number; bookedRooms: number; requested: number } | undefined;
     if (input.roomTypeId) {
       // Prisma ≥6.19 no puede deserializar el `void` que devuelve
       // pg_advisory_xact_lock vía $queryRaw → $executeRaw (no deserializa filas).
@@ -648,18 +710,39 @@ export async function createReservation(input: {
       const bookedRooms = overlapping._sum.roomsCount ?? 0;
       const requested = input.roomsCount ?? 1;
       if (bookedRooms + requested > totalRooms) {
-        throw new ConflictError(
-          `No hay disponibilidad para el tipo de habitación seleccionado en esas fechas ` +
-            `(${totalRooms} habitaciones, ${bookedRooms} ya reservadas, ${requested} solicitadas).`
-        );
+        if (input.allowOverbooking) {
+          overbooking = { totalRooms, bookedRooms, requested };
+        } else {
+          throw new ConflictError(
+            `No hay disponibilidad para el tipo de habitación seleccionado en esas fechas ` +
+              `(${totalRooms} habitaciones, ${bookedRooms} ya reservadas, ${requested} solicitadas).`
+          );
+        }
       }
     }
 
     let guestId: string | undefined;
 
-    if (input.primaryGuest?.documentNumber) {
+    // Tanda 7: huésped existente elegido por el importador (por documento o
+    // e-mail dentro de la organización). Debe pertenecer a la organización del
+    // contexto; la ficha nunca se modifica desde aquí.
+    if (input.primaryGuestId) {
       const existingGuest = await tx.guest.findFirst({
-        where: { documentNumber: input.primaryGuest.documentNumber, organizationId: input.context.organizationId }
+        where: { id: input.primaryGuestId, organizationId: input.context.organizationId },
+        select: { id: true }
+      });
+      if (!existingGuest) {
+        throw new BadRequestError("primaryGuestId no pertenece a la organización.");
+      }
+      guestId = existingGuest.id;
+    }
+
+    if (!guestId && input.primaryGuest?.documentNumber) {
+      // T7-FUN-05: una ficha borrada (soft-delete) nunca se reutiliza; el
+      // importador ya la descarta en la preview y aquí se crea una nueva.
+      const existingGuest = await tx.guest.findFirst({
+        where: { documentNumber: input.primaryGuest.documentNumber, organizationId: input.context.organizationId, deletedAt: null },
+        orderBy: [{ createdAt: "asc" }]
       });
       guestId = existingGuest?.id;
     }
@@ -722,7 +805,8 @@ export async function createReservation(input: {
         propertyId: input.propertyId,
         code,
         channel: input.channel ?? "direct",
-        status: "confirmed",
+        // Tanda 7: una reserva histórica nace ya con el check-out hecho.
+        status: input.historical ? "checked_out" : "confirmed",
         arrivalDate: dateOnly(input.arrivalDate),
         departureDate: dateOnly(input.departureDate),
         adults: input.adults ?? 1,
@@ -776,12 +860,27 @@ export async function createReservation(input: {
       data: {
         reservationId: created.id,
         guestId: guestId ?? null,
-        status: "open",
+        // Tanda 7: el folio de una reserva histórica nace cerrado (sin cargos).
+        status: input.historical ? "closed" : "open",
         currency: created.currency
       }
     });
 
-    return Object.assign(created, { primaryGuestId: guestId });
+    // Tanda 7: estancia cerrada de la reserva histórica cuando trae habitación
+    // (los cuadros que cuentan `stays` la ven como un check-out más).
+    if (input.historical && input.assignedRoomId) {
+      await tx.stay.create({
+        data: {
+          reservationId: created.id,
+          roomId: input.assignedRoomId,
+          checkinAt: zonedDateTimeToUtc(input.arrivalDate, 15, 0, property.timezone),
+          checkoutAt: zonedDateTimeToUtc(input.departureDate, 11, 0, property.timezone),
+          status: "checked_out"
+        }
+      });
+    }
+
+    return Object.assign(created, { primaryGuestId: guestId, overbooking });
   }));
 
   const mapped = mapReservation(reservation);
@@ -809,7 +908,12 @@ export async function createReservation(input: {
     action: "RESERVATION_CREATED",
     entityType: "reservation",
     entityId: mapped.id,
-    afterJson: mapped,
+    // Tanda 7: el overbooking consentido y el alta histórica dejan rastro en la
+    // auditoría; sin esas opciones el afterJson es la reserva, como siempre.
+    afterJson:
+      reservation.overbooking || input.historical
+        ? { ...mapped, ...(reservation.overbooking ? { overbooking: reservation.overbooking } : {}), ...(input.historical ? { historical: true } : {}) }
+        : mapped,
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });

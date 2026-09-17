@@ -107,6 +107,20 @@ enum PayrollCostImportStatus {
   reversed
 }
 
+/// Lote de importación masiva de reservas (Tanda 7): processing (lote creado, filas en curso: «Interrumpida» si el proceso murió; deshacible) · imported (todas las filas válidas creadas) · partial (alguna fila omitida o con error en el alta) · failed (ninguna reserva creada) · undone (reservas del lote canceladas por «deshacer»).
+enum ReservationImportStatus {
+  /// Lote creado antes de la primera reserva; filas en curso. Si el proceso muere queda así («Interrumpida») y sigue siendo deshacible.
+  processing
+  /// Todas las filas de datos crearon su reserva.
+  imported
+  /// Se crearon reservas pero alguna fila quedó omitida o falló en el alta.
+  partial
+  /// Ninguna reserva creada.
+  failed
+  /// Deshecho: las reservas del lote sin check-in fueron canceladas.
+  undone
+}
+
 enum CashClosureStatus {
   open
   closed
@@ -5271,6 +5285,100 @@ model PayrollCostReference {
   @@index([propertyId, periodCode])
   @@index([organizationId, periodCode])
   @@map("payroll_cost_references")
+}
+
+// ---- Importación masiva de reservas (Tanda 7 · 2026-09-16) ----
+// Contrato: docs/runbooks/reservas-importacion.md · diseño docs/design/RESERVAS-IMPORTACION-MASIVA.md.
+// Un lote = un fichero (csv | xlsx) importado en UNA propiedad; las reservas se crean una a una con
+// createReservation (bookingSource "import:<importId>") y se deshacen con transitionReservation
+// (cancelled, motivo «importación deshecha») sobre las que sigan sin check-in. GDPR: el fichero NO se
+// guarda; la fila del lote registra SOLO nº de fila, referencia externa, fechas y tipo resueltos,
+// código de reserva creado o código de error (nunca nombre, e-mail, teléfono ni documento del huésped;
+// los mensajes de error no deben citar valores personales). Sin FK a properties / reservations (misma
+// convención que PayrollCostLine); organizationId y propertyId desnormalizados para filtrar sin join.
+
+/// Lote de importación masiva de reservas (un fichero → N reservas en una propiedad).
+model ReservationImport {
+  id               String                  @id @default(cuid())
+  organizationId   String                  @map("organization_id")
+  propertyId       String                  @map("property_id")
+  /// csv · xlsx (texto; catálogo en el runbook).
+  format           String
+  fileName         String?                 @map("file_name")
+  /// sha256 hex de las filas normalizadas tras el mapeo: idempotencia (409 RESERVATION_IMPORT_DUPLICATE mientras exista un lote no deshecho con el mismo hash en la propiedad, salvo `force`).
+  contentHash      String                  @map("content_hash")
+  /// processing (creado antes de la primera reserva) → imported | partial | failed → undone.
+  status           ReservationImportStatus @default(processing)
+  /// Filas de datos del fichero (sin cabecera).
+  rowCount         Int                     @default(0) @map("row_count")
+  createdCount     Int                     @default(0) @map("created_count")
+  /// Filas omitidas: inválidas con `omitirInvalidas`, referencia externa ya existente, duplicadas en el fichero.
+  skippedCount     Int                     @default(0) @map("skipped_count")
+  /// Filas que fallaron en el alta (p. ej. disponibilidad perdida entre la previsualización y el commit).
+  errorCount       Int                     @default(0) @map("error_count")
+  warningCount     Int                     @default(0) @map("warning_count")
+  /// Mapeo aplicado: { "<cabecera del fichero>": "<campo canónico>" }.
+  mappingJson      Json                    @default("{}") @map("mapping_json")
+  /// Opciones del commit: { omitirInvalidas, permitirOverbooking, historico, force, separador, codificación }.
+  optionsJson      Json                    @default("{}") @map("options_json")
+  /// Primera y última llegada de las reservas creadas (informativo para el listado).
+  arrivalFrom      DateTime?               @map("arrival_from") @db.Date
+  arrivalTo        DateTime?               @map("arrival_to") @db.Date
+  /// Σ totalAmount de las reservas creadas (informativo).
+  totalAmount      Decimal                 @default(0) @db.Decimal(14, 2) @map("total_amount")
+  currency         String                  @default("EUR")
+  createdBy        String?                 @map("created_by")
+  createdAt        DateTime                @default(now()) @map("created_at")
+  undoneAt         DateTime?               @map("undone_at")
+  undoneBy         String?                 @map("undone_by")
+  undoReason       String?                 @map("undo_reason")
+  /// Reservas canceladas al deshacer y reservas conservadas (ya con check-in / check-out).
+  undoneCount      Int                     @default(0) @map("undone_count")
+  undoKeptCount    Int                     @default(0) @map("undo_kept_count")
+
+  rows             ReservationImportRow[]
+
+  @@index([propertyId, status, createdAt])
+  @@index([propertyId, contentHash])
+  @@index([organizationId, createdAt])
+  @@map("reservation_imports")
+}
+
+/// Resultado por fila del fichero (sin datos personales del huésped).
+model ReservationImportRow {
+  id                String    @id @default(cuid())
+  importId          String    @map("import_id")
+  /// Desnormalizados del lote (sin FK): búsqueda por referencia externa y por reserva sin join.
+  organizationId    String    @map("organization_id")
+  propertyId        String    @map("property_id")
+  /// Nº de fila de datos en el fichero (1 = primera fila tras la cabecera).
+  rowNumber         Int       @map("row_number")
+  /// created · skipped · error (texto; catálogo en el runbook).
+  outcome           String
+  /// Fecha/tipo/tarifa resueltos (informativo, sin PII). Null cuando la fila no llegó a normalizarse.
+  externalReference String?   @map("external_reference")
+  arrivalDate       DateTime? @map("arrival_date") @db.Date
+  departureDate     DateTime? @map("departure_date") @db.Date
+  roomTypeCode      String?   @map("room_type_code")
+  ratePlanCode      String?   @map("rate_plan_code")
+  roomsCount        Int       @default(1) @map("rooms_count")
+  /// Reserva creada (una fila crea como máximo una reserva; una reserva procede como máximo de una fila).
+  reservationId     String?   @unique @map("reservation_id")
+  reservationCode   String?   @map("reservation_code")
+  /// Código de error o de omisión (RESERVATION_IMPORT_ROW_*) y mensaje en español SIN valores personales.
+  errorCode         String?   @map("error_code")
+  errorMessage      String?   @map("error_message")
+  /// Avisos de la fila (códigos + mensajes sin PII), [] si ninguno.
+  warningsJson      Json      @default("[]") @map("warnings_json")
+  /// Tras deshacer: cancelled · kept (ya con check-in / check-out) · skipped (ya estaba cancelada / no-show) · null (lote no deshecho o fila sin reserva).
+  undoOutcome       String?   @map("undo_outcome")
+
+  import            ReservationImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, rowNumber])
+  @@index([importId, outcome])
+  @@index([propertyId, externalReference])
+  @@map("reservation_import_rows")
 }
 
 // ---- Multi-currency (Sprint 24) ----

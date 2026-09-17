@@ -20,6 +20,10 @@ export * from "./legal-structure-types.js";
 // departamento (nunca personas), previsualización, informe de coste y códigos de
 // error compartidos por el API, el CLI payroll:import-cost y el admin-web.
 export * from "./payroll-cost-types.js";
+// Importación masiva de reservas (Tanda 7 · L0): límites, campos canónicos (33),
+// catálogos, previsualización, lote / filas sin PII y códigos de error de lote y de
+// fila compartidos por el API, el CLI reservations:import y el admin-web.
+export * from "./reservation-import-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 284,
+      "csvRows": 285,
       "categories": 9,
       "items": 67,
-      "tabs": 98,
+      "tabs": 99,
       "devOnly": 21,
       "retired": 72,
       "aliases": 24,
@@ -233,6 +233,18 @@
               ],
               "modulesAny": [],
               "detail": true
+            },
+            {
+              "screenKey": "ReservationImportScreen",
+              "label": "Importar",
+              "url": "/recepcion/reservas/importar",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "comercial",
+                "admin"
+              ],
+              "modulesAny": []
             }
           ]
         },

@@ -26,7 +26,8 @@
     "accounting:provision-chart": "node --env-file-if-exists=../../.env --import tsx src/scripts/accounting-provision-chart.ts",
     "accounting:replay": "node --env-file-if-exists=../../.env --import tsx src/scripts/accounting-replay.ts",
     "accounting:relabel-customer-account": "node --env-file-if-exists=../../.env --import tsx src/scripts/accounting-relabel-customer-account.ts",
-    "import:pms-history-forecast": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-pms-history-forecast.ts"
+    "import:pms-history-forecast": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-pms-history-forecast.ts",
+    "reservations:import": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-reservations.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

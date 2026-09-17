@@ -31,7 +31,18 @@ export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = Object.free
   usr_system_legal_structure: "alta de la estructura societaria",
   usr_system_faranda_celuisma: "migración de Faranda a CELUISMA",
   // Tanda 6c: CLI payroll:import-cost (apps/api/src/scripts/import-payroll-cost.ts): los asientos 640/642 del coste de personal agregado.
-  usr_system_payroll_cost_import: "importación del coste de personal"
+  usr_system_payroll_cost_import: "importación del coste de personal",
+  // Tanda 7: CLI reservations:import (apps/api/src/scripts/import-reservations.ts): los lotes de reservas importadas desde CSV o XLSX.
+  usr_system_reservation_import: "importación masiva de reservas"
+});
+
+/**
+ * `createdBy` que el CLI reservations:import escribía antes de la Tanda 7
+ * (ronda 1) en vez de su SYSTEM_USER_ID; los lotes ya persistidos lo conservan
+ * y se reconocen como el mismo actor de sistema.
+ */
+export const LEGACY_SYSTEM_ACTOR_IDS: Readonly<Record<string, string>> = Object.freeze({
+  "cli:import-reservations": "usr_system_reservation_import"
 });
 
 export const SYSTEM_ACTOR_FALLBACK_LABEL = "Sistema";
@@ -54,7 +65,8 @@ export function isSystemActor(actorId: string): boolean {
  * · another user → the name found in `names` (id → full name) or «otro usuario»
  */
 export function actorLabel(actorId: string | null | undefined, session?: ActorSession, names?: Readonly<Record<string, string>>): ActorLabel | null {
-  const id = actorId?.trim() ?? "";
+  const raw = actorId?.trim() ?? "";
+  const id = LEGACY_SYSTEM_ACTOR_IDS[raw] ?? raw;
   if (id === "") return null;
   if (isSystemActor(id)) {
     const process = SYSTEM_ACTOR_LABELS[id];

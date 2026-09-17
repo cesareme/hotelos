@@ -287,6 +287,11 @@ const RESOLVERS = {
   reservation: byProperty("Reserva no encontrada.", (id) =>
     prisma.reservation.findUnique({ where: { id }, select: selectProperty })
   ),
+  // Importación masiva de reservas (Tanda 7 · L3): lote de reservation_imports,
+  // propiedad de UNA propiedad; `:id` de GET/undo cruza además `:propertyId`.
+  reservationImport: byProperty("Importación de reservas no encontrada.", (id) =>
+    prisma.reservationImport.findUnique({ where: { id }, select: selectProperty })
+  ),
   invoice: byProperty("Factura no encontrada.", (id) =>
     prisma.invoice.findUnique({ where: { id }, select: selectProperty })
   ),
