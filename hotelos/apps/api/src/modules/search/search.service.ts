@@ -12,6 +12,7 @@
 // lookups (no plaintext is stored on those columns).
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 const EMAIL_RE = /^[\w.+-]+@[\w-]+\.[\w.-]+$/;
 const CUID_RE = /^c[a-z0-9]{20,}$/;
@@ -60,19 +61,35 @@ function guestDisplayName(g: {
   return parts.join(" ").trim() || g.company || "—";
 }
 
-export async function globalSearch(input: SearchInput): Promise<{ items: SearchHit[]; counts: Record<string, number>; took_ms: number }> {
+export type GlobalSearchResult = {
+  items: SearchHit[];
+  counts: Record<string, number>;
+  took_ms: number;
+  /**
+   * Tanda L2 (L2-06, QC-06): kinds whose query failed and answered with no
+   * hits in this response ("reservation", "reservation_by_guest", "guest",
+   * "room", "folio", "invoice", "property", "rate_plan"). Empty = every index
+   * answered.
+   */
+  degraded: string[];
+};
+
+export async function globalSearch(input: SearchInput): Promise<GlobalSearchResult> {
   const t0 = Date.now();
   const q = (input.query ?? "").trim();
   if (!q || q.length < 1) {
-    return { items: [], counts: {}, took_ms: 0 };
+    return { items: [], counts: {}, took_ms: 0, degraded: [] };
   }
   const types = input.types && input.types.length ? new Set(input.types) : null;
   const wants = (k: SearchHit["kind"]) => !types || types.has(k);
   const perKind = Math.min(15, Math.max(3, input.limit ?? 8));
 
-  // Run all queries in parallel; each catches its own error so one failure
-  // (e.g. missing index) doesn't take down the others.
-  const safe = <T,>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
+  // Run all queries in parallel; each index falls back to no hits so one
+  // failure (e.g. missing index) doesn't take down the others — but the
+  // failure is logged and named in `degraded[]` (Tanda L2 · L2-06), never
+  // passed off as «no results».
+  const collector = createDegradedCollector("search.global", { organizationId: input.organizationId, propertyId: input.propertyId });
+  const safe = <T,>(label: string, p: Promise<T>, fallback: T): Promise<T> => collector.safe(label, p, fallback);
 
   const [
     reservations,
@@ -86,6 +103,7 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
   ] = await Promise.all([
     wants("reservation") && input.propertyId
       ? safe(
+          "reservation",
           prisma.reservation.findMany({
             where: {
               propertyId: input.propertyId,
@@ -114,6 +132,7 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
     // gracias a la @relation Reservation ↔ ReservationGuest ↔ Guest (P1-4).
     wants("reservation") && input.propertyId
       ? safe(
+          "reservation_by_guest",
           (async () => {
             const rows = await prisma.reservation.findMany({
               where: {
@@ -154,6 +173,7 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
 
     wants("guest")
       ? safe(
+          "guest",
           (async () => {
             const orFilters: object[] = [
               { firstName: { contains: q, mode: "insensitive" } },
@@ -178,6 +198,7 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
 
     wants("room") && input.propertyId
       ? safe(
+          "room",
           prisma.room.findMany({
             where: {
               propertyId: input.propertyId,
@@ -200,17 +221,27 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
     // Folios: only meaningful when q looks like a cuid prefix.
     wants("folio") && CUID_RE.test(q)
       ? safe(
-          prisma.folio.findMany({
-            where: { id: { startsWith: q } },
-            select: { id: true, reservationId: true, label: true, isPrimary: true, currency: true, status: true },
-            take: perKind
-          }),
+          "folio",
+          (async () => {
+            // Tanda L2 (L2-06): folios are reached through their reservation —
+            // scoped to the active property or, without one, to the hotels of
+            // the organisation (a folio of another tenant never matches by prefix).
+            const propertyIds = input.propertyId
+              ? [input.propertyId]
+              : (await prisma.property.findMany({ where: { organizationId: input.organizationId }, select: { id: true } })).map((p) => p.id);
+            return prisma.folio.findMany({
+              where: { id: { startsWith: q }, reservation: { propertyId: { in: propertyIds } } },
+              select: { id: true, reservationId: true, label: true, isPrimary: true, currency: true, status: true },
+              take: perKind
+            });
+          })(),
           [] as Array<{ id: string; reservationId: string; label: string; isPrimary: boolean; currency: string; status: string }>
         )
       : Promise.resolve([]),
 
     wants("invoice") && input.propertyId
       ? safe(
+          "invoice",
           prisma.invoice.findMany({
             where: {
               propertyId: input.propertyId,
@@ -229,6 +260,7 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
 
     wants("property")
       ? safe(
+          "property",
           prisma.property.findMany({
             where: {
               organizationId: input.organizationId,
@@ -250,6 +282,7 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
 
     wants("rate_plan") && input.propertyId
       ? safe(
+          "rate_plan",
           prisma.ratePlan.findMany({
             where: {
               propertyId: input.propertyId,
@@ -372,5 +405,5 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
   const counts: Record<string, number> = {};
   for (const it of items) counts[it.kind] = (counts[it.kind] ?? 0) + 1;
 
-  return { items, counts, took_ms: Date.now() - t0 };
+  return { items, counts, took_ms: Date.now() - t0, degraded: collector.degraded };
 }

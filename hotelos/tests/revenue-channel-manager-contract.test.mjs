@@ -30,6 +30,13 @@ const demoStore = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", impo
 const aiTools = readFileSync(new URL("../packages/ai-tools/src/registry.ts", import.meta.url), "utf8");
 const toolNames = readFileSync(new URL("../packages/ai-tools/src/tool-names.ts", import.meta.url), "utf8");
 const worker = readFileSync(new URL("../apps/worker/src/index.ts", import.meta.url), "utf8");
+// Tanda L2 (L2-07 · worker honesto): the catalogue is the four pg-boss queues of scheduler.ts.
+const workerScheduler = readFileSync(new URL("../apps/worker/src/scheduler.ts", import.meta.url), "utf8");
+// Tanda L2 (L2-03): recommendations are applied to the real rate grid by pricing.service.ts.
+const pricingService = readFileSync(new URL("../apps/api/src/modules/revenue/pricing.service.ts", import.meta.url), "utf8");
+// Rate grid v2 / Tanda L2: the channel sync gate lives in modules/channel-manager (readiness + aggregator).
+const channelReadiness = readFileSync(new URL("../apps/api/src/modules/channel-manager/readiness.core.ts", import.meta.url), "utf8");
+const channelAggregator = readFileSync(new URL("../apps/api/src/modules/channel-manager/aggregator.service.ts", import.meta.url), "utf8");
 const channelAdapter = readFileSync(new URL("../packages/integrations/src/channel-manager.ts", import.meta.url), "utf8");
 const adminApp = readFileSync(new URL("../apps/admin-web/src/App.tsx", import.meta.url), "utf8");
 // Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels, keys, URLs and
@@ -91,8 +98,8 @@ describe("Revenue Management and Channel Manager module", () => {
       "CompetitorHotel",
       "CompetitorRateSnapshot",
       "DemandCalendarEvent",
-      "RevenueAutomationRule",
-      "RevenueScenario",
+      // Tanda L2 (L2-01): RevenueAutomationRule and RevenueScenario were retired
+      // by migration 20260918130000_persistencia_l2 (memory-only legs, 0 rows).
       "RateParityAlert",
       "ExternalReservation"
     ]) {
@@ -119,7 +126,7 @@ describe("Revenue Management and Channel Manager module", () => {
     for (const route of [
       "/revenue/properties/:propertyId/forecasts/generate",
       "/revenue/properties/:propertyId/recommendations/generate",
-      "/revenue/recommendations/:recommendationId/apply",
+      "/revenue/properties/:propertyId/recommendations/:id/apply",
       // Rate grid v2 (2026-09-14): the grid lives in modules/rate-manager and the
       // channel manager in modules/channel-manager, each with its own *.routes.ts
       // and route-permissions.partial.ts; the /revenue/…/rate-grid family and the
@@ -127,8 +134,8 @@ describe("Revenue Management and Channel Manager module", () => {
       "/properties/:propertyId/rate-grid",
       "/properties/:propertyId/rate-grid/bulk-update",
       "/properties/:propertyId/rate-grid/push",
-      "/revenue/properties/:propertyId/scenarios/simulate",
-      "/revenue/properties/:propertyId/automation-rules",
+      // Tanda L2 (L2-01): the memory-only scenarios / automation-rules legs are
+      // retired by L2-02 (tables dropped in 20260918130000_persistencia_l2).
       "/properties/:propertyId/channels",
       "/channel-manager/channels/:channelId/room-mappings",
       "/channel-manager/channels/:channelId/product-mappings",
@@ -165,8 +172,10 @@ describe("Revenue Management and Channel Manager module", () => {
       "revenueScenarios",
       "externalReservations"
     ]) {
+      // Tanda L2 (L2-03, corrector): the seed mirrors stay in demo-store.ts; the
+      // engine service no longer reads any of them (Prisma-only record store).
       assert.match(demoStore, new RegExp(marker));
-      assert.match(advancedService, new RegExp(marker));
+      assert.doesNotMatch(advancedService, new RegExp(`demoStore\\.${marker}\\b`));
     }
     for (const marker of [
       "channel_mappings_valid",
@@ -179,45 +188,50 @@ describe("Revenue Management and Channel Manager module", () => {
       "RateParityAlertCreated",
       "RevenueAutomationBlocked",
       "sync_health",
-      "data_quality",
-      "revenue_alerts"
+      "data_quality"
     ]) {
       assert.match(advancedService, new RegExp(marker));
     }
   });
 
   it("applies confirmed revenue operations into the operational rate grid safely", () => {
+    // Tanda L2 (L2-03, corrector): the in-memory applyRevenueRecommendationToRateGrid
+    // was retired; the canonical application writes rate_days through Prisma
+    // (pricing.service.ts · decideRecommendation "applied") and the front calls
+    // POST /revenue/properties/:propertyId/recommendations/:id/apply.
     for (const marker of [
-      "applyRevenueRecommendationToRateGrid",
-      "applyRateDayUpdates",
-      "applyRestrictionDayUpdates",
-      "applyInventoryDayUpdates",
-      "manualOverrideBlocked",
-      "priceLimitBlocked",
-      "previewRequired: !confirmed",
-      "appliedChanges",
-      "approvalRequired",
-      "RevenueAutomationBlocked"
+      "decideRecommendation",
+      "rateDay.updateMany",
+      "manuallyOverridden: true",
+      "resolveBarRatePlan",
+      "La recomendación ya está aplicada.",
+      "No se puede aplicar una recomendación sobre una fecha pasada",
+      "REVENUE_RECOMMENDATION_APPLIED",
+      "rateDaysUpdated"
     ]) {
-      assert.match(advancedService, new RegExp(marker));
+      assert.match(pricingService, new RegExp(escaped(marker)));
     }
-    assert.match(advancedService, /recommendation\.status !== "approved"/);
-    assert.match(advancedService, /existing\.syncStatus = "pending"/);
+    assert.match(pricingService, /requirePermissions\(input\.context, \["revenue\.apply_recommendations"\]\)/);
+    assert.match(routePermissionsSource, /"\/revenue\/properties\/:propertyId\/recommendations\/:id\/apply"/);
+    assert.doesNotMatch(advancedService, /applyRevenueRecommendationToRateGrid/);
   });
 
   it("blocks unsafe channel syncs and records sync outcomes", () => {
-    for (const marker of [
-      "evaluateChannelSyncSafety",
-      "Channel sync is unhealthy or disabled",
-      "Missing room or rate mapping blocks channel sync",
-      "ChannelSyncSucceeded",
-      "ChannelSyncFailed",
-      "lastSyncAt",
-      "exportedAvailability",
-      "exportedRates"
-    ]) {
+    // Tanda L2 (L2-03, corrector): the in-memory evaluateChannelSyncSafety was
+    // retired; the real gate is the channel readiness (credentials, mode,
+    // product codes, recent success) of modules/channel-manager and the pushes
+    // of the aggregator over Prisma channels. The audit catalogue keeps the
+    // sync outcome events.
+    for (const marker of ["readinessForGrid", "readyToPush", "credentialsCheck", "modeCheck", "productCodesCheck", "recentSuccessCheck"]) {
+      assert.match(channelReadiness, new RegExp(marker));
+    }
+    for (const marker of ["pushRates", "pushAvailability", "pushRestrictions"]) {
+      assert.match(channelAggregator, new RegExp(`export async function ${marker}`));
+    }
+    for (const marker of ["ChannelSyncSucceeded", "ChannelSyncFailed"]) {
       assert.match(advancedService, new RegExp(marker));
     }
+    assert.doesNotMatch(advancedService, /evaluateChannelSyncSafety/);
   });
 
   it("adds typed channel adapters, AI tools and worker jobs", () => {
@@ -251,22 +265,14 @@ describe("Revenue Management and Channel Manager module", () => {
     }
     assert.match(aiTools, /"revenue.apply_recommendations", "critical", true/);
     assert.match(aiTools, /"channel_manager.sync", "high", true/);
-    for (const job of [
-      "generateDailyRevenueForecasts",
-      "calculatePickupAndPace",
-      "detectRateParityIssues",
-      "runRateShopper",
-      "syncChannelAvailability",
-      "syncChannelRates",
-      "syncChannelRestrictions",
-      "pullChannelReservations",
-      "retryFailedChannelSyncJobs",
-      "calculateForecastAccuracy",
-      "runRevenueAutomationRules",
-      "detectUnderpricingRisk"
-    ]) {
-      assert.match(worker, new RegExp(job));
+    // Tanda L2 (L2-07 · worker honesto): the scaffolded revenue job names
+    // (generateDailyRevenueForecasts, runRateShopper, syncChannelRates…) that
+    // answered «completed» without doing anything were retired; the worker
+    // catalogue is the four real pg-boss queues and nothing else.
+    for (const queue of ["notifications.scheduled", "notifications.retry", "notifications.sending-sweep", "webhooks.deliver"]) {
+      assert.match(workerScheduler, new RegExp(`"${escaped(queue)}"`));
     }
+    assert.doesNotMatch(worker + workerScheduler, /generateDailyRevenueForecasts|runRateShopper|syncChannelRates|runRevenueAutomationRules/);
   });
 
   it("adds mobile and admin screens plus a visible browser demo", () => {

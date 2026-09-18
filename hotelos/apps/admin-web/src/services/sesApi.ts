@@ -64,13 +64,10 @@ export async function patchSesSettings(propertyId: string, patch: Record<string,
   return apiRequest<SesReportingSettings>(propPath(propertyId), { method: "PATCH", body: patch });
 }
 
-export async function fetchSesSubmissions(propertyId: string): Promise<AuthoritySubmission[]> {
-  return apiRequest<AuthoritySubmission[]>(`/compliance/authority/properties/${propertyId}/submissions`);
-}
-
-export async function retrySesSubmission(submissionId: string): Promise<AuthoritySubmission> {
-  return apiRequest<AuthoritySubmission>(`/compliance/authority/submissions/${submissionId}/retry`, { method: "POST" });
-}
+// Tanda L2 (L2-02): fetchSesSubmissions / retrySesSubmission (familia de envíos
+// a autoridad en memoria) se retiraron; el histórico SES canónico es
+// fetchSesSubmissionsPage (complianceApi.ts → GET /properties/:id/ses/submissions)
+// y el reintento POST /ses/submissions/:id/retry.
 
 export async function generateSesBatch(propertyId: string): Promise<SesBatch> {
   return apiRequest<SesBatch>(`/compliance/ses-hospedajes/properties/${propertyId}/batches/generate`, { method: "POST" });

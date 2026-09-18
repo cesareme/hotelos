@@ -17,6 +17,10 @@ const advancedService = read("apps/api/src/modules/advanced/advanced-modules.ser
 const server = read("apps/api/src/server.ts");
 const routePermissions = read("apps/api/src/security/route-permissions.ts");
 const worker = read("apps/worker/src/index.ts");
+// Tanda L2 (L2-07 · worker honesto): the catalogue is the four pg-boss queues of scheduler.ts.
+const workerScheduler = read("apps/worker/src/scheduler.ts");
+// Tanda L2 (L2-03): the History & Forecast board is served by modules/revenue/hf-board.service.ts.
+const hfBoardService = read("apps/api/src/modules/revenue/hf-board.service.ts");
 const toolNames = read("packages/ai-tools/src/tool-names.ts");
 const aiRegistry = read("packages/ai-tools/src/registry.ts");
 const uiIndex = read("packages/ui/src/index.ts");
@@ -69,7 +73,9 @@ describe("Revenue Visual Analytics History & Forecast", () => {
   });
 
   it("declares snapshot and saved view tables without replacing revenue models", () => {
-    for (const model of ["RevenueDailySnapshot", "RevenueForecastSnapshot", "RevenueReportView"]) {
+    // Tanda L2 (L2-01): RevenueReportView (saved views, memory-only, 0 rows) was
+    // retired by migration 20260918130000_persistencia_l2.
+    for (const model of ["RevenueDailySnapshot", "RevenueForecastSnapshot"]) {
       assert.match(schema, new RegExp(`model ${model}`));
     }
     for (const field of [
@@ -82,15 +88,12 @@ describe("Revenue Visual Analytics History & Forecast", () => {
       "occupancyPercent",
       "confidenceLowJson",
       "confidenceHighJson",
-      "driversJson",
-      "filtersJson",
-      "layoutJson"
+      "driversJson"
     ]) {
       assert.match(schema, new RegExp(field));
     }
     assert.match(schema, /@@map\("revenue_daily_snapshots"\)/);
     assert.match(schema, /@@map\("revenue_forecast_snapshots"\)/);
-    assert.match(schema, /@@map\("revenue_report_views"\)/);
   });
 
   it("implements the aggregation package with date validation, split logic and weighted totals", () => {
@@ -128,21 +131,17 @@ describe("Revenue Visual Analytics History & Forecast", () => {
       assert.match(server, new RegExp(escaped(route)));
       assert.match(routePermissions, new RegExp(escaped(route)));
     }
-    for (const marker of [
-      "getHistoryForecastReport",
-      "getHistoryForecastCharts",
-      "getHistoryForecastKpis",
-      "exportHistoryForecastReport",
-      "RevenueHistoryForecastExported",
-      "revenueDailySnapshots",
-      "revenueForecastSnapshots",
-      "revenueReportViews",
-      "History subtotal",
-      "Forecast subtotal",
-      "Total"
-    ]) {
-      assert.match(advancedService + demoStore, new RegExp(escaped(marker)));
+    // Tanda L2 (L2-03, corrector): the in-memory getHistoryForecastReport /
+    // Charts / Kpis / export were retired; the four GET routes serve the real
+    // board (getHistoryForecastBoard over revenue_daily_snapshots +
+    // reservations) and the export goes through the Export Center generator.
+    // `revenue_report_views` was dropped by 20260918130000_persistencia_l2.
+    for (const marker of ["getHistoryForecastBoard", "parseBoardWindow", "writeDailySnapshot", "revenueDailySnapshot", "revenueForecast"]) {
+      assert.match(hfBoardService, new RegExp(escaped(marker)));
     }
+    assert.match(server, /getHistoryForecastBoard\(params\.propertyId, boardWindow\(request\)\)/);
+    assert.match(advancedService, /RevenueHistoryForecastExported/);
+    assert.doesNotMatch(advancedService, /getHistoryForecastReport|getHistoryForecastCharts|getHistoryForecastKpis/);
     assert.match(routePermissions, /"revenue\.history_forecast\.read"/);
     assert.match(routePermissions, /"revenue\.history_forecast\.export"/);
   });
@@ -256,16 +255,15 @@ describe("Revenue Visual Analytics History & Forecast", () => {
     for (const style of ["revenue-chart-grid", "mock-chart", "revenue-report-table", "forecast-boundary"]) {
       assert.match(demoStyles, new RegExp(style));
     }
-    for (const job of [
-      "generateRevenueDailySnapshots",
-      "generateRevenueForecastSnapshots",
-      "aggregateHistoryForecastReports",
-      "calculateForecastConfidence",
-      "detectHistoryForecastAlerts",
-      "generateScheduledHistoryForecastReports",
-      "exportHistoryForecastReport"
-    ]) {
-      assert.match(worker, new RegExp(job));
+    // Tanda L2 (L2-07 · worker honesto): the scaffolded history/forecast job
+    // names were retired from the worker; the daily snapshot is written by the
+    // API scheduler (hf-board.service.ts · writeYesterdayDailySnapshotsForAllProperties)
+    // and the worker catalogue is the four real pg-boss queues.
+    assert.match(hfBoardService, /export async function writeYesterdayDailySnapshotsForAllProperties/);
+    assert.match(server, /writeYesterdayDailySnapshotsForAllProperties/);
+    for (const queue of ["notifications.scheduled", "notifications.retry", "notifications.sending-sweep", "webhooks.deliver"]) {
+      assert.match(workerScheduler, new RegExp(`"${escaped(queue)}"`));
     }
+    assert.doesNotMatch(worker + workerScheduler, /generateRevenueDailySnapshots|generateScheduledHistoryForecastReports/);
   });
 });

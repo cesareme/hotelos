@@ -284,8 +284,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/onboarding/projects/:projectId/cutover-plan", permissions: ["onboarding.read"], riskLevel: "medium" },
   { method: "POST", path: "/onboarding/projects/:projectId/cutover/delta-import/dry-run", permissions: ["onboarding.manage_cutover"], riskLevel: "critical" },
   { method: "POST", path: "/onboarding/projects/:projectId/go-live", permissions: ["onboarding.go_live"], riskLevel: "critical" },
-  { method: "GET", path: "/revenue/properties/:propertyId/dashboard", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "GET", path: "/revenue/properties/:propertyId/metrics", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/properties/:propertyId/history-forecast", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/properties/:propertyId/history-forecast/report", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/properties/:propertyId/history-forecast/charts", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
@@ -295,12 +293,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/revenue/properties/:propertyId/history-forecast/board", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/properties/:propertyId/export-center/catalog", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
   { method: "POST", path: "/revenue/properties/:propertyId/export-center/generate", permissions: ["revenue.history_forecast.export"], riskLevel: "high" },
-  {
-    method: "POST",
-    path: "/revenue/properties/:propertyId/history-forecast/saved-views",
-    permissions: ["revenue.history_forecast.saved_views.manage"],
-    riskLevel: "medium"
-  },
   { method: "GET", path: "/revenue/properties/:propertyId/pickup", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/properties/:propertyId/pace", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "POST", path: "/revenue/properties/:propertyId/pace/capture", permissions: ["revenue.recommend"], riskLevel: "medium" },
@@ -315,9 +307,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/revenue/properties/:propertyId/recommendations/:id/approve", permissions: ["revenue.apply_recommendations"], riskLevel: "critical" },
   { method: "POST", path: "/revenue/properties/:propertyId/recommendations/:id/apply", permissions: ["revenue.apply_recommendations"], riskLevel: "critical" },
   { method: "POST", path: "/revenue/properties/:propertyId/recommendations/:id/reject", permissions: ["revenue.apply_recommendations"], riskLevel: "high" },
-  { method: "POST", path: "/revenue/recommendations/:recommendationId/approve", permissions: ["revenue.apply_recommendations"], riskLevel: "critical" },
-  { method: "POST", path: "/revenue/recommendations/:recommendationId/apply", permissions: ["revenue.apply_recommendations"], riskLevel: "critical" },
-  { method: "POST", path: "/revenue/recommendations/:recommendationId/reject", permissions: ["revenue.apply_recommendations"], riskLevel: "high" },
   { method: "POST", path: "/revenue/properties/:propertyId/pricing-rules", permissions: ["revenue.configure"], riskLevel: "high" },
   { method: "PATCH", path: "/revenue/pricing-rules/:id", permissions: ["revenue.configure"], riskLevel: "high" },
   { method: "POST", path: "/revenue/properties/:propertyId/bar-levels", permissions: ["revenue.configure"], riskLevel: "medium" },
@@ -331,15 +320,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/properties/:propertyId/email/ingest", permissions: ["integrations.connect"], riskLevel: "medium" },
   { method: "POST", path: "/email/inbound/:id/approve", permissions: ["pms.reservation.create"], riskLevel: "high" },
   { method: "POST", path: "/email/inbound/:id/reject", permissions: ["integrations.connect"], riskLevel: "low" },
-  { method: "GET", path: "/revenue/properties/:propertyId/channel-profitability", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "POST", path: "/revenue/properties/:propertyId/scenarios/simulate", permissions: ["revenue.recommend"], riskLevel: "high" },
-  { method: "GET", path: "/revenue/properties/:propertyId/scenarios", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "GET", path: "/revenue/scenarios/:scenarioId", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "GET", path: "/revenue/properties/:propertyId/automation-rules", permissions: ["revenue.automation.manage"], riskLevel: "high" },
-  { method: "POST", path: "/revenue/properties/:propertyId/automation-rules", permissions: ["revenue.automation.manage"], riskLevel: "critical" },
-  { method: "PATCH", path: "/revenue/automation-rules/:ruleId", permissions: ["revenue.automation.manage"], riskLevel: "critical" },
-  { method: "POST", path: "/revenue/automation-rules/:ruleId/enable", permissions: ["revenue.automation.manage"], riskLevel: "critical" },
-  { method: "POST", path: "/revenue/automation-rules/:ruleId/disable", permissions: ["revenue.automation.manage"], riskLevel: "critical" },
   { method: "GET", path: "/channel-manager/channels/:channelId/room-mappings", permissions: ["channel_manager.read"], riskLevel: "medium" },
   { method: "POST", path: "/channel-manager/channels/:channelId/room-mappings", permissions: ["channel_manager.mappings.manage"], riskLevel: "high" },
   { method: "GET", path: "/channel-manager/channels/:channelId/rate-mappings", permissions: ["channel_manager.read"], riskLevel: "medium" },
@@ -365,7 +345,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/rate-shopper/properties/:propertyId/rates", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "POST", path: "/rate-shopper/properties/:propertyId/shop", permissions: ["revenue.recommend"], riskLevel: "high" },
   { method: "GET", path: "/rate-shopper/properties/:propertyId/parity-alerts", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "POST", path: "/crm/profiles/:id/merge", permissions: ["crm.manage_profiles"], riskLevel: "high" },
   { method: "POST", path: "/crm/segments", permissions: ["crm.manage_profiles"], riskLevel: "medium" },
   { method: "PATCH", path: "/crm/segments/:id", permissions: ["crm.manage_profiles"], riskLevel: "medium" },
   { method: "POST", path: "/crm/campaigns", permissions: ["crm.manage_campaigns"], riskLevel: "high" },
@@ -384,7 +363,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/event-spaces", permissions: ["events.read"], riskLevel: "low" },
   { method: "POST", path: "/groups/:id/release-unsold", permissions: ["groups.block_inventory"], riskLevel: "critical" },
   { method: "POST", path: "/groups/:id/master-folio", permissions: ["groups.manage"], riskLevel: "medium" },
-  { method: "POST", path: "/groups/:id/create-reservations", permissions: ["groups.manage"], riskLevel: "critical" },
   { method: "POST", path: "/properties/:propertyId/groups/release-expired", permissions: ["groups.manage"], riskLevel: "medium" },
   { method: "POST", path: "/events/properties/:propertyId/spaces", permissions: ["events.manage_spaces"], riskLevel: "high" },
   { method: "POST", path: "/events/properties/:propertyId/events", permissions: ["events.manage"], riskLevel: "high" },
@@ -396,19 +374,10 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/workforce/time-clock/clock-out", permissions: ["workforce.timeclock.use"], riskLevel: "medium" },
   { method: "POST", path: "/workforce/absences", permissions: ["workforce.schedule.manage"], riskLevel: "medium" },
   { method: "PATCH", path: "/workforce/absences/:id", permissions: ["workforce.schedule.manage"], riskLevel: "high" },
-  { method: "POST", path: "/procurement/suppliers", permissions: ["procurement.manage"], riskLevel: "medium" },
-  { method: "POST", path: "/inventory/properties/:propertyId/items", permissions: ["inventory.manage"], riskLevel: "medium" },
-  { method: "POST", path: "/inventory/properties/:propertyId/stock-movements", permissions: ["inventory.adjust"], riskLevel: "high" },
-  { method: "POST", path: "/inventory/properties/:propertyId/stock-counts", permissions: ["inventory.stock_count"], riskLevel: "high" },
   { method: "POST", path: "/procurement/properties/:propertyId/purchase-orders", permissions: ["purchase_orders.create"], riskLevel: "high" },
   { method: "POST", path: "/procurement/purchase-orders/:id/approve", permissions: ["purchase_orders.approve"], riskLevel: "critical" },
   { method: "POST", path: "/procurement/purchase-orders/:id/receive", permissions: ["purchase_orders.receive"], riskLevel: "high" },
-  { method: "POST", path: "/guest-portal/session/:token/check-in", permissions: ["guest_self_service.manage"], riskLevel: "high" },
-  { method: "POST", path: "/guest-portal/session/:token/check-out", permissions: ["guest_self_service.manage"], riskLevel: "high" },
   { method: "POST", path: "/guest-portal/session/:token/pay", permissions: ["guest_self_service.manage"], riskLevel: "critical" },
-  { method: "POST", path: "/guest-portal/session/:token/invoice-request", permissions: ["guest_self_service.manage"], riskLevel: "high" },
-  { method: "POST", path: "/guest-portal/session/:token/upsells/:offerId/purchase", permissions: ["guest_self_service.manage"], riskLevel: "high" },
-  { method: "PATCH", path: "/guest-self-service/properties/:propertyId/settings", permissions: ["guest_portal.configure"], riskLevel: "high" },
   // Guest portal real auth + pre-check-in + service requests (Sprint 40).
   // These are GUEST-scoped, not staff-permission-gated: the guest token IS the
   // auth. Registered as "public" with empty permissions (like /auth/login) so
@@ -419,7 +388,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/guest-portal/reservation", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/guest-portal/pre-check-in", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/guest-portal/service-request", permissions: [], riskLevel: "public" },
-  { method: "POST", path: "/reputation/reviews/:id/ai-draft-response", permissions: ["reputation.respond"], riskLevel: "medium" },
   { method: "POST", path: "/reputation/reviews/:id/respond", permissions: ["reputation.respond"], riskLevel: "high" },
   { method: "POST", path: "/quality/properties/:propertyId/cases", permissions: ["quality_cases.manage"], riskLevel: "medium" },
   { method: "PATCH", path: "/quality/cases/:id", permissions: ["quality_cases.manage"], riskLevel: "medium" },
@@ -436,24 +404,11 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/analytics/metrics", permissions: ["metrics.manage"], riskLevel: "high" },
   { method: "PATCH", path: "/analytics/anomalies/:id", permissions: ["analytics.configure"], riskLevel: "medium" },
   { method: "POST", path: "/analytics/properties/:propertyId/reports", permissions: ["analytics.configure"], riskLevel: "medium" },
-  { method: "POST", path: "/analytics/query", permissions: ["analytics.ai_ask"], riskLevel: "low" },
   // POST /developer/apps and POST /developer/apps/:appId/rotate-secret are
   // declared once, above (developer.manage_webhooks): findRoutePermission is an
   // exact first-wins match, so the second /developer/apps entry and the
   // `:id`-named rotate-secret variant here were dead code. PATCH
   // /developer/apps/:id is not registered anywhere (audit 2026-09-13).
-  { method: "POST", path: "/developer/webhooks", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
-  { method: "PATCH", path: "/developer/webhooks/:id", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
-  { method: "POST", path: "/developer/webhooks/:id/test", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
-  { method: "POST", path: "/ai-governance/policies", permissions: ["ai_governance.configure"], riskLevel: "high" },
-  { method: "PATCH", path: "/ai-governance/policies/:id", permissions: ["ai_governance.configure"], riskLevel: "high" },
-  { method: "PATCH", path: "/ai-governance/tools/:toolName", permissions: ["ai_tool_registry.manage"], riskLevel: "critical" },
-  { method: "POST", path: "/ai-governance/prompts", permissions: ["ai_prompts.manage"], riskLevel: "high" },
-  { method: "PATCH", path: "/ai-governance/prompts/:id", permissions: ["ai_prompts.manage"], riskLevel: "high" },
-  { method: "POST", path: "/ai-governance/evaluations/:id/run", permissions: ["ai_evals.manage"], riskLevel: "high" },
-  { method: "POST", path: "/ai-governance/incidents", permissions: ["ai_incidents.manage"], riskLevel: "high" },
-  { method: "PATCH", path: "/ai-governance/incidents/:id", permissions: ["ai_incidents.manage"], riskLevel: "high" },
-  { method: "PATCH", path: "/ai-governance/human-review/:id", permissions: ["ai_governance.configure"], riskLevel: "high" },
   // AI Operations — pipeline status (Sprint 48, tool-call telemetry)
   { method: "GET", path: "/ai-operations/pipeline/dashboard", permissions: ["ai_governance.read"], riskLevel: "low" },
   { method: "GET", path: "/ai-operations/pipeline/calls/:id", permissions: ["ai_governance.read"], riskLevel: "low" },
@@ -537,10 +492,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/backoffice/properties/:propertyId/floors", permissions: ["property.map.manage"], riskLevel: "high" },
   { method: "POST", path: "/backoffice/properties/:propertyId/zones", permissions: ["property.map.manage"], riskLevel: "high" },
   { method: "POST", path: "/backoffice/properties/:propertyId/spaces", permissions: ["property.map.manage"], riskLevel: "high" },
-  { method: "POST", path: "/backoffice/properties/:propertyId/map-positions", permissions: ["property.map.manage"], riskLevel: "high" },
   { method: "POST", path: "/backoffice/properties/:propertyId/rooms/bulk", permissions: ["property.map.manage"], riskLevel: "critical" },
   { method: "PATCH", path: "/backoffice/properties/:propertyId/rooms/bulk", permissions: ["property.map.manage"], riskLevel: "critical" },
-  { method: "GET", path: "/backoffice/properties/:propertyId/property-map/export", permissions: ["property.map.read"], riskLevel: "medium" },
   { method: "GET", path: "/backoffice/properties/:propertyId/room-types", permissions: ["property.map.read"], riskLevel: "medium" },
   { method: "POST", path: "/backoffice/properties/:propertyId/room-types", permissions: ["property.map.manage"], riskLevel: "high" },
   { method: "PATCH", path: "/backoffice/properties/:propertyId/room-types/:roomTypeId", permissions: ["property.map.manage"], riskLevel: "high" },
@@ -561,18 +514,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/backoffice/properties/:propertyId/room-features", permissions: ["property.map.manage"], riskLevel: "high" },
   { method: "GET", path: "/backoffice/properties/:propertyId/bed-types", permissions: ["property.map.read"], riskLevel: "medium" },
   { method: "POST", path: "/backoffice/properties/:propertyId/bed-types", permissions: ["property.map.manage"], riskLevel: "high" },
-  {
-    method: "POST",
-    path: "/backoffice/properties/:propertyId/imports/property-map/preview",
-    permissions: ["property.import"],
-    riskLevel: "high"
-  },
-  {
-    method: "POST",
-    path: "/backoffice/properties/:propertyId/imports/property-map/commit",
-    permissions: ["property.import", "property.map.manage"],
-    riskLevel: "critical"
-  },
   { method: "GET", path: "/backoffice/properties/:propertyId/imports/:importId", permissions: ["property.import"], riskLevel: "medium" },
   { method: "GET", path: "/backoffice/properties/:propertyId/modules", permissions: ["modules.read"], riskLevel: "medium" },
   { method: "PATCH", path: "/backoffice/properties/:propertyId/modules/:moduleCode", permissions: ["modules.configure"], riskLevel: "high" },
@@ -587,12 +528,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
     path: "/backoffice/properties/:propertyId/modules/:moduleCode/configuration",
     permissions: ["modules.configure"],
     riskLevel: "high"
-  },
-  {
-    method: "GET",
-    path: "/backoffice/properties/:propertyId/modules/:moduleCode/health",
-    permissions: ["modules.read"],
-    riskLevel: "medium"
   },
   {
     method: "POST",
@@ -706,20 +641,9 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   },
   { method: "GET", path: "/backoffice/properties/:propertyId/ai-settings", permissions: ["ai.configure"], riskLevel: "high" },
   { method: "PATCH", path: "/backoffice/properties/:propertyId/ai-settings", permissions: ["ai.configure"], riskLevel: "critical" },
-  { method: "GET", path: "/backoffice/properties/:propertyId/ai/suggestions", permissions: ["ai.configure"], riskLevel: "high" },
-  { method: "POST", path: "/backoffice/properties/:propertyId/ai/suggestions", permissions: ["ai.configure"], riskLevel: "high" },
-  {
-    method: "POST",
-    path: "/backoffice/properties/:propertyId/ai/suggestions/:suggestionId/apply",
-    permissions: ["ai.configure"],
-    riskLevel: "critical"
-  },
   { method: "GET", path: "/backoffice/properties/:propertyId/templates", permissions: ["templates.read"], riskLevel: "medium" },
   { method: "POST", path: "/backoffice/properties/:propertyId/templates", permissions: ["templates.manage"], riskLevel: "high" },
   { method: "PATCH", path: "/backoffice/properties/:propertyId/templates/:templateId", permissions: ["templates.manage"], riskLevel: "high" },
-  { method: "POST", path: "/backoffice/properties/:propertyId/qr-codes", permissions: ["property.map.manage"], riskLevel: "high" },
-  { method: "GET", path: "/backoffice/properties/:propertyId/qr-codes", permissions: ["property.map.read"], riskLevel: "medium" },
-  { method: "POST", path: "/backoffice/properties/:propertyId/qr-codes/bulk", permissions: ["property.map.manage"], riskLevel: "high" },
   { method: "GET", path: "/backoffice/properties/:propertyId/audit", permissions: ["audit.read"], riskLevel: "high" },
   { method: "GET", path: "/modules/catalog", permissions: ["modules.read"], riskLevel: "low" },
   { method: "GET", path: "/modules/:moduleCode/dependencies", permissions: ["modules.read"], riskLevel: "low" },
@@ -951,30 +875,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
     riskLevel: "high"
   },
   {
-    method: "GET",
-    path: "/compliance/authority/properties/:propertyId/inbox",
-    permissions: ["guest_register.read"],
-    riskLevel: "medium"
-  },
-  {
-    method: "GET",
-    path: "/compliance/authority/properties/:propertyId/submissions",
-    permissions: ["guest_register.read"],
-    riskLevel: "medium"
-  },
-  {
-    method: "GET",
-    path: "/compliance/authority/submissions/:submissionId",
-    permissions: ["guest_register.read", "guest_register.view_sensitive"],
-    riskLevel: "high"
-  },
-  {
-    method: "POST",
-    path: "/compliance/authority/submissions/:submissionId/retry",
-    permissions: ["guest_register.submit"],
-    riskLevel: "high"
-  },
-  {
     method: "POST",
     path: "/compliance/ses-hospedajes/properties/:propertyId/batches/generate",
     permissions: ["guest_register.export", "compliance.ses.export"],
@@ -1032,13 +932,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/guest-register-records/:id/sign", permissions: ["pms.checkin.execute"], riskLevel: "high" },
   { method: "PATCH", path: "/guest-register-records/:id/correct", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   { method: "POST", path: "/guest-register-records/:id/queue-ses", permissions: ["compliance.ses.submit"], riskLevel: "high" },
-  {
-    method: "GET",
-    path: "/properties/:propertyId/ses-hospedajes/submissions",
-    permissions: ["guest_register.read"],
-    riskLevel: "medium"
-  },
-  { method: "PATCH", path: "/ses-hospedajes/submissions/:id/status", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   {
     method: "POST",
     path: "/ai/commands/check-in-from-scan",
@@ -1233,10 +1126,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/cancellation-policies", permissions: ["pms.reservation.read"], riskLevel: "low" },
   { method: "GET", path: "/cancellation-policies/:id", permissions: ["pms.reservation.read"], riskLevel: "low" },
 
-  // CRM reads — guest profiles + segments are PII.
-  { method: "GET", path: "/crm/profiles", permissions: ["crm.read"], riskLevel: "medium" },
-  { method: "GET", path: "/crm/profiles/:id", permissions: ["crm.read"], riskLevel: "medium" },
-  { method: "GET", path: "/crm/duplicates", permissions: ["crm.read"], riskLevel: "medium" },
+  // CRM reads — segments, campaigns and loyalty are PII (profiles / duplicates:
+  // memory-only legs retired in Tanda L2 · L2-02).
   { method: "GET", path: "/crm/segments", permissions: ["crm.read"], riskLevel: "medium" },
   { method: "GET", path: "/crm/campaigns", permissions: ["crm.read"], riskLevel: "medium" },
   { method: "GET", path: "/crm/loyalty", permissions: ["crm.read"], riskLevel: "medium" },
@@ -1251,7 +1142,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // the staff permission preHandler must still find a manifest entry).
   { method: "GET", path: "/guest-portal/session/:token", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/guest-portal/session/:token/folio", permissions: [], riskLevel: "public" },
-  { method: "GET", path: "/guest-portal/session/:token/upsells", permissions: [], riskLevel: "public" },
 
   // Auto-generated OpenAPI spec — public so external tooling can fetch the schema.
   { method: "GET", path: "/developer/openapi.yaml", permissions: [], riskLevel: "public" },
@@ -1284,6 +1174,9 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/admin/tenants", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
   { method: "GET", path: "/admin/tenants/:orgId", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
   { method: "GET", path: "/admin/tenants/:orgId/audit-log", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
+  // Tanda L2 (L2-02): ejecuciones durables del worker (worker_job_runs) para la
+  // consola de plataforma; el handler exige además requirePlatformAdmin.
+  { method: "GET", path: "/admin/worker/job-runs", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
   { method: "POST", path: "/admin/tenants", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
   { method: "POST", path: "/admin/tenants/:orgId/users/:userId/reset-password", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
   // Tanda 3 (CFG-P1-6): replaces the clear-text temp password with a persisted
@@ -1295,8 +1188,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // registered without a manifest entry and therefore ran fail-open. Keys reuse
   // existing PermissionKey values, aligned with the sibling entries of each
   // family (the POST/PATCH of the same resource, or the equivalent read route).
-  // Advanced modules health (mirrors /backoffice/.../modules/:moduleCode/health).
-  { method: "GET", path: "/advanced/properties/:propertyId/modules/:moduleCode/health", permissions: ["modules.read"], riskLevel: "low" },
   // Revenue strategy reads.
   { method: "GET", path: "/revenue/properties/:propertyId/period-metrics", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/properties/:propertyId/pricing-rules", permissions: ["revenue.read"], riskLevel: "medium" },
@@ -1321,42 +1212,20 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // Workforce (labor costs are payroll data: dedicated key).
   { method: "GET", path: "/workforce/properties/:propertyId/schedule", permissions: ["workforce.read"], riskLevel: "medium" },
   { method: "GET", path: "/workforce/properties/:propertyId/time-clock", permissions: ["workforce.read"], riskLevel: "medium" },
-  { method: "GET", path: "/workforce/properties/:propertyId/labor-forecast", permissions: ["workforce.read"], riskLevel: "medium" },
-  { method: "GET", path: "/workforce/properties/:propertyId/labor-costs", permissions: ["workforce.labor_cost.view"], riskLevel: "high" },
   // Procurement & inventory (advanced modules).
-  { method: "GET", path: "/procurement/suppliers", permissions: ["procurement.read"], riskLevel: "medium" },
-  { method: "GET", path: "/inventory/properties/:propertyId/items", permissions: ["inventory.read"], riskLevel: "low" },
-  { method: "GET", path: "/inventory/properties/:propertyId/stock", permissions: ["inventory.read"], riskLevel: "medium" },
   { method: "GET", path: "/procurement/properties/:propertyId/purchase-orders", permissions: ["procurement.read"], riskLevel: "medium" },
   // Guest self-service, reputation, quality, surveys.
-  { method: "GET", path: "/guest-self-service/properties/:propertyId/settings", permissions: ["guest_self_service.read"], riskLevel: "low" },
-  { method: "GET", path: "/reputation/properties/:propertyId/dashboard", permissions: ["reputation.read"], riskLevel: "low" },
   { method: "GET", path: "/reputation/properties/:propertyId/reviews", permissions: ["reputation.read"], riskLevel: "medium" },
   { method: "GET", path: "/quality/properties/:propertyId/cases", permissions: ["quality_cases.read"], riskLevel: "medium" },
   { method: "GET", path: "/surveys/properties/:propertyId", permissions: ["surveys.read"], riskLevel: "low" },
   // Energy, sustainability, safety.
-  { method: "GET", path: "/energy/properties/:propertyId/dashboard", permissions: ["energy.read"], riskLevel: "low" },
   { method: "GET", path: "/energy/properties/:propertyId/meters", permissions: ["energy.read"], riskLevel: "low" },
-  { method: "GET", path: "/sustainability/properties/:propertyId/dashboard", permissions: ["sustainability.read"], riskLevel: "low" },
-  { method: "GET", path: "/sustainability/properties/:propertyId/report", permissions: ["sustainability.read"], riskLevel: "low" },
   { method: "GET", path: "/safety/properties/:propertyId/incidents", permissions: ["incidents.read"], riskLevel: "medium" },
   { method: "GET", path: "/safety/properties/:propertyId/checks", permissions: ["safety_checks.read"], riskLevel: "low" },
   // Analytics.
-  { method: "GET", path: "/analytics/properties/:propertyId/dashboard", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/analytics/properties/:propertyId/metrics", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/analytics/properties/:propertyId/anomalies", permissions: ["analytics.read"], riskLevel: "medium" },
   { method: "GET", path: "/analytics/properties/:propertyId/reports", permissions: ["analytics.read"], riskLevel: "medium" },
-  // Developer portal.
-  { method: "GET", path: "/developer/apps/:id/usage", permissions: ["developer.manage_apps"], riskLevel: "medium" },
-  { method: "GET", path: "/developer/webhooks", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
-  { method: "GET", path: "/developer/webhooks/:id/deliveries", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
-  // AI governance (legacy prefix; mirrors /ai-operations/governance/*).
-  { method: "GET", path: "/ai-governance/policies", permissions: ["ai_governance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/ai-governance/tools", permissions: ["ai_governance.read"], riskLevel: "low" },
-  { method: "GET", path: "/ai-governance/prompts", permissions: ["ai_governance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/ai-governance/evaluations", permissions: ["ai_governance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/ai-governance/incidents", permissions: ["ai_incidents.read"], riskLevel: "medium" },
-  { method: "GET", path: "/ai-governance/human-review", permissions: ["ai_governance.read"], riskLevel: "medium" },
   // Reservation sub-resources.
   { method: "GET", path: "/reservations/:id/audit-events", permissions: ["pms.reservation.read"], riskLevel: "medium" },
   { method: "GET", path: "/reservations/:id/documents", permissions: ["pms.reservation.read"], riskLevel: "low" },

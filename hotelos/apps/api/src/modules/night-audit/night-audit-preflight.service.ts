@@ -89,18 +89,31 @@ function fmtName(g: { firstName?: string | null; surname1?: string | null } | nu
   return [g.firstName, g.surname1].filter(Boolean).join(" ") || "Huésped";
 }
 
-async function nameForReservation(reservationId: string): Promise<string> {
-  const link = await prisma.reservationGuest.findFirst({
-    where: { reservationId, isPrimary: true },
-    select: { guestId: true }
+/**
+ * Tanda L2 (L2-06): primary-guest name of every listed reservation in two
+ * queries (links + guests) instead of two per reservation. Missing link or
+ * guest → «Huésped», as before.
+ */
+async function namesForReservations(reservationIds: readonly string[]): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  if (reservationIds.length === 0) return names;
+  const links = await prisma.reservationGuest.findMany({
+    where: { reservationId: { in: [...reservationIds] }, isPrimary: true },
+    select: { reservationId: true, guestId: true }
   });
-  if (!link) return "Huésped";
-  const guest = await prisma.guest.findUnique({
-    where: { id: link.guestId },
-    select: { firstName: true, surname1: true }
-  });
-  return fmtName(guest);
+  const guestIds = Array.from(new Set(links.map((l) => l.guestId)));
+  const guests = guestIds.length
+    ? await prisma.guest.findMany({ where: { id: { in: guestIds } }, select: { id: true, firstName: true, surname1: true } })
+    : [];
+  const guestById = new Map(guests.map((g) => [g.id, g]));
+  for (const link of links) {
+    if (names.has(link.reservationId)) continue;
+    names.set(link.reservationId, fmtName(guestById.get(link.guestId) ?? null));
+  }
+  return names;
 }
+
+const nameOf = (names: Map<string, string>, reservationId: string): string => names.get(reservationId) ?? "Huésped";
 
 export async function buildPreflight(input: { propertyId: string }): Promise<PreflightResult> {
   const propertyId = input.propertyId;
@@ -112,19 +125,18 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     where: { propertyId, arrivalDate: { gte: today, lt: tomorrow }, status: "confirmed" },
     select: { id: true, code: true, eta: true, assignedRoomId: true }
   });
+  const arrivalNames = await namesForReservations(arrivalsPending.slice(0, 5).map((r) => r.id));
   const checkArrivals: PreflightCheck = {
     id: "arrivals_pending",
     title: T.arrivals_pending.title,
     status: arrivalsPending.length === 0 ? "ok" : arrivalsPending.length > 3 ? "blocker" : "warning",
     count: arrivalsPending.length,
     detail: arrivalsPending.length === 0 ? T.arrivals_pending.ok : T.arrivals_pending.some(arrivalsPending.length),
-    items: await Promise.all(
-      arrivalsPending.slice(0, 5).map(async (r) => ({
-        ref: r.id,
-        label: `${r.code} · ${await nameForReservation(r.id)}`,
-        detail: arrivalTimeHint(r.eta)
-      }))
-    )
+    items: arrivalsPending.slice(0, 5).map((r) => ({
+      ref: r.id,
+      label: `${r.code} · ${nameOf(arrivalNames, r.id)}`,
+      detail: arrivalTimeHint(r.eta)
+    }))
   };
 
   // ---- 2) No-shows sin resolver ---------------------------------------
@@ -139,10 +151,10 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     status: unresolvedNoShows.length === 0 ? "ok" : "blocker",
     count: unresolvedNoShows.length,
     detail: unresolvedNoShows.length === 0 ? T.unresolved_no_shows.ok : T.unresolved_no_shows.some(unresolvedNoShows.length),
-    items: await Promise.all(
-      unresolvedNoShows.slice(0, 5).map(async (r) => ({
+    items: await namesForReservations(unresolvedNoShows.slice(0, 5).map((r) => r.id)).then((names) =>
+      unresolvedNoShows.slice(0, 5).map((r) => ({
         ref: r.id,
-        label: `${r.code} · ${await nameForReservation(r.id)}`,
+        label: `${r.code} · ${nameOf(names, r.id)}`,
         detail: expectedArrivalHint(r.arrivalDate)
       }))
     )
@@ -163,10 +175,10 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     status: foliosWithBalance.length === 0 ? "ok" : "blocker",
     count: foliosWithBalance.length,
     detail: foliosWithBalance.length === 0 ? T.open_folios_with_balance.ok : T.open_folios_with_balance.some(foliosWithBalance.length, totalOwed),
-    items: await Promise.all(
-      foliosWithBalance.slice(0, 5).map(async (f) => ({
+    items: await namesForReservations(foliosWithBalance.slice(0, 5).map((f) => f.reservationId)).then((names) =>
+      foliosWithBalance.slice(0, 5).map((f) => ({
         ref: f.reservationId,
-        label: await nameForReservation(f.reservationId),
+        label: nameOf(names, f.reservationId),
         detail: T.open_folios_with_balance.balance(balances.get(f.reservationId) ?? 0)
       }))
     )
@@ -177,19 +189,22 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     where: { propertyId, status: "checked_in" },
     select: { id: true, code: true, arrivalDate: true, departureDate: true }
   });
-  let unpostedCount = 0;
-  for (const r of inHouse) {
-    // Si la reserva está in-house pero no tiene ninguna línea de tipo "room" posteada hoy → posiblemente falta.
-    const todayLine = await prisma.folioLine.findFirst({
-      where: {
-        folio: { reservationId: r.id },
-        type: "room",
-        postedAt: { gte: today, lt: tomorrow }
-      },
-      select: { id: true }
-    });
-    if (!todayLine) unpostedCount++;
-  }
+  // Tanda L2 (L2-06): the reservations that DO have a room line posted today,
+  // in one query over their folios (was one findFirst per in-house reservation).
+  // Si la reserva está in-house pero no tiene ninguna línea de tipo "room" posteada hoy → posiblemente falta.
+  const postedToday =
+    inHouse.length === 0
+      ? []
+      : await prisma.folio.findMany({
+          where: {
+            reservationId: { in: inHouse.map((r) => r.id) },
+            lines: { some: { type: "room", postedAt: { gte: today, lt: tomorrow } } }
+          },
+          select: { reservationId: true },
+          distinct: ["reservationId"]
+        });
+  const postedTodaySet = new Set(postedToday.map((f) => f.reservationId));
+  const unpostedCount = inHouse.filter((r) => !postedTodaySet.has(r.id)).length;
   const checkUnposted: PreflightCheck = {
     id: "unposted_room_charges",
     title: T.unposted_room_charges.title,
@@ -237,10 +252,10 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     status: departuresNotCheckedOut.length === 0 ? "ok" : "blocker",
     count: departuresNotCheckedOut.length,
     detail: departuresNotCheckedOut.length === 0 ? T.departures_not_checked_out.ok : T.departures_not_checked_out.some(departuresNotCheckedOut.length),
-    items: await Promise.all(
-      departuresNotCheckedOut.slice(0, 5).map(async (r) => ({
+    items: await namesForReservations(departuresNotCheckedOut.slice(0, 5).map((r) => r.id)).then((names) =>
+      departuresNotCheckedOut.slice(0, 5).map((r) => ({
         ref: r.id,
-        label: `${r.code} · ${await nameForReservation(r.id)}`,
+        label: `${r.code} · ${nameOf(names, r.id)}`,
         detail: expectedDepartureHint(r.departureDate)
       }))
     )

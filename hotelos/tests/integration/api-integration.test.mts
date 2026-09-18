@@ -265,12 +265,15 @@ describe("API integration (app.inject)", () => {
     // five routes were among the 62 GETs mapped in the 2026-09-13 audit and
     // take no :propertyId, so the check does not depend on seeded data. A 403
     // here would mean the manifest gate (or a permission key) is wrong.
+    // Tanda L2 (L2-01): /procurement/suppliers, /developer/webhooks and
+    // /ai-governance/policies (memory-only or duplicated legs retired by L2-02)
+    // were replaced by canonical GETs without :propertyId that stay.
     await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", RBAC_STRICT: "true" }, async () => {
       for (const url of [
         "/integrations/email/providers",
-        "/procurement/suppliers",
-        "/developer/webhooks",
-        "/ai-governance/policies",
+        "/webhooks/subscriptions",
+        "/ai-operations/governance/policies",
+        "/marketplace/listings",
         "/accounting/fiscal-periods"
       ]) {
         const res = await app.inject({ method: "GET", url });

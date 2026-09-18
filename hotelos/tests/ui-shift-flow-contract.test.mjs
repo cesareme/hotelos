@@ -110,8 +110,8 @@ describe("ehotelOS Flow UI/UX shift", () => {
     for (const marker of [
       "model InventoryResource",
       "@@map(\"inventory_resources\")",
-      "model ReservationResource",
-      "@@map(\"reservation_resources\")",
+      // Tanda L2 (L2-01): ReservationResource was retired by migration
+      // 20260918130000_persistencia_l2 (0 readers / writers, 0 rows).
       "resourceType",
       "hourlyBookable",
       "monthlyBookable"

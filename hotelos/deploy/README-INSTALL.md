@@ -43,6 +43,13 @@ Decisiones fijadas en esta tanda:
   a `http://localhost:3000` y el smoke lo detecta.
 - **Una sola instancia con `RUN_SCHEDULERS=true`** (el API). El worker corre
   siempre con `RUN_SCHEDULERS=false`; una segunda réplica del API también.
+  Desde la Tanda L2 (2026-09-18) cada tick exige además el lease de la tabla
+  `scheduler_leases` (fila `api-schedulers`, ttl 60 s, `lib/scheduler-leader.ts`):
+  si dos instancias arrancan con `RUN_SCHEDULERS=true`, solo la que sostiene el
+  lease ejecuta; `GET /health` lo muestra en `schedulers: { leader, held,
+  thisInstance, expiresAt }`. El worker (pg-boss, esquema `pgboss`, 4 colas)
+  escribe cada ejecución en `worker_job_runs` y purga las antiguas según
+  `WORKER_JOB_RUN_RETENTION_DAYS` (7 por defecto).
 
 ---
 
@@ -82,7 +89,8 @@ Rol `production-native` (systemd + Caddy) — mínimas:
 | `APP_BASE_URL` | `https://<dominio>` | Enlaces de invitación/reset; de aquí se deriva `VITE_API_URL` |
 | `API_PUBLIC_URL` / `VITE_API_URL` | `https://<dominio>/api` | Origen público del API; `VITE_API_URL` se hornea en el build del front (`APP_PUBLIC_API_URL` está retirada) |
 | `CORS_ALLOWED_ORIGINS` | `https://<dominio>` | Lista separada por comas (`PILOT_PUBLIC_ORIGIN` es alias antiguo) |
-| `RUN_SCHEDULERS` | `true` (solo en el API) | El worker lo fuerza a `false` |
+| `RUN_SCHEDULERS` | `true` (solo en el API) | El worker lo fuerza a `false`; el tick real lo decide además el lease `scheduler_leases` (Tanda L2) |
+| `WORKER_JOB_RUN_RETENTION_DAYS` | `7` (opcional) | Días que el worker conserva los `worker_job_runs` `completed` (los `failed` 4×); nunca toca `running` ni las remesas SEPA |
 | `RBAC_STRICT` | `true` | Documental: ya es el default en producción |
 | `HOTELOS_ALLOW_DEMO_AUTH` | ausente o `false` | Con `true` el API se niega a arrancar en producción |
 | `VERIFACTU_MODE` / `SES_HOSPEDAJES_MODE` | `sandbox` hasta tener certificados | Fuera de sandbox el bloque `VERIFACTU_SOFTWARE_*` es obligatorio |
@@ -221,6 +229,18 @@ anfitorio-api anfitorio-worker` y espera a `/health`) → `smoke`.
 
 `rbac:sync -- --prune` (borra claves obsoletas y sus grants) queda fuera del
 script a propósito: manual, tras backup.
+
+Migración `20260918130000_persistencia_l2` (Tanda L2, 2026-09-18): es la primera
+migración **destructiva** de la cadena (18 `DROP TABLE` de tablas muertas, cada
+uno precedido de un `DO $$` que aborta si la tabla tiene filas; 2 tablas nuevas
+`scheduler_leases` y `ai_pending_confirmations`; `organization_id` NOT NULL en
+`notifications`, `offline_sync_records` y `worker_job_runs`; 14 índices únicos
+parciales). El paso `backup` del script la precede siempre; si se aplica a mano,
+`pg_dump -Fc` antes de `db:migrate:deploy`. Si alguna de las 18 tablas tiene filas
+en el VPS, la migración se detiene con el nombre de la tabla: vaciarla (o
+exportarla) y relanzar. Remesas SEPA anteriores a L2 con
+`worker_job_runs.organization_id` NULL dejan de listarse: rellenar
+`organization_id`/`property_id` desde `payload_json` tras el deploy.
 
 GitHub Actions: `deploy.yml` (raíz git) hace lo mismo por SSH
 (`workflow_dispatch`, o automático tras CI verde si la variable `AUTO_DEPLOY`

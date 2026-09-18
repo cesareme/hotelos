@@ -50,6 +50,19 @@
 // entities (guest register, authority submissions, onboarding projects,
 // integration connections) try the in-memory mirror first and fall back to
 // Prisma, where the normal re-pointing semantics apply.
+//
+// Tanda L2 (L2-01 · persistencia): NO entity of the advanced-modules engine
+// resolves from memory any more — shift, absenceRequest, safetyIncident,
+// safetyCheck, qualityCase, survey, demandCalendarEvent and pendingConfirmation
+// are Prisma-only, `advancedRecord` is a composite Prisma resolver over the
+// concrete tables (purchaseOrder → anomalyEvent → guestReview → utilityMeter →
+// metricDefinition → scheduledReport; L2-02 replaces it with those entities in
+// server.ts) and the retired tables (revenue_scenarios, revenue_automation_rules,
+// property_imports — migration 20260918130000_persistencia_l2) keep only a
+// deprecated stub that always answers the opaque 404 until their routes go.
+// What still falls back to memory is outside the engine: groupBookings,
+// hotelEvents, revenueRecommendations and channels (seeded demo boards), the
+// hybrid entities above and the onboarding sub-entities (in-memory service).
 
 import { prisma } from "@hotelos/database";
 import { BadRequestError, NotFoundError } from "./http-error.js";
@@ -266,12 +279,6 @@ function withMemoryFallback(
   };
 }
 
-/** Generic advanced-module rows created through createAdvancedRecord live in demoStore.advancedRecords. */
-function advancedRecordFallback(id: string): Owner | null {
-  const row = demoStore.advancedRecords.find((candidate) => candidate.id === id);
-  return row ? { propertyId: row.propertyId, inMemory: true } : null;
-}
-
 function propertyMirrorFallback(collection: Array<{ id: string; propertyId: string }>): (id: string) => Owner | null {
   return (id) => {
     const row = collection.find((candidate) => candidate.id === id);
@@ -319,6 +326,26 @@ function onboardingProjectsForCaller(request: TenantRequest) {
 }
 
 // ── Resolver table ──────────────────────────────────────────────────────────
+
+/** Concrete tables the generic `advancedRecord` leg is tried against, in order (Tanda L2 · L2-01). */
+const ADVANCED_RECORD_ENTITIES = [
+  "purchaseOrder",
+  "anomalyEvent",
+  "guestReview",
+  "utilityMeter",
+  "metricDefinition",
+  "scheduledReport"
+] as const;
+
+/** Lazy lookups (the table is self-referential: RESOLVERS is declared below). */
+const RESOLVERS_FOR_ADVANCED: Record<(typeof ADVANCED_RECORD_ENTITIES)[number], () => Resolver> = {
+  purchaseOrder: () => RESOLVERS.purchaseOrder,
+  anomalyEvent: () => RESOLVERS.anomalyEvent,
+  guestReview: () => RESOLVERS.guestReview,
+  utilityMeter: () => RESOLVERS.utilityMeter,
+  metricDefinition: () => RESOLVERS.metricDefinition,
+  scheduledReport: () => RESOLVERS.scheduledReport
+};
 
 const RESOLVERS = {
   // ─ Property-owned rows (Prisma, direct column) ─
@@ -371,37 +398,34 @@ const RESOLVERS = {
   salesOpportunity: byProperty("Oportunidad no encontrada.", (id) =>
     prisma.salesOpportunity.findUnique({ where: { id }, select: selectProperty })
   ),
-  shift: withMemoryFallback(
-    byProperty("Turno no encontrado.", (id) => prisma.shift.findUnique({ where: { id }, select: selectProperty })),
-    advancedRecordFallback
+  // Tanda L2 (L2-01): the advanced-module entities below are Prisma-only — the
+  // demoStore.advancedRecords fallback is gone, so an id that only ever lived in
+  // memory is simply not found.
+  shift: byProperty("Turno no encontrado.", (id) => prisma.shift.findUnique({ where: { id }, select: selectProperty })),
+  absenceRequest: byProperty("Solicitud de ausencia no encontrada.", (id) =>
+    prisma.absenceRequest.findUnique({ where: { id }, select: selectProperty })
   ),
-  absenceRequest: withMemoryFallback(
-    byProperty("Solicitud de ausencia no encontrada.", (id) =>
-      prisma.absenceRequest.findUnique({ where: { id }, select: selectProperty })
-    ),
-    advancedRecordFallback
+  safetyIncident: byProperty("Incidencia no encontrada.", (id) =>
+    prisma.safetyIncident.findUnique({ where: { id }, select: selectProperty })
   ),
-  safetyIncident: withMemoryFallback(
-    byProperty("Incidencia no encontrada.", (id) =>
-      prisma.safetyIncident.findUnique({ where: { id }, select: selectProperty })
-    ),
-    advancedRecordFallback
+  safetyCheck: byProperty("Control de seguridad no encontrado.", (id) =>
+    prisma.safetyCheck.findUnique({ where: { id }, select: selectProperty })
   ),
-  safetyCheck: withMemoryFallback(
-    byProperty("Control de seguridad no encontrado.", (id) =>
-      prisma.safetyCheck.findUnique({ where: { id }, select: selectProperty })
-    ),
-    advancedRecordFallback
+  qualityCase: byProperty("Caso de calidad no encontrado.", (id) =>
+    prisma.qualityCase.findUnique({ where: { id }, select: selectProperty })
   ),
-  qualityCase: withMemoryFallback(
-    byProperty("Caso de calidad no encontrado.", (id) =>
-      prisma.qualityCase.findUnique({ where: { id }, select: selectProperty })
-    ),
-    advancedRecordFallback
+  survey: byProperty("Encuesta no encontrada.", (id) => prisma.survey.findUnique({ where: { id }, select: selectProperty })),
+  purchaseOrder: byProperty("Pedido de compra no encontrado.", (id) =>
+    prisma.purchaseOrder.findUnique({ where: { id }, select: selectProperty })
   ),
-  survey: withMemoryFallback(
-    byProperty("Encuesta no encontrada.", (id) => prisma.survey.findUnique({ where: { id }, select: selectProperty })),
-    advancedRecordFallback
+  guestReview: byProperty("Reseña no encontrada.", (id) =>
+    prisma.guestReview.findUnique({ where: { id }, select: selectProperty })
+  ),
+  utilityMeter: byProperty("Contador no encontrado.", (id) =>
+    prisma.utilityMeter.findUnique({ where: { id }, select: selectProperty })
+  ),
+  sustainabilityAction: byProperty("Acción de sostenibilidad no encontrada.", (id) =>
+    prisma.sustainabilityAction.findUnique({ where: { id }, select: selectProperty })
   ),
   channel: byProperty("Canal no encontrado.", (id) =>
     prisma.channel.findUnique({ where: { id }, select: selectProperty })
@@ -479,9 +503,6 @@ const RESOLVERS = {
   ),
   department: byProperty("Departamento no encontrado.", (id) =>
     prisma.department.findUnique({ where: { id }, select: selectProperty })
-  ),
-  propertyImport: byProperty("Importación no encontrada.", (id) =>
-    prisma.propertyImport.findUnique({ where: { id }, select: selectProperty })
   ),
   housekeepingSection: byProperty("Sección de housekeeping no encontrada.", (id) =>
     prisma.housekeepingSection.findUnique({ where: { id }, select: selectProperty })
@@ -582,15 +603,17 @@ const RESOLVERS = {
         ?.webhookSubscriptionId,
     (): Resolver => RESOLVERS.webhookSubscription
   ),
-  // Wallet passes live in the raw `advanced_records` table (no Prisma model).
+  // Tanda L2 (L2-03 · corrector): the mobile key is a GuestPortalAction of
+  // type "mobile_key" in the reservation's property (id `mkey_<serial>`,
+  // modules/mobile-keys/wallet-pass.service.ts). The former raw SELECT on
+  // `advanced_records` (a table that never existed) answered 500 (42P01) to
+  // every verify / revoke.
   mobileKey: byProperty("Llave móvil no encontrada.", async (serialNumber) => {
-    const rows = await prisma.$queryRawUnsafe<Array<{ property_id: string }>>(
-      `SELECT property_id FROM advanced_records
-       WHERE module_code = 'guest_self_service' AND entity_type = 'mobile_key' AND entity_id = $1
-       LIMIT 1`,
-      serialNumber
-    );
-    return rows[0] ? { propertyId: rows[0].property_id } : null;
+    const row = await prisma.guestPortalAction.findFirst({
+      where: { id: `mkey_${serialNumber}`, actionType: "mobile_key" },
+      select: selectProperty
+    });
+    return row ? { propertyId: row.propertyId } : null;
   }),
 
   // Tanda 6b (L2): a Property addressed by its own id (PATCH /properties/:propertyId/establishment).
@@ -744,37 +767,46 @@ const RESOLVERS = {
   aiEvaluation: byPropertyOrOrganization("Evaluación no encontrada.", (id) =>
     prisma.aiEvaluation.findUnique({ where: { id }, select: { propertyId: true, organizationId: true } })
   ),
+  // Tanda L2 (L2-01): analytics rows of the hotel_intelligence_platform module.
+  // anomaly_events / scheduled_reports carry BOTH columns (property optional:
+  // an organization-wide anomaly or report); metric_definitions are org-owned.
+  anomalyEvent: byPropertyOrOrganization("Anomalía no encontrada.", (id) =>
+    prisma.anomalyEvent.findUnique({ where: { id }, select: { propertyId: true, organizationId: true } })
+  ),
+  scheduledReport: byPropertyOrOrganization("Informe programado no encontrado.", (id) =>
+    prisma.scheduledReport.findUnique({ where: { id }, select: { propertyId: true, organizationId: true } })
+  ),
+  metricDefinition: byOrganization("Métrica no encontrada.", (id) =>
+    prisma.metricDefinition.findUnique({ where: { id }, select: selectOrganization })
+  ),
 
-  // ─ Legacy revenue_profit_engine legs: the `/revenue/*` and `/channel-manager/*`
-  //   by-id routes mutate the in-memory boards (demoStore.channels,
-  //   demandCalendarEvents, revenueAutomationRules, revenueScenarios), which
-  //   are seeded in code and never dual-written. Prisma is still tried first
-  //   (re-pointing applies for migrated rows); the mirror fallback is strict.
-  //   `revenueChannel` deliberately differs from `channel` (Prisma-only, used
-  //   by the aggregator routes) so a mirror-only demo channel keeps working on
-  //   the legacy legs without widening the aggregator guard. ─
+  // ─ Legacy revenue_profit_engine legs: the `/channel-manager/*` by-id routes
+  //   still mutate the in-memory channel board (demoStore.channels, seeded in
+  //   code and never dual-written). Prisma is tried first (re-pointing applies
+  //   for migrated rows); the mirror fallback is strict. `revenueChannel`
+  //   deliberately differs from `channel` (Prisma-only, used by the aggregator
+  //   routes) so a mirror-only demo channel keeps working on the legacy legs
+  //   without widening the aggregator guard. ─
   revenueChannel: withMemoryFallback(
     byProperty("Canal no encontrado.", (id) => prisma.channel.findUnique({ where: { id }, select: selectProperty })),
     propertyMirrorFallback(demoStore.channels)
   ),
-  demandCalendarEvent: withMemoryFallback(
-    byProperty("Evento de demanda no encontrado.", (id) =>
-      prisma.demandCalendarEvent.findUnique({ where: { id }, select: selectProperty })
-    ),
-    propertyMirrorFallback(demoStore.demandCalendarEvents)
+  // Tanda L2 (L2-01): DemandCalendarEvent is a real Prisma table
+  // (modules/revenue/demand-calendar.service.ts writes it); the demoStore
+  // mirror fallback is gone.
+  demandCalendarEvent: byProperty("Evento de demanda no encontrado.", (id) =>
+    prisma.demandCalendarEvent.findUnique({ where: { id }, select: selectProperty })
   ),
-  revenueAutomationRule: withMemoryFallback(
-    byProperty("Regla de automatización no encontrada.", (id) =>
-      prisma.revenueAutomationRule.findUnique({ where: { id }, select: selectProperty })
-    ),
-    propertyMirrorFallback(demoStore.revenueAutomationRules)
-  ),
-  revenueScenario: withMemoryFallback(
-    byProperty("Escenario no encontrado.", (id) =>
-      prisma.revenueScenario.findUnique({ where: { id }, select: selectProperty })
-    ),
-    propertyMirrorFallback(demoStore.revenueScenarios)
-  ),
+  /** @deprecated L2: tabla retirada; L2-02 retira las rutas 2862-2897; eliminar el stub en la tanda siguiente */
+  revenueAutomationRule: {
+    notFound: "Regla de automatización no encontrada.",
+    resolve: async () => null
+  } satisfies Resolver,
+  /** @deprecated L2: tabla retirada; L2-02 retira las rutas 2862-2897; eliminar el stub en la tanda siguiente */
+  revenueScenario: {
+    notFound: "Escenario no encontrado.",
+    resolve: async () => null
+  } satisfies Resolver,
 
   // ─ Hybrid rows: in-memory mirror first (strict), Prisma fallback (re-pointing) ─
   guestRegisterRecord: {
@@ -824,18 +856,33 @@ const RESOLVERS = {
       return row ? { propertyId: row.propertyId } : null;
     }
   } satisfies Resolver,
+  // Tanda L2 (L2-01): HITL confirmations persist in ai_pending_confirmations.
+  // Only a `pending` row can be granted: an executed or expired confirmation is
+  // indistinguishable from a missing one (no replay, no oracle).
   pendingConfirmation: {
     notFound: "Confirmación no encontrada.",
     resolve: async (id) => {
-      const row = demoStore.pendingConfirmations.find((candidate) => candidate.id === id);
-      return row ? { propertyId: row.propertyId, inMemory: true } : null;
+      const row = await prisma.aiPendingConfirmation.findUnique({
+        where: { id },
+        select: { propertyId: true, organizationId: true, status: true }
+      });
+      return row && row.status === "pending" ? { propertyId: row.propertyId } : null;
     }
   } satisfies Resolver,
+  // Tanda L2 (L2-01): composite Prisma resolver for the generic by-id legs of
+  // the advanced-modules engine (server.ts purchase-orders, anomalies,
+  // reviews…). Tried in order over the concrete tables; L2-02 replaces every
+  // `entity: "advancedRecord"` with the concrete entity (server.ts:3163/3167
+  // purchaseOrder, :3357 anomalyEvent, :3313 guestReview…) and this resolver
+  // goes with it.
   advancedRecord: {
     notFound: "Recurso no encontrado.",
-    resolve: async (id) => {
-      const row = demoStore.advancedRecords.find((candidate) => candidate.id === id);
-      return row ? { propertyId: row.propertyId, inMemory: true } : null;
+    resolve: async (id, request) => {
+      for (const entity of ADVANCED_RECORD_ENTITIES) {
+        const owner = await RESOLVERS_FOR_ADVANCED[entity]().resolve(id, request);
+        if (owner) return owner;
+      }
+      return null;
     }
   } satisfies Resolver,
   // POS tickets are Prisma-first (Tanda 2 · FISC-05): a ticket IS a PosOrder

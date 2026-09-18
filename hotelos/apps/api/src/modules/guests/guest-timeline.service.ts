@@ -15,6 +15,8 @@
 // admins pueden cruzar orgs en la cadena demo).
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
+import { NotFoundError } from "../../lib/http-error.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
 
 export type GuestTimelineEventType =
@@ -104,6 +106,8 @@ export type GuestTimelineResult = {
   metrics: GuestTimelineMetrics;
   reservations: GuestTimelineReservation[];   // ordenadas desc por arrivalDate
   events: GuestTimelineEvent[];               // ordenadas desc por timestamp
+  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_orders"). */
+  degraded: string[];
 };
 
 function fmtName(g: { firstName?: string | null; surname1?: string | null; surname2?: string | null }): string {
@@ -122,7 +126,10 @@ function nightsBetween(a: Date, b: Date): number {
 
 export async function buildGuestTimeline(input: { guestId: string }): Promise<GuestTimelineResult> {
   const guest = await prisma.guest.findUnique({ where: { id: input.guestId } });
-  if (!guest) throw new Error("Guest not found.");
+  // Typed 404 (the route already answers 404 through assertEntityAccess; this
+  // keeps a direct caller from turning a missing guest into a 500).
+  if (!guest) throw new NotFoundError("Huésped no encontrado.");
+  const { safe, degraded } = createDegradedCollector("guests.timeline", { guestId: guest.id, organizationId: guest.organizationId });
 
   // Toda reserva donde este guest esté vinculado
   const links = await prisma.reservationGuest.findMany({
@@ -192,11 +199,17 @@ export async function buildGuestTimeline(input: { guestId: string }): Promise<Gu
 
   // Work orders relacionadas (por habitación asignada en alguna estancia)
   const occupiedRoomIds = Array.from(new Set(stays.map((s) => s.roomId)));
+  // Tanda L2 (L2-06): a failed work-order query is logged and reported in
+  // `degraded[]` (was `.catch(() => [])`: the timeline showed no incidents).
   const workOrders = occupiedRoomIds.length
-    ? await prisma.workOrder.findMany({
-        where: { roomId: { in: occupiedRoomIds } },
-        select: { id: true, propertyId: true, roomId: true, title: true, status: true, priority: true, createdAt: true }
-      }).catch(() => [])
+    ? await safe(
+        "work_orders",
+        prisma.workOrder.findMany({
+          where: { roomId: { in: occupiedRoomIds } },
+          select: { id: true, propertyId: true, roomId: true, title: true, status: true, priority: true, createdAt: true }
+        }),
+        []
+      )
     : [];
 
   // Profile
@@ -444,5 +457,5 @@ export async function buildGuestTimeline(input: { guestId: string }): Promise<Gu
   // Sort by timestamp desc
   events.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
-  return { profile, metrics, reservations: slimReservations, events };
+  return { profile, metrics, reservations: slimReservations, events, degraded };
 }

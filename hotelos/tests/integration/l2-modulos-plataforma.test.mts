@@ -1,0 +1,436 @@
+/**
+ * Tanda L2 · L2-08 · tests de integración mínimos por módulo — PLATAFORMA
+ * (admin-console, gdpr, esrs, reporting, search, offline, mobile-keys).
+ * app.inject sobre Postgres real con dos organizaciones AISLADAS
+ * (helpers/l2-tenant.mts): A escribe y lee; B (otra organización) nunca ve
+ * nada. STRICT_ENV: auth real, sin unión de permisos de demo, RBAC_STRICT=true.
+ *
+ * Tres casos por módulo (criterio §4 del plan · fila L2 «tests por módulo»):
+ *   (1) crear o leer con ámbito (fila en Prisma con organizationId / propertyId de A);
+ *   (2) 403 sin clave (mensaje en español del gate o de requirePermissions,
+ *       nunca el 403 de «ruta no registrada en el manifiesto»); en los módulos
+ *       cuyas rutas son solo `authenticated` (search) el caso negativo es el
+ *       401 sin sesión;
+ *   (3) 404 opaco en propiedad ajena (recepción de A sobre el hotel B; usuario
+ *       de la organización B sobre el hotel A o sobre una entidad de A).
+ *
+ * Administrador de plataforma: el helper no lo crea (ninguna plantilla de
+ * organización lleva admin.tenants.manage); esta suite crea en A un rol custom
+ * «Plataforma L2» con esa única clave real (role_permissions) y un usuario
+ * asignado a la organización — `isPlatformAdmin` se deriva de las concesiones
+ * reales (auth.service hasPlatformAdminGrant). Solo LEE /admin/tenants y
+ * /admin/worker/job-runs; cleanupTenant lo barre con la organización.
+ *
+ *   cd apps/api && node --env-file-if-exists=../../.env --import tsx --test ../../tests/integration/l2-modulos-plataforma.test.mts
+ */
+import assert from "node:assert/strict";
+import { after, before, describe, it } from "node:test";
+
+const { createIsolatedTenant, cleanupTenant, loginOrThrow, newRunId, STRICT_ENV, withEnv, farandaInvariants } = await import("./helpers/l2-tenant.mts");
+type IsolatedTenant = import("./helpers/l2-tenant.mts").IsolatedTenant;
+type Session = import("./helpers/l2-tenant.mts").Session;
+const { prisma, hashPassword } = await import("@hotelos/database");
+const { buildApiServer } = await import("../../apps/api/src/server.js");
+const { resetRbacScopeCacheForTests } = await import("../../apps/api/src/lib/rbac-scope.js");
+const { flushAuditQueues } = await import("../../apps/api/src/modules/audit/audit.service.js");
+
+type ApiApp = Awaited<ReturnType<typeof buildApiServer>>;
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Reply = { status: number; body: any; raw: string };
+
+const RUN = `p${newRunId()}`;
+const OPAQUE_404 = "Propiedad no encontrada.";
+
+let app: ApiApp;
+let A: IsolatedTenant;
+let B: IsolatedTenant;
+let owner: Session;
+let manager: Session;
+let reception: Session;
+let accountant: Session;
+let systems: Session;
+let auditor: Session;
+let platform: Session;
+let ownerB: Session;
+let receptionB: Session;
+let invariantsBefore: Awaited<ReturnType<typeof farandaInvariants>>;
+
+async function call(method: Method, url: string, session: Session | null, options: { payload?: unknown; propertyId?: string } = {}): Promise<Reply> {
+  const res = await withEnv(STRICT_ENV, () =>
+    app.inject({
+      method,
+      url,
+      headers: { ...(session?.headers ?? {}), ...(options.propertyId ? { "x-property-id": options.propertyId } : {}) },
+      ...(options.payload !== undefined ? { payload: options.payload } : {})
+    })
+  );
+  let body: any = null;
+  try {
+    body = res.body ? JSON.parse(res.body) : null;
+  } catch {
+    body = null;
+  }
+  return { status: res.statusCode, body, raw: res.body };
+}
+
+function expect404(reply: Reply, message = OPAQUE_404): void {
+  assert.equal(reply.status, 404, reply.raw.slice(0, 300));
+  assert.equal(reply.body?.message, message);
+}
+
+/** 403 en español del gate o de requirePermissions, con la clave que falta; nunca el de «ruta sin manifiesto». */
+function expect403(reply: Reply, key: string): void {
+  assert.equal(reply.status, 403, reply.raw.slice(0, 300));
+  const message = String(reply.body?.message ?? "");
+  assert.match(message, /^No tienes permiso para realizar esta acción/, message);
+  assert.ok(message.includes(key), `la clave que falta (${key}) viaja en el mensaje: ${message}`);
+  assert.doesNotMatch(message, /manifiesto/, "no es el 403 de ruta sin entrada en el manifiesto");
+}
+
+async function createUser(tenant: IsolatedTenant, local: string): Promise<{ id: string; email: string }> {
+  const id = `usr_l2_${local}_${tenant.run}`;
+  const email = `${local}.l2.${tenant.run}@faranda.test`;
+  await prisma.user.create({
+    data: { id, organizationId: tenant.organizationId, email, fullName: `L2 ${local} ${tenant.run}`, status: "active", passwordHash: hashPassword(tenant.password), mustChangePassword: false, passwordChangedAt: new Date() }
+  });
+  return { id, email };
+}
+
+async function assignRole(tenant: IsolatedTenant, userId: string, roleId: string, propertyId?: string): Promise<void> {
+  await prisma.userRoleAssignment.create({
+    data: { userId, roleId, scopeType: propertyId ? "property" : "organization", propertyId: propertyId ?? null, organizationId: tenant.organizationId, reason: `l2-08 ${userId}` }
+  });
+  resetRbacScopeCacheForTests();
+}
+
+async function addTenantUser(tenant: IsolatedTenant, spec: { local: string; templateKey: string; propertyId?: string }): Promise<{ id: string; email: string }> {
+  const user = await createUser(tenant, spec.local);
+  const roleId = tenant.roles[spec.templateKey];
+  if (!roleId) throw new Error(`Sin rol de plantilla «${spec.templateKey}» en ${tenant.organizationId}.`);
+  await assignRole(tenant, user.id, roleId, spec.propertyId);
+  return user;
+}
+
+/** Rol custom con la ÚNICA clave de plataforma, concedida en role_permissions (nunca por la unión demo). */
+async function addPlatformAdmin(tenant: IsolatedTenant): Promise<{ id: string; email: string }> {
+  const permission = await prisma.permission.findUnique({ where: { key: "admin.tenants.manage" }, select: { id: true } });
+  if (!permission) throw new Error("La clave admin.tenants.manage no está en el catálogo de permisos.");
+  const role = await prisma.role.create({ data: { organizationId: tenant.organizationId, name: `Plataforma L2 ${tenant.run}`, managed: false }, select: { id: true } });
+  await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+  const user = await createUser(tenant, "platform");
+  await assignRole(tenant, user.id, role.id);
+  return user;
+}
+
+before(async () => {
+  invariantsBefore = await farandaInvariants();
+  app = await buildApiServer();
+  A = await createIsolatedTenant(RUN);
+  B = await createIsolatedTenant(`${RUN}b`);
+  const managerUser = await addTenantUser(A, { local: "manager", templateKey: "manager", propertyId: A.propertyA });
+  const auditorUser = await addTenantUser(A, { local: "auditor", templateKey: "auditor" });
+  const platformUser = await addPlatformAdmin(A);
+  await withEnv(STRICT_ENV, async () => {
+    owner = await loginOrThrow(app, A.users.owner.email, A.password, "l2-08-plat-owner");
+    manager = await loginOrThrow(app, managerUser.email, A.password, "l2-08-plat-manager");
+    reception = await loginOrThrow(app, A.users.receptionist.email, A.password, "l2-08-plat-reception");
+    accountant = await loginOrThrow(app, A.users.accountant.email, A.password, "l2-08-plat-accountant");
+    systems = await loginOrThrow(app, A.users.systems.email, A.password, "l2-08-plat-systems");
+    auditor = await loginOrThrow(app, auditorUser.email, A.password, "l2-08-plat-auditor");
+    platform = await loginOrThrow(app, platformUser.email, A.password, "l2-08-plat-platform");
+    ownerB = await loginOrThrow(app, B.users.owner.email, B.password, "l2-08-plat-owner-b");
+    receptionB = await loginOrThrow(app, B.users.receptionist.email, B.password, "l2-08-plat-reception-b");
+  });
+});
+
+after(async () => {
+  try {
+    await flushAuditQueues();
+    if (A) await cleanupTenant(A.organizationId);
+    if (B) await cleanupTenant(B.organizationId);
+  } finally {
+    await app?.close();
+  }
+  assert.deepEqual(await farandaInvariants(), invariantsBefore, "las cifras de Faranda no cambian");
+  assert.equal(await prisma.organization.count({ where: { id: { in: [A.organizationId, B.organizationId] } } }), 0, "sin organizaciones residuales de esta suite");
+});
+
+// ---------------------------------------------------------------------------
+// admin-console
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · admin-console: consola de plataforma solo con admin.tenants.manage real", () => {
+  it("(1) el administrador de plataforma (rol custom con la clave real) lista los tenants — incluida la organización A — y las ejecuciones del worker", async () => {
+    const me = await call("GET", "/users/me", platform);
+    assert.equal(me.status, 200, me.raw.slice(0, 300));
+    assert.equal(me.body.isPlatformAdmin, true, "isPlatformAdmin se deriva de la concesión real");
+    const tenants = await call("GET", "/admin/tenants", platform);
+    assert.equal(tenants.status, 200, tenants.raw.slice(0, 300));
+    assert.ok(Array.isArray(tenants.body));
+    const mine = tenants.body.find((row: { organizationId: string }) => row.organizationId === A.organizationId);
+    assert.ok(mine, "la organización A aparece en la consola");
+    assert.equal(mine.propertiesCount ?? mine.propertyCount ?? 2, 2, JSON.stringify(mine).slice(0, 200));
+    const runs = await call("GET", "/admin/worker/job-runs?limit=5", platform);
+    assert.equal(runs.status, 200, runs.raw.slice(0, 300));
+    assert.ok(Array.isArray(runs.body.items));
+    assert.equal(typeof runs.body.total, "number");
+  });
+
+  it("(2) 403 sin clave: owner, sistemas (plantilla admin de organización) y recepción no entran en /admin/tenants ni en /admin/worker/job-runs", async () => {
+    for (const session of [owner, systems, reception]) {
+      expect403(await call("GET", "/admin/tenants", session), "admin.tenants.manage");
+      expect403(await call("GET", "/admin/worker/job-runs", session), "admin.tenants.manage");
+    }
+    const me = await call("GET", "/users/me", systems);
+    assert.equal(me.body.isPlatformAdmin, false, "la plantilla admin de organización nunca es plataforma");
+  });
+
+  it("(3) 404 opaco / sin fuga: el detalle de otra organización y las escrituras de la consola no están al alcance de un usuario de organización", async () => {
+    expect403(await call("GET", `/admin/tenants/${B.organizationId}`, owner), "admin.tenants.manage");
+    expect403(await call("PATCH", `/admin/tenants/${A.organizationId}/modules/workforce_labor`, ownerB, { payload: { enabled: true } }), "admin.tenants.manage");
+    expect403(await call("POST", "/admin/tenants", ownerB, { payload: { name: "Intruso", country: "ES", plan: "starter", ownerEmail: `x.${RUN}@example.com`, ownerFullName: "X", propertyName: "X" } }), "admin.tenants.manage");
+    assert.equal(await prisma.organization.count({ where: { name: "Intruso" } }), 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gdpr
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · gdpr: solicitudes RGPD con ámbito de organización", () => {
+  let requestId = "";
+
+  it("(1) POST /gdpr/requests (manager, compliance.gdpr.manage) persiste la solicitud con organizationId de A y GET la lista (owner, compliance.read)", async () => {
+    const created = await call("POST", "/gdpr/requests", manager, {
+      propertyId: A.propertyA,
+      payload: { requestType: "dsar", subjectEmail: `interesado.${RUN}@example.com`, requestorEmail: `dpo.${RUN}@example.com`, propertyId: A.propertyA }
+    });
+    assert.equal(created.status, 200, created.raw.slice(0, 300));
+    requestId = created.body.id;
+    const row = await prisma.gdprRequest.findUnique({ where: { id: requestId } });
+    assert.ok(row, "la solicitud existe en Prisma");
+    assert.equal(row.organizationId, A.organizationId);
+    assert.equal(row.propertyId, A.propertyA);
+    assert.equal(row.status, "pending");
+
+    const list = await call("GET", "/gdpr/requests", owner);
+    assert.equal(list.status, 200, list.raw.slice(0, 300));
+    assert.ok(list.body.some((item: { id: string }) => item.id === requestId));
+    const detail = await call("GET", `/gdpr/requests/${requestId}`, owner);
+    assert.equal(detail.status, 200, detail.raw.slice(0, 300));
+  });
+
+  it("(2) 403 sin clave: recepción no crea solicitudes (compliance.gdpr.manage) y sistemas no las lee (compliance.read)", async () => {
+    expect403(await call("POST", "/gdpr/requests", reception, { propertyId: A.propertyA, payload: { requestType: "erasure", subjectEmail: "x@example.com", requestorEmail: "y@example.com" } }), "compliance.gdpr.manage");
+    expect403(await call("GET", "/gdpr/requests", systems), "compliance.read");
+    assert.equal(await prisma.gdprRequest.count({ where: { organizationId: A.organizationId } }), 1);
+  });
+
+  it("(3) 404 opaco: la organización B no ve la solicitud de A (lista vacía, detalle y acuse 404) y recepción de A no la crea sobre el hotel B", async () => {
+    const listB = await call("GET", "/gdpr/requests", ownerB);
+    assert.equal(listB.status, 200);
+    assert.ok(!listB.body.some((item: { id: string }) => item.id === requestId));
+    expect404(await call("GET", `/gdpr/requests/${requestId}`, ownerB), "Solicitud RGPD no encontrada.");
+    expect404(await call("POST", "/gdpr/requests", manager, { propertyId: A.propertyA, payload: { requestType: "dsar", subjectEmail: "x@example.com", requestorEmail: "y@example.com", propertyId: A.propertyB } }));
+    assert.equal(await prisma.gdprRequest.count({ where: { propertyId: A.propertyB } }), 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// esrs
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · esrs: catálogo e indicadores por organización", () => {
+  it("(1) GET /esrs/catalog responde `items` a cualquier sesión y GET /organizations/:orgId/esrs/:year/indicators (manager, compliance.configure) lista los de A", async () => {
+    const catalog = await call("GET", "/esrs/catalog", reception);
+    assert.equal(catalog.status, 200, catalog.raw.slice(0, 300));
+    assert.ok(Array.isArray(catalog.body.items) && catalog.body.items.length > 0);
+    await prisma.esrsIndicator.create({
+      data: { organizationId: A.organizationId, propertyId: A.propertyA, fiscalYear: "2026", standardCode: "ESRS_E1", disclosureCode: `E1-6_L2_${RUN}`, valueType: "NUMERIC", numericValue: "12.5", unit: "tCO2e" }
+    });
+    const indicators = await call("GET", `/organizations/${A.organizationId}/esrs/2026/indicators`, manager, { propertyId: A.propertyA });
+    assert.equal(indicators.status, 200, indicators.raw.slice(0, 300));
+    assert.ok(indicators.body.items.some((item: { disclosureCode: string; organizationId: string }) => item.disclosureCode === `E1-6_L2_${RUN}` && item.organizationId === A.organizationId));
+  });
+
+  it("(2) 403 sin clave: recepción pasa el gate (compliance.read) pero el servicio exige compliance.configure; sistemas no pasa ni el gate", async () => {
+    expect403(await call("GET", `/organizations/${A.organizationId}/esrs/2026/indicators`, reception, { propertyId: A.propertyA }), "compliance.configure");
+    expect403(await call("GET", `/organizations/${A.organizationId}/esrs/2026/indicators`, systems), "compliance.read");
+    expect403(await call("POST", `/organizations/${A.organizationId}/esrs/2026/generate`, reception, { propertyId: A.propertyA, payload: {} }), "compliance.configure");
+  });
+
+  it("(3) 404 opaco con orgId ajeno: la organización B sobre los indicadores de A y A sobre los de B", async () => {
+    expect404(await call("GET", `/organizations/${A.organizationId}/esrs/2026/indicators`, ownerB), "Organización no encontrada.");
+    expect404(await call("GET", `/organizations/${B.organizationId}/esrs/2026/indicators`, manager, { propertyId: A.propertyA }), "Organización no encontrada.");
+    expect404(await call("GET", `/organizations/${A.organizationId}/esrs/2026/report`, ownerB), "Organización no encontrada.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reporting
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · reporting: catálogo de informes y generación con ámbito", () => {
+  it("(1) GET /reports/properties/:id/catalog (recepción, analytics.read) y POST …/export (manager, analytics.export) generan un artefacto real del hotel A", async () => {
+    const catalog = await call("GET", `/reports/properties/${A.propertyA}/catalog`, reception);
+    assert.equal(catalog.status, 200, catalog.raw.slice(0, 300));
+    assert.equal(catalog.body.propertyId, A.propertyA);
+    assert.ok(Array.isArray(catalog.body.reports) && catalog.body.reports.length > 0);
+
+    const exported = await call("POST", `/reports/properties/${A.propertyA}/export`, manager, { payload: { reportType: "reservation", format: "json", query: { fromDate: "2026-10-01", toDate: "2026-10-31" } } });
+    assert.equal(exported.status, 200, exported.raw.slice(0, 300));
+    assert.equal(exported.body.export.propertyId, A.propertyA);
+    assert.equal(exported.body.export.reportType, "reservation");
+    assert.equal(typeof exported.body.export.filename, "string");
+    assert.equal(typeof exported.body.content, "string");
+  });
+
+  it("(2) 403 sin clave: recepción no exporta (analytics.export) y sistemas no abre el catálogo (analytics.read sí; analytics.export no)", async () => {
+    expect403(await call("POST", `/reports/properties/${A.propertyA}/export`, reception, { payload: { reportType: "billing", format: "csv" } }), "analytics.export");
+    expect403(await call("POST", `/reports/properties/${A.propertyA}/export`, systems, { payload: { reportType: "billing", format: "csv" } }), "analytics.export");
+  });
+
+  it("(3) 404 opaco: recepción de A sobre B y organización B sobre A (catálogo y exportación)", async () => {
+    expect404(await call("GET", `/reports/properties/${A.propertyB}/catalog`, reception));
+    expect404(await call("GET", `/reports/properties/${A.propertyA}/catalog`, ownerB));
+    expect404(await call("POST", `/reports/properties/${A.propertyA}/export`, ownerB, { payload: { reportType: "reservation", format: "json" } }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// search (server.ts GET /search)
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · search: buscador global con ámbito", () => {
+  const surname = `Buscable${RUN}`;
+
+  it("(1) GET /search?q= encuentra el huésped de A y devuelve `items`, `counts` y `degraded: []`", async () => {
+    await prisma.guest.create({ data: { organizationId: A.organizationId, firstName: "Ana", surname1: surname } });
+    const found = await call("GET", `/search?q=${encodeURIComponent(surname)}&propertyId=${A.propertyA}`, owner);
+    assert.equal(found.status, 200, found.raw.slice(0, 300));
+    assert.ok(found.body.items.some((item: { kind: string; title: string }) => item.kind === "guest" && item.title.includes(surname)));
+    assert.equal(typeof found.body.counts, "object");
+    assert.deepEqual(found.body.degraded, []);
+  });
+
+  it("(2) sin sesión → 401 (la ruta es `authenticated`, sin fallback demo en modo estricto)", async () => {
+    const anonymous = await call("GET", `/search?q=${encodeURIComponent(surname)}`, null);
+    assert.equal(anonymous.status, 401, anonymous.raw.slice(0, 300));
+  });
+
+  it("(3) 404 opaco con propertyId ajeno y sin fuga entre organizaciones: B no encuentra el huésped de A", async () => {
+    expect404(await call("GET", `/search?q=${encodeURIComponent(surname)}&propertyId=${A.propertyB}`, reception));
+    expect404(await call("GET", `/search?q=${encodeURIComponent(surname)}&propertyId=${A.propertyA}`, ownerB));
+    const fromB = await call("GET", `/search?q=${encodeURIComponent(surname)}&propertyId=${B.propertyA}`, ownerB);
+    assert.equal(fromB.status, 200, fromB.raw.slice(0, 300));
+    assert.equal(fromB.body.items.filter((item: { kind: string }) => item.kind === "guest").length, 0, "la organización B no ve los huéspedes de A");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// offline
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · offline: sincronización de acciones con ámbito", () => {
+  it("(1) POST /offline/sync (recepción, ai.tool.execute) persiste las filas con organizationId / propertyId de A y GET …/offline-sync-records las lista", async () => {
+    const sync = await call("POST", "/offline/sync", reception, {
+      propertyId: A.propertyA,
+      payload: {
+        propertyId: A.propertyA,
+        deviceId: `dev-${RUN}`,
+        actions: [
+          { id: `act_${RUN}`, type: "voice.command.draft", payload: { text: "hola" }, createdAt: new Date().toISOString(), status: "pending" },
+          { id: `act_${RUN}_inv`, type: "invoice.issue", payload: {}, createdAt: new Date().toISOString(), status: "pending" }
+        ]
+      }
+    });
+    assert.equal(sync.status, 200, sync.raw.slice(0, 300));
+    assert.equal(sync.body.accepted, 1);
+    assert.equal(sync.body.rejected, 1);
+    const rows = await prisma.offlineSyncRecord.findMany({ where: { propertyId: A.propertyA } });
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((row) => row.organizationId === A.organizationId));
+
+    const list = await call("GET", `/properties/${A.propertyA}/offline-sync-records`, reception);
+    assert.equal(list.status, 200, list.raw.slice(0, 300));
+    assert.equal(list.body.length, 2);
+    assert.ok(list.body.every((item: { propertyId: string; deviceId: string }) => item.propertyId === A.propertyA && item.deviceId === `dev-${RUN}`));
+  });
+
+  it("(2) 403 sin clave: la plantilla auditor (sin ai.tool.execute) no sincroniza ni lista", async () => {
+    expect403(await call("POST", "/offline/sync", auditor, { propertyId: A.propertyA, payload: { propertyId: A.propertyA, deviceId: "dev-x", actions: [] } }), "ai.tool.execute");
+    expect403(await call("GET", `/properties/${A.propertyA}/offline-sync-records`, auditor), "ai.tool.execute");
+  });
+
+  it("(3) 404 opaco: recepción de A sobre B (body y ruta) y organización B sobre A; B no escribe en A", async () => {
+    expect404(await call("POST", "/offline/sync", reception, { propertyId: A.propertyA, payload: { propertyId: A.propertyB, deviceId: "dev-x", actions: [] } }));
+    expect404(await call("GET", `/properties/${A.propertyB}/offline-sync-records`, reception));
+    expect404(await call("POST", "/offline/sync", receptionB, { propertyId: B.propertyA, payload: { propertyId: A.propertyA, deviceId: "dev-b", actions: [{ id: `act_b_${RUN}`, type: "voice.command.draft", payload: {}, createdAt: new Date().toISOString(), status: "pending" }] } }));
+    expect404(await call("GET", `/properties/${A.propertyA}/offline-sync-records`, ownerB));
+    assert.equal(await prisma.offlineSyncRecord.count({ where: { propertyId: A.propertyA } }), 2, "la organización B no escribe");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mobile-keys (server.ts: POST /reservations/:id/wallet-pass · POST /mobile-keys/:serial/verify · POST /mobile-keys/:serial/revoke)
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · mobile-keys: emisión, verificación y revocación de la llave móvil con ámbito", () => {
+  let reservationId = "";
+  let serialNumber = "";
+  let unlockSig = "";
+  // Corrector L2 (SEC-L2-01): el resolver `mobileKey` de lib/tenancy.ts lee la
+  // fila `mkey_<serial>` de guest_portal_actions (antes una tabla inexistente
+  // → 500) y revokeWalletPass filtra por la propiedad resuelta.
+
+  it("(1) POST /reservations/:id/wallet-pass (recepción, pms.checkin.execute) persiste la llave activa de la reserva en A (guest_portal_actions)", async () => {
+    const reservation = await prisma.reservation.create({
+      data: { propertyId: A.propertyA, code: `MK-${RUN}`, channel: "direct", status: "confirmed", arrivalDate: new Date("2026-10-02T00:00:00.000Z"), departureDate: new Date("2027-10-04T00:00:00.000Z"), roomTypeId: A.roomTypeA, assignedRoomId: A.roomsA[0], bookerName: "Huésped móvil" },
+      select: { id: true }
+    });
+    reservationId = reservation.id;
+    const issued = await call("POST", `/reservations/${reservationId}/wallet-pass`, reception, { payload: {} });
+    assert.equal(issued.status, 200, issued.raw.slice(0, 300));
+    serialNumber = issued.body.serialNumber;
+    assert.equal(typeof serialNumber, "string");
+    assert.equal(issued.body.reservationId, reservationId);
+    assert.equal(issued.body.roomNumber, "101");
+    const row = await prisma.guestPortalAction.findUnique({ where: { id: `mkey_${serialNumber}` } });
+    assert.ok(row, "la llave existe en Prisma (guest_portal_actions)");
+    assert.equal(row.propertyId, A.propertyA);
+    assert.equal(row.reservationId, reservationId);
+    assert.equal(row.actionType, "mobile_key");
+    assert.equal(row.status, "active");
+    unlockSig = String((row.payloadJson as { unlockSig?: string }).unlockSig ?? "");
+    assert.ok(unlockSig.length > 0, "la firma pública del QR queda persistida para verificar cada apertura");
+    assert.equal(await prisma.guestPortalAction.count({ where: { propertyId: A.propertyB, actionType: "mobile_key" } }), 0, "nada en B");
+  });
+
+  it("(2) 403 sin clave: contabilidad y owner (sin pms.checkin.execute) no emiten ni revocan llaves (el gate contesta antes de resolver la entidad)", async () => {
+    expect403(await call("POST", `/reservations/${reservationId}/wallet-pass`, accountant, { payload: {} }), "pms.checkin.execute");
+    expect403(await call("POST", `/mobile-keys/${serialNumber}/revoke`, owner, { payload: {} }), "pms.checkin.execute");
+    assert.equal((await prisma.guestPortalAction.findUnique({ where: { id: `mkey_${serialNumber}` } }))?.status, "active");
+  });
+
+  it("(3) 404 opaco: recepción de B (con la clave) sobre la reserva de A y recepción de A sobre una reserva de B; ninguna llave nueva", async () => {
+    expect404(await call("POST", `/reservations/${reservationId}/wallet-pass`, receptionB, { payload: {} }), "Reserva no encontrada.");
+    const reservationB = await prisma.reservation.create({
+      data: { propertyId: A.propertyB, code: `MKB-${RUN}`, channel: "direct", status: "confirmed", arrivalDate: new Date("2026-10-02T00:00:00.000Z"), departureDate: new Date("2026-10-04T00:00:00.000Z"), roomTypeId: A.roomTypeB },
+      select: { id: true }
+    });
+    expect404(await call("POST", `/reservations/${reservationB.id}/wallet-pass`, reception, { payload: {} }), "Reserva no encontrada.");
+    assert.equal(await prisma.guestPortalAction.count({ where: { actionType: "mobile_key", propertyId: { in: [A.propertyA, A.propertyB] } } }), 1, "solo la llave legítima de A");
+  });
+
+  it("verify acepta la firma del QR, rechaza otra y la revocación deja la fila `revoked`", async () => {
+    const ok = await call("POST", `/mobile-keys/${serialNumber}/verify`, reception, { payload: { signature: unlockSig, timestamp: Date.now() } });
+    assert.equal(ok.status, 200, ok.raw.slice(0, 300));
+    assert.equal(ok.body.ok, true);
+    const bad = await call("POST", `/mobile-keys/${serialNumber}/verify`, reception, { payload: { signature: "0000000000000000", timestamp: Date.now() } });
+    assert.deepEqual(bad.body, { ok: false, reason: "bad_signature" });
+    expect404(await call("POST", `/mobile-keys/${serialNumber}/revoke`, receptionB, { payload: {} }), "Llave móvil no encontrada.");
+    const revoked = await call("POST", `/mobile-keys/${serialNumber}/revoke`, reception, { payload: {} });
+    assert.equal(revoked.status, 200, revoked.raw.slice(0, 300));
+    assert.equal((await prisma.guestPortalAction.findUnique({ where: { id: `mkey_${serialNumber}` } }))?.status, "revoked");
+  });
+});

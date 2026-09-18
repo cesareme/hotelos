@@ -1,6 +1,13 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 
+// Explicit bounds of the window reads (Tanda L2 · L2-05): a hotel has hundreds
+// of rooms and a window of weeks, so the caps never cut a real report.
+const ROOM_PROFITABILITY_MAX_ROOMS = 5_000;
+const ROOM_PROFITABILITY_MAX_ROOM_TYPES = 500;
+const ROOM_PROFITABILITY_MAX_SNAPSHOT_ROWS = 20_000;
+const ROOM_PROFITABILITY_MAX_RESERVATION_ROWS = 50_000;
+
 /**
  * Room profitability dashboard — read-only RevPAR / GOPPAR / occupancy per
  * room type and per channel for a property over a configurable window.
@@ -178,14 +185,17 @@ export async function buildRoomProfitabilityDashboard(
   const [rooms, roomTypes, snapshots, reservations, channelSnapshots] = await Promise.all([
     prisma.room.findMany({
       where: { propertyId, active: true },
-      select: { id: true, number: true, roomTypeId: true, sellable: true, active: true }
+      select: { id: true, number: true, roomTypeId: true, sellable: true, active: true },
+      take: ROOM_PROFITABILITY_MAX_ROOMS
     }),
     prisma.roomType.findMany({
       where: { propertyId },
-      select: { id: true, name: true, displayOrder: true, active: true }
+      select: { id: true, name: true, displayOrder: true, active: true },
+      take: ROOM_PROFITABILITY_MAX_ROOM_TYPES
     }),
     prisma.revenueDailySnapshot.findMany({
-      where: { propertyId, snapshotDate: { gte: from, lte: to } }
+      where: { propertyId, snapshotDate: { gte: from, lte: to } },
+      take: ROOM_PROFITABILITY_MAX_SNAPSHOT_ROWS
     }),
     prisma.reservation.findMany({
       where: {
@@ -204,10 +214,12 @@ export async function buildRoomProfitabilityDashboard(
         assignedRoomId: true,
         roomTypeId: true,
         totalAmount: true
-      }
+      },
+      take: ROOM_PROFITABILITY_MAX_RESERVATION_ROWS
     }),
     prisma.channelProfitabilitySnapshot.findMany({
-      where: { propertyId, date: { gte: from, lte: to } }
+      where: { propertyId, date: { gte: from, lte: to } },
+      take: ROOM_PROFITABILITY_MAX_SNAPSHOT_ROWS
     })
   ]);
 

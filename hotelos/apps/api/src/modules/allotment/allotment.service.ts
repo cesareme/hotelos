@@ -210,8 +210,13 @@ export async function getRemainingForDay(propertyId: string, roomTypeId: string,
   });
   let total = 0;
   const breakdown: Array<{ allotmentId: string; allotmentCode: string; remaining: number }> = [];
+  // Tanda L2 (L2-06): the day row of every matching allotment in one query (was one findUnique per allotment).
+  const dayRows = allotments.length
+    ? await prisma.allotmentDay.findMany({ where: { allotmentId: { in: allotments.map((a) => a.id) }, date: d } })
+    : [];
+  const dayByAllotment = new Map(dayRows.map((row) => [row.allotmentId, row]));
   for (const a of allotments) {
-    const day = await prisma.allotmentDay.findUnique({ where: { allotmentId_date: { allotmentId: a.id, date: d } } });
+    const day = dayByAllotment.get(a.id);
     const remaining = day ? Math.max(0, day.blockedRooms - day.pickedUpRooms - day.releasedRooms) : 0;
     total += remaining;
     breakdown.push({ allotmentId: a.id, allotmentCode: a.code, remaining });
@@ -283,15 +288,24 @@ export async function getPickupSummary(input: {
     orderBy: { validFrom: "asc" }
   });
 
+  // Tanda L2 (L2-06): the day rows of every allotment in the window in one
+  // query (was one findMany per allotment), grouped per allotment in date order.
+  const windowDayRows = allotments.length
+    ? await prisma.allotmentDay.findMany({
+        where: { allotmentId: { in: allotments.map((a) => a.id) }, date: { gte: from, lt: to } },
+        orderBy: [{ allotmentId: "asc" }, { date: "asc" }]
+      })
+    : [];
+  const daysByAllotment = new Map<string, typeof windowDayRows>();
+  for (const row of windowDayRows) {
+    const list = daysByAllotment.get(row.allotmentId) ?? [];
+    list.push(row);
+    daysByAllotment.set(row.allotmentId, list);
+  }
+
   const result: PickupSummaryAllotment[] = [];
   for (const a of allotments) {
-    const days = await prisma.allotmentDay.findMany({
-      where: {
-        allotmentId: a.id,
-        date: { gte: from, lt: to }
-      },
-      orderBy: { date: "asc" }
-    });
+    const days = daysByAllotment.get(a.id) ?? [];
 
     const daySummaries: PickupSummaryDay[] = days.map((d) => {
       const remaining = Math.max(0, d.blockedRooms - d.pickedUpRooms - d.releasedRooms);
@@ -359,26 +373,36 @@ export async function releaseExpired(input: { propertyId: string; asOfDate?: str
   const allotments = await prisma.allotment.findMany({ where: { propertyId: input.propertyId, status: "active" } });
   let releasedDays = 0;
   let releasedRooms = 0;
-  for (const a of allotments) {
-    const threshold = new Date(now.getTime() + a.releaseDays * MS_DAY);
-    const days = await prisma.allotmentDay.findMany({
-      where: {
-        allotmentId: a.id,
-        date: { gte: now, lte: threshold },
-        releasedRooms: 0
-      }
+  if (allotments.length === 0) return { releasedDays, releasedRooms };
+
+  // Tanda L2 (L2-06): ONE read over every active allotment (widest release
+  // window; the per-allotment threshold is applied in memory) and one
+  // updateMany per distinct «rooms to release» value instead of one findMany
+  // per allotment plus one update per day. The `releasedRooms: 0` guard stays
+  // in the write, so a concurrent run never releases a day twice.
+  const thresholdByAllotment = new Map(allotments.map((a) => [a.id, new Date(now.getTime() + a.releaseDays * MS_DAY)]));
+  const widestThreshold = new Date(Math.max(...Array.from(thresholdByAllotment.values(), (d) => d.getTime())));
+  const candidateDays = await prisma.allotmentDay.findMany({
+    where: { allotmentId: { in: allotments.map((a) => a.id) }, date: { gte: now, lte: widestThreshold }, releasedRooms: 0 },
+    select: { id: true, allotmentId: true, date: true, blockedRooms: true, pickedUpRooms: true }
+  });
+  const idsByRemaining = new Map<number, string[]>();
+  for (const d of candidateDays) {
+    const threshold = thresholdByAllotment.get(d.allotmentId);
+    if (!threshold || d.date.getTime() > threshold.getTime()) continue;
+    const remaining = d.blockedRooms - d.pickedUpRooms;
+    if (remaining <= 0) continue;
+    const ids = idsByRemaining.get(remaining) ?? [];
+    ids.push(d.id);
+    idsByRemaining.set(remaining, ids);
+  }
+  for (const [remaining, ids] of idsByRemaining) {
+    const updated = await prisma.allotmentDay.updateMany({
+      where: { id: { in: ids }, releasedRooms: 0 },
+      data: { releasedRooms: remaining }
     });
-    for (const d of days) {
-      const remaining = d.blockedRooms - d.pickedUpRooms;
-      if (remaining > 0) {
-        await prisma.allotmentDay.update({
-          where: { allotmentId_date: { allotmentId: a.id, date: d.date } },
-          data: { releasedRooms: remaining }
-        });
-        releasedDays += 1;
-        releasedRooms += remaining;
-      }
-    }
+    releasedDays += updated.count;
+    releasedRooms += updated.count * remaining;
   }
   return { releasedDays, releasedRooms };
 }

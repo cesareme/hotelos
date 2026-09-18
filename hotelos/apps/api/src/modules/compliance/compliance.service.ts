@@ -27,8 +27,10 @@
 // queueSesBajaForReservation best-effort so every parte the MIR already holds
 // (accepted alta/modificación) receives a baja exactly once.
 //
-// Still in demoStore (not part of this lot): authority reporting settings,
-// lodging legal profiles, routing rules and identity-scan processing events.
+// Tanda L2 (L2-04): authority reporting settings, lodging legal profiles,
+// routing rules and identity-scan processing events are Prisma rows too
+// (authority_reporting_settings, lodging_legal_profiles, authority_routing_rules,
+// identity_document_processing_events). Nothing in this module reads demoStore.
 
 import type { GuestIdentityFields } from "@hotelos/shared";
 import {
@@ -43,17 +45,21 @@ import {
   type SpainGuestRegisterValidationResult
 } from "@hotelos/compliance";
 import { prisma, type Prisma } from "@hotelos/database";
+import { z } from "zod";
 import { createId, nowIso } from "../../lib/ids.js";
-import {
-  demoStore,
-  type AuthoritySubmissionBatchRecord,
-  type AuthoritySubmissionBatchRecordLink,
-  type AuthoritySubmissionRecord,
-  type GuestRegisterRecord,
-  type IdentityDocumentProcessingEventRecord,
-  type UserContext
+import type {
+  AuthorityReportingSettingRecord,
+  AuthorityRoutingRuleRecord,
+  AuthoritySubmissionBatchRecord,
+  AuthoritySubmissionBatchRecordLink,
+  AuthoritySubmissionRecord,
+  GuestRegisterRecord,
+  IdentityDocumentProcessingEventRecord,
+  LodgingLegalProfileRecord,
+  UserContext
 } from "../../lib/demo-store.js";
-import { ConflictError, HttpError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, HttpError, NotFoundError } from "../../lib/http-error.js";
+import { parse } from "../../lib/validate.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import {
@@ -796,12 +802,16 @@ export async function queueSesHospedajesSubmission(input: {
   });
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira la familia /properties/:propertyId/ses-hospedajes/submissions). */
 export async function listSesHospedajesSubmissions(propertyId: string): Promise<SesSubmissionView[]> {
   const page = await listSesSubmissions(propertyId, { limit: 100 });
   return page.items;
 }
 
-/** Manual status override (e.g. acknowledged by hand at the MIR portal); mirrors the parte status. */
+/**
+ * Manual status override (e.g. acknowledged by hand at the MIR portal); mirrors the parte status.
+ * @deprecated L2: sin ruta (L2-02 retira PATCH /ses-hospedajes/submissions/:id/status).
+ */
 export async function updateSesHospedajesSubmissionStatus(input: {
   context: UserContext;
   submissionId: string;
@@ -1063,65 +1073,375 @@ export async function getAuthorityInbox(propertyId: string): Promise<ComplianceI
   return [...baseIssues, ...authorityIssues];
 }
 
-// ───────────────────────────────────────────── settings (demoStore · unchanged in this lot)
+// ───────────────────────────────────────────── settings (Prisma · Tanda L2 · L2-04)
+//
+// `reporting` = authority_reporting_settings (unique propertyId; without a row the
+// GET answers the statutory defaults with `persisted: false` and creates nothing);
+// `legalProfile` = lodging_legal_profiles or, when the hotel never filled one in,
+// the establishment resolved from the sociedad + property profile
+// (resolveSesEstablishment) tagged `source: "derived"`; `routingRules` =
+// authority_routing_rules (global rules with propertyId null + the property's own),
+// the two Spanish defaults being seeded once per process with skipDuplicates.
 
-export function getSpainGuestRegisterSettings(propertyId: string) {
+type AuthorityReportingRow = NonNullable<Awaited<ReturnType<typeof prisma.authorityReportingSetting.findUnique>>>;
+type LodgingLegalProfileRow = NonNullable<Awaited<ReturnType<typeof prisma.lodgingLegalProfile.findUnique>>>;
+type AuthorityRoutingRuleRow = NonNullable<Awaited<ReturnType<typeof prisma.authorityRoutingRule.findUnique>>>;
+
+const AUTHORITY_TYPES = ["ses_hospedajes", "mossos", "ertzaintza", "manual", "other"] as const;
+
+export type SpainGuestRegisterReportingView = Omit<AuthorityReportingSettingRecord, "id" | "createdAt" | "updatedAt"> & {
+  /** null while the property has no persisted row (defaults, nothing created). */
+  id: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  persisted: boolean;
+};
+
+export type SpainGuestRegisterLegalProfileView = Omit<LodgingLegalProfileRecord, "id" | "createdAt" | "updatedAt"> & {
+  id: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  source: "persisted" | "derived";
+  /** Establishment fields the derived profile could not fill (empty for a persisted row). */
+  missing: string[];
+};
+
+/** Reglas de enrutado por defecto (España): mismas dos filas que sembraba la demo en memoria. */
+const DEFAULT_AUTHORITY_ROUTING_RULES: Prisma.AuthorityRoutingRuleCreateManyInput[] = [
+  {
+    id: "arr_es_default",
+    propertyId: null,
+    country: "ES",
+    regionCode: null,
+    authorityType: "ses_hospedajes",
+    priority: 100,
+    active: true,
+    configurationJson: { rule: "Ruta por defecto de la autoridad en España (SES.HOSPEDAJES)" }
+  },
+  {
+    id: "arr_es_ct_mossos",
+    propertyId: null,
+    country: "ES",
+    regionCode: "CT",
+    authorityType: "mossos",
+    priority: 10,
+    active: true,
+    configurationJson: { rule: "Ruta de Cataluña (Mossos d'Esquadra), configurable en el Back Office" }
+  }
+];
+
+let routingRulesSeedPromise: Promise<void> | null = null;
+
+/** Siembra una sola vez por proceso las dos reglas ES (createMany + skipDuplicates: nunca duplica ni sobreescribe). */
+export function ensureDefaultAuthorityRoutingRules(): Promise<void> {
+  if (!routingRulesSeedPromise) {
+    routingRulesSeedPromise = prisma.authorityRoutingRule
+      .createMany({ data: DEFAULT_AUTHORITY_ROUTING_RULES, skipDuplicates: true })
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        routingRulesSeedPromise = null; // permite reintentar en la siguiente llamada
+        throw error;
+      });
+  }
+  return routingRulesSeedPromise;
+}
+
+const orUndefined = <T>(value: T | null): T | undefined => (value === null ? undefined : value);
+
+function toReportingView(row: AuthorityReportingRow): SpainGuestRegisterReportingView {
   return {
-    reporting: demoStore.authorityReportingSettings.find((setting) => setting.propertyId === propertyId),
-    legalProfile: demoStore.lodgingLegalProfiles.find((profile) => profile.propertyId === propertyId),
-    routingRules: demoStore.authorityRoutingRules.filter((rule) => !rule.propertyId || rule.propertyId === propertyId),
-    privacy: {
-      temporaryOcrEnabled: true,
-      onDeviceOcrPreferred: true,
-      storeIdImageDefault: false,
-      allowIdImageStorage: false,
-      documentImageRetentionDays: 0,
-      manualVisualVerificationRequired: true,
-      onlineVerificationMethods: ["email_code", "sms_code", "payment_match", "certificate"]
-    }
+    id: row.id,
+    propertyId: row.propertyId,
+    country: row.country,
+    regionCode: orUndefined(row.regionCode),
+    authorityType: row.authorityType as AuthorityReportingSettingRecord["authorityType"],
+    enabled: row.enabled,
+    professionalActivity: row.professionalActivity,
+    establishmentCode: orUndefined(row.establishmentCode),
+    landlordCode: orUndefined(row.landlordCode),
+    webServiceEnabled: row.webServiceEnabled,
+    webServiceUsername: orUndefined(row.webServiceUsername),
+    webServiceSecretRef: orUndefined(row.webServiceSecretRef),
+    batchExportEnabled: row.batchExportEnabled,
+    automaticSubmissionEnabled: row.automaticSubmissionEnabled,
+    configurationJson: jsonObject(row.configurationJson),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    persisted: true
   };
 }
 
-export function patchSpainGuestRegisterSettings(input: {
+function defaultReportingView(propertyId: string, country: string): SpainGuestRegisterReportingView {
+  return {
+    id: null,
+    propertyId,
+    country,
+    authorityType: "ses_hospedajes",
+    enabled: true,
+    professionalActivity: true,
+    webServiceEnabled: false,
+    batchExportEnabled: true,
+    automaticSubmissionEnabled: false,
+    configurationJson: {},
+    persisted: false
+  };
+}
+
+function toLegalProfileView(row: LodgingLegalProfileRow): SpainGuestRegisterLegalProfileView {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    legalName: row.legalName,
+    taxId: row.taxId,
+    municipality: orUndefined(row.municipality),
+    province: orUndefined(row.province),
+    phone: orUndefined(row.phone),
+    email: orUndefined(row.email),
+    website: orUndefined(row.website),
+    listingUrl: orUndefined(row.listingUrl),
+    establishmentType: orUndefined(row.establishmentType),
+    establishmentName: orUndefined(row.establishmentName),
+    fullAddress: row.fullAddress,
+    postalCode: orUndefined(row.postalCode),
+    locality: orUndefined(row.locality),
+    establishmentProvince: orUndefined(row.establishmentProvince),
+    roomCount: orUndefined(row.roomCount),
+    internetConnection: orUndefined(row.internetConnection),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    source: "persisted",
+    missing: []
+  };
+}
+
+/** Perfil legal derivado de la sociedad + ficha de la propiedad (sin inventar nada: lo que falta va en `missing`). */
+async function deriveLegalProfileView(propertyId: string): Promise<SpainGuestRegisterLegalProfileView> {
+  const [resolution, roomCount] = await Promise.all([
+    resolveSesEstablishment(propertyId),
+    prisma.room.count({ where: { propertyId, active: true } })
+  ]);
+  const establishment = resolution.establishment;
+  return {
+    id: null,
+    propertyId,
+    legalName: establishment.legalName ?? "",
+    taxId: establishment.taxId ?? "",
+    municipality: establishment.municipality ?? undefined,
+    province: establishment.province ?? undefined,
+    fullAddress: establishment.address ?? "",
+    postalCode: establishment.postalCode ?? undefined,
+    locality: establishment.municipality ?? undefined,
+    establishmentProvince: establishment.province ?? undefined,
+    roomCount,
+    source: "derived",
+    missing: [...resolution.missing]
+  };
+}
+
+function toRoutingRuleView(row: AuthorityRoutingRuleRow): AuthorityRoutingRuleRecord {
+  return {
+    id: row.id,
+    propertyId: orUndefined(row.propertyId),
+    country: row.country,
+    regionCode: orUndefined(row.regionCode),
+    authorityType: row.authorityType as AuthorityRoutingRuleRecord["authorityType"],
+    priority: row.priority,
+    active: row.active,
+    configurationJson: jsonObject(row.configurationJson),
+    createdAt: row.createdAt.toISOString()
+  };
+}
+
+/** Propiedad existente (404 opaco); con contexto, además de la organización del usuario (o admin de plataforma). */
+async function requireScopedProperty(propertyId: string, context?: UserContext): Promise<{ id: string; organizationId: string; country: string }> {
+  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { id: true, organizationId: true, country: true } });
+  if (!property || (context && property.organizationId !== context.organizationId && !context.isPlatformAdmin)) {
+    throw new NotFoundError("Propiedad no encontrada.");
+  }
+  return property;
+}
+
+const SPAIN_GUEST_REGISTER_PRIVACY = {
+  temporaryOcrEnabled: true,
+  onDeviceOcrPreferred: true,
+  storeIdImageDefault: false,
+  allowIdImageStorage: false,
+  documentImageRetentionDays: 0,
+  manualVisualVerificationRequired: true,
+  onlineVerificationMethods: ["email_code", "sms_code", "payment_match", "certificate"]
+} as const;
+
+export async function getSpainGuestRegisterSettings(propertyId: string) {
+  const property = await requireScopedProperty(propertyId);
+  await ensureDefaultAuthorityRoutingRules();
+  const [reportingRow, profileRow, routingRows] = await Promise.all([
+    prisma.authorityReportingSetting.findUnique({ where: { propertyId } }),
+    prisma.lodgingLegalProfile.findUnique({ where: { propertyId } }),
+    prisma.authorityRoutingRule.findMany({
+      where: { OR: [{ propertyId: null }, { propertyId }] },
+      orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+      take: 200
+    })
+  ]);
+  return {
+    reporting: reportingRow ? toReportingView(reportingRow) : defaultReportingView(propertyId, property.country),
+    legalProfile: profileRow ? toLegalProfileView(profileRow) : await deriveLegalProfileView(propertyId),
+    routingRules: routingRows.map(toRoutingRuleView),
+    privacy: { ...SPAIN_GUEST_REGISTER_PRIVACY, onlineVerificationMethods: [...SPAIN_GUEST_REGISTER_PRIVACY.onlineVerificationMethods] }
+  };
+}
+
+const nullableText = (max: number) => z.string().trim().max(max).nullable().optional();
+
+const spainGuestRegisterLegalProfileSchema = z
+  .object({
+    legalName: z.string().trim().min(1).max(200).optional(),
+    taxId: z.string().trim().min(1).max(20).optional(),
+    municipality: nullableText(120),
+    province: nullableText(120),
+    phone: nullableText(40),
+    email: z.string().trim().email().max(200).nullable().optional(),
+    website: nullableText(300),
+    listingUrl: nullableText(300),
+    establishmentType: nullableText(60),
+    establishmentName: nullableText(200),
+    fullAddress: z.string().trim().min(1).max(300).optional(),
+    postalCode: nullableText(10),
+    locality: nullableText(120),
+    establishmentProvince: nullableText(120),
+    roomCount: z.number().int().min(0).max(10_000).nullable().optional(),
+    internetConnection: z.boolean().nullable().optional()
+  })
+  .strict();
+
+/**
+ * Body of PATCH …/guest-register/settings: connector fields at the top level,
+ * the configuration keys the settings screen sends at the top level
+ * (defaultBatchTime, alertBeforeDeadlineHours, retentionYears,
+ * storeIdImageDefault, officialSchemaConfigured → configurationJson), an
+ * explicit `configurationJson` merge and the optional `legalProfile` block.
+ */
+const spainGuestRegisterSettingsPatchSchema = z
+  .object({
+    establishmentCode: nullableText(100),
+    landlordCode: nullableText(100),
+    webServiceUsername: nullableText(200),
+    webServiceSecretRef: nullableText(300),
+    regionCode: nullableText(10),
+    authorityType: z.enum(AUTHORITY_TYPES).optional(),
+    enabled: z.boolean().optional(),
+    professionalActivity: z.boolean().optional(),
+    webServiceEnabled: z.boolean().optional(),
+    batchExportEnabled: z.boolean().optional(),
+    automaticSubmissionEnabled: z.boolean().optional(),
+    defaultBatchTime: z.string().trim().max(5).optional(),
+    alertBeforeDeadlineHours: z.number().int().min(0).max(168).optional(),
+    retentionYears: z.number().int().min(1).max(10).optional(),
+    storeIdImageDefault: z.boolean().optional(),
+    officialSchemaConfigured: z.boolean().optional(),
+    configurationJson: z.record(z.string(), z.unknown()).optional(),
+    legalProfile: spainGuestRegisterLegalProfileSchema.optional()
+  })
+  .strict();
+
+export type SpainGuestRegisterSettingsPatch = z.input<typeof spainGuestRegisterSettingsPatchSchema>;
+
+const TOP_LEVEL_STR = ["establishmentCode", "landlordCode", "webServiceUsername", "webServiceSecretRef", "regionCode"] as const;
+const TOP_LEVEL_BOOL = ["enabled", "professionalActivity", "webServiceEnabled", "batchExportEnabled", "automaticSubmissionEnabled"] as const;
+const CONFIGURATION_KEYS = ["defaultBatchTime", "alertBeforeDeadlineHours", "retentionYears", "storeIdImageDefault", "officialSchemaConfigured"] as const;
+
+export async function patchSpainGuestRegisterSettings(input: {
   context: UserContext;
   propertyId: string;
   patch: Record<string, unknown>;
   correlationId: string;
 }) {
   requirePermissions(input.context, ["guest_register.configure", "compliance.ses.configure"]);
-  const setting = demoStore.authorityReportingSettings.find((candidate) => candidate.propertyId === input.propertyId);
-  if (!setting) {
-    throw new NotFoundError("La configuración de comunicación a la autoridad no existe para esta propiedad.");
+  const property = await requireScopedProperty(input.propertyId, input.context);
+  const patch = parse(spainGuestRegisterSettingsPatchSchema, input.patch, "body");
+
+  const [beforeReporting, beforeProfile] = await Promise.all([
+    prisma.authorityReportingSetting.findUnique({ where: { propertyId: property.id } }),
+    prisma.lodgingLegalProfile.findUnique({ where: { propertyId: property.id } })
+  ]);
+
+  // Connector fields: only the keys present in the patch change; null clears a text field.
+  const reportingData: Prisma.AuthorityReportingSettingUncheckedUpdateInput = {};
+  for (const key of TOP_LEVEL_STR) {
+    if (patch[key] !== undefined) reportingData[key] = patch[key] === null || patch[key] === "" ? null : patch[key];
   }
-  const before = { ...setting, configurationJson: { ...setting.configurationJson } };
-  // Apply known top-level connector fields; merge anything else into configurationJson.
-  const TOP_LEVEL_STR = ["establishmentCode", "landlordCode", "webServiceUsername", "webServiceSecretRef", "regionCode"];
-  const TOP_LEVEL_BOOL = ["enabled", "professionalActivity", "webServiceEnabled", "batchExportEnabled", "automaticSubmissionEnabled"];
-  const rest: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input.patch)) {
-    if (TOP_LEVEL_STR.includes(key)) {
-      (setting as Record<string, unknown>)[key] = value == null ? undefined : String(value);
-    } else if (TOP_LEVEL_BOOL.includes(key)) {
-      (setting as Record<string, unknown>)[key] = Boolean(value);
+  for (const key of TOP_LEVEL_BOOL) {
+    if (patch[key] !== undefined) reportingData[key] = patch[key];
+  }
+  if (patch.authorityType !== undefined) reportingData.authorityType = patch.authorityType;
+  const configurationPatch: Record<string, unknown> = { ...(patch.configurationJson ?? {}) };
+  for (const key of CONFIGURATION_KEYS) {
+    if (patch[key] !== undefined) configurationPatch[key] = patch[key];
+  }
+  const mergedConfiguration = { ...jsonObject(beforeReporting?.configurationJson), ...configurationPatch };
+
+  const reportingRow = await prisma.authorityReportingSetting.upsert({
+    where: { propertyId: property.id },
+    create: {
+      ...(reportingData as Omit<Prisma.AuthorityReportingSettingUncheckedCreateInput, "propertyId">),
+      propertyId: property.id,
+      country: property.country || "ES",
+      configurationJson: asJson(mergedConfiguration)
+    },
+    update: { ...reportingData, configurationJson: asJson(mergedConfiguration) }
+  });
+
+  let profileRow: LodgingLegalProfileRow | null = beforeProfile;
+  if (patch.legalProfile) {
+    const profilePatch = patch.legalProfile;
+    if (beforeProfile) {
+      profileRow = await prisma.lodgingLegalProfile.update({ where: { propertyId: property.id }, data: profilePatch });
     } else {
-      rest[key] = value;
+      // First profile of the property: the mandatory columns fall back to the
+      // establishment already known (sociedad + property profile); nothing invented.
+      const derived = await deriveLegalProfileView(property.id);
+      const legalName = profilePatch.legalName ?? derived.legalName;
+      const taxId = profilePatch.taxId ?? derived.taxId;
+      const fullAddress = profilePatch.fullAddress ?? derived.fullAddress;
+      if (!legalName || !taxId || !fullAddress) {
+        throw new BadRequestError("Para crear el perfil legal del establecimiento se necesitan razón social, NIF y dirección completa.");
+      }
+      profileRow = await prisma.lodgingLegalProfile.create({
+        data: {
+          propertyId: property.id,
+          ...profilePatch,
+          legalName,
+          taxId,
+          fullAddress,
+          municipality: profilePatch.municipality ?? derived.municipality ?? null,
+          province: profilePatch.province ?? derived.province ?? null,
+          postalCode: profilePatch.postalCode ?? derived.postalCode ?? null,
+          locality: profilePatch.locality ?? derived.locality ?? null,
+          establishmentProvince: profilePatch.establishmentProvince ?? derived.establishmentProvince ?? null,
+          roomCount: profilePatch.roomCount ?? derived.roomCount ?? null
+        }
+      });
     }
   }
-  setting.configurationJson = { ...setting.configurationJson, ...rest };
-  setting.updatedAt = nowIso();
+
+  const reporting = toReportingView(reportingRow);
+  const legalProfile = profileRow ? toLegalProfileView(profileRow) : null;
   recordAuditEvent({
     organizationId: input.context.organizationId,
-    propertyId: input.propertyId,
+    propertyId: property.id,
     actorUserId: input.context.userId,
     actorType: "user",
-    action: "AIPolicyUpdated",
+    action: "AuthorityReportingSettingsUpdated",
     entityType: "authority_reporting_settings",
-    entityId: setting.id,
-    beforeJson: before,
-    afterJson: setting,
+    entityId: reportingRow.id,
+    beforeJson: {
+      reporting: beforeReporting ? toReportingView(beforeReporting) : null,
+      legalProfile: beforeProfile ? toLegalProfileView(beforeProfile) : null
+    },
+    afterJson: { reporting, legalProfile },
     correlationId: input.correlationId
   });
-  return setting;
+  return { ...reporting, legalProfile };
 }
 
 // ───────────────────────────────────────────── authority submissions (Prisma)
@@ -1154,7 +1474,7 @@ export async function queueGuestAuthoritySubmission(input: {
       issues: validation.issues
     });
   }
-  const setting = demoStore.authorityReportingSettings.find((candidate) => candidate.propertyId === row.propertyId);
+  const setting = await prisma.authorityReportingSetting.findUnique({ where: { propertyId: row.propertyId }, select: { authorityType: true } });
   const authorityType = setting?.authorityType ?? "ses_hospedajes";
   const created = await prisma.authoritySubmission.create({
     data: {
@@ -1258,6 +1578,7 @@ export async function annulAuthorityCommunication(input: { context: UserContext;
   return toAuthoritySubmissionApi(updated);
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira GET /compliance/authority/properties/:propertyId/submissions a favor de /properties/:propertyId/ses/submissions). */
 export async function listAuthoritySubmissions(propertyId: string): Promise<AuthoritySubmissionRecord[]> {
   const rows = await prisma.authoritySubmission.findMany({ where: { propertyId }, orderBy: { createdAt: "desc" }, take: 200 });
   return rows.map(toAuthoritySubmissionApi);
@@ -1281,6 +1602,7 @@ export async function getAuthoritySubmission(input: { context: UserContext; subm
   return toAuthoritySubmissionApi(row);
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira POST /compliance/authority/submissions/:submissionId/retry a favor de /ses/submissions/:id/retry). */
 export async function retryAuthoritySubmission(input: { context: UserContext; submissionId: string; correlationId: string }): Promise<AuthoritySubmissionRecord> {
   requirePermissions(input.context, ["guest_register.submit"]);
   const before = await prisma.authoritySubmission.findUnique({ where: { id: input.submissionId } });
@@ -1486,7 +1808,11 @@ export async function markSesBatchManuallyUploaded(input: {
  */
 export async function testSesHospedajesConnection(input: { context: UserContext; propertyId: string; correlationId: string }) {
   requirePermissions(input.context, ["compliance.ses.configure"]);
-  const setting = demoStore.authorityReportingSettings.find((candidate) => candidate.propertyId === input.propertyId);
+  await requireScopedProperty(input.propertyId, input.context);
+  const setting = await prisma.authorityReportingSetting.findUnique({
+    where: { propertyId: input.propertyId },
+    select: { authorityType: true, webServiceEnabled: true }
+  });
   const rawMode = process.env.SES_HOSPEDAJES_MODE;
   const mode = rawMode === "production" || rawMode === "preproduction" ? rawMode : "sandbox";
   const establishment = await resolveSesEstablishment(input.propertyId);
@@ -1505,9 +1831,21 @@ export async function testSesHospedajesConnection(input: { context: UserContext;
   };
 }
 
-// ───────────────────────────────────────────── identity scan events (demoStore · unchanged)
+// ───────────────────────────────────────────── identity scan events (Prisma · Tanda L2 · L2-04)
 
-export function recordTemporaryIdentityScan(input: {
+type IdentityEventRow = NonNullable<Awaited<ReturnType<typeof prisma.identityDocumentProcessingEvent.findUnique>>>;
+
+const identityScanInputSchema = z
+  .object({
+    propertyId: z.string().trim().min(1),
+    reservationId: z.string().trim().min(1).optional(),
+    guestId: z.string().trim().min(1).optional(),
+    fieldsExtractedJson: z.record(z.string(), z.unknown()).optional(),
+    confidenceJson: z.record(z.string(), z.unknown()).optional()
+  })
+  .strict();
+
+type IdentityScanInput = {
   context: UserContext;
   propertyId: string;
   reservationId?: string;
@@ -1515,26 +1853,65 @@ export function recordTemporaryIdentityScan(input: {
   fieldsExtractedJson?: Record<string, unknown>;
   confidenceJson?: Record<string, unknown>;
   correlationId: string;
-}): IdentityDocumentProcessingEventRecord {
-  requirePermissions(input.context, ["guest_register.create"]);
-  const event: IdentityDocumentProcessingEventRecord = {
-    id: createId("idpe"),
-    propertyId: input.propertyId,
-    reservationId: input.reservationId,
-    guestId: input.guestId,
-    eventType: "temporary_scan_started",
-    processor: "on_device",
-    fieldsExtractedJson: input.fieldsExtractedJson ?? {},
-    confidenceJson: input.confidenceJson ?? {},
-    imageStored: false,
-    imageDiscarded: false,
-    createdBy: input.context.userId,
-    createdAt: nowIso()
+};
+
+function toIdentityEventRecord(row: IdentityEventRow): IdentityDocumentProcessingEventRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    reservationId: orUndefined(row.reservationId),
+    guestId: orUndefined(row.guestId),
+    eventType: row.eventType as IdentityDocumentProcessingEventRecord["eventType"],
+    processor: (row.processor ?? "on_device") as IdentityDocumentProcessingEventRecord["processor"],
+    fieldsExtractedJson: jsonObject(row.fieldsExtractedJson),
+    confidenceJson: jsonObject(row.confidenceJson),
+    imageStored: row.imageStored,
+    imageDiscarded: row.imageDiscarded,
+    createdBy: orUndefined(row.createdBy),
+    createdAt: row.createdAt.toISOString()
   };
-  demoStore.identityDocumentProcessingEvents.push(event);
+}
+
+/** Persists one identity-document processing event for a property of the caller's organization (image never stored). */
+async function createIdentityEvent(
+  input: IdentityScanInput,
+  event: { eventType: IdentityDocumentProcessingEventRecord["eventType"]; imageDiscarded: boolean }
+): Promise<IdentityDocumentProcessingEventRecord> {
+  const body = parse(
+    identityScanInputSchema,
+    {
+      propertyId: input.propertyId,
+      reservationId: input.reservationId,
+      guestId: input.guestId,
+      fieldsExtractedJson: input.fieldsExtractedJson,
+      confidenceJson: input.confidenceJson
+    },
+    "body"
+  );
+  await requireScopedProperty(body.propertyId, input.context);
+  const row = await prisma.identityDocumentProcessingEvent.create({
+    data: {
+      propertyId: body.propertyId,
+      reservationId: body.reservationId ?? null,
+      guestId: body.guestId ?? null,
+      eventType: event.eventType,
+      processor: "on_device",
+      fieldsExtractedJson: asJson(body.fieldsExtractedJson ?? {}),
+      confidenceJson: asJson(body.confidenceJson ?? {}),
+      imageStored: false,
+      imageDiscarded: event.imageDiscarded,
+      createdBy: input.context.userId
+    }
+  });
+  return toIdentityEventRecord(row);
+}
+
+export async function recordTemporaryIdentityScan(input: IdentityScanInput): Promise<IdentityDocumentProcessingEventRecord> {
+  requirePermissions(input.context, ["guest_register.create"]);
+  const event = await createIdentityEvent(input, { eventType: "temporary_scan_started", imageDiscarded: false });
   recordAuditEvent({
     organizationId: input.context.organizationId,
-    propertyId: input.propertyId,
+    propertyId: event.propertyId,
     actorUserId: input.context.userId,
     actorType: "user",
     action: "TemporaryIdScanStarted",
@@ -1546,35 +1923,13 @@ export function recordTemporaryIdentityScan(input: {
   return event;
 }
 
-export function recordIdentityDiscardEvent(input: {
-  context: UserContext;
-  propertyId: string;
-  reservationId?: string;
-  guestId?: string;
-  fieldsExtractedJson?: Record<string, unknown>;
-  confidenceJson?: Record<string, unknown>;
-  correlationId: string;
-}): IdentityDocumentProcessingEventRecord {
+export async function recordIdentityDiscardEvent(input: IdentityScanInput): Promise<IdentityDocumentProcessingEventRecord> {
   requirePermissions(input.context, ["guest_register.create"]);
-  const event: IdentityDocumentProcessingEventRecord = {
-    id: createId("idpe"),
-    propertyId: input.propertyId,
-    reservationId: input.reservationId,
-    guestId: input.guestId,
-    eventType: "image_discarded",
-    processor: "on_device",
-    fieldsExtractedJson: input.fieldsExtractedJson ?? {},
-    confidenceJson: input.confidenceJson ?? {},
-    imageStored: false,
-    imageDiscarded: true,
-    createdBy: input.context.userId,
-    createdAt: nowIso()
-  };
-  demoStore.identityDocumentProcessingEvents.push(event);
+  const event = await createIdentityEvent(input, { eventType: "image_discarded", imageDiscarded: true });
   for (const action of ["ID_IMAGE_DISCARDED", "TemporaryIdOcrCompleted", "IdImageDiscarded"]) {
     recordAuditEvent({
       organizationId: input.context.organizationId,
-      propertyId: input.propertyId,
+      propertyId: event.propertyId,
       actorUserId: input.context.userId,
       actorType: "system",
       action,
@@ -1586,4 +1941,3 @@ export function recordIdentityDiscardEvent(input: {
   }
   return event;
 }
-

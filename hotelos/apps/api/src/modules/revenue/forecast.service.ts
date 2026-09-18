@@ -158,12 +158,17 @@ export async function generateForecasts(input: {
   if (roomTypes.length === 0) return { generated: 0 };
 
   // Total sellable rooms per type (capacity for rooms-sold/RevPAR).
-  const roomCounts = new Map<string, number>();
-  for (const rt of roomTypes) {
-    roomCounts.set(
-      rt.id,
-      await prisma.room.count({ where: { propertyId: input.propertyId, roomTypeId: rt.id, sellable: true } })
-    );
+  // Tanda L2 (L2-06): one groupBy instead of one count per room type; a type
+  // without sellable rooms keeps counting 0.
+  const roomTypeIds = roomTypes.map((rt) => rt.id);
+  const sellableByType = await prisma.room.groupBy({
+    by: ["roomTypeId"],
+    where: { propertyId: input.propertyId, roomTypeId: { in: roomTypeIds }, sellable: true },
+    _count: { _all: true }
+  });
+  const roomCounts = new Map<string, number>(roomTypeIds.map((id) => [id, 0]));
+  for (const row of sellableByType) {
+    if (row.roomTypeId) roomCounts.set(row.roomTypeId, row._count._all);
   }
   // ADR inputs: published BAR per day/type (BAR plan only) and the LY close.
   const [publishedBar, stlyAdr] = await Promise.all([

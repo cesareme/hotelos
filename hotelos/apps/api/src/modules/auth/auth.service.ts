@@ -744,14 +744,16 @@ export async function verifyMfaChallenge(input: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Notificaciones in-app — persistidas en Prisma (Notification) para sobrevivir
-// reinicios (persistencia tanda 2, patrón assets.service.ts):
-//  · Escritura (markRead): Prisma primero, después espejo demoStore (mismo id).
-//  · Lectura: Prisma primero + merge con los registros solo-seed.
-//  · Los fixtures del seed in-memory se copian una vez por proceso a Prisma
-//    (createMany + skipDuplicates, mismos ids) para que sigan siendo marcables.
+// Notificaciones in-app (Tanda L2 · L2-04): la tabla `notifications` es la
+// única fuente. Sin espejo demoStore, sin fixtures copiados por proceso: cada
+// lectura filtra por usuario Y organización (Notification.organizationId,
+// L2-01) y cada escritura pasa organizationId explícito. Ningún flujo de
+// dominio crea todavía Notification (queueNotificationsForEvent escribe
+// NotificationDelivery): decisión abierta para el integrador.
 
 type NotificationRow = NonNullable<Awaited<ReturnType<typeof prisma.notification.findUnique>>>;
+
+const NOTIFICATIONS_PAGE = 200;
 
 function toNotificationRecord(row: NotificationRow): NotificationRecord {
   return {
@@ -766,89 +768,31 @@ function toNotificationRecord(row: NotificationRow): NotificationRecord {
   };
 }
 
-function notificationToDbRow(record: NotificationRecord) {
-  return {
-    id: record.id,
-    propertyId: record.propertyId,
-    userId: record.userId,
-    type: record.type,
-    title: record.title,
-    body: record.body,
-    status: record.status,
-    createdAt: new Date(record.createdAt)
-  };
-}
-
-/** Insert-or-update del espejo demoStore (conserva identidad de objeto). */
-function mirrorNotification(record: NotificationRecord): NotificationRecord {
-  const existing = demoStore.notifications.find((candidate) => candidate.id === record.id);
-  if (existing) {
-    Object.assign(existing, record);
-    return existing;
-  }
-  demoStore.notifications.push(record);
-  return record;
-}
-
-let notificationFixtureSyncPromise: Promise<void> | null = null;
-
-function ensureNotificationFixturesPersisted(): Promise<void> {
-  if (!notificationFixtureSyncPromise) {
-    notificationFixtureSyncPromise = persistNotificationFixtures().catch((error) => {
-      notificationFixtureSyncPromise = null; // permite reintentar en la siguiente llamada
-      throw error;
-    });
-  }
-  return notificationFixtureSyncPromise;
-}
-
-async function persistNotificationFixtures(): Promise<void> {
-  if (demoStore.notifications.length > 0) {
-    await prisma.notification.createMany({
-      data: demoStore.notifications.map(notificationToDbRow),
-      skipDuplicates: true
-    });
-  }
-}
-
+/** Las 200 notificaciones más recientes del usuario dentro de su organización. */
 export async function listNotifications(context: UserContext): Promise<NotificationRecord[]> {
-  await ensureNotificationFixturesPersisted();
   const rows = await prisma.notification.findMany({
-    where: { userId: context.userId },
-    orderBy: { createdAt: "asc" }
+    where: { userId: context.userId, organizationId: context.organizationId },
+    orderBy: { createdAt: "desc" },
+    take: NOTIFICATIONS_PAGE
   });
-  for (const row of rows) {
-    mirrorNotification(toNotificationRecord(row));
-  }
-  return demoStore.notifications.filter((notification) => notification.userId === context.userId);
+  return rows.map(toNotificationRecord);
 }
 
 export async function markNotificationRead(input: {
   context: UserContext;
   notificationId: string;
 }): Promise<NotificationRecord> {
-  await ensureNotificationFixturesPersisted();
-  let row = await prisma.notification.findFirst({
-    where: { id: input.notificationId, userId: input.context.userId }
+  // Fail-secure: una notificación de otro usuario u otra organización es
+  // indistinguible de una inexistente (404 opaco).
+  const row = await prisma.notification.findFirst({
+    where: { id: input.notificationId, userId: input.context.userId, organizationId: input.context.organizationId },
+    select: { id: true }
   });
   if (!row) {
-    // Registro que otro flujo empujó solo al espejo: materializarlo y seguir.
-    const legacy = demoStore.notifications.find(
-      (candidate) => candidate.id === input.notificationId && candidate.userId === input.context.userId
-    );
-    if (!legacy) {
-      throw new NotFoundError("Notification was not found.");
-    }
-    await prisma.notification.createMany({ data: [notificationToDbRow(legacy)], skipDuplicates: true });
-    row = await prisma.notification.findFirst({ where: { id: input.notificationId, userId: input.context.userId } });
+    throw new NotFoundError("La notificación no existe.");
   }
-  if (!row) {
-    throw new NotFoundError("Notification was not found.");
-  }
-
-  // Prisma primero, después espejo (mismo id).
   const updated = await prisma.notification.update({ where: { id: row.id }, data: { status: "read" } });
-  return mirrorNotification(toNotificationRecord(updated));
+  return toNotificationRecord(updated);
 }
 
 export async function getSecuritySettings(context: UserContext): Promise<{

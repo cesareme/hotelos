@@ -669,12 +669,24 @@ export async function getGroupsPickupSummary(input: {
     orderBy: { arrivalDate: "asc" }
   });
 
+  // Tanda L2 (L2-06): the room blocks of every group in the window in one
+  // query (was one findMany per group), grouped per group in date order.
+  const allBlocks = groups.length
+    ? await prisma.groupRoomBlock.findMany({
+        where: { groupBookingId: { in: groups.map((g) => g.id) } },
+        orderBy: [{ groupBookingId: "asc" }, { date: "asc" }]
+      })
+    : [];
+  const blocksByGroup = new Map<string, typeof allBlocks>();
+  for (const block of allBlocks) {
+    const list = blocksByGroup.get(block.groupBookingId) ?? [];
+    list.push(block);
+    blocksByGroup.set(block.groupBookingId, list);
+  }
+
   const result: GroupPickupSummary[] = [];
   for (const g of groups) {
-    const blocks = await prisma.groupRoomBlock.findMany({
-      where: { groupBookingId: g.id },
-      orderBy: { date: "asc" }
-    });
+    const blocks = blocksByGroup.get(g.id) ?? [];
 
     // Aggregate per night across all room types contracted for the group.
     const byDate = new Map<string, { blocked: number; pickedUp: number }>();
@@ -754,14 +766,28 @@ export async function releaseExpiredGroupBlocks(propertyId: string): Promise<{ r
 
   let released = 0;
   let totalRoomsReleased = 0;
+  if (groups.length === 0) return { released, totalRoomsReleased };
+
+  // Tanda L2 (L2-06): the blocks of every expired group in one query and ONE
+  // updateMany for the status flip (was one findMany + one update per group).
+  // The write is re-filtered by property and by the two non-terminal statuses,
+  // so a group released by a concurrent run is not flipped (nor counted) twice.
+  const expiredBlocks = await prisma.groupRoomBlock.findMany({
+    where: { groupBookingId: { in: groups.map((g) => g.id) } },
+    select: { groupBookingId: true, blockedCount: true, pickedUpCount: true }
+  });
+  const roomsReleasedByGroup = new Map<string, number>();
+  for (const block of expiredBlocks) {
+    roomsReleasedByGroup.set(block.groupBookingId, (roomsReleasedByGroup.get(block.groupBookingId) ?? 0) + Math.max(0, block.blockedCount - block.pickedUpCount));
+  }
+  const releaseDate = new Date();
+  const flipped = await prisma.groupBooking.updateMany({
+    where: { id: { in: groups.map((g) => g.id) }, propertyId, status: { in: ["tentative", "definite"] } },
+    data: { status: "released", releaseDate }
+  });
+  released = flipped.count;
   for (const g of groups) {
-    const blocks = await prisma.groupRoomBlock.findMany({ where: { groupBookingId: g.id } });
-    const roomsReleased = blocks.reduce((s, b) => s + Math.max(0, b.blockedCount - b.pickedUpCount), 0);
-    await prisma.groupBooking.update({
-      where: { id: g.id },
-      data: { status: "released", releaseDate: new Date() }
-    });
-    released += 1;
+    const roomsReleased = roomsReleasedByGroup.get(g.id) ?? 0;
     totalRoomsReleased += roomsReleased;
     if (organizationId) {
       recordAuditEvent({

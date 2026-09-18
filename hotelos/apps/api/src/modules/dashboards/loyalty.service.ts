@@ -1,5 +1,9 @@
 import { prisma } from "@hotelos/database";
 
+// Tanda L2 (L2-05): explicit bounds of the property-scoped reads.
+const LOYALTY_RESERVATION_WINDOW_MONTHS = 24;
+const LOYALTY_MAX_RESERVATION_ROWS = 5_000;
+
 /**
  * Loyalty dashboard — read-only members + tiers + points stats.
  *
@@ -212,16 +216,21 @@ export async function buildLoyaltyDashboard(
   // guestIds via ReservationGuest, map guestIds to GuestProfiles (primary or
   // linked), then check which profiles own an active membership we've
   // already fetched. This avoids N+1 by issuing one query per relation.
+  // Tanda L2 (L2-05): stays of the last 24 months by arrival date, bounded (was every reservation of the property).
   let staysWithMemberPct = 0;
+  const today = new Date();
+  const arrivalsSince = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - LOYALTY_RESERVATION_WINDOW_MONTHS, today.getUTCDate()));
   const reservationIds = await prisma.reservation.findMany({
-    where: { propertyId },
-    select: { id: true }
+    where: { propertyId, arrivalDate: { gte: arrivalsSince } },
+    select: { id: true },
+    take: LOYALTY_MAX_RESERVATION_ROWS
   });
 
   if (reservationIds.length > 0) {
     const reservationGuestRows = await prisma.reservationGuest.findMany({
       where: { reservationId: { in: reservationIds.map((r) => r.id) } },
-      select: { reservationId: true, guestId: true }
+      select: { reservationId: true, guestId: true },
+      take: LOYALTY_MAX_RESERVATION_ROWS * 8
     });
 
     if (reservationGuestRows.length > 0) {
@@ -231,11 +240,13 @@ export async function buildLoyaltyDashboard(
       const [byPrimary, byLink] = await Promise.all([
         prisma.guestProfile.findMany({
           where: { primaryGuestId: { in: guestIds }, organizationId },
-          select: { id: true, primaryGuestId: true }
+          select: { id: true, primaryGuestId: true },
+          take: LOYALTY_MAX_RESERVATION_ROWS * 8
         }),
         prisma.guestProfileLink.findMany({
           where: { guestId: { in: guestIds } },
-          select: { guestId: true, guestProfileId: true }
+          select: { guestId: true, guestProfileId: true },
+          take: LOYALTY_MAX_RESERVATION_ROWS * 8
         })
       ]);
 
@@ -287,7 +298,8 @@ export async function buildLoyaltyDashboard(
         type: "redeem",
         occurredAt: { gte: thirtyDaysAgo }
       },
-      select: { points: true }
+      select: { points: true },
+      take: LOYALTY_MAX_RESERVATION_ROWS * 8
     });
     redemptions30dCount = redemptions.length;
     redemptions30dPointsBurned = redemptions.reduce(

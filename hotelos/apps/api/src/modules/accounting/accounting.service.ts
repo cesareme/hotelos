@@ -444,7 +444,7 @@ type AccountRef = { id: string; code: string; name: string; isPostable: boolean;
 export async function resolvePostableAccounts(client: Client, organizationId: string, codes: readonly string[], autoProvision = true): Promise<Map<string, AccountRef>> {
   const unique = Array.from(new Set(codes));
   const select = { id: true, code: true, name: true, isPostable: true, kind: true } as const;
-  let rows = await client.account.findMany({ where: { organizationId, code: { in: unique } }, select });
+  let rows = await client.account.findMany({ where: { organizationId, code: { in: unique } }, select, take: unique.length });
   let missing = unique.filter((code) => !rows.some((row) => row.code === code));
   if (missing.length > 0 && autoProvision) {
     const setting = await client.accountingSetting.findFirst({ where: { organizationId, propertyId: null }, select: { chartTemplate: true } });
@@ -458,7 +458,7 @@ export async function resolvePostableAccounts(client: Client, organizationId: st
         entityId: organizationId,
         afterJson: { reason: "auto_provision_on_post", created: result.created, linked: result.linked, totalAfter: result.totalAfter, missingCodes: missing }
       });
-      rows = await client.account.findMany({ where: { organizationId, code: { in: unique } }, select });
+      rows = await client.account.findMany({ where: { organizationId, code: { in: unique } }, select, take: unique.length });
       missing = unique.filter((code) => !rows.some((row) => row.code === code));
     }
   }
@@ -555,7 +555,7 @@ async function hydrateEntries(client: Client, entries: EntryRow[]): Promise<Jour
   if (entries.length === 0) return [];
   const lines = await client.journalLine.findMany({ where: { journalEntryId: { in: entries.map((e) => e.id) } }, orderBy: { id: "asc" } });
   const accountIds = Array.from(new Set(lines.map((l) => l.accountId)));
-  const accounts = accountIds.length > 0 ? await client.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, code: true, name: true } }) : [];
+  const accounts = accountIds.length > 0 ? await client.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, code: true, name: true }, take: accountIds.length }) : [];
   const accountById = new Map(accounts.map((a) => [a.id, a]));
   const linesByEntry = new Map<string, JournalLineView[]>();
   for (const line of lines) {
@@ -737,7 +737,8 @@ export async function reverseJournalEntry(options: ReverseJournalEntryOptions): 
       throw ledgerConflict("JOURNAL_REVERSAL_OF_REVERSAL", "Un asiento de anulación no se revierte: contabiliza de nuevo el documento original.", { journalEntryId: original.id });
     }
     const lines = await tx.journalLine.findMany({ where: { journalEntryId: original.id }, orderBy: { id: "asc" } });
-    const accounts = await tx.account.findMany({ where: { id: { in: Array.from(new Set(lines.map((l) => l.accountId))) } }, select: { id: true, code: true } });
+    const originalAccountIds = Array.from(new Set(lines.map((l) => l.accountId)));
+    const accounts = await tx.account.findMany({ where: { id: { in: originalAccountIds } }, select: { id: true, code: true }, take: originalAccountIds.length });
     const codeById = new Map(accounts.map((a) => [a.id, a.code]));
     const reason = options.reason?.trim();
     if (!reason) throw ledgerBadRequest("JOURNAL_REVERSAL_REASON_REQUIRED", "Indica el motivo de la anulación.");
@@ -1221,19 +1222,52 @@ function toChartView(row: AccountRow, codeById: Map<string, string>): ChartAccou
   };
 }
 
-export async function listChartAccounts(input: { context: UserContext; postableOnly?: boolean }): Promise<{ organizationId: string; chartTemplate: string | null; accounts: ChartAccountView[] }> {
+/** GET /accounting/chart (Tanda L2 · L2-05): keyset page on `code`. Default 500, max 2.000 (the pickers need every postable account in one page). */
+export const CHART_PAGE_DEFAULT_LIMIT = 500;
+export const CHART_PAGE_MAX_LIMIT = 2_000;
+/** Explicit bound of the whole-chart reads (create / patch validation): a PGC chart has a few hundred accounts. */
+export const CHART_MAX_ACCOUNTS = 5_000;
+
+/** `{ organizationId, chartTemplate, accounts }` (the object the front reads) plus the page fields. */
+export type ChartAccountsPage = { organizationId: string; chartTemplate: string | null; accounts: ChartAccountView[]; total: number; nextCursor: string | null };
+
+/**
+ * Plan de cuentas paged by keyset on (code, id) — the same order as before
+ * (`code asc`, Postgres text collation on both sides). `q` matches a code
+ * prefix or the name (insensitive); `postableOnly` filters in SQL. `total`
+ * counts the filtered chart, not the page. Parent codes are resolved for the
+ * page rows even when the parent (a header) falls outside the page or is
+ * excluded by the filters.
+ */
+export async function listChartAccounts(input: { context: UserContext; postableOnly?: boolean; q?: string; limit?: number; cursor?: string | null }): Promise<ChartAccountsPage> {
   requirePermissions(input.context, ["accounting.read"]);
   const organizationId = input.context.organizationId;
-  const [rows, setting] = await Promise.all([
-    prisma.account.findMany({ where: { organizationId }, orderBy: { code: "asc" } }),
-    prisma.accountingSetting.findFirst({ where: { organizationId, propertyId: null }, select: { chartTemplate: true } })
+  const limit = Math.min(Math.max(Math.trunc(input.limit ?? CHART_PAGE_DEFAULT_LIMIT), 1), CHART_PAGE_MAX_LIMIT);
+  const q = input.q?.trim() ?? "";
+  const filter: Prisma.AccountWhereInput = {
+    organizationId,
+    ...(input.postableOnly ? { isPostable: true } : {}),
+    ...(q ? { OR: [{ code: { startsWith: q } }, { name: { contains: q, mode: "insensitive" } }] } : {})
+  };
+  const cursor = decodeCursor(input.cursor ?? null);
+  const where: Prisma.AccountWhereInput = cursor ? { AND: [filter, { OR: [{ code: { gt: cursor.k } }, { code: cursor.k, id: { gt: cursor.id } }] }] } : filter;
+  const [rows, total, setting, provisioned] = await Promise.all([
+    prisma.account.findMany({ where, orderBy: [{ code: "asc" }, { id: "asc" }], take: limit + 1 }),
+    prisma.account.count({ where: filter }),
+    prisma.accountingSetting.findFirst({ where: { organizationId, propertyId: null }, select: { chartTemplate: true } }),
+    prisma.account.findFirst({ where: { organizationId }, select: { id: true } })
   ]);
-  if (rows.length === 0) {
+  if (!provisioned) {
     throw ledgerConflict("CHART_NOT_PROVISIONED", "La organización no tiene plan de cuentas: provisiónalo (accounting:provision-chart) o contabiliza un primer asiento.", { organizationId });
   }
-  const codeById = new Map(rows.map((row) => [row.id, row.code]));
-  const accounts = rows.filter((row) => !input.postableOnly || row.isPostable).map((row) => toChartView(row, codeById));
-  return { organizationId, chartTemplate: setting?.chartTemplate ?? null, accounts };
+  const page = buildPage(rows, limit, total, (row) => row.code);
+  const codeById = new Map(page.items.map((row) => [row.id, row.code]));
+  const missingParentIds = Array.from(new Set(page.items.map((row) => row.parentId).filter((id): id is string => Boolean(id) && !codeById.has(id as string))));
+  if (missingParentIds.length > 0) {
+    const parents = await prisma.account.findMany({ where: { organizationId, id: { in: missingParentIds } }, select: { id: true, code: true }, take: missingParentIds.length });
+    for (const parent of parents) codeById.set(parent.id, parent.code);
+  }
+  return { organizationId, chartTemplate: setting?.chartTemplate ?? null, accounts: page.items.map((row) => toChartView(row, codeById)), total: page.total, nextCursor: page.nextCursor };
 }
 
 function assertUsali(department: string | null | undefined, line: string | null | undefined): { usaliDepartment: string | null; usaliLine: string | null } {
@@ -1254,7 +1288,7 @@ export async function createChartAccount(input: { context: UserContext; body: Ch
   if (name.length < 2 || name.length > 200) throw ledgerBadRequest("ACCOUNT_NAME_INVALID", "El nombre de la cuenta debe tener entre 2 y 200 caracteres.");
   const usali = assertUsali(input.body.usaliDepartment, input.body.usaliLine);
 
-  const existingRows = await prisma.account.findMany({ where: { organizationId }, select: { id: true, code: true, kind: true } });
+  const existingRows = await prisma.account.findMany({ where: { organizationId }, select: { id: true, code: true, kind: true }, take: CHART_MAX_ACCOUNTS });
   if (existingRows.some((row) => row.code === code)) throw ledgerConflict("ACCOUNT_CODE_EXISTS", `La cuenta ${code} ya existe.`, { accountCode: code });
   const byCode = new Map(existingRows.map((row) => [row.code, row]));
   const parentCode = parentCandidates(code).find((candidate) => byCode.has(candidate)) ?? null;
@@ -1553,10 +1587,12 @@ async function postDraftJournalEntry(input: LegacyPostDraftInput): Promise<Journ
     const fiscalYear = await resolveFiscalYear(tx, entry.organizationId, entry.propertyId, entryDate);
     await acquireNumberingLock(tx, entry.organizationId, fiscalYear.code);
     const entryNumber = await nextEntryNumber(tx, entry.organizationId, fiscalYear.code);
-    const accounts = await tx.account.findMany({ where: { id: { in: lines.map((l) => l.accountId) } }, select: { id: true, code: true } });
-    for (const line of lines) {
-      if (!line.accountCode) {
-        await tx.journalLine.update({ where: { id: line.id }, data: { accountCode: accounts.find((a) => a.id === line.accountId)?.code ?? null } });
+    // L2-05: one updateMany per account of the lines still without accountCode (was one update per line).
+    const pendingAccountIds = Array.from(new Set(lines.filter((l) => !l.accountCode).map((l) => l.accountId)));
+    if (pendingAccountIds.length > 0) {
+      const accounts = await tx.account.findMany({ where: { id: { in: pendingAccountIds } }, select: { id: true, code: true }, take: pendingAccountIds.length });
+      for (const account of accounts) {
+        await tx.journalLine.updateMany({ where: { journalEntryId: entry.id, accountId: account.id, accountCode: null }, data: { accountCode: account.code } });
       }
     }
     return tx.journalEntry.update({

@@ -276,8 +276,17 @@ export async function createPeriod(input: { context: UserContext; organizationId
 /** Reverses the slip entries of the previous run (idempotent: already-reversed ids are skipped). */
 async function reversePreviousRun(tx: Db, period: PeriodRow, createdBy: string | null, reason: string): Promise<string[]> {
   const reversalIds: string[] = [];
+  if (period.journalEntryIds.length === 0) return reversalIds;
+  // Tanda L2 (L2-06): the tracked entries in one query (was one findUnique per
+  // id), scoped to the organisation of the period; the loop keeps the order of
+  // period.journalEntryIds so the reversal ids come out as before.
+  const entries = await tx.journalEntry.findMany({
+    where: { id: { in: period.journalEntryIds }, organizationId: period.organizationId },
+    select: { id: true, reversedById: true, status: true }
+  });
+  const entryById = new Map(entries.map((entry) => [entry.id, entry]));
   for (const journalEntryId of period.journalEntryIds) {
-    const entry = await tx.journalEntry.findUnique({ where: { id: journalEntryId }, select: { id: true, reversedById: true, status: true } });
+    const entry = entryById.get(journalEntryId);
     if (!entry) continue;
     if (entry.reversedById) {
       reversalIds.push(entry.reversedById);

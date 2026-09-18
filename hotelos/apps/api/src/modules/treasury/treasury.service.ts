@@ -48,6 +48,14 @@ import { addDays, dayUtc, daysBetween, dec, isoDay, money, round2, sum, type Dec
 import { DEFAULT_BANK_LEDGER_CODE } from "../banking/bank-account.service.js";
 import { folioDisplayLabel } from "../folio/folio-labels.js";
 
+// Tanda L2 (L2-05): explicit bounds of the position / receivables reads. A
+// sociedad has a handful of bank accounts and their statements are monthly;
+// the line cap only turns an unbounded scan into a bounded one.
+const TREASURY_MAX_BANK_ACCOUNTS = 1_000;
+const TREASURY_MAX_STATEMENT_ROWS = 20_000;
+const TREASURY_MAX_STATEMENT_LINE_ROWS = 200_000;
+const TREASURY_MAX_OPEN_FOLIOS = 20_000;
+
 export const CASH_CODE = "570";
 export const CARD_PENDING_CODE = "5721";
 export const PSP_PENDING_CODE = "5722";
@@ -256,7 +264,7 @@ export async function treasuryPosition(input: TreasuryScopeInput): Promise<Treas
 async function positionForScope(scope: TreasuryScope, asOf: Date): Promise<TreasuryPosition> {
   const organizationId = scope.organizationId;
   const warnings: string[] = [];
-  const bankAccounts = await prisma.bankAccount.findMany({ where: bankAccountFilter(scope), orderBy: [{ propertyId: "asc" }, { name: "asc" }] });
+  const bankAccounts = await prisma.bankAccount.findMany({ where: bankAccountFilter(scope), orderBy: [{ propertyId: "asc" }, { name: "asc" }], take: TREASURY_MAX_BANK_ACCOUNTS });
   const bankCodes = Array.from(new Set(bankAccounts.map((b) => b.ledgerAccountCode ?? DEFAULT_BANK_LEDGER_CODE)));
   const codes = Array.from(new Set([CASH_CODE, CARD_PENDING_CODE, PSP_PENDING_CODE, DEFAULT_BANK_LEDGER_CODE, ...bankCodes]));
   const balances = await ledgerBalances(organizationId, codes, ledgerScopeOptions(scope, asOf));
@@ -270,14 +278,37 @@ async function positionForScope(scope: TreasuryScope, asOf: Date): Promise<Treas
     const code = b.ledgerAccountCode ?? DEFAULT_BANK_LEDGER_CODE;
     sharedCodeCount.set(code, (sharedCodeCount.get(code) ?? 0) + 1);
   }
+  // L2-05: three queries for ALL the bank accounts (was three per account): the statements up to asOf (latest per account
+  // picked in memory, ordered by periodEnd desc), the statement lines and the reconciliation matches of those accounts.
+  const accountIds = bankAccounts.map((account) => account.id);
+  const [statements, statementLines, matchedRows] = accountIds.length
+    ? await Promise.all([
+        prisma.bankStatement.findMany({
+          where: { bankAccountId: { in: accountIds }, periodEnd: { lte: addDays(asOf, 1) } },
+          orderBy: [{ periodEnd: "desc" }],
+          select: { bankAccountId: true, periodEnd: true, closingBalance: true },
+          take: TREASURY_MAX_STATEMENT_ROWS
+        }),
+        prisma.bankStatementLine.findMany({ where: { bankAccountId: { in: accountIds } }, select: { id: true, bankAccountId: true, amount: true }, take: TREASURY_MAX_STATEMENT_LINE_ROWS }),
+        prisma.reconciliationMatch.findMany({ where: { bankAccountId: { in: accountIds } }, select: { bankLineId: true }, take: TREASURY_MAX_STATEMENT_LINE_ROWS })
+      ])
+    : [[], [], []];
+  const latestStatement = new Map<string, { periodEnd: Date; closingBalance: Prisma.Decimal }>();
+  for (const statement of statements) if (!latestStatement.has(statement.bankAccountId)) latestStatement.set(statement.bankAccountId, statement);
+  const matchedIds = new Set(matchedRows.map((m) => m.bankLineId));
+  const unmatchedByAccount = new Map<string, { count: number; amount: Dec }>();
+  for (const line of statementLines) {
+    if (matchedIds.has(line.id)) continue;
+    const bucket = unmatchedByAccount.get(line.bankAccountId) ?? { count: 0, amount: dec(0) };
+    bucket.count += 1;
+    bucket.amount = bucket.amount.plus(dec(line.amount));
+    unmatchedByAccount.set(line.bankAccountId, bucket);
+  }
   for (const account of bankAccounts) {
     const code = account.ledgerAccountCode ?? DEFAULT_BANK_LEDGER_CODE;
     const ledgerBalance = round2(balances.get(code) ?? dec(0));
-    const statement = await prisma.bankStatement.findFirst({ where: { bankAccountId: account.id, periodEnd: { lte: addDays(asOf, 1) } }, orderBy: { periodEnd: "desc" } });
-    const lines = await prisma.bankStatementLine.findMany({ where: { bankAccountId: account.id }, select: { id: true, amount: true } });
-    const matched = lines.length ? await prisma.reconciliationMatch.findMany({ where: { bankLineId: { in: lines.map((l) => l.id) } }, select: { bankLineId: true } }) : [];
-    const matchedIds = new Set(matched.map((m) => m.bankLineId));
-    const unmatched = lines.filter((l) => !matchedIds.has(l.id));
+    const statement = latestStatement.get(account.id) ?? null;
+    const unmatched = unmatchedByAccount.get(account.id) ?? { count: 0, amount: dec(0) };
     const closing = statement ? round2(dec(statement.closingBalance)) : null;
     if (closing !== null) statementsUsed = true;
     if ((sharedCodeCount.get(code) ?? 0) > 1) warnings.push(`Varias cuentas bancarias comparten la subcuenta ${code}: el saldo del libro se repite en cada una; asigna una subcuenta 572.x por cuenta.`);
@@ -292,8 +323,8 @@ async function positionForScope(scope: TreasuryScope, asOf: Date): Promise<Treas
       statementDate: statement ? isoDay(statement.periodEnd) : null,
       reconciledBalance: money(closing ?? ledgerBalance),
       drift: money(closing === null ? dec(0) : closing.minus(ledgerBalance)),
-      unmatchedLines: unmatched.length,
-      unmatchedAmount: money(sum(unmatched.map((l) => dec(l.amount))))
+      unmatchedLines: unmatched.count,
+      unmatchedAmount: money(round2(unmatched.amount))
     });
   }
   // Ledger 572 (general) when no bank account is registered: still a bank balance.
@@ -443,11 +474,13 @@ async function receivablesForScope(scope: TreasuryScope, asOf: Date): Promise<Re
   }
 
   // Open folios without any invoice.
-  const reservations = await prisma.reservation.findMany({ where: { ...centreFilter(scope), deletedAt: null }, select: { id: true, code: true, departureDate: true, bookerName: true, companyName: true } });
-  const reservationById = new Map(reservations.map((r) => [r.id, r]));
-  const openFolios = reservations.length
-    ? await prisma.folio.findMany({ where: { reservationId: { in: reservations.map((r) => r.id) }, status: "open", deletedAt: null }, select: { id: true, reservationId: true, label: true, invoices: { select: { id: true, status: true } } } })
-    : [];
+  // L2-05: the open folios of the scope through the reservation relation (was every reservation of the scope, then its folios).
+  const openFolios = await prisma.folio.findMany({
+    where: { status: "open", deletedAt: null, reservation: { ...centreFilter(scope), deletedAt: null } },
+    select: { id: true, reservationId: true, label: true, invoices: { select: { id: true, status: true } }, reservation: { select: { id: true, code: true, departureDate: true, bookerName: true, companyName: true } } },
+    take: TREASURY_MAX_OPEN_FOLIOS
+  });
+  const reservationById = new Map(openFolios.map((f) => [f.reservationId, f.reservation]));
   const uninvoiced = openFolios.filter((f) => !f.invoices.some((i) => i.status !== "cancelled"));
   let foliosTotal = dec(0);
   if (uninvoiced.length > 0) {

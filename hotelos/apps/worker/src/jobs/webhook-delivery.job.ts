@@ -1,26 +1,29 @@
-// Webhook delivery worker (P0-1 from 2026 audit).
+// Entrega de webhooks salientes (P0-1 de la auditoría de 2026; cola pg-boss
+// `webhooks.deliver`, un WorkerJobRun por tick — scheduler.ts).
 //
-// The audit found that `WebhookSubscription` + `WebhookDelivery` were modelled
-// in Prisma and the `/developer/webhooks` HTTP surface existed, but nothing
-// actually delivered the events to subscribers' URLs. Result: any partner
-// (RoomDiary, Canary, etc.) integrating with HotelOS would receive zero
-// real-time events.
+// La auditoría encontró `WebhookSubscription` + `WebhookDelivery` modelados en
+// Prisma y la superficie HTTP de suscripciones publicada, pero nada entregaba
+// los eventos a las URLs de los suscriptores: un socio integrado con ehotelOS
+// no recibía ningún evento en tiempo real. La superficie canónica es
+// /webhooks/subscriptions (apps/api/src/security/route-permissions.ts); la
+// familia duplicada /developer/webhooks/* se retiró en la Tanda L2 (L2-02).
 //
-// This worker closes the loop:
-//   1. Reads `WebhookDelivery` rows with status="pending" or status="retrying".
-//   2. POSTs the payload to `WebhookSubscription.targetUrl` with an HMAC-SHA256
-//      signature over the body, using the secret from `secretRef`.
-//   3. Records the response and re-queues with exponential backoff on failure
-//      (up to 6 attempts: 30s, 2m, 10m, 30m, 2h, 6h).
+// Este job cierra el bucle:
+//   1. Lee filas `WebhookDelivery` con status="pending" o status="retrying".
+//   2. Hace POST del payload a `WebhookSubscription.targetUrl` con firma
+//      HMAC-SHA256 del cuerpo, usando el secreto de `secretRef`.
+//   3. Registra la respuesta y reencola con backoff exponencial si falla
+//      (hasta 6 intentos: 30s, 2m, 10m, 30m, 2h, 6h).
 //
-// Why a separate `WebhookDelivery` row instead of just retrying live? Because
-// every attempt is auditable: partners can ask "did event X reach me?" and we
-// can answer with HTTP status + timestamp + body.
+// ¿Por qué una fila `WebhookDelivery` por intento en vez de reintentar en vivo?
+// Porque cada intento es auditable: un socio puede preguntar «¿os llegó el
+// evento X?» y se responde con estado HTTP, marca de tiempo y cuerpo.
 //
-// Trigger surface: anywhere the domain emits an event (recordDomainEvent),
-// `enqueueWebhookDeliveries(event)` creates one `WebhookDelivery` row per
-// subscription whose `eventTypes` array contains the event type. Then this
-// worker picks them up on its next tick.
+// Productor: `enqueueWebhookDeliveries` (aquí) o `dispatchEvent` en
+// apps/api/src/modules/webhooks/webhooks.service.ts crean una fila por
+// suscripción activa cuyo `eventTypes` contiene el tipo de evento; este job
+// las recoge en el siguiente tick. Cablear `dispatchEvent` desde
+// recordDomainEvent es de la Tanda L8 (hoy los eventos de dominio no lo llaman).
 
 import { createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import { prisma } from "@hotelos/database";

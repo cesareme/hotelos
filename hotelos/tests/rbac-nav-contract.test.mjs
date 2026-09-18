@@ -508,7 +508,9 @@ const READ_GATED_GETS = [
   { path: "/properties/:propertyId/guest-register-records", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
   { path: "/properties/:propertyId/compliance/inbox", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
   { path: "/ses/submissions/:id", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
-  { path: "/properties/:propertyId/ses-hospedajes/submissions", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  // Tanda L2 (L2-01): the canonical SES list is /properties/:propertyId/ses/submissions; the
+  // /ses-hospedajes/submissions duplicate is retired by L2-02.
+  { path: "/properties/:propertyId/ses/submissions", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
   // Tanda 8a · L1/L2 (§4.6): claves de lectura nuevas y GET de auditoría / cumplimiento / proveedores recableados.
   { path: "/properties/:propertyId/housekeeping/board", permission: "housekeeping.read", templates: ["housekeeper", "housekeeping_manager", "manager", "operations_director", "general_manager", "auditor"] },
   { path: "/properties/:propertyId/work-orders", permission: "maintenance.read", templates: ["maintenance", "maintenance_manager", "manager", "operations_director", "general_manager", "auditor"] },

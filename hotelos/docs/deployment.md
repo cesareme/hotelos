@@ -15,7 +15,7 @@
 | Adopción de un VPS existente | `deploy/scripts/vps-inventory.sh` + `install-from-scratch.sh --adopt` |
 | Runtime | tsx (`node --import tsx src/server.ts`); `pnpm install --frozen-lockfile` sin `--prod` |
 | Esquema | `pnpm db:adopt-baseline -- --apply` → `pnpm db:migrate:deploy` → `pnpm db:drift:check` (nunca `db push`) |
-| Worker | pg-boss (`webhooks.deliver`), `RUN_SCHEDULERS=false`; los schedulers viven en el API |
+| Worker | pg-boss, 4 colas (`notifications.scheduled`, `notifications.retry`, `notifications.sending-sweep`, `webhooks.deliver`), un run por ejecución en `worker_job_runs` con retención por cola (`WORKER_JOB_RUN_RETENTION_DAYS`, 7 días; fallidos 4×), `RUN_SCHEDULERS=false`; los schedulers viven en el API |
 | CI | `.github/workflows/ci.yml` en la **raíz git** (typecheck:all, contract tests, integración con `migrate deploy`, fresh-install + smoke, build web, imágenes pnpm) |
 | Deploy por SSH | `.github/workflows/deploy.yml` (raíz git) → `deploy.sh --role production-native --pull --yes` |
 
@@ -26,19 +26,45 @@
 3. Arrancar API (`RUN_SCHEDULERS=true`) y worker (`RUN_SCHEDULERS=false`).
 4. Smoke: `deploy/scripts/smoke.sh` (HTTP real) y `pnpm smoke:demo` (contrato estático del preview).
 
-## Worker Jobs
+## Worker (pg-boss)
 
-El worker (`apps/worker`, pg-boss) registra cada intento en `worker_job_runs`.
-Responsabilidades documentadas (algunas siguen en el API como schedulers in-process):
+El worker (`apps/worker`, `node --import tsx src/index.ts`) ejecuta exactamente **cuatro colas pg-boss**
+(esquema `pgboss` de la misma base de datos; `boss.start()` lo crea en el primer arranque). Cada cola la
+lanza un cron y cada tick lo consume una sola instancia:
 
-- `ses_hospedajes.submit`: submit queued guest register records, write accepted/rejected/failed events, and retry transport failures.
-- `invoice.compliance.check`: verify issued invoices have VERI*FACTU hash and QR placeholders, then create B2B e-invoice envelopes when enabled.
-- `messaging.send`: send or queue WhatsApp, email, SMS, webchat, or app messages through provider adapters.
-- `ota.channel_sync`: sync availability and reservations with OTA/channel manager adapters.
-- `bank.reconciliation.match`: suggest payment, folio, invoice, and supplier bill matches without posting journals.
-- `retention.delete_expired`: delete only records whose retention date has elapsed and which are not under legal hold.
-- `reports.daily_briefing`: generate owner daily briefing text from live dashboard metrics.
-- `webhooks.deliver`: cola pg-boss real del worker (entrega de webhooks salientes).
+| Cola | Cron (Europe/Madrid) | Qué hace |
+|---|---|---|
+| `notifications.scheduled` | `*/1 * * * *` | Reclama `NotificationDelivery` en `queued` con `scheduledFor` vencido y llama al proveedor del canal (hoy stubs: ver aviso más abajo). |
+| `notifications.retry` | `*/5 * * * *` | Devuelve a `queued` las entregas `failed` con intentos restantes (backoff exponencial). |
+| `notifications.sending-sweep` | `*/10 * * * *` | Rescata entregas atascadas en `sending` más de 15 minutos. |
+| `webhooks.deliver` | `*/1 * * * *` | Entrega `WebhookDelivery` pendientes/reintentables con firma HMAC-SHA256 (cola crítica: si su setup falla, el worker sale con código 1). |
+
+**Un run por ejecución.** Cada tick escribe **una fila** en `worker_job_runs` (modelo `WorkerJobRun`,
+`apps/worker/src/jobs/job-runs.ts`): `status=running` con `attempts=1`, `started_at` y `payload_json` al
+empezar; `completed` con `result_json` (el resumen del barrido) o `failed` con `last_error`, y `finished_at`,
+al terminar. Un error deja el run en `failed` y se relanza para que pg-boss marque el job. Los cuatro barridos
+son globales (recorren todas las organizaciones), así que `organization_id` y `property_id` quedan a NULL. La
+tabla la comparte `treasury.sepa_remittance` (remesas SEPA del API): toda lectura de runs filtra por `job_name`.
+
+- **Líder.** pg-boss guarda los crons en `pgboss.schedule` con clave primaria `name` y serializa su publicación
+  con un lock de intervalo (`pgboss.version.cron_on`): con varias réplicas del worker cada cola tiene un único
+  cron y cada tick lo ejecuta una sola instancia (`FOR UPDATE SKIP LOCKED`). Los schedulers in-process del API
+  (SES Hospedajes, VeriFactu, pace, allotment release, group cut-off, mailbox, PMS sombra, drain del channel
+  manager) corren solo en la instancia del API con `RUN_SCHEDULERS=true`; el worker arranca siempre con
+  `RUN_SCHEDULERS=false` (compose y systemd lo fuerzan), no importa `apps/api` y no los ejecuta.
+- **Proveedores.** `apps/worker/src/providers/*` son stubs que marcan «enviado» sin enviar. Si `EMAIL_PROVIDER`,
+  `TWILIO_ACCOUNT_SID` o `WHATSAPP_PHONE_ID` están definidos, el worker lo avisa una vez al arrancar
+  (`console.warn`). Unificarlos con los proveedores del API es de la Tanda L8.
+- **Salud.** Al arrancar imprime el JSON de `getWorkerHealth()`: dependencias, `failedSchedules` (pasos de
+  setup de pg-boss fallidos) y `lastRuns` (últimos 10 runs por cola leídos de `worker_job_runs`).
+- **Retirado en Tanda L2 (L2-07).** El catálogo de 85 nombres de job sin implementación (respondían
+  «completed» sin hacer nada), `handleJob` y sus siete handlers tipados sin productor, y la cola
+  `modelo303.aggregate` (solo un `console.log`).
+- **Tests.** `corepack pnpm --filter @hotelos/worker test` (`node --test` sobre `src/**/__tests__/*.test.ts`,
+  sin base de datos: catálogo, runs y despachador de notificaciones).
+- **Comprobación en local.** `SELECT job_name, status, count(*) FROM worker_job_runs GROUP BY 1, 2;` y
+  `SELECT name, cron FROM pgboss.schedule;` (4 filas). Hasta la Tanda L2 el esquema se llamaba `pg_boss` y
+  Postgres lo rechazaba (SQLSTATE 42939, prefijo `pg_` reservado): el worker nunca había llegado a arrancar.
 
 ## Release Gate (observabilidad)
 

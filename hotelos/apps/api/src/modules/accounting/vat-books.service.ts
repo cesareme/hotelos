@@ -52,6 +52,7 @@ import type {
 import type { UserContext } from "../../lib/demo-store.js";
 import { resolveLegalIdentity, type LegalIdentity } from "../../lib/finance-scope.js";
 import { BadRequestError, ConflictError } from "../../lib/http-error.js";
+import { buildPage, decodeCursor } from "../../lib/pagination.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { assertFinanceReadScope } from "../../lib/finance-scope.js";
@@ -1085,6 +1086,11 @@ export type LoadedVatBookRows = {
  * range has any, otherwise the rows derived from the documents (flagged in
  * `origen` and `avisos`). Read-only.
  */
+/** GET /fiscal/vat-books (Tanda L2 · L2-05): page size (default and maximum) of the keyset page on (date, id). */
+export const VAT_BOOK_PAGE_LIMIT = 500;
+/** Explicit bound of the whole-range reads of the models (303 / 390 / 347…): ≈ 3.000 rows a year at Faranda; a hit is reported in `avisos`. */
+export const VAT_BOOK_MAX_ROWS = 50_000;
+
 export async function loadVatBookRows(input: { organizationId: string; from: string; to: string; propertyId?: string | null; periodicity: VatPeriodicityCode; taxFigure?: string; books?: readonly VatBookName[] }): Promise<LoadedVatBookRows> {
   const books = input.books ?? (["emitidas", "recibidas", "bienes_inversion"] as const);
   const persisted = await prisma.vatBookEntry.findMany({
@@ -1094,12 +1100,17 @@ export async function loadVatBookRows(input: { organizationId: string; from: str
       date: { gte: dateColumn(input.from), lte: dateColumn(input.to) },
       ...(input.propertyId ? { propertyId: input.propertyId } : {})
     },
-    orderBy: [{ date: "asc" }, { number: "asc" }]
+    orderBy: [{ date: "asc" }, { number: "asc" }],
+    take: VAT_BOOK_MAX_ROWS + 1
   });
+  const avisos: string[] = [];
+  if (persisted.length > VAT_BOOK_MAX_ROWS) {
+    persisted.length = VAT_BOOK_MAX_ROWS;
+    avisos.push(`Los libros del rango ${input.from}..${input.to} superan ${VAT_BOOK_MAX_ROWS} filas: el cálculo usa las primeras ${VAT_BOOK_MAX_ROWS} por fecha; acota el rango.`);
+  }
   const origen = { emitidas: "libros", recibidas: "libros", bienes_inversion: "libros" } as Record<VatBookName, "libros" | "documentos">;
   const rows: VatBookRow[] = persisted.map(fromPersistedRow);
   const missing = books.filter((book) => !persisted.some((row) => row.book === book));
-  const avisos: string[] = [];
   if (missing.length > 0) {
     const derived = await deriveVatBookRows({ organizationId: input.organizationId, from: input.from, to: input.to, propertyId: input.propertyId, periodicity: input.periodicity, taxFigure: input.taxFigure });
     for (const book of missing) {
@@ -1243,7 +1254,34 @@ export async function rebuildVatBooks(input: { context: UserContext; from: strin
 
 // ── Listing ─────────────────────────────────────────────────────────────────
 
-export async function listVatBook(input: { context: UserContext; book: VatBookName; period?: string; from?: string; to?: string; propertyId?: string | null }): Promise<VatBookResponse> {
+/** The book the front reads (`rows`, `resumen`, `origen`, `avisos`, `periodo`) plus the page fields. */
+export type VatBookPage = VatBookResponse & { total: number; nextCursor: string | null };
+
+type VatRateGroup = { rate: Prisma.Decimal; _count: { _all: number }; _sum: { base: Prisma.Decimal | null; quota: Prisma.Decimal | null; total: Prisma.Decimal | null; retention: Prisma.Decimal | null } };
+
+/** Totals of a materialised book from groupBy(rate) + aggregate over the WHOLE range — never from the page rows. */
+function summaryFromGroups(groups: readonly VatRateGroup[], totals: VatRateGroup["_sum"], filas: number): VatBookSummary {
+  return {
+    filas,
+    base: toWire(totals.base ?? ZERO),
+    cuota: toWire(totals.quota ?? ZERO),
+    total: toWire(totals.total ?? ZERO),
+    retencion: toWire(totals.retention ?? ZERO),
+    porTipo: [...groups]
+      .sort((a, b) => b.rate.comparedTo(a.rate))
+      .map((group) => ({ rate: toWire(group.rate), filas: group._count._all, base: toWire(group._sum.base ?? ZERO), cuota: toWire(group._sum.quota ?? ZERO), total: toWire(group._sum.total ?? ZERO), retencion: toWire(group._sum.retention ?? ZERO) }))
+  };
+}
+
+/**
+ * Libro de IVA paged (Tanda L2 · L2-05). A materialised book (VatBookEntry
+ * rows in the range) is a keyset page on (date, id) with `total` and the
+ * per-rate totals computed by groupBy / aggregate over the whole range; a
+ * book without materialised rows is derived from the documents in memory
+ * (as before), bounded to `limit` rows with no cursor (`avisos` says how to
+ * materialise it with POST /fiscal/vat-books/rebuild).
+ */
+export async function listVatBook(input: { context: UserContext; book: VatBookName; period?: string; from?: string; to?: string; propertyId?: string | null; limit?: number; cursor?: string | null }): Promise<VatBookPage> {
   requirePermissions(input.context, ["accounting.read"]);
   // R11: the whole-sociedad book needs accounting.entity.read; a centre view, that centre.
   assertFinanceReadScope(input.context, input.propertyId ?? null);
@@ -1260,15 +1298,52 @@ export async function listVatBook(input: { context: UserContext; book: VatBookNa
   } else {
     throw new BadRequestError("Indica period (2026-Q3 · 2026-09 · 2026) o from y to.");
   }
+  const limit = Math.min(Math.max(Math.trunc(input.limit ?? VAT_BOOK_PAGE_LIMIT), 1), VAT_BOOK_PAGE_LIMIT);
+  const cursor = decodeCursor(input.cursor ?? null);
+  if (cursor && !isIsoDay(cursor.k)) throw new BadRequestError("El cursor de paginación no es válido.");
+  const filter: Prisma.VatBookEntryWhereInput = {
+    organizationId,
+    book: input.book,
+    date: { gte: dateColumn(periodo.from), lte: dateColumn(periodo.to) },
+    ...(input.propertyId ? { propertyId: input.propertyId } : {})
+  };
+  const total = await prisma.vatBookEntry.count({ where: filter });
+  if (total > 0) {
+    const where: Prisma.VatBookEntryWhereInput = cursor ? { AND: [filter, { OR: [{ date: { gt: dateColumn(cursor.k) } }, { date: dateColumn(cursor.k), id: { gt: cursor.id } }] }] } : filter;
+    const [rows, groups, totals] = await Promise.all([
+      prisma.vatBookEntry.findMany({ where, orderBy: [{ date: "asc" }, { id: "asc" }], take: limit + 1 }),
+      prisma.vatBookEntry.groupBy({ by: ["rate"], where: filter, _count: { _all: true }, _sum: { base: true, quota: true, total: true, retention: true } }),
+      prisma.vatBookEntry.aggregate({ where: filter, _sum: { base: true, quota: true, total: true, retention: true } })
+    ]);
+    const page = buildPage(rows, limit, total, (row) => dateColumnDay(row.date));
+    return {
+      organizationId,
+      propertyId: input.propertyId ?? null,
+      book: input.book,
+      periodo,
+      origen: "libros",
+      rows: page.items.map((row) => toVatBookRowDto(fromPersistedRow(row))),
+      resumen: summaryFromGroups(groups, totals._sum, total),
+      avisos: [],
+      total,
+      nextCursor: page.nextCursor
+    };
+  }
   const loaded = await loadVatBookRows({ organizationId, from: periodo.from, to: periodo.to, propertyId: input.propertyId, periodicity: settings.periodicity, taxFigure: settings.taxFigure, books: [input.book] });
+  const avisos = [...loaded.avisos];
+  if (loaded.rows.length > limit) {
+    avisos.push(`El libro calculado desde los documentos tiene ${loaded.rows.length} filas y se muestran las primeras ${limit}: materialízalo con POST /fiscal/vat-books/rebuild para paginarlo.`);
+  }
   return {
     organizationId,
     propertyId: input.propertyId ?? null,
     book: input.book,
     periodo,
     origen: loaded.origen[input.book],
-    rows: loaded.rows.map(toVatBookRowDto),
+    rows: loaded.rows.slice(0, limit).map(toVatBookRowDto),
     resumen: summarizeVatRows(loaded.rows),
-    avisos: loaded.avisos
+    avisos,
+    total: loaded.rows.length,
+    nextCursor: null
   };
 }

@@ -143,7 +143,26 @@ async function connect() {
   }
 }
 
-export async function inspect(prisma, baseline) {
+// Tanda L2 (corrector · DP-01): the versioned migrations that FOLLOW the
+// baseline may retire tables the baseline created (20260918130000_persistencia_l2
+// drops 18). A freshly `migrate deploy`ed database lacks them by design, so
+// they are not «missing»: the expected set is the baseline minus every
+// `DROP TABLE "x";` of a later migration.
+export function tablesDroppedAfterBaseline(migrationsDir = MIGRATIONS_DIR) {
+  const dropped = new Set();
+  if (!existsSync(migrationsDir)) return dropped;
+  for (const name of readdirSync(migrationsDir).filter((entry) => MIGRATION_DIR_RE.test(entry) && entry !== BASELINE_NAME).sort()) {
+    const file = join(migrationsDir, name, "migration.sql");
+    if (!existsSync(file)) continue;
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      const drop = /^DROP TABLE "([^"]+)";/.exec(line.replace(/\r$/, ""));
+      if (drop) dropped.add(drop[1]);
+    }
+  }
+  return dropped;
+}
+
+export async function inspect(prisma, baseline, droppedLater = tablesDroppedAfterBaseline()) {
   const tableRows = await prisma.$queryRawUnsafe(
     `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`
   );
@@ -168,10 +187,10 @@ export async function inspect(prisma, baseline) {
   const dbColumns = new Set(columnRows.map((r) => `${r.table_name}.${r.column_name}`));
   const dbEnums = new Set(enumRows.map((r) => r.typname));
 
-  const missingTables = [...baseline.tables.keys()].filter((t) => !dbTables.has(t));
+  const missingTables = [...baseline.tables.keys()].filter((t) => !dbTables.has(t) && !droppedLater.has(t));
   const missingColumns = [];
   for (const [table, columns] of baseline.tables) {
-    if (!dbTables.has(table)) continue;
+    if (!dbTables.has(table) || droppedLater.has(table)) continue;
     for (const column of columns) if (!dbColumns.has(`${table}.${column}`)) missingColumns.push(`${table}.${column}`);
   }
   const missingEnums = baseline.enums.filter((e) => !dbEnums.has(e));

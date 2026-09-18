@@ -1,4 +1,5 @@
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 import type { Prisma } from "@hotelos/database";
 
 // Read-only channel performance dashboard. Aggregates channel mix, profitability,
@@ -50,6 +51,13 @@ export type ChannelPerformanceDashboard = {
     description?: string;
   }>;
   syncJobsStatus: Array<{ status: string; count: number }>;
+  /**
+   * Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this
+   * response ("profitability_snapshots", "sync_jobs", "parity_alerts",
+   * "external_reservations"). The channel list itself is never degraded: a
+   * failure there is a 500.
+   */
+  degraded: string[];
 };
 
 function dec(value: Prisma.Decimal | number | null | undefined): number {
@@ -74,55 +82,52 @@ export async function buildChannelPerformanceDashboard(input: {
   const now = new Date();
   const windowStart = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 
-  // 1) Parallel fetch of every input we need.
+  // 1) Parallel fetch of every input we need. Tanda L2 (L2-06): the two
+  //    placeholder mapping queries (`channelId: { in: [] }` behind a
+  //    `.catch(() => [])`) and their voided re-fetch fed nothing in the
+  //    payload and are gone; the KPI sources go through the degraded
+  //    collector so a failed table is reported in `degraded[]` instead of
+  //    rendering as a quiet zero. The channel list stays a hard failure.
+  const { safe, degraded } = createDegradedCollector("dashboards.channel-performance", { propertyId, days });
   const [
     channels,
     profitabilitySnapshots,
-    rateMappings,
-    roomMappings,
     syncJobs,
     parityAlerts,
     externalReservations
   ] = await Promise.all([
     prisma.channel.findMany({ where: { propertyId } }),
-    prisma.channelProfitabilitySnapshot.findMany({
-      where: { propertyId, date: { gte: windowStart, lte: now } }
-    }),
-    prisma.channelRateMapping.findMany({
-      where: { channelId: { in: [] } } // refined below
-    }).catch(() => [] as Array<{ id: string; channelId: string; ratePlanId: string; externalRateCode: string; externalRateName: string | null; status: string }>),
-    prisma.channelRoomMapping.findMany({
-      where: { channelId: { in: [] } }
-    }).catch(() => [] as Array<{ id: string; channelId: string; roomTypeId: string; externalRoomCode: string; externalRoomName: string | null; status: string }>),
-    prisma.channelSyncJob.findMany({
-      where: { propertyId, createdAt: { gte: windowStart } }
-    }),
-    prisma.rateParityAlert.findMany({
-      where: { propertyId },
-      orderBy: { createdAt: "desc" },
-      take: 50
-    }),
-    prisma.externalReservation.findMany({
-      where: { propertyId, importedAt: { gte: windowStart, lte: now } }
-    })
+    safe(
+      "profitability_snapshots",
+      prisma.channelProfitabilitySnapshot.findMany({
+        where: { propertyId, date: { gte: windowStart, lte: now } }
+      }),
+      []
+    ),
+    safe(
+      "sync_jobs",
+      prisma.channelSyncJob.findMany({
+        where: { propertyId, createdAt: { gte: windowStart } }
+      }),
+      []
+    ),
+    safe(
+      "parity_alerts",
+      prisma.rateParityAlert.findMany({
+        where: { propertyId },
+        orderBy: { createdAt: "desc" },
+        take: 50
+      }),
+      []
+    ),
+    safe(
+      "external_reservations",
+      prisma.externalReservation.findMany({
+        where: { propertyId, importedAt: { gte: windowStart, lte: now } }
+      }),
+      []
+    )
   ]);
-
-  const channelIds = channels.map((c) => c.id);
-
-  // Re-fetch mappings now that we know the channel IDs (Prisma "in: []"
-  // short-circuits with no rows, so the placeholder above is intentional
-  // and we ignore its result).
-  const [realRateMappings, realRoomMappings] = channelIds.length
-    ? await Promise.all([
-        prisma.channelRateMapping.findMany({ where: { channelId: { in: channelIds } } }),
-        prisma.channelRoomMapping.findMany({ where: { channelId: { in: channelIds } } })
-      ])
-    : [[] as typeof rateMappings, [] as typeof roomMappings];
-
-  void rateMappings;
-  void roomMappings;
-  void realRateMappings;
-  void realRoomMappings;
 
   // 2) Build channel lookup maps for resolving free-form channel strings to
   //    display names. Try providerCode first, then name (case-insensitive).
@@ -263,6 +268,7 @@ export async function buildChannelPerformanceDashboard(input: {
     channelMix,
     topProfitableChannels,
     recentParityAlerts,
-    syncJobsStatus
+    syncJobsStatus,
+    degraded
   };
 }

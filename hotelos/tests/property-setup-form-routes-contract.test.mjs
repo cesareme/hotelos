@@ -7,6 +7,7 @@ const service = readFileSync(new URL("../apps/api/src/modules/backoffice/backoff
 const server = readFileSync(new URL("../apps/api/src/server.ts", import.meta.url), "utf8");
 const routePermissions = readFileSync(new URL("../apps/api/src/security/route-permissions.ts", import.meta.url), "utf8");
 const demoStore = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", import.meta.url), "utf8");
+const setupStore = readFileSync(new URL("../apps/api/src/modules/backoffice/setup.store.ts", import.meta.url), "utf8");
 const apiClient = readFileSync(new URL("../apps/admin-web/src/services/backofficeApi.ts", import.meta.url), "utf8");
 const adminApp = readFileSync(new URL("../apps/admin-web/src/App.tsx", import.meta.url), "utf8");
 const adminRoutes = readFileSync(new URL("../apps/admin-web/src/routes/backoffice.routes.tsx", import.meta.url), "utf8");
@@ -25,15 +26,20 @@ const demoHtml = readFileSync(new URL("../demo/public/index.html", import.meta.u
 const demoJs = readFileSync(new URL("../demo/public/app.js", import.meta.url), "utf8");
 
 describe("Property setup form routes", () => {
-  it("adds a database-backed submission model and demo store records", () => {
+  it("adds database-backed submission models persisted through setup.store.ts (no demo-store legs)", () => {
     assert.match(schema, /model PropertySetupFormSubmission/);
     assert.match(schema, /property_setup_form_submissions/);
     assert.match(schema, /model ManualSetupSubmission/);
     assert.match(schema, /manual_setup_submissions/);
-    assert.match(demoStore, /PropertySetupFormSubmissionRecord/);
-    assert.match(demoStore, /propertySetupFormSubmissions/);
-    assert.match(demoStore, /ManualSetupSubmissionRecord/);
-    assert.match(demoStore, /manualSetupSubmissions/);
+    // Tanda L2 (L2-04/L2-08): both submission kinds persist in Prisma; the
+    // in-memory demoStore.propertySetupFormSubmissions / manualSetupSubmissions
+    // legs were retired (the record types stay for the service signatures).
+    assert.match(setupStore, /prisma\.propertySetupFormSubmission\.create\(/);
+    assert.match(setupStore, /prisma\.propertySetupFormSubmission\.findMany\(/);
+    assert.match(setupStore, /prisma\.manualSetupSubmission\.create\(/);
+    assert.match(setupStore, /prisma\.manualSetupSubmission\.findMany\(/);
+    assert.doesNotMatch(demoStore, /\n  propertySetupFormSubmissions: /);
+    assert.doesNotMatch(demoStore, /\n  manualSetupSubmissions: /);
   });
 
   it("exposes form metadata and save endpoints with permissions", () => {

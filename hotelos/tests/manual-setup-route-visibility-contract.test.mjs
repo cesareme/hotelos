@@ -64,13 +64,18 @@ describe("manual setup route visibility", () => {
     const service = read("apps/api/src/modules/backoffice/backoffice.service.ts");
     const server = read("apps/api/src/server.ts");
     const permissions = read("apps/api/src/security/route-permissions.ts");
+    const setupStore = read("apps/api/src/modules/backoffice/setup.store.ts");
     const demoStore = read("apps/api/src/lib/demo-store.ts");
     assert.match(service, /listManualSetupOptions/);
     assert.match(service, /getManualSetupOptionDetail/);
     assert.match(service, /saveManualSetupOption/);
     assert.match(service, /MANUAL_SETUP_COVERAGE_SUMMARY/);
-    assert.match(demoStore, /ManualSetupSubmissionRecord/);
-    assert.match(demoStore, /manualSetupSubmissions/);
+    // Tanda L2 (L2-04/L2-08): manual setup submissions persist in Prisma
+    // (manual_setup_submissions via setup.store.ts); the in-memory
+    // demoStore.manualSetupSubmissions leg was retired.
+    assert.match(setupStore, /prisma\.manualSetupSubmission\.findMany\(/);
+    assert.match(setupStore, /prisma\.manualSetupSubmission\.create\(/);
+    assert.doesNotMatch(demoStore, /\n  manualSetupSubmissions: /);
     assert.match(server, /\/backoffice\/properties\/:propertyId\/manual-setup\/options/);
     assert.match(server, /\/backoffice\/properties\/:propertyId\/manual-setup\/:optionCode/);
     assert.match(permissions, /manual-setup\/options/);

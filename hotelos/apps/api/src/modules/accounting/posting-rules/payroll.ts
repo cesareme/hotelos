@@ -1,6 +1,6 @@
 import { prisma } from "@hotelos/database";
 import type { EventEnvelope } from "@hotelos/shared";
-import { findJournalEntryBySource, isoDay, postJournalEntry, reverseJournalEntry, type PostedJournalEntry } from "../accounting.service.js";
+import { isoDay, postJournalEntry, reverseJournalEntry, type PostedJournalEntry } from "../accounting.service.js";
 import { buildPayrollSlipEntry } from "../posting-rules.js";
 
 // Payroll posting rule (canonical rule «Nómina» of the runbook §2).
@@ -49,10 +49,19 @@ export async function postPayrollPeriod(input: { periodId: string; slipIds?: str
     select: { id: true, sourceId: true }
   });
   const reversalIds: string[] = [];
+  // Tanda L2 (L2-06): the slips that still stand (another calculation of the
+  // same period) in ONE query instead of one findUnique per tracked entry.
+  const candidateSlipIds = tracked
+    .map((entry) => entry.sourceId)
+    .filter((sourceId): sourceId is string => typeof sourceId === "string" && sourceId.length > 0 && !currentSlipIds.has(sourceId));
+  const standingSlipIds = new Set(
+    candidateSlipIds.length > 0
+      ? (await prisma.payrollSlip.findMany({ where: { id: { in: candidateSlipIds } }, select: { id: true } })).map((slip) => slip.id)
+      : []
+  );
   for (const entry of tracked) {
     if (!entry.sourceId || currentSlipIds.has(entry.sourceId)) continue;
-    const stillExists = await prisma.payrollSlip.findUnique({ where: { id: entry.sourceId }, select: { id: true } });
-    if (stillExists) continue; // a slip of another calculation that still stands
+    if (standingSlipIds.has(entry.sourceId)) continue; // a slip of another calculation that still stands
     const reversal = await reverseJournalEntry({
       organizationId: period.organizationId,
       journalEntryId: entry.id,
@@ -66,9 +75,23 @@ export async function postPayrollPeriod(input: { periodId: string; slipIds?: str
   }
 
   // 2. Post the current slips (idempotent).
+  // Tanda L2 (L2-06): the asientos already posted for these slips in ONE
+  // query (same key as findJournalEntryBySource: organisation + source type +
+  // source id) instead of one findFirst per slip.
+  const alreadyPosted = slips.length > 0
+    ? await prisma.journalEntry.findMany({
+        where: { organizationId: period.organizationId, sourceType: "payroll_slip", sourceId: { in: slips.map((slip) => slip.id) } },
+        select: { id: true, sourceId: true },
+        orderBy: { id: "asc" }
+      })
+    : [];
+  const postedBySlip = new Map<string, { id: string }>();
+  for (const entry of alreadyPosted) {
+    if (entry.sourceId && !postedBySlip.has(entry.sourceId)) postedBySlip.set(entry.sourceId, { id: entry.id });
+  }
   const postedIds: string[] = [];
   for (const slip of slips) {
-    const existing = await findJournalEntryBySource(prisma, period.organizationId, "payroll_slip", slip.id);
+    const existing = postedBySlip.get(slip.id) ?? null;
     if (existing) {
       postedIds.push(existing.id);
       result.existing.push(existing.id);

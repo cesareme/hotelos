@@ -252,6 +252,50 @@ tree sin commit; :3000 sirve el backend de la tanda, :5173 sin reiniciar):
   61 asientos / 150 líneas / Σ 2.595,00 · 33 envíos · 2 centros · 4 series · 1
   instalación); org_123 en el dataset de referencia; 2 organizaciones (0 residuales)
 
+Estado verificado (Tanda L2 · Persistencia y API + ronda de corrección 1,
+2026-09-18 18:20; working tree sin commit; :3000 sin reiniciar — sirve el código
+anterior a la tanda; informe `docs/audits/TANDA-L2-PERSISTENCIA-2026-09-18.md`):
+- manifiesto = rutas registradas: 935 (L2-02 retiró 82 rutas y añadió
+  `GET /admin/worker/job-runs`); `demo-store.ts` 3.987 → 3.605 líneas y 115 → 89
+  claves (26 retiradas sin lector); migración `20260918130000_persistencia_l2`
+  (18 DROP + 2 CREATE → 274 tablas = 274 modelos)
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · admin-web
+  build OK · `build-nav-tree --check` al día (68 ítems · 101 pestañas · 205
+  redirecciones) · discoverability OK (placeholders 16/20) · `check-route-access`
+  OK (15 tokens × 192 URL; no está en package.json) · Cocoa 22 inventario 226
+  pantallas · 193 puntos · waves 0 pendientes · contrato 18/18
+- unitarios api 2.244 (2.243 pass · 1 skipped · 0 fail) · worker 20/20 · front
+  1.219/1.219 · contratos raíz 532/532 · integración COMPLETA (46 ficheros):
+  633 tests · 626 pass · 0 fail · 0 cancelados · 7 skips conocidos · 0 «too many
+  clients» (las suites L2 limitan su pool: `connection_limit=4`) · 0
+  organizaciones residuales (3 restos de la revisión borrados, informe §9)
+- migraciones 14/14 (`migrate status` al día, drift 0) · `db:install:check` OK
+  (274 tablas) · `rbac:sync -- --dry-run` +0 · 0 stale · 0 behind · Faranda solo
+  lectura (25 facturas · 33 VeriFactu · 4.951 asientos · 34 lotes Sage · 1 nóminas
+  · 7 importaciones de reservas · 2 OPERA · 110 reservas · 250 claves · 24
+  plantillas · 31 asignaciones vivas (+1 revocada) idénticas antes y después)
+- corrección 1 (SEC-L2-01/03/04/05/06, DP-01/02/03/04/06/08/11, FC-01…08):
+  llaves móviles por `guest_portal_actions`, rutas por id del motor en la
+  propiedad de la entidad y padre desde el path, retención de `worker_job_runs`
+  (`WORKER_JOB_RUN_RETENTION_DAYS`), `/health` sin `holder_id`, copia previa
+  `backups/hotelos-pre-l2-correccion-20260918-174934.dump`
+- integración final (18:16-19:05, informe §3.1/§7.2-§7.5): copia previa
+  `backups/hotelos-pre-l2-integracion-20260918-181652.dump`; reinicio real con
+  instancia propia `:3901` (4 procesos): 36 escrituras por API de los usuarios de
+  departamento de T8a (Carmen no tiene claves de ejecución del motor: 403 por
+  diseño) → 36/36 filas por SQL → 22/22 relecturas por API con Carmen tras matar
+  y arrancar otra instancia (motor 25 tablas, offline, SES, setup, regla de
+  precios, notificación); matriz Carmen 200 · `recepcion.tilos` 403 finanzas /
+  404 RA · `sistemas` 403 · plataforma 200 en `/admin/worker/job-runs`; 14 rutas
+  retiradas → 404 genérico; 0 llamadas a rutas retiradas en los fronts;
+  `demo:refresh` en seco `residual: []`; los 8 módulos del motor NO están
+  activados en Faranda (se activaron en Rías Altas para la prueba y se
+  desactivaron; todo lo escrito se borró, invariantes idénticas); INT-01: el mapa
+  de setup manual llevaba 7 endpoints fuera del manifiesto (`/ai/governance/*` no
+  existe: la canónica es `/ai-operations/governance/*`) → 40/40; puertas
+  repetidas en verde; `:3000` estaba parado (lo arranca el orquestador); `:3901`
+  cerrado.
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).
@@ -721,7 +765,8 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     (c) los servicios de lectura siguen exigiendo `accounting.read` internamente
     (el borde exige `accounting.reports.read`; sin efecto en las plantillas, sí
     en un rol custom con solo la clave nueva); (d) `SepaRemittance` sin modelo
-    (remesas en `worker_job_runs`), dispatcher de notificaciones sin adjuntos
+    (remesas en `worker_job_runs`, desde L2-04 con `organizationId` /
+    `propertyId` por columna), dispatcher de notificaciones sin adjuntos
     (`providers/types.ts`), `Payment.method`/`JournalEntry.sourceType` siguen
     `String`, `JournalLine` sin `@@index([accountId])`, `openingAccumulatedDepreciation`
     inexistente (elementos heredados de ejercicios cerrados), parejas de

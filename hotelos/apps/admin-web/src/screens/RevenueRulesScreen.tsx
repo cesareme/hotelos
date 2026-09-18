@@ -270,10 +270,10 @@ export function RevenueRulesScreen() {
             rowActions={(r) =>
               r.status === "pending" ? (
                 <span className="cocoa-row" data-gap="1" data-wrap="nowrap">
-                  <CocoaButton variant="tinted" tone="accent" size="small" disabled={busy} onClick={() => void run(() => decideRecommendation(r.id, "apply"), "Recomendación aplicada al BAR.")}>
+                  <CocoaButton variant="tinted" tone="accent" size="small" disabled={busy} onClick={() => void run(() => decideRecommendation(r.id, "apply", property.propertyId), "Recomendación aplicada al BAR.")}>
                     {ACTIONS.apply}
                   </CocoaButton>
-                  <CocoaButton variant="plain" tone="destructive" size="small" disabled={busy} onClick={() => void run(() => decideRecommendation(r.id, "reject"), "Recomendación rechazada.")}>
+                  <CocoaButton variant="plain" tone="destructive" size="small" disabled={busy} onClick={() => void run(() => decideRecommendation(r.id, "reject", property.propertyId), "Recomendación rechazada.")}>
                     {ACTIONS.reject}
                   </CocoaButton>
                 </span>

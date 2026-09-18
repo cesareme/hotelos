@@ -617,51 +617,78 @@ model MfaChallenge {
   @@map("mfa_challenges")
 }
 
+/// Notificaciones in-app (Tanda L2 · L2-01): aisladas por organización. `organizationId`
+/// es NOT NULL en Postgres (filas existentes rellenadas desde properties.organization_id
+/// en la migración 20260918130000); el `@default("")` solo existe para que el escritor
+/// previo (auth.service.ts notificationToDbRow, sin organizationId; fuera del lote) siga
+/// compilando. Deuda: el lote de /notifications pasa organizationId explícito y la
+/// migración siguiente retira el default y añade CHECK (organization_id <> '').
 model Notification {
-  id         String   @id @default(cuid())
-  propertyId String   @map("property_id")
-  userId     String   @map("user_id")
-  type       String
-  title      String
-  body       String
-  status     String   @default("unread")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id             String   @id @default(cuid())
+  organizationId String   @default("") @map("organization_id")
+  propertyId     String   @map("property_id")
+  userId         String   @map("user_id")
+  type           String
+  title          String
+  body           String
+  status         String   @default("unread")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   @@index([userId, status, createdAt])
+  @@index([organizationId, userId, status, createdAt])
   @@map("notifications")
 }
 
+/// Cola de sincronización offline de la app móvil (Tanda L2 · L2-01: organizationId NOT NULL, tabla vacía; la cablea L2-04).
 model OfflineSyncRecord {
-  id         String   @id @default(cuid())
-  propertyId String   @map("property_id")
-  deviceId   String   @map("device_id")
-  actionJson Json     @map("action_json")
-  resultJson Json     @map("result_json")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  propertyId     String   @map("property_id")
+  deviceId       String   @map("device_id")
+  actionJson     Json     @map("action_json")
+  resultJson     Json     @map("result_json")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   @@index([propertyId, deviceId, createdAt])
+  @@index([organizationId, propertyId, createdAt])
   @@map("offline_sync_records")
 }
 
+/// Ejecuciones durables del worker (Tanda L2 · L2-01: organizationId / propertyId opcionales —
+/// un job de plataforma no tiene tenant; los de tenant los filtran por organización).
 model WorkerJobRun {
-  id            String    @id @default(cuid())
-  jobName       String    @map("job_name")
-  queueName     String    @default("default") @map("queue_name")
-  payloadJson   Json      @map("payload_json")
-  resultJson    Json?     @map("result_json")
-  status        String    @default("queued")
-  attempts      Int       @default(0)
-  lastError     String?   @map("last_error")
-  correlationId String?   @map("correlation_id")
-  scheduledFor  DateTime? @map("scheduled_for")
-  startedAt     DateTime? @map("started_at")
-  finishedAt    DateTime? @map("finished_at")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  id             String    @id @default(cuid())
+  organizationId String?   @map("organization_id")
+  propertyId     String?   @map("property_id")
+  jobName        String    @map("job_name")
+  queueName      String    @default("default") @map("queue_name")
+  payloadJson    Json      @map("payload_json")
+  resultJson     Json?     @map("result_json")
+  status         String    @default("queued")
+  attempts       Int       @default(0)
+  lastError      String?   @map("last_error")
+  correlationId  String?   @map("correlation_id")
+  scheduledFor   DateTime? @map("scheduled_for")
+  startedAt      DateTime? @map("started_at")
+  finishedAt     DateTime? @map("finished_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@index([status, scheduledFor])
   @@index([jobName, status])
+  @@index([organizationId, jobName, createdAt])
   @@map("worker_job_runs")
+}
+
+/// Líder de los schedulers in-process (Tanda L2 · L2-01; lo consume L2-02): una fila por
+/// clave de scheduler; la instancia cuyo holderId figura y cuyo lease no ha caducado ejecuta.
+model SchedulerLease {
+  key       String   @id
+  holderId  String   @map("holder_id")
+  expiresAt DateTime @map("expires_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("scheduler_leases")
 }
 
 model RetentionPolicy {
@@ -706,15 +733,6 @@ model PropertyModule {
   @@unique([propertyId, moduleId])
   @@index([propertyId, status])
   @@map("property_modules")
-}
-
-model ModuleDependency {
-  id               String @id @default(cuid())
-  moduleId         String @map("module_id")
-  requiredModuleId String @map("required_module_id")
-
-  @@unique([moduleId, requiredModuleId])
-  @@map("module_dependencies")
 }
 
 model ModuleHealthCheck {
@@ -859,7 +877,11 @@ model InvoiceSequence {
   padding      Int     @default(6)
   invoiceType  String  @map("invoice_type")
   active       Boolean @default(true)
-  /// Tanda 3 (FISC-09): fiscal year of the series (FAC-2027-000001 starts a new row); null only for legacy rows before backfill.
+  /// Tanda 3 (FISC-09): fiscal year of the series (FAC-2027-000001 starts a new row). Tanda L2 (L2-01):
+  /// 0 NULL en Faranda y los tres escritores ya lo pasan; la migración 20260918130000 lo protege con la
+  /// restricción CHECK `invoice_sequences_year_not_null` (Prisma no la ve). Sigue `Int?` en el cliente
+  /// porque invoice.service.ts:527, backoffice.service.ts:5901 y series-prefix.service.ts:72 aún buscan
+  /// filas heredadas con `year: null`; al retirarlas, `Int` + SET NOT NULL en la migración siguiente.
   year         Int?
   /// Tanda 6b (L1): issuing legal entity (backfilled from the property; NOT NULL deferred to L2 writers).
   legalEntityId String? @map("legal_entity_id")
@@ -954,36 +976,6 @@ model QrCode {
 
   @@unique([propertyId, entityType, entityId, purpose])
   @@map("qr_codes")
-}
-
-model PropertyImport {
-  id           String    @id @default(cuid())
-  propertyId   String    @map("property_id")
-  importType   String    @map("import_type")
-  status       String
-  previewJson  Json      @default("{}") @map("preview_json")
-  errorJson    Json      @default("{}") @map("error_json")
-  committedAt  DateTime? @map("committed_at")
-  createdBy    String?   @map("created_by")
-  createdAt    DateTime  @default(now()) @map("created_at")
-
-  @@index([propertyId, importType, status])
-  @@map("property_imports")
-}
-
-model BackOfficeAiSuggestion {
-  id                  String    @id @default(cuid())
-  propertyId          String    @map("property_id")
-  userId              String    @map("user_id")
-  prompt              String
-  status              String
-  proposedChangesJson Json      @default("{}") @map("proposed_changes_json")
-  requiresConfirmation Boolean  @default(true) @map("requires_confirmation")
-  appliedAt           DateTime? @map("applied_at")
-  createdAt           DateTime  @default(now()) @map("created_at")
-
-  @@index([propertyId, status, createdAt])
-  @@map("backoffice_ai_suggestions")
 }
 
 model RevenueForecast {
@@ -1327,21 +1319,6 @@ model InboundEmail {
   @@unique([connectionId, messageId])
   @@index([propertyId, status])
   @@map("inbound_emails")
-}
-
-model RevenueReportView {
-  id          String   @id @default(cuid())
-  propertyId  String   @map("property_id")
-  userId      String?  @map("user_id")
-  name        String
-  reportType  String   @default("history_forecast") @map("report_type")
-  filtersJson Json     @default("{}") @map("filters_json")
-  layoutJson  Json     @default("{}") @map("layout_json")
-  isShared    Boolean  @default(false) @map("is_shared")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  @@index([propertyId, reportType, isShared])
-  @@map("revenue_report_views")
 }
 
 model GuestProfile {
@@ -2206,21 +2183,6 @@ model WebhookDelivery {
   @@map("webhook_deliveries")
 }
 
-model ApiUsageLog {
-  id             String   @id @default(cuid())
-  developerAppId String?  @map("developer_app_id")
-  organizationId String?  @map("organization_id")
-  propertyId     String?  @map("property_id")
-  endpoint       String
-  method         String
-  statusCode     Int?     @map("status_code")
-  latencyMs      Int?     @map("latency_ms")
-  createdAt      DateTime @default(now()) @map("created_at")
-
-  @@index([organizationId, propertyId, createdAt])
-  @@map("api_usage_logs")
-}
-
 model AiPolicy {
   id                String   @id @default(cuid())
   organizationId    String   @map("organization_id")
@@ -2438,25 +2400,6 @@ model PropertySpace {
 
   @@index([propertyId, buildingId, floorId, zoneId])
   @@map("property_spaces")
-}
-
-model PropertyMapPosition {
-  id           String   @id @default(cuid())
-  propertyId   String   @map("property_id")
-  entityType   String   @map("entity_type")
-  entityId     String   @map("entity_id")
-  floorId      String?  @map("floor_id")
-  x            Decimal  @db.Decimal(10, 2)
-  y            Decimal  @db.Decimal(10, 2)
-  width        Decimal? @db.Decimal(10, 2)
-  height       Decimal? @db.Decimal(10, 2)
-  rotation     Decimal? @db.Decimal(10, 2)
-  metadataJson Json     @default("{}") @map("metadata_json")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-
-  @@index([propertyId, floorId, entityType])
-  @@map("property_map_positions")
 }
 
 model RatePlan {
@@ -2733,35 +2676,6 @@ model RateParityAlert {
 
   @@index([propertyId, severity, status])
   @@map("rate_parity_alerts")
-}
-
-model RevenueAutomationRule {
-  id              String   @id @default(cuid())
-  propertyId      String   @map("property_id")
-  name            String
-  automationLevel String   @map("automation_level")
-  scopeJson       Json     @default("{}") @map("scope_json")
-  constraintsJson Json     @default("{}") @map("constraints_json")
-  active          Boolean  @default(true)
-  createdBy       String?  @map("created_by")
-  createdAt       DateTime @default(now()) @map("created_at")
-
-  @@index([propertyId, active])
-  @@map("revenue_automation_rules")
-}
-
-model RevenueScenario {
-  id           String   @id @default(cuid())
-  propertyId   String   @map("property_id")
-  name         String
-  scenarioType String   @map("scenario_type")
-  inputJson    Json     @default("{}") @map("input_json")
-  outputJson   Json     @default("{}") @map("output_json")
-  createdBy    String?  @map("created_by")
-  createdAt    DateTime @default(now()) @map("created_at")
-
-  @@index([propertyId, scenarioType, createdAt])
-  @@map("revenue_scenarios")
 }
 
 model ExternalReservation {
@@ -3189,15 +3103,6 @@ model RoomFeature {
   @@map("room_features")
 }
 
-model RoomFeatureAssignment {
-  id            String @id @default(cuid())
-  roomId        String @map("room_id")
-  roomFeatureId String @map("room_feature_id")
-
-  @@unique([roomId, roomFeatureId])
-  @@map("room_feature_assignments")
-}
-
 model BedType {
   id         String  @id @default(cuid())
   propertyId String  @map("property_id")
@@ -3302,16 +3207,6 @@ model PropertyCustomFieldValue {
   @@unique([entityType, entityId, fieldDefinitionId])
   @@index([propertyId, entityType, entityId])
   @@map("property_custom_field_values")
-}
-
-model RoomBed {
-  id        String @id @default(cuid())
-  roomId    String @map("room_id")
-  bedTypeId String @map("bed_type_id")
-  quantity  Int    @default(1)
-
-  @@unique([roomId, bedTypeId])
-  @@map("room_beds")
 }
 
 model Guest {
@@ -3596,20 +3491,6 @@ model InventoryResource {
   @@index([roomId])
   @@index([spaceId])
   @@map("inventory_resources")
-}
-
-model ReservationResource {
-  id                  String   @id @default(cuid())
-  reservationId       String   @map("reservation_id")
-  inventoryResourceId String   @map("inventory_resource_id")
-  startAt             DateTime @map("start_at")
-  endAt               DateTime @map("end_at")
-  pricingMode         String   @default("nightly") @map("pricing_mode")
-  createdAt           DateTime @default(now()) @map("created_at")
-
-  @@index([reservationId])
-  @@index([inventoryResourceId, startAt, endAt])
-  @@map("reservation_resources")
 }
 
 model ReservationGuest {
@@ -4817,127 +4698,6 @@ model OnboardingProject {
   @@map("onboarding_projects")
 }
 
-model OnboardingSourceConnection {
-  id                  String    @id @default(cuid())
-  onboardingProjectId String    @map("onboarding_project_id")
-  providerCode        String    @map("provider_code")
-  status              String    @default("pending")
-  credentialsSecretRef String?  @map("credentials_secret_ref")
-  configJson          Json      @default("{}") @map("config_json")
-  lastTestedAt        DateTime? @map("last_tested_at")
-  lastSyncAt          DateTime? @map("last_sync_at")
-  errorMessage        String?   @map("error_message")
-  createdAt           DateTime  @default(now()) @map("created_at")
-
-  @@index([onboardingProjectId, providerCode, status])
-  @@map("onboarding_source_connections")
-}
-
-model OnboardingFile {
-  id                   String   @id @default(cuid())
-  onboardingProjectId  String   @map("onboarding_project_id")
-  fileName             String   @map("file_name")
-  fileType             String?  @map("file_type")
-  objectKey            String   @map("object_key")
-  detectedDocumentType String?  @map("detected_document_type")
-  status               String   @default("uploaded")
-  extractionStatus     String   @default("not_started") @map("extraction_status")
-  metadataJson         Json     @default("{}") @map("metadata_json")
-  createdBy            String?  @map("created_by")
-  createdAt            DateTime @default(now()) @map("created_at")
-
-  @@index([onboardingProjectId, status, extractionStatus])
-  @@map("onboarding_files")
-}
-
-model OnboardingExtractedEntity {
-  id                  String   @id @default(cuid())
-  onboardingProjectId String   @map("onboarding_project_id")
-  onboardingFileId    String?  @map("onboarding_file_id")
-  sourceType          String   @map("source_type")
-  entityType          String   @map("entity_type")
-  sourceIdentifier    String?  @map("source_identifier")
-  rawJson             Json     @default("{}") @map("raw_json")
-  normalizedJson      Json     @default("{}") @map("normalized_json")
-  confidence          Decimal? @db.Decimal(5, 2)
-  status              String   @default("extracted")
-  createdAt           DateTime @default(now()) @map("created_at")
-
-  @@index([onboardingProjectId, entityType, status])
-  @@map("onboarding_extracted_entities")
-}
-
-model OnboardingMappingSuggestion {
-  id                  String   @id @default(cuid())
-  onboardingProjectId String   @map("onboarding_project_id")
-  sourceEntityId      String?  @map("source_entity_id")
-  targetEntityType    String   @map("target_entity_type")
-  suggestedTargetJson Json     @default("{}") @map("suggested_target_json")
-  confidence          Decimal? @db.Decimal(5, 2)
-  riskLevel           String   @default("medium") @map("risk_level")
-  reasonJson          Json     @default("[]") @map("reason_json")
-  warningsJson        Json     @default("[]") @map("warnings_json")
-  missingDataJson     Json     @default("[]") @map("missing_data_json")
-  status              String   @default("pending")
-  reviewedBy          String?  @map("reviewed_by")
-  reviewedAt          DateTime? @map("reviewed_at")
-  createdAt           DateTime @default(now()) @map("created_at")
-
-  @@index([onboardingProjectId, targetEntityType, status])
-  @@map("onboarding_mapping_suggestions")
-}
-
-model OnboardingMigrationBatch {
-  id                  String    @id @default(cuid())
-  onboardingProjectId String    @map("onboarding_project_id")
-  batchType           String    @map("batch_type")
-  status              String    @default("draft")
-  dryRunResultJson    Json      @default("{}") @map("dry_run_result_json")
-  appliedResultJson   Json      @default("{}") @map("applied_result_json")
-  errorMessage        String?   @map("error_message")
-  createdBy           String?   @map("created_by")
-  appliedBy           String?   @map("applied_by")
-  createdAt           DateTime  @default(now()) @map("created_at")
-  appliedAt           DateTime? @map("applied_at")
-
-  @@index([onboardingProjectId, batchType, status])
-  @@map("onboarding_migration_batches")
-}
-
-model OnboardingMigrationBatchRecord {
-  id                  String   @id @default(cuid())
-  batchId             String   @map("batch_id")
-  mappingSuggestionId String?  @map("mapping_suggestion_id")
-  targetEntityType    String   @map("target_entity_type")
-  targetEntityId      String?  @map("target_entity_id")
-  operation           String
-  status              String   @default("pending")
-  beforeJson          Json     @default("{}") @map("before_json")
-  afterJson           Json     @default("{}") @map("after_json")
-  errorMessage        String?  @map("error_message")
-  createdAt           DateTime @default(now()) @map("created_at")
-
-  @@index([batchId, targetEntityType, status])
-  @@map("onboarding_migration_batch_records")
-}
-
-model AiOnboardingRun {
-  id                  String    @id @default(cuid())
-  onboardingProjectId String    @map("onboarding_project_id")
-  agentName           String    @map("agent_name")
-  status              String    @default("running")
-  inputJson           Json      @default("{}") @map("input_json")
-  outputJson          Json      @default("{}") @map("output_json")
-  confidence          Decimal?  @db.Decimal(5, 2)
-  traceId             String?   @map("trace_id")
-  errorMessage        String?   @map("error_message")
-  createdAt           DateTime  @default(now()) @map("created_at")
-  completedAt         DateTime? @map("completed_at")
-
-  @@index([onboardingProjectId, agentName, status])
-  @@map("ai_onboarding_runs")
-}
-
 model AuditEvent {
   id             String    @id @default(cuid())
   organizationId String    @map("organization_id")
@@ -4961,6 +4721,34 @@ model AuditEvent {
   @@index([entityType, entityId, createdAt])
   @@index([currentHash])
   @@map("audit_events")
+}
+
+/// Confirmación pendiente de una acción IA (HITL) — Tanda L2 · L2-01. Antes vivía en
+/// demoStore.pendingConfirmations (apps/api/src/modules/ai/check-in.command.ts). El
+/// resolver de tenencia `pendingConfirmation` solo concede filas `status = "pending"`.
+model AiPendingConfirmation {
+  id                    String    @id @default(cuid())
+  organizationId        String    @map("organization_id")
+  propertyId            String    @map("property_id")
+  userId                String    @map("user_id")
+  /// Tipo de acción confirmable: `check_in_from_scan`.
+  type                  String
+  reservationId         String    @map("reservation_id")
+  roomId                String?   @map("room_id")
+  guestId               String    @map("guest_id")
+  guestRegisterRecordId String    @map("guest_register_record_id")
+  /// Tarjeta mostrada al usuario (CheckInCard) tal cual se presentó.
+  cardJson              Json      @map("card_json")
+  requiredSignature     Boolean   @default(false) @map("required_signature")
+  /// pending | executed | expired
+  status                String    @default("pending")
+  expiresAt             DateTime  @map("expires_at")
+  executedAt            DateTime? @map("executed_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  @@index([organizationId, propertyId, status, createdAt])
+  @@map("ai_pending_confirmations")
 }
 
 model AiToolCall {

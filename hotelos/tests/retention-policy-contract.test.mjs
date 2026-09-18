@@ -31,11 +31,14 @@ describe("Retention policy contract", () => {
     assert.match(retention, /Append-only records are not deleted by retention jobs/);
   });
 
-  it("uses compliance retention decisions in the worker", () => {
+  it("keeps the retention decision in packages/compliance and no stub handler in the worker", () => {
     assert.equal(workerPackage.dependencies["@hotelos/compliance"], "workspace:*");
-    assert.match(worker, /shouldDeleteRetentionCandidate/);
-    assert.match(worker, /decision\.deleteNow/);
-    assert.match(worker, /retainedCount/);
+    // Tanda L2 · L2-07: the worker's retention.delete_expired handler had no
+    // producer and only wrapped this function; the decision stays exported by
+    // packages/compliance (consumed by the API) and the worker keeps no stub.
+    assert.match(retention, /export function shouldDeleteRetentionCandidate/);
+    assert.match(retention, /deleteNow: retentionUntil\.getTime\(\) <= asOf\.getTime\(\)/);
+    assert.doesNotMatch(worker, /scaffolded|handleRetentionDeleteExpired/);
   });
 
   it("adds configurable retention policies to the schema", () => {

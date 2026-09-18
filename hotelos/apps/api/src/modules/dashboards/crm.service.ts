@@ -64,6 +64,12 @@ import { prisma } from "@hotelos/database";
 const DEFAULT_DAYS = 90;
 const CHURN_DAYS = 90;
 const BIRTHDAY_WINDOW_DAYS = 30;
+// Tanda L2 (L2-05): the stay aggregates (LTV fallback, last stay, churn, recent
+// guests) read the reservations arrived in the last 24 months, with the
+// minimum columns and an explicit cap; org-wide KPIs are SQL counts.
+const CRM_RESERVATION_WINDOW_MONTHS = 24;
+const CRM_MAX_RESERVATION_ROWS = 5_000;
+const CRM_MAX_CATALOG_ROWS = 500;
 const INACTIVE_CAMPAIGN_STATUSES = new Set(["draft", "archived", "cancelled", "canceled"]);
 
 export type BuildCrmDashboardInput = {
@@ -199,13 +205,16 @@ export async function buildCrmDashboard(input: BuildCrmDashboardInput): Promise<
   // Fetch all reservations at the property (we use them for LTV, lastStay,
   // totalStays, churn, recent guests, revenue 90d). Also fetch the
   // ReservationGuest links restricted to those reservations.
+  const arrivalsSince = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - CRM_RESERVATION_WINDOW_MONTHS, now.getUTCDate()));
   const reservations = await prisma.reservation.findMany({
-    where: { propertyId },
-    orderBy: { departureDate: "desc" }
+    where: { propertyId, arrivalDate: { gte: arrivalsSince } },
+    select: { id: true, totalAmount: true, departureDate: true },
+    orderBy: { departureDate: "desc" },
+    take: CRM_MAX_RESERVATION_ROWS
   });
   const reservationIds = reservations.map((r) => r.id);
   const reservationGuests = reservationIds.length
-    ? await prisma.reservationGuest.findMany({ where: { reservationId: { in: reservationIds } } })
+    ? await prisma.reservationGuest.findMany({ where: { reservationId: { in: reservationIds } }, select: { reservationId: true, guestId: true, isPrimary: true }, take: CRM_MAX_RESERVATION_ROWS * 8 })
     : [];
 
   // Map: reservationId -> Reservation; guestId -> guest aggregate.
@@ -249,32 +258,36 @@ export async function buildCrmDashboard(input: BuildCrmDashboardInput): Promise<
   // Pull guests participating in property reservations, plus CRM-scoped data
   // for the organization. Run in parallel.
   const guestIds = Array.from(aggregateByGuest.keys());
-  const [guests, profiles, segments, campaigns, allOrgGuests] = await Promise.all([
+  const guestNameSelect = { id: true, firstName: true, surname1: true, surname2: true } as const;
+  const [guests, profileStats, vipProfileCount, segments, campaigns, totalGuests, birthdayGuests] = await Promise.all([
     guestIds.length
-      ? prisma.guest.findMany({ where: { id: { in: guestIds } } })
-      : Promise.resolve([] as Awaited<ReturnType<typeof prisma.guest.findMany>>),
-    prisma.guestProfile.findMany({ where: { organizationId } }),
-    prisma.crmSegment.findMany({ where: { organizationId, active: true }, orderBy: { createdAt: "desc" } }),
-    prisma.crmCampaign.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" } }),
+      ? prisma.guest.findMany({ where: { id: { in: guestIds } }, select: guestNameSelect, take: guestIds.length })
+      : Promise.resolve([] as Array<{ id: string; firstName: string; surname1: string | null; surname2: string | null }>),
+    // Profiles: count and Σ lifetimeValue in SQL (L2-05; was every profile row).
+    prisma.guestProfile.aggregate({ where: { organizationId }, _count: { _all: true }, _sum: { lifetimeValue: true } }),
+    prisma.guestProfile.count({ where: { organizationId, vipLevel: { not: null }, NOT: { vipLevel: "" } } }),
+    prisma.crmSegment.findMany({ where: { organizationId, active: true }, orderBy: { createdAt: "desc" }, take: CRM_MAX_CATALOG_ROWS }),
+    prisma.crmCampaign.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" }, take: CRM_MAX_CATALOG_ROWS }),
     // Total guests KPI is org-wide for CRM purposes (matches the "totalGuests"
     // wording — it's the size of the addressable contact base, not the
     // property-stayed subset).
-    prisma.guest.findMany({ where: { organizationId }, select: { id: true, dateOfBirth: true, firstName: true, surname1: true, surname2: true } })
+    prisma.guest.count({ where: { organizationId } }),
+    // Birthdays: only guests with a date of birth (the window filter runs below), bounded.
+    prisma.guest.findMany({ where: { organizationId, dateOfBirth: { not: null } }, select: { ...guestNameSelect, dateOfBirth: true }, take: CRM_MAX_RESERVATION_ROWS })
   ]);
 
   const guestById = new Map(guests.map((g) => [g.id, g] as const));
 
   // --- KPIs --------------------------------------------------------------
-  const totalGuests = allOrgGuests.length;
-  const activeProfiles = profiles.length;
-  const vipCount = profiles.filter((p) => p.vipLevel && p.vipLevel.trim().length > 0).length;
+  const activeProfiles = profileStats._count._all;
+  const vipCount = vipProfileCount;
 
-  // Average LTV — prefer GuestProfile.lifetimeValue; fall back to summing
-  // Reservation.totalAmount per guest if no profiles exist.
+  // Average LTV — prefer GuestProfile.lifetimeValue (Σ / profiles, a NULL
+  // counts as 0 like before); fall back to summing Reservation.totalAmount
+  // per guest if no profiles exist.
   let avgLifetimeValueEur = 0;
-  if (profiles.length > 0) {
-    const total = profiles.reduce((acc, p) => acc + toNumber(p.lifetimeValue), 0);
-    avgLifetimeValueEur = round2(total / profiles.length);
+  if (activeProfiles > 0) {
+    avgLifetimeValueEur = round2(toNumber(profileStats._sum.lifetimeValue) / activeProfiles);
   } else if (aggregateByGuest.size > 0) {
     const total = Array.from(aggregateByGuest.values()).reduce((acc, a) => acc + a.totalRevenue, 0);
     avgLifetimeValueEur = round2(total / aggregateByGuest.size);
@@ -336,7 +349,7 @@ export async function buildCrmDashboard(input: BuildCrmDashboardInput): Promise<
     .slice(0, 10);
 
   // --- Upcoming birthdays ------------------------------------------------
-  const upcomingBirthdays = allOrgGuests
+  const upcomingBirthdays = birthdayGuests
     .map((g) => {
       const daysAway = daysToNextBirthday(g.dateOfBirth ?? null, now, BIRTHDAY_WINDOW_DAYS);
       if (daysAway === null || !g.dateOfBirth) return null;

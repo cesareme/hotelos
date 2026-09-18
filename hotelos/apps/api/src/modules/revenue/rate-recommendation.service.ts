@@ -600,6 +600,9 @@ const OTB_STATUSES = ["confirmed", "checked_in"] as const;
 export const RECOMMENDATION_MAX_DAYS = 120;
 /** Rate days loaded around the window to learn the weekly shape (± days). */
 const DOW_LEARNING_SPAN_DAYS = 182;
+/** Explicit bounds of the window reads (Tanda L2 · L2-05): the window is ≤ RECOMMENDATION_MAX_DAYS, so these never cut a real hotel. */
+const RECOMMENDATION_MAX_RESERVATION_ROWS = 50_000;
+const RECOMMENDATION_MAX_FORECAST_ROWS = 50_000;
 
 export type BuildRecommendationsInput = {
   propertyId: string;
@@ -656,7 +659,7 @@ export async function buildRecommendations(input: BuildRecommendationsInput): Pr
     // Every ACTIVE type (the rate-grid catalogue) so a requested id can be told
     // apart as "foreign/inactive" (400 UNKNOWN_IDS) vs "known but not sellable"
     // (silently absent from byRoomType, like a type without rooms).
-    prisma.roomType.findMany({ where: { propertyId, active: true }, select: { id: true, displayOrder: true, sellable: true } }),
+    prisma.roomType.findMany({ where: { propertyId, active: true }, select: { id: true, displayOrder: true, sellable: true }, take: 500 }),
     prisma.room.groupBy({ by: ["roomTypeId"], where: { propertyId, sellable: true }, _count: { _all: true } })
   ]);
   assertRoomTypeIdsBelong(input.roomTypeIds, new Set(roomTypes.map((t) => t.id)));
@@ -679,32 +682,38 @@ export async function buildRecommendations(input: BuildRecommendationsInput): Pr
   const captureDate = addDays(today, -7);
   const budgetMonths = new Set<string>();
   for (let t = from.getTime(); t <= to.getTime(); t += MS_DAY) budgetMonths.add(isoDate(new Date(t)).slice(0, 7));
+  // Days of the effective window: the bound of the per-day reads (pace / STLY: one row a day; rate days: one per type and day of the DOW span).
+  const windowDays = Math.max(1, Math.round((to.getTime() - from.getTime()) / MS_DAY) + 1);
 
   const [reservations, paceRows, forecasts, stlySnapshots, compset, events, budgets, rules, levels, wideRateDays] = emptyDays
     ? [[], [], [], [], { byDate: new Map(), activeCompetitors: 0, source: null }, [], [], [], [], []]
     : await Promise.all([
         prisma.reservation.findMany({
           where: { propertyId, status: { in: OTB_STATUSES as unknown as Prisma.EnumReservationStatusFilter["in"] }, departureDate: { gt: from }, arrivalDate: { lte: to } },
-          select: { arrivalDate: true, departureDate: true, roomsCount: true, totalAmount: true, createdAt: true }
+          select: { arrivalDate: true, departureDate: true, roomsCount: true, totalAmount: true, createdAt: true },
+          take: RECOMMENDATION_MAX_RESERVATION_ROWS
         }),
-        prisma.revenuePaceSnapshot.findMany({ where: { propertyId, captureDate, stayDate: { gte: from, lte: to } }, select: { stayDate: true, roomsOtb: true } }),
+        prisma.revenuePaceSnapshot.findMany({ where: { propertyId, captureDate, stayDate: { gte: from, lte: to } }, select: { stayDate: true, roomsOtb: true }, take: windowDays }),
         prisma.revenueForecast.findMany({
           where: { propertyId, forecastDate: { gte: from, lte: to } },
-          select: { forecastDate: true, roomTypeId: true, ratePlanId: true, channelId: true, segment: true, expectedOccupancy: true, expectedRoomsSold: true, modelVersion: true }
+          select: { forecastDate: true, roomTypeId: true, ratePlanId: true, channelId: true, segment: true, expectedOccupancy: true, expectedRoomsSold: true, modelVersion: true },
+          take: RECOMMENDATION_MAX_FORECAST_ROWS
         }),
         prisma.revenueDailySnapshot.findMany({
           where: { propertyId, ...TOP_LEVEL_SNAPSHOT_WHERE, snapshotDate: { gte: stlyFrom, lte: stlyTo } },
-          select: { snapshotDate: true, totalOcc: true, occupancyPercent: true, adr: true, roomRevenue: true }
+          select: { snapshotDate: true, totalOcc: true, occupancyPercent: true, adr: true, roomRevenue: true },
+          take: windowDays
         }),
         compsetMedianByDate(propertyId, from, to),
         listDemandEventsInWindow(propertyId, isoDate(from), isoDate(to)),
-        prisma.budget.findMany({ where: { propertyId, periodMonth: { in: [...budgetMonths] } }, select: { periodMonth: true, budgetedRoomRevenue: true } }),
+        prisma.budget.findMany({ where: { propertyId, periodMonth: { in: [...budgetMonths] } }, select: { periodMonth: true, budgetedRoomRevenue: true }, take: Math.max(1, budgetMonths.size) }),
         prisma.pricingRule.findMany({ where: { propertyId, active: true }, orderBy: { priority: "asc" }, take: 200 }),
         prisma.barLevel.findMany({ where: { propertyId, active: true }, orderBy: { sortOrder: "asc" }, take: 100 }),
         ratePlan
           ? prisma.rateDay.findMany({
               where: { propertyId, ratePlanId: ratePlan.id, roomTypeId: { in: typeIds }, date: { gte: addDays(from, -DOW_LEARNING_SPAN_DAYS), lte: addDays(to, DOW_LEARNING_SPAN_DAYS) } },
-              select: { roomTypeId: true, date: true, price: true, minPrice: true, maxPrice: true }
+              select: { roomTypeId: true, date: true, price: true, minPrice: true, maxPrice: true },
+              take: Math.max(1, typeIds.length) * (windowDays + 2 * DOW_LEARNING_SPAN_DAYS)
             })
           : Promise.resolve([])
       ]);

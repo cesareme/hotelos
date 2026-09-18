@@ -1,6 +1,11 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
+
+// Explicit bounds of the day / month reads (Tanda L2 · L2-05): arrivals and
+// departures of ONE day, top-level snapshots of ONE month.
+const OVERVIEW_MAX_DAY_RESERVATIONS = 5_000;
+const OVERVIEW_MAX_MONTH_SNAPSHOTS = 62;
 // Tanda 6b (R2, fix t6b#12): the razón social shown for a centre is the sociedad's
 // (single reader); Property.legalName is the deprecated trade name.
 import { resolveLegalIdentity } from "../../lib/finance-scope.js";
@@ -208,10 +213,11 @@ export async function buildPropertyOverview(
     maintenanceOpen,
     safetyIncidentsOpen,
     openConversations,
-    reviews,
+    ratedReviews,
+    pendingReviews,
     recentRaw,
     todayReservations,
-    monthReservations
+    monthRevenue
   ] = await Promise.all([
     prisma.room.count({ where: { propertyId, active: true } }),
     prisma.reservation.count({ where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd } } }),
@@ -219,7 +225,8 @@ export async function buildPropertyOverview(
     prisma.reservation.count({ where: { propertyId, status: "checked_in", departureDate: { gt: dayEnd } } }),
     prisma.reservation.findMany({
       where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd } },
-      select: { id: true, assignedRoomId: true }
+      select: { id: true, assignedRoomId: true },
+      take: OVERVIEW_MAX_DAY_RESERVATIONS
     }),
     prisma.revenueDailySnapshot.findMany({
       where: {
@@ -231,7 +238,8 @@ export async function buildPropertyOverview(
         segment: null,
         market: null
       },
-      select: { totalOcc: true, adr: true, revpar: true, occupancyPercent: true }
+      select: { totalOcc: true, adr: true, revpar: true, occupancyPercent: true },
+      take: OVERVIEW_MAX_MONTH_SNAPSHOTS
     }),
     prisma.verifactuSubmission.count({ where: { propertyId, status: { in: FISCAL_PENDING_STATUSES } } }),
     prisma.tbaiSubmission.count({ where: { propertyId, status: { in: FISCAL_PENDING_STATUSES } } }),
@@ -241,10 +249,9 @@ export async function buildPropertyOverview(
     prisma.workOrder.count({ where: { propertyId, status: { in: ["open", "assigned", "in_progress", "waiting_vendor"] } } }),
     prisma.safetyIncident.count({ where: { propertyId, status: "open" } }),
     prisma.conversation.count({ where: { propertyId, status: "open" } }),
-    prisma.guestReview.findMany({
-      where: { propertyId },
-      select: { rating: true, respondedAt: true }
-    }),
+    // Reviews: average of the rated ones and the rated-but-unanswered count, aggregated in SQL (L2-05; was every review row).
+    prisma.guestReview.aggregate({ where: { propertyId, rating: { gt: 0 } }, _avg: { rating: true }, _count: { _all: true } }),
+    prisma.guestReview.count({ where: { propertyId, rating: { gt: 0 }, respondedAt: null } }),
     prisma.reservation.findMany({
       where: { propertyId },
       orderBy: { createdAt: "desc" },
@@ -269,10 +276,12 @@ export async function buildPropertyOverview(
           { status: "checked_in", departureDate: { gt: dayEnd } }
         ]
       },
-      select: { id: true }
+      select: { id: true },
+      take: OVERVIEW_MAX_DAY_RESERVATIONS
     }),
-    // All reservations of the property (for revenue MTD via folios).
-    prisma.reservation.findMany({ where: { propertyId }, select: { id: true } })
+    // Revenue MTD: Σ FolioLine.total posted >= monthStart on the folios of any reservation of the property — one
+    // aggregate through the relation (L2-05; was every reservation id + every folio id + a groupBy).
+    prisma.folioLine.aggregate({ where: { postedAt: { gte: monthStart }, folio: { reservation: { propertyId } } }, _sum: { total: true } })
   ]);
 
   const unassignedRooms = arrivalsForUnassigned.filter((r) => !r.assignedRoomId).length;
@@ -307,23 +316,11 @@ export async function buildPropertyOverview(
 
   const pendingFiscalSubmissions = verifactuPending + tbaiPending + igicPending + sesPending;
 
-  // Guest reviews: avg rating + pending (rated, missing respondedAt).
-  const ratings: number[] = [];
-  let pendingReviews = 0;
-  for (const review of reviews) {
-    const rating = review.rating === null || review.rating === undefined ? null : dec(review.rating);
-    if (rating !== null && rating > 0) {
-      ratings.push(rating);
-      if (review.respondedAt === null) pendingReviews += 1;
-    }
-  }
-  const avgReviewRating = ratings.length > 0
-    ? round1(ratings.reduce((acc, v) => acc + v, 0) / ratings.length)
-    : 0;
+  // Guest reviews: avg rating (rated ones) + pending (rated, missing respondedAt).
+  const avgReviewRating = ratedReviews._count._all > 0 ? round1(dec(ratedReviews._avg.rating)) : 0;
 
   // --- Folio-derived figures (pending balance today + revenue MTD) ---------
   const todayReservationIds = todayReservations.map((r) => r.id);
-  const monthReservationIds = monthReservations.map((r) => r.id);
   const recentReservationIds = recentRaw.map((r) => r.id);
 
   // Folio balances for today's + recent reservations via the shared helper
@@ -342,32 +339,16 @@ export async function buildPropertyOverview(
   }
   pendingBalanceEur = round2(pendingBalanceEur);
 
-  // Revenue MTD: Σ FolioLine.total posted >= monthStart for folios of any
-  // reservation of the property.
-  let revenueMtdEur = 0;
-  if (monthReservationIds.length > 0) {
-    const monthFolios = await prisma.folio.findMany({
-      where: { reservationId: { in: monthReservationIds } },
-      select: { id: true }
-    });
-    const monthFolioIds = monthFolios.map((f) => f.id);
-    if (monthFolioIds.length > 0) {
-      const lines = await prisma.folioLine.groupBy({
-        by: ["folioId"],
-        where: { folioId: { in: monthFolioIds }, postedAt: { gte: monthStart } },
-        _sum: { total: true }
-      });
-      for (const row of lines) revenueMtdEur += dec(row._sum?.total);
-      revenueMtdEur = round2(revenueMtdEur);
-    }
-  }
+  // Revenue MTD (aggregated above through folio → reservation).
+  const revenueMtdEur = round2(dec(monthRevenue._sum.total));
 
   // Guest names for the recent reservations list (primary guest, fallback any).
   const reservationGuests = recentReservationIds.length === 0
     ? []
     : await prisma.reservationGuest.findMany({
         where: { reservationId: { in: recentReservationIds } },
-        select: { reservationId: true, guestId: true, isPrimary: true }
+        select: { reservationId: true, guestId: true, isPrimary: true },
+        take: recentReservationIds.length * 20
       });
   const guestIdByReservation = new Map<string, string>();
   for (const link of reservationGuests) {
@@ -385,7 +366,8 @@ export async function buildPropertyOverview(
     ? []
     : await prisma.guest.findMany({
         where: { id: { in: guestIds } },
-        select: { id: true, firstName: true, surname1: true, surname2: true }
+        select: { id: true, firstName: true, surname1: true, surname2: true },
+        take: guestIds.length
       });
   const guestById = new Map<string, { firstName: string | null; surname1: string | null; surname2: string | null }>();
   for (const g of guests) {

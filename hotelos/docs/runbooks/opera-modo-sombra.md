@@ -619,8 +619,10 @@ tiene modo «todas»).
 ## 10 · Job, correo y registro (diseño §6.5 con §10)
 
 - **Job del líder**, en el API (no hay dependencia de `apps/worker` hacia `@hotelos/api`), bajo el mismo
-  interruptor que los demás schedulers (`isSchedulerLeader`, `server.ts:8467`; `RUN_SCHEDULERS=false` en
-  las réplicas que no son líder). Variables: `PMS_SHADOW_JOB_DISABLED=true` lo apaga; `PMS_SHADOW_JOB_INTERVAL_MS`
+  interruptor que los demás schedulers (`RUN_SCHEDULERS=false` en las réplicas que no deben ejecutar) y,
+  desde la Tanda L2, bajo el lease `scheduler_leases` que cada vuelta adquiere o renueva
+  (`holdsSchedulerLease`, `lib/scheduler-leader.ts`; bloque de schedulers de `server.ts`): la réplica que
+  no sostiene el lease se salta la vuelta, y un proceso reiniciado toma el relevo cuando el lease caduca. Variables: `PMS_SHADOW_JOB_DISABLED=true` lo apaga; `PMS_SHADOW_JOB_INTERVAL_MS`
   (por defecto 900000 = 15 min). En cada vuelta, por cada `PmsShadowProfile` `active`: (1) emite
   `OPERA_FEED_LATE` para los feeds `required` sin run del business date esperado pasada la hora + gracia
   (una por feed y día); (2) cierra como `failed` «interrumpido» los runs `processing` de más de 30 minutos

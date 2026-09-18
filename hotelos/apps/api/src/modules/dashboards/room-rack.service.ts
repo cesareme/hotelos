@@ -13,6 +13,7 @@
 // late checkout · early check-in.
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
 
 export type RoomRackBadge =
@@ -83,6 +84,8 @@ export type RoomRackResult = {
     departuresToday: number;
   };
   roomTypeById: Record<string, { id: string; name: string }>;
+  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_orders"). */
+  degraded: string[];
 };
 
 function startOfDayUtc(): Date {
@@ -119,6 +122,7 @@ export async function buildRoomRack(input: { propertyId: string; now?: Date }): 
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
 
+  const { safe, degraded } = createDegradedCollector("dashboards.room-rack", { propertyId });
   const [rooms, roomTypes, inHouse, arrivalsToday, departuresToday, openWorkOrders] = await Promise.all([
     prisma.room.findMany({ where: { propertyId, active: true }, orderBy: [{ floor: "asc" }, { number: "asc" }] }),
     prisma.roomType.findMany({ where: { propertyId } }),
@@ -141,10 +145,16 @@ export async function buildRoomRack(input: { propertyId: string; now?: Date }): 
         status: { in: ["checked_in", "checked_out"] }
       }
     }),
-    prisma.workOrder.findMany({
-      where: { propertyId, status: { in: ["open", "in_progress"] } },
-      select: { id: true, roomId: true, priority: true, title: true }
-    }).catch(() => [])
+    // Tanda L2 (L2-06): a failed work-order query is logged and reported in
+    // `degraded[]` (was `.catch(() => [])`: a broken table looked like «sin incidencias»).
+    safe(
+      "work_orders",
+      prisma.workOrder.findMany({
+        where: { propertyId, status: { in: ["open", "in_progress"] } },
+        select: { id: true, roomId: true, priority: true, title: true }
+      }),
+      []
+    )
   ]);
 
   const roomTypeById = new Map(roomTypes.map((t) => [t.id, t]));
@@ -333,6 +343,7 @@ export async function buildRoomRack(input: { propertyId: string; now?: Date }): 
     generatedAt: now.toISOString(),
     floors,
     totals,
-    roomTypeById: roomTypeMap
+    roomTypeById: roomTypeMap,
+    degraded
   };
 }

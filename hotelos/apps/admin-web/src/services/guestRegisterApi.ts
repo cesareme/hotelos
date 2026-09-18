@@ -248,19 +248,9 @@ export async function queueSpainGuestRegisterSubmission(
   );
 }
 
-export async function retrySpainAuthoritySubmission(
-  submissionId: string,
-  opts: RetryOptions = {}
-): Promise<AuthoritySubmissionResult> {
-  return withRetry(
-    () =>
-      apiRequest<AuthoritySubmissionResult>(
-        `/compliance/authority/submissions/${submissionId}/retry`,
-        { method: "POST" }
-      ),
-    opts
-  );
-}
+// Tanda L2 (L2-02): retrySpainAuthoritySubmission se retiró con el reintento en
+// memoria de envíos a autoridad; el reintento canónico es
+// POST /ses/submissions/:id/retry.
 
 /**
  * Helper that wraps `spainGuestRegisterInputSchema.safeParse` so callers can

@@ -22,10 +22,21 @@ describe("App shell and security contract", () => {
     }
   });
 
-  it("stores sessions, devices, MFA challenges, notifications, users, and properties in shared state", () => {
+  it("persists sessions, devices, MFA challenges and notifications in Prisma; users and properties stay as hydrated demo mirrors", () => {
+    // Tanda L2 (L2-08): the in-memory demoStore legs (sessions, devices,
+    // mfaChallenges, notifications) were retired — auth.service reads and
+    // writes the Prisma models directly; the demo store only keeps the mirrors
+    // hydrated at boot (users, properties).
+    const service = readFileSync(new URL("../apps/api/src/modules/auth/auth.service.ts", import.meta.url), "utf8");
+    for (const delegate of ["prisma.session", "prisma.device", "prisma.mfaChallenge", "prisma.notification"]) {
+      assert.match(service, new RegExp(delegate.replace(".", "\\.") + "\\."), `${delegate} must be read/written by auth.service.ts`);
+    }
     const store = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", import.meta.url), "utf8");
-    for (const key of ["sessions", "devices", "mfaChallenges", "notifications", "users", "properties"]) {
-      assert.match(store, new RegExp(key));
+    for (const key of ["users", "properties"]) {
+      assert.match(store, new RegExp(`\\n  ${key}: `));
+    }
+    for (const retired of ["sessions", "devices", "mfaChallenges", "notifications"]) {
+      assert.doesNotMatch(store, new RegExp(`\\n  ${retired}: `), `demoStore.${retired} was retired in L2-08`);
     }
   });
 

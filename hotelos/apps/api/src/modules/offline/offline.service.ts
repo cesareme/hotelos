@@ -1,6 +1,12 @@
+// Sincronización offline de la app móvil (Tanda L2 · L2-04): cada acción
+// reproducida deja una fila en `offline_sync_records` (OfflineSyncRecord, con
+// organizationId desde L2-01) en lugar del array en memoria; la lista por
+// propiedad filtra por propiedad Y por la organización de esa propiedad.
 import type { OfflineAction, OfflineSyncRequest, OfflineSyncResponse, OfflineSyncResult } from "@hotelos/shared";
-import { demoStore, type UserContext } from "../../lib/demo-store.js";
-import { createId, nowIso } from "../../lib/ids.js";
+import { prisma, type Prisma } from "@hotelos/database";
+import type { OfflineSyncRecord, UserContext } from "../../lib/demo-store.js";
+import { NotFoundError } from "../../lib/http-error.js";
+import { createId } from "../../lib/ids.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { createHousekeepingTask, markRoomClean, updateHousekeepingTask } from "../housekeeping/housekeeping.service.js";
 import { attachWorkOrderMedia, createWorkOrder } from "../maintenance/maintenance.service.js";
@@ -31,6 +37,9 @@ export async function syncOfflineActions(input: {
   request: OfflineSyncRequest;
   finalOfflineCheckInAllowed?: boolean;
 }): Promise<OfflineSyncResponse> {
+  // Fail-secure: la propiedad del lote debe pertenecer a la organización del
+  // usuario (404 opaco; el ámbito RBAC por cabecera se comprueba antes).
+  await requireOrganizationProperty(input.request.propertyId, input.context);
   // Sequential (not Promise.all) to preserve replay order — a create then an
   // update of the same entity must apply in order.
   const results: OfflineSyncResult[] = [];
@@ -186,7 +195,15 @@ function synced(action: OfflineAction, serverEntityId?: string): OfflineSyncResu
   };
 }
 
-function persistSyncResult(
+async function requireOrganizationProperty(propertyId: string, context: UserContext): Promise<{ organizationId: string }> {
+  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { organizationId: true } });
+  if (!property || (property.organizationId !== context.organizationId && !context.isPlatformAdmin)) {
+    throw new NotFoundError("Propiedad no encontrada.");
+  }
+  return property;
+}
+
+async function persistSyncResult(
   input: {
     context: UserContext;
     propertyId: string;
@@ -194,14 +211,15 @@ function persistSyncResult(
     action: OfflineAction;
   },
   result: OfflineSyncResult
-): OfflineSyncResult {
-  demoStore.offlineSyncRecords.push({
-    id: createId("offline_sync"),
-    propertyId: input.propertyId,
-    deviceId: input.deviceId,
-    action: input.action,
-    result,
-    createdAt: nowIso()
+): Promise<OfflineSyncResult> {
+  await prisma.offlineSyncRecord.create({
+    data: {
+      organizationId: input.context.organizationId,
+      propertyId: input.propertyId,
+      deviceId: input.deviceId,
+      actionJson: input.action as unknown as Prisma.InputJsonValue,
+      resultJson: result as unknown as Prisma.InputJsonValue
+    }
   });
 
   recordAuditEvent({
@@ -219,6 +237,29 @@ function persistSyncResult(
   return result;
 }
 
-export function listOfflineSyncRecords(propertyId: string) {
-  return demoStore.offlineSyncRecords.filter((record) => record.propertyId === propertyId);
+type OfflineSyncRow = NonNullable<Awaited<ReturnType<typeof prisma.offlineSyncRecord.findUnique>>>;
+
+function toOfflineSyncRecord(row: OfflineSyncRow): OfflineSyncRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    deviceId: row.deviceId,
+    action: row.actionJson as unknown as OfflineAction,
+    result: row.resultJson as unknown as OfflineSyncResult,
+    createdAt: row.createdAt.toISOString()
+  };
+}
+
+const OFFLINE_SYNC_PAGE = 200;
+
+/** Últimas 200 sincronizaciones de la propiedad, acotadas a la organización de esa propiedad. */
+export async function listOfflineSyncRecords(propertyId: string): Promise<OfflineSyncRecord[]> {
+  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { organizationId: true } });
+  if (!property) throw new NotFoundError("Propiedad no encontrada.");
+  const rows = await prisma.offlineSyncRecord.findMany({
+    where: { propertyId, organizationId: property.organizationId },
+    orderBy: { createdAt: "desc" },
+    take: OFFLINE_SYNC_PAGE
+  });
+  return rows.map(toOfflineSyncRecord);
 }

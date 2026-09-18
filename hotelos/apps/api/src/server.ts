@@ -35,7 +35,6 @@ import type { ChatAttachmentDraft, CheckInFromScanRequest, GuestIdentityFields, 
 import type { HotelModuleCode } from "@hotelos/product";
 import { isValidSpanishTaxId, resolveVerifactuSoftware, type TaxCategory } from "@hotelos/compliance";
 import type { Prisma } from "@hotelos/database";
-import type { HotelOsToolName } from "@hotelos/ai-tools";
 import { buildHealthResponse, OBSERVABILITY_HEADERS, SERVICE_NAMES } from "@hotelos/config";
 import { createId } from "./lib/ids.js";
 import { demoStore, type PropertyRecord, type UserContext } from "./lib/demo-store.js";
@@ -47,13 +46,14 @@ import { createRoleFromTemplate } from "./lib/rbac-catalog.js";
 import { ROLE_TEMPLATE_KEYS, type RoleKey } from "@hotelos/shared";
 // Tanda 6b (L2, integración): enums of the sociedad layer for the POST /admin/tenants bridge.
 import { LEGAL_FORMS, PROPERTY_KINDS, type LegalForm, type PropertyKind } from "@hotelos/shared";
-import { isSchedulerLeader } from "./lib/scheduler-leader.js";
+import { describeSchedulerLease, holdsSchedulerLease, isSchedulerLeader } from "./lib/scheduler-leader.js";
 import { BadRequestError, ConflictError, ForbiddenError, HttpError, NotFoundError, UnauthorizedError, statusCodeForError, describePrismaError, describeFastifyContentTypeError } from "./lib/http-error.js";
-import { pageBody, pageHeaders, parsePageQuery } from "./lib/pagination.js";
+import { buildPage, decodeCursor, pageBody, pageHeaders, parsePageQuery } from "./lib/pagination.js";
 import {
   assertEntityAccess,
   assertPropertyEntityAccess,
   grantPropertyAccess,
+  isPropertyAssigned,
   listOperationalProperties,
   resolveOrganizationScope
 } from "./lib/tenancy.js";
@@ -66,7 +66,8 @@ import { MAPPING_CATALOGS } from "@hotelos/ai-tools";
 // outbox (delivery.service) and its drain job below.
 import { registerRateGridRoutes } from "./modules/rate-manager/rate-grid.routes.js";
 import { registerChannelManagerRoutes } from "./modules/channel-manager/channel-manager.routes.js";
-import { startChannelDeliveryDrain } from "./modules/channel-manager/drain.service.js";
+import { drainChannelDeliveries } from "./modules/channel-manager/drain.service.js";
+import { readChannelEnv } from "./modules/channel-manager/env.partial.js";
 import { enqueueRateGridPush, getCellSyncMap as getCellSyncMapFromOutbox } from "./modules/channel-manager/delivery.service.js";
 import { registerRecommendationRoutes } from "./modules/revenue/recommendations.routes.js";
 // Finanzas (2026-09-16, integración): every finance module owns its routes in
@@ -365,14 +366,10 @@ import {
   correctSpainGuestRegisterRecord,
   downloadSesHospedajesBatch,
   generateSesHospedajesBatch,
-  getAuthorityInbox,
-  getAuthoritySubmission,
   getComplianceInbox,
   getSpainGuestRegisterSettings,
   listGuestRegisterRecords,
-  listAuthoritySubmissions,
   listReservationGuestRegisterRecords,
-  listSesHospedajesSubmissions,
   markGuestRegisterIdentityVerified,
   markGuestRegisterSigned,
   markSesBatchManuallyUploaded,
@@ -382,10 +379,8 @@ import {
   queueSesHospedajesSubmission,
   recordIdentityDiscardEvent,
   recordTemporaryIdentityScan,
-  retryAuthoritySubmission,
   submitSesHospedajesBatch,
   testSesHospedajesConnection,
-  updateSesHospedajesSubmissionStatus,
   validateSpainGuestRegisterRecordApi
 } from "./modules/compliance/compliance.service.js";
 import {
@@ -847,16 +842,13 @@ import {
 } from "./modules/integrations/integrations.service.js";
 import {
   approveGoLive,
-  applyBackOfficeAiSuggestion,
   applyCategoryImport,
   applyCategoryTemplate,
   assignRoomsToHousekeepingSection,
   assignRoomsToMaintenanceArea,
   bulkCreateRooms,
   bulkUpdateRooms,
-  commitPropertyMapImport,
   configureModule,
-  createBackOfficeAiSuggestion,
   createBackOfficeRoomType,
   createBedType,
   createBuilding,
@@ -874,9 +866,6 @@ import {
   disableBackOfficeUser,
   assignUserToDepartment,
   exportCategories,
-  exportPropertyMap,
-  generateQrCode,
-  generateBulkQrCodes,
   getAccountingSettings,
   getAiSettings,
   getBackOfficeDashboard,
@@ -888,7 +877,6 @@ import {
   getHousekeepingConfiguration,
   getMaintenanceConfiguration,
   getModuleConfiguration,
-  getModuleHealth,
   getPropertyImport,
   getPropertyMap,
   getPropertySetupForm,
@@ -898,7 +886,6 @@ import {
   inviteBackOfficeUser,
   listPropertyRoles,
   listBackOfficeAudit,
-  listBackOfficeAiSuggestions,
   listBackOfficeModules,
   listBackOfficeRoomTypes,
   listBackOfficeUsers,
@@ -911,7 +898,6 @@ import {
   listManualSetupOptions,
   listPropertySetupForms,
   getManualSetupOptionDetail,
-  listQrCodes,
   listRoleCatalog,
   listRoomFeatures,
   listRoomsForRoomType,
@@ -924,7 +910,6 @@ import {
   patchCustomField,
   patchEntityCustomFields,
   patchComplianceSettings,
-  previewPropertyMapImport,
   previewCategoryImport,
   previewCategoryTemplate,
   recalculateModuleHealth,
@@ -938,8 +923,7 @@ import {
   setCategoryOptionActive,
   suggestPropertyCategories,
   upsertHousekeepingRule,
-  upsertMaintenanceRule,
-  upsertMapPosition
+  upsertMaintenanceRule
 } from "./modules/backoffice/backoffice.service.js";
 import {
   listTenants,
@@ -951,12 +935,8 @@ import {
 } from "./modules/admin-console/tenant-admin.service.js";
 import {
   createAdvancedRecord,
-  getAdvancedModuleDashboard,
-  getAdvancedModuleHealth,
-  getAdvancedRecord,
   listAdvancedRecords,
-  transitionAdvancedRecord,
-  validateAdvancedAiTool
+  transitionAdvancedRecord
 } from "./modules/advanced/advanced-modules.service.js";
 import {
   analyzeOnboardingProject,
@@ -1703,10 +1683,19 @@ export async function buildApiServer() {
     // P7: whether THIS instance runs the in-process schedulers (RUN_SCHEDULERS,
     // lib/scheduler-leader). Lets ops verify at runtime that exactly one
     // replica is the leader. No logger passed → no side effects.
+    // Tanda L2 (L2-02): the env switch is only the first gate — every tick also
+    // needs the `scheduler_leases` lease, so the response carries who holds it
+    // (`schedulers.leader` = "lease" with a live row, "env" without one; the
+    // legacy `schedulerLeader` key stays). Read-only: /health never acquires.
     const schedulerLeader = isSchedulerLeader();
+    const schedulerLease = await describeSchedulerLease();
     checks.schedulers = {
       ok: true,
-      message: schedulerLeader ? "leader (RUN_SCHEDULERS)" : "disabled on this instance (RUN_SCHEDULERS=false)"
+      message: schedulerLeader
+        ? schedulerLease.holder
+          ? `leader (RUN_SCHEDULERS · lease held by ${schedulerLease.thisInstance ? "this instance" : "another instance"})`
+          : "leader (RUN_SCHEDULERS · no live lease)"
+        : "disabled on this instance (RUN_SCHEDULERS=false)"
     };
 
     // env (Tanda 4 · rutas-cors): the same contract assertEnv enforced at boot
@@ -1744,6 +1733,10 @@ export async function buildApiServer() {
       timestamp: new Date().toISOString(),
       version: process.env.APP_VERSION ?? "dev",
       schedulerLeader,
+      // SEC-L2-06 (corrector): /health is public — the lease holder id is
+      // `hostname:pid` of the leader and is not exposed; `held` says whether a
+      // live lease exists and `thisInstance` whether this process holds it.
+      schedulers: { leader: schedulerLease.leader, held: schedulerLease.holder !== null, thisInstance: schedulerLease.thisInstance, expiresAt: schedulerLease.expiresAt },
       // Contract (C) of Tanda 4: `env: { ok, warnings }` at the top level as
       // well as inside `checks` (the latter drives `status`).
       env: envCheck,
@@ -2318,10 +2311,13 @@ export async function buildApiServer() {
   });
 
   app.post("/mobile-keys/:serial/revoke", async (request) => {
-    await assertEntityAccess(request, { entity: "mobileKey", id: (request.params as { serial: string }).serial });
+    // Tanda L2 (corrector): the key's property (guest_portal_actions row) wins
+    // over the header; the service filters the revocation by it.
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "mobileKey", id: (request.params as { serial: string }).serial });
     return revokeWalletPass({
       context: request.userContext,
-      serialNumber: (request.params as { serial: string }).serial
+      serialNumber: (request.params as { serial: string }).serial,
+      propertyId
     });
   });
 
@@ -2544,19 +2540,6 @@ export async function buildApiServer() {
     });
   });
 
-  app.get("/advanced/properties/:propertyId/modules/:moduleCode/health", async (request) => {
-    const params = request.params as { propertyId: string; moduleCode: HotelModuleCode };
-    return getAdvancedModuleHealth(params.propertyId, params.moduleCode);
-  });
-
-  app.get("/revenue/properties/:propertyId/dashboard", async (request) => {
-    const params = request.params as { propertyId: string };
-    return getAdvancedModuleDashboard(params.propertyId, "revenue_profit_engine");
-  });
-  app.get("/revenue/properties/:propertyId/metrics", async (request) => {
-    const params = request.params as { propertyId: string };
-    return getAdvancedModuleDashboard(params.propertyId, "revenue_profit_engine");
-  });
   // History & Forecast BOARD (contract 2026-07-15): canonical Opera-style board
   // computed from Prisma (reservations + RevenueDailySnapshot + RevenueForecast
   // + Budget + RevenuePaceSnapshot).
@@ -2631,10 +2614,6 @@ export async function buildApiServer() {
       month: body.month,
       correlationId: createId("corr")
     });
-  });
-  app.post("/revenue/properties/:propertyId/history-forecast/saved-views", async (request) => {
-    const params = request.params as { propertyId: string };
-    return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_report_view", auditAction: "RevenueReportViewCreated", requiredPermissions: ["revenue.history_forecast.saved_views.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.get("/revenue/properties/:propertyId/pickup", async (request) => {
     const params = request.params as { propertyId: string };
@@ -2719,21 +2698,6 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { id: string }).id, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; id: string };
     return decideRecommendation({ context: request.userContext, id: params.id, decision: "rejected", correlationId: createId("corr") });
-  });
-  app.post("/revenue/recommendations/:recommendationId/approve", async (request) => {
-    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { recommendationId: string }).recommendationId });
-    const params = request.params as { recommendationId: string };
-    return decideRecommendation({ context: request.userContext, id: params.recommendationId, decision: "approved", correlationId: createId("corr") });
-  });
-  app.post("/revenue/recommendations/:recommendationId/apply", async (request) => {
-    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { recommendationId: string }).recommendationId });
-    const params = request.params as { recommendationId: string };
-    return decideRecommendation({ context: request.userContext, id: params.recommendationId, decision: "applied", correlationId: createId("corr") });
-  });
-  app.post("/revenue/recommendations/:recommendationId/reject", async (request) => {
-    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { recommendationId: string }).recommendationId });
-    const params = request.params as { recommendationId: string };
-    return decideRecommendation({ context: request.userContext, id: params.recommendationId, decision: "rejected", correlationId: createId("corr") });
   });
   // Pricing rules + BAR levels (Fase C2)
   app.get("/revenue/properties/:propertyId/pricing-rules", async (request) => listPricingRules((request.params as { propertyId: string }).propertyId));
@@ -2825,10 +2789,6 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "inboundEmail", id: (request.params as { id: string }).id });
     return rejectEmailReservation({ context: request.userContext, inboundEmailId: (request.params as { id: string }).id, reason: ((request.body ?? {}) as { reason?: string }).reason, correlationId: createId("corr") });
   });
-  app.get("/revenue/properties/:propertyId/channel-profitability", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "channel_profitability");
-  });
   // Rate Plan CRUD (Fase 0) — backs the admin RatePlansScreen with persisted
   // data (the screen previously fell back to demo data with a "no implementado"
   // banner). Tenant scoping + permissions enforced inside the service.
@@ -2859,42 +2819,6 @@ export async function buildApiServer() {
     }
   });
   registerRecommendationRoutes(app);
-  app.post("/revenue/properties/:propertyId/scenarios/simulate", async (request) => {
-    const params = request.params as { propertyId: string };
-    return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_scenario", auditAction: "RevenueScenarioSimulated", requiredPermissions: ["revenue.recommend"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.get("/revenue/properties/:propertyId/scenarios", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "revenue_scenarios");
-  });
-  app.get("/revenue/scenarios/:scenarioId", async (request) => {
-    const params = request.params as { scenarioId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueScenario", id: params.scenarioId });
-    return getAdvancedRecord(propertyId, "revenue_profit_engine", "revenue_scenarios", params.scenarioId);
-  });
-  app.get("/revenue/properties/:propertyId/automation-rules", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "automation_rules");
-  });
-  app.post("/revenue/properties/:propertyId/automation-rules", async (request) => {
-    const params = request.params as { propertyId: string };
-    return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", auditAction: "RevenueAutomationRuleCreated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.patch("/revenue/automation-rules/:ruleId", async (request) => {
-    const params = request.params as { ruleId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueAutomationRule", id: params.ruleId });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "updated", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.post("/revenue/automation-rules/:ruleId/enable", async (request) => {
-    const params = request.params as { ruleId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueAutomationRule", id: params.ruleId });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "enabled", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.post("/revenue/automation-rules/:ruleId/disable", async (request) => {
-    const params = request.params as { ruleId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueAutomationRule", id: params.ruleId });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "disabled", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
 
   // Rate grid v2 · channel manager routes (channels, credentials, product
   // mappings, deliveries, drain, webhooks). The demoStore legs that lived here
@@ -3023,34 +2947,34 @@ export async function buildApiServer() {
     return listParityAlerts(params.propertyId);
   });
 
-  app.get("/crm/profiles", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "guest_profiles"));
-  app.get("/crm/profiles/:id", async (request) =>
-    getAdvancedRecord(request.userContext.propertyId, "guest_data_crm_loyalty", "guest_profiles", (request.params as { id: string }).id)
-  );
-  app.post("/crm/profiles/:id/merge", async (request) => {
-    await assertEntityAccess(request, { entity: "guestProfile", id: (request.params as { id: string }).id });
-    // The source profile comes in the body and is merged INTO the target: same tenant rule.
-    const sourceProfileId = (request.body as { sourceProfileId?: string } | null)?.sourceProfileId;
-    if (typeof sourceProfileId === "string" && sourceProfileId.length > 0) {
-      await assertEntityAccess(request, { entity: "guestProfile", id: sourceProfileId });
-    }
-    const params = request.params as { id: string };
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "guest_profile", entityId: params.id, status: "merged", auditAction: "GuestProfileMerged", requiredPermissions: ["crm.manage_profiles"], payload: request.body as never, correlationId: createId("corr") });
+  app.get("/crm/segments", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "crm_segments", query);
+    reply.headers(pageHeaders(page));
+    return page;
   });
-  app.get("/crm/duplicates", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "duplicate_guests"));
-  app.get("/crm/segments", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "crm_segments"));
   app.post("/crm/segments", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_segment", auditAction: "GuestSegmentCreated", requiredPermissions: ["crm.manage_profiles"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/crm/segments/:id", async (request) => {
     await assertEntityAccess(request, { entity: "crmSegment", id: (request.params as { id: string }).id });
     return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_segment", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "GuestSegmentCreated", requiredPermissions: ["crm.manage_profiles"], payload: request.body as never, correlationId: createId("corr") });
   });
-  app.get("/crm/campaigns", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "crm_campaigns"));
+  app.get("/crm/campaigns", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "crm_campaigns", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/crm/campaigns", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_campaign", auditAction: "CampaignCreated", requiredPermissions: ["crm.manage_campaigns"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/crm/campaigns/:id", async (request) => {
     await assertEntityAccess(request, { entity: "crmCampaign", id: (request.params as { id: string }).id });
     return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_campaign", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "CampaignCreated", requiredPermissions: ["crm.manage_campaigns"], payload: request.body as never, correlationId: createId("corr") });
   });
-  app.get("/crm/loyalty", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "loyalty"));
+  app.get("/crm/loyalty", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "loyalty", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/crm/loyalty/programs", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "loyalty_program", auditAction: "LoyaltyMembershipCreated", requiredPermissions: ["crm.manage_loyalty"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/crm/loyalty/memberships/:id", async (request) => {
     await assertEntityAccess(request, { entity: "loyaltyMembership", id: (request.params as { id: string }).id });
@@ -3115,62 +3039,74 @@ export async function buildApiServer() {
     const params = request.params as { propertyId: string };
     return releaseExpiredGroupBlocks(params.propertyId);
   });
-  app.post("/groups/:id/create-reservations", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "groups_events_sales", entityType: "group_reservation_batch", auditAction: "GroupBookingCreated", requiredPermissions: ["groups.manage"], payload: { groupId: (request.params as { id: string }).id, ...(request.body as Record<string, unknown>) }, correlationId: createId("corr") }));
-  app.get("/events/properties/:propertyId/calendar", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "groups_events_sales", "events_calendar"));
+  app.get("/events/properties/:propertyId/calendar", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "groups_events_sales", "events_calendar", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/events/properties/:propertyId/spaces", async (request) => createEventSpace({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
   app.post("/events/properties/:propertyId/events", async (request) => createEvent({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/events/:id", async (request) => {
     await assertEntityAccess(request, { entity: "event", id: (request.params as { id: string }).id });
     return updateEvent({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
   });
+  // By-id legs of the engine (Tanda L2 · corrector, SEC-L2-03/04): the row's
+  // property returned by assertPropertyEntityAccess is the one the transition
+  // or the child row runs in («la propiedad de la entidad siempre gana», T8a),
+  // never the header's; and the parent id of a child row is the one of the
+  // path (the guarded one), never a different id smuggled in the body.
   app.post("/events/:id/generate-beo", async (request) => {
-    await assertEntityAccess(request, { entity: "event", id: (request.params as { id: string }).id });
-    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "groups_events_sales", entityType: "event_order", auditAction: "BEOCreated", requiredPermissions: ["events.manage"], payload: { eventId: (request.params as { id: string }).id, ...(request.body as Record<string, unknown>) }, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "event", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "groups_events_sales", entityType: "event_order", auditAction: "BEOCreated", requiredPermissions: ["events.manage"], payload: { ...(request.body as Record<string, unknown>), eventId: (request.params as { id: string }).id }, correlationId: createId("corr") });
   });
 
-  app.get("/workforce/properties/:propertyId/schedule", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "schedule"));
+  app.get("/workforce/properties/:propertyId/schedule", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "schedule", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/workforce/properties/:propertyId/shifts", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "workforce_labor", entityType: "shift", auditAction: "ShiftCreated", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/workforce/shifts/:id", async (request) => {
-    await assertEntityAccess(request, { entity: "shift", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "shift", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "ShiftUpdated", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "shift", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "workforce_labor", entityType: "shift", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "ShiftUpdated", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.post("/workforce/time-clock/clock-in", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "time_clock_entry", auditAction: "StaffClockedIn", requiredPermissions: ["workforce.timeclock.use"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/workforce/time-clock/clock-out", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "time_clock_entry", auditAction: "StaffClockedOut", requiredPermissions: ["workforce.timeclock.use"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/workforce/properties/:propertyId/time-clock", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "time_clock_entries"));
+  app.get("/workforce/properties/:propertyId/time-clock", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "time_clock_entries", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/workforce/absences", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "absence_request", auditAction: "AbsenceRequested", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/workforce/absences/:id", async (request) => {
-    await assertEntityAccess(request, { entity: "absenceRequest", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "absence_request", entityId: (request.params as { id: string }).id, status: "approved", auditAction: "AbsenceApproved", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "absenceRequest", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "workforce_labor", entityType: "absence_request", entityId: (request.params as { id: string }).id, status: "approved", auditAction: "AbsenceApproved", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
-  app.get("/workforce/properties/:propertyId/labor-forecast", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "labor_forecast"));
-  app.get("/workforce/properties/:propertyId/labor-costs", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "labor_costs"));
 
-  app.get("/procurement/suppliers", async (request) => listAdvancedRecords(request.userContext.propertyId, "procurement_inventory", "suppliers"));
-  app.post("/procurement/suppliers", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "procurement_inventory", entityType: "supplier", auditAction: "SupplierCreated", requiredPermissions: ["procurement.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/inventory/properties/:propertyId/items", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "procurement_inventory", "inventory_items"));
-  app.post("/inventory/properties/:propertyId/items", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "procurement_inventory", entityType: "inventory_item", auditAction: "StockMovementCreated", requiredPermissions: ["inventory.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/inventory/properties/:propertyId/stock", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "procurement_inventory", "stock"));
-  app.post("/inventory/properties/:propertyId/stock-movements", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "procurement_inventory", entityType: "stock_movement", auditAction: "StockMovementCreated", requiredPermissions: ["inventory.adjust"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/inventory/properties/:propertyId/stock-counts", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "procurement_inventory", entityType: "stock_count", auditAction: "StockCountCompleted", requiredPermissions: ["inventory.stock_count"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/procurement/properties/:propertyId/purchase-orders", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "procurement_inventory", "purchase_orders"));
+  app.get("/procurement/properties/:propertyId/purchase-orders", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "procurement_inventory", "purchase_orders", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/procurement/properties/:propertyId/purchase-orders", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", auditAction: "PurchaseOrderCreated", requiredPermissions: ["purchase_orders.create"], payload: request.body as never, correlationId: createId("corr") }));
-  // Generic advanced-record legs by id (procurement, anomalies, developer
-  // webhooks, legacy AI governance): the rows only exist in
-  // demoStore.advancedRecords, so `advancedRecord` (strict, same org) is the
-  // guard — an unknown id is a 404 instead of a phantom 200 + audit event,
-  // and the transition runs in the row's property.
+  // By-id legs of the engine (Tanda L2 · L2-02): the tenant guard resolves the
+  // CONCRETE Prisma table (purchase_orders here; anomaly_events / guest_reviews
+  // below) — an unknown or foreign id is one opaque 404 instead of a phantom
+  // 200 + audit event, and the transition runs in the row's property.
   app.post("/procurement/purchase-orders/:id/approve", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "purchaseOrder", id: (request.params as { id: string }).id });
     return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", entityId: (request.params as { id: string }).id, status: "approved", auditAction: "PurchaseOrderApproved", requiredPermissions: ["purchase_orders.approve"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.post("/procurement/purchase-orders/:id/receive", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "purchaseOrder", id: (request.params as { id: string }).id });
     return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", entityId: (request.params as { id: string }).id, status: "received", auditAction: "PurchaseOrderReceived", requiredPermissions: ["purchase_orders.receive"], payload: request.body as never, correlationId: createId("corr") });
   });
 
   app.get("/guest-portal/session/:token", async (request) => ({ token: (request.params as { token: string }).token, status: "active" }));
-  app.post("/guest-portal/session/:token/check-in", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_action", auditAction: "GuestOnlineCheckInCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/guest-portal/session/:token/check-out", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_action", auditAction: "GuestMobileCheckoutCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
   // Finanzas (2026-09-15): the guest sees the REAL balance of the primary
   // folio of the reservation the token belongs to (never a literal 0), and
   // «pagar» creates a PSP payment link — or answers 409 PSP_NOT_CONFIGURED
@@ -3217,9 +3153,6 @@ export async function buildApiServer() {
     reply.code(result.idempotent ? 200 : 202);
     return result;
   });
-  app.post("/guest-portal/session/:token/invoice-request", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_invoice_request", auditAction: "GuestMobileCheckoutCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/guest-portal/session/:token/upsells", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_self_service", "upsell_offers"));
-  app.post("/guest-portal/session/:token/upsells/:offerId/purchase", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_upsell_purchase", auditAction: "GuestUpsellPurchased", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
   // ---- Guest portal real auth + pre-check-in + service requests (Sprint 40) ----
   // These routes are public in the staff-permission manifest (empty perms) so
   // the preHandler passes; the guest token IS the auth and is verified inside
@@ -3304,85 +3237,101 @@ export async function buildApiServer() {
     }
   });
 
-  app.get("/guest-self-service/properties/:propertyId/settings", async (request) => getAdvancedModuleDashboard((request.params as { propertyId: string }).propertyId, "guest_self_service"));
-  app.patch("/guest-self-service/properties/:propertyId/settings", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "guest_self_service", entityType: "guest_self_service_settings", entityId: "settings", status: "updated", auditAction: "GuestPortalSessionCreated", requiredPermissions: ["guest_portal.configure"], payload: request.body as never, correlationId: createId("corr") }));
-
-  app.get("/reputation/properties/:propertyId/dashboard", async (request) => getAdvancedModuleDashboard((request.params as { propertyId: string }).propertyId, "reputation_quality"));
-  app.get("/reputation/properties/:propertyId/reviews", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "guest_reviews"));
-  app.post("/reputation/reviews/:id/ai-draft-response", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "review_response_draft", auditAction: "ReviewResponseDrafted", requiredPermissions: ["reputation.respond"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/reputation/reviews/:id/respond", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "guest_review", entityId: (request.params as { id: string }).id, status: "responded", auditAction: "ReviewResponseSent", requiredPermissions: ["reputation.respond"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/quality/properties/:propertyId/cases", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "quality_cases"));
+  app.get("/reputation/properties/:propertyId/reviews", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "guest_reviews", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
+  app.post("/reputation/reviews/:id/respond", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "guestReview", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "guest_review", entityId: (request.params as { id: string }).id, status: "responded", auditAction: "ReviewResponseSent", requiredPermissions: ["reputation.respond"], payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.get("/quality/properties/:propertyId/cases", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "quality_cases", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/quality/properties/:propertyId/cases", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "reputation_quality", entityType: "quality_case", auditAction: "QualityCaseCreated", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/quality/cases/:id", async (request) => {
-    await assertEntityAccess(request, { entity: "qualityCase", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "quality_case", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "QualityCaseResolved", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "qualityCase", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "quality_case", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "QualityCaseResolved", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
-  app.get("/surveys/properties/:propertyId", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "surveys"));
+  app.get("/surveys/properties/:propertyId", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "surveys", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/surveys/properties/:propertyId", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "reputation_quality", entityType: "survey", auditAction: "SurveyCreated", requiredPermissions: ["surveys.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/surveys/:id/responses", async (request) => {
-    await assertEntityAccess(request, { entity: "survey", id: (request.params as { id: string }).id });
-    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "survey_response", auditAction: "SurveyResponseReceived", requiredPermissions: ["surveys.read"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "survey", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "survey_response", auditAction: "SurveyResponseReceived", requiredPermissions: ["surveys.read"], payload: { ...requireObjectBody(request.body), surveyId: (request.params as { id: string }).id }, correlationId: createId("corr") });
   });
 
-  app.get("/energy/properties/:propertyId/dashboard", async (request) => getAdvancedModuleDashboard((request.params as { propertyId: string }).propertyId, "energy_sustainability"));
-  app.get("/energy/properties/:propertyId/meters", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "energy_sustainability", "utility_meters"));
+  app.get("/energy/properties/:propertyId/meters", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "energy_sustainability", "utility_meters", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/energy/properties/:propertyId/meters", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "energy_sustainability", entityType: "utility_meter", auditAction: "UtilityMeterCreated", requiredPermissions: ["energy.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/energy/properties/:propertyId/readings", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "energy_sustainability", entityType: "utility_reading", auditAction: "UtilityReadingCreated", requiredPermissions: ["energy.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/sustainability/properties/:propertyId/dashboard", async (request) => getAdvancedModuleDashboard((request.params as { propertyId: string }).propertyId, "energy_sustainability"));
   app.post("/sustainability/properties/:propertyId/actions", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "energy_sustainability", entityType: "sustainability_action", auditAction: "SustainabilityActionCreated", requiredPermissions: ["sustainability.report"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/sustainability/properties/:propertyId/report", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "energy_sustainability", "sustainability_report"));
 
-  app.get("/safety/properties/:propertyId/incidents", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "safety_incident_management", "safety_incidents"));
+  app.get("/safety/properties/:propertyId/incidents", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "safety_incident_management", "safety_incidents", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/safety/properties/:propertyId/incidents", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "safety_incident_management", entityType: "safety_incident", auditAction: "SafetyIncidentCreated", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/safety/incidents/:id", async (request) => {
-    await assertEntityAccess(request, { entity: "safetyIncident", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "safety_incident", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "SafetyIncidentUpdated", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "safetyIncident", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "safety_incident_management", entityType: "safety_incident", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "SafetyIncidentUpdated", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.post("/safety/incidents/:id/evidence", async (request) => {
-    await assertEntityAccess(request, { entity: "safetyIncident", id: (request.params as { id: string }).id });
-    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "incident_evidence", auditAction: "IncidentEvidenceAdded", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "safetyIncident", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "safety_incident_management", entityType: "incident_evidence", auditAction: "IncidentEvidenceAdded", requiredPermissions: ["incidents.manage"], payload: { ...requireObjectBody(request.body), incidentId: (request.params as { id: string }).id }, correlationId: createId("corr") });
   });
-  app.get("/safety/properties/:propertyId/checks", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "safety_incident_management", "safety_checks"));
+  app.get("/safety/properties/:propertyId/checks", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "safety_incident_management", "safety_checks", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/safety/properties/:propertyId/checks", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "safety_incident_management", entityType: "safety_check", auditAction: "SafetyCheckCreated", requiredPermissions: ["safety_checks.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/safety/checks/:id/results", async (request) => {
-    await assertEntityAccess(request, { entity: "safetyCheck", id: (request.params as { id: string }).id });
-    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "safety_check_result", auditAction: "SafetyCheckCompleted", requiredPermissions: ["safety_checks.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "safetyCheck", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "safety_incident_management", entityType: "safety_check_result", auditAction: "SafetyCheckCompleted", requiredPermissions: ["safety_checks.manage"], payload: { ...requireObjectBody(request.body), safetyCheckId: (request.params as { id: string }).id }, correlationId: createId("corr") });
   });
 
-  app.get("/analytics/properties/:propertyId/dashboard", async (request) => getAdvancedModuleDashboard((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform"));
-  app.get("/analytics/properties/:propertyId/metrics", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "metrics"));
+  app.get("/analytics/properties/:propertyId/metrics", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "metrics", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/analytics/metrics", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "hotel_intelligence_platform", entityType: "metric_definition", auditAction: "MetricDefinitionCreated", requiredPermissions: ["metrics.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/analytics/properties/:propertyId/anomalies", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "anomalies"));
+  app.get("/analytics/properties/:propertyId/anomalies", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "anomalies", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.patch("/analytics/anomalies/:id", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "anomalyEvent", id: (request.params as { id: string }).id });
     return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "hotel_intelligence_platform", entityType: "anomaly_event", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AnomalyDetected", requiredPermissions: ["analytics.configure"], payload: request.body as never, correlationId: createId("corr") });
   });
-  app.get("/analytics/properties/:propertyId/reports", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "scheduled_reports"));
+  app.get("/analytics/properties/:propertyId/reports", async (request, reply) => {
+    const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "scheduled_reports", query);
+    reply.headers(pageHeaders(page));
+    return page;
+  });
   app.post("/analytics/properties/:propertyId/reports", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "hotel_intelligence_platform", entityType: "scheduled_report", auditAction: "ScheduledReportGenerated", requiredPermissions: ["analytics.configure"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/analytics/query", async (request) => ({ status: "answered_from_approved_metrics", input: request.body, moduleCode: "hotel_intelligence_platform" }));
 
-  // /developer/apps + rotate-secret movidos a marketplace.service en P2-1.
-  // Legacy usage logs siguen aquí hasta que se migren.
-  app.get("/developer/apps/:id/usage", async (request) => {
-    // The app id only gates access (org-owned Prisma row); usage logs are
-    // still the per-property stub list.
-    await assertEntityAccess(request, { entity: "developerApp", id: (request.params as { id: string }).id });
-    return listAdvancedRecords(request.userContext.propertyId, "developer_platform", "api_usage_logs");
-  });
-  app.get("/developer/webhooks", async (request) => listAdvancedRecords(request.userContext.propertyId, "developer_platform", "webhooks"));
-  app.post("/developer/webhooks", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "developer_platform", entityType: "webhook_subscription", auditAction: "WebhookSubscriptionCreated", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/developer/webhooks/:id", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "developer_platform", entityType: "webhook_subscription", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "WebhookSubscriptionCreated", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.post("/developer/webhooks/:id/test", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "developer_platform", entityType: "webhook_delivery", auditAction: "WebhookDeliveryFailed", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.get("/developer/webhooks/:id/deliveries", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return listAdvancedRecords(propertyId, "developer_platform", "webhook_deliveries");
-  });
 
   // Auto-generated OpenAPI spec served from apps/api/docs/openapi.yaml.
   // Regenerate via `node apps/api/scripts/generate-openapi.mjs`.
@@ -3400,41 +3349,6 @@ export async function buildApiServer() {
     }
     reply.code(404);
     return { error: "openapi.yaml not found — run apps/api/scripts/generate-openapi.mjs to generate it" };
-  });
-
-  app.get("/ai-governance/policies", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_policies"));
-  app.post("/ai-governance/policies", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_policy", auditAction: "AIPolicyUpdated", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/ai-governance/policies/:id", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_policy", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AIPolicyUpdated", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.get("/ai-governance/tools", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_tool_registry"));
-  app.patch("/ai-governance/tools/:toolName", async (request) => {
-    const params = request.params as { toolName: string };
-    const validation = validateAdvancedAiTool({ propertyId: request.userContext.propertyId, toolName: params.toolName as HotelOsToolName, userPermissions: request.userContext.permissions });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_tool_registry", entityId: params.toolName, status: validation.allowed ? "updated" : "blocked", auditAction: validation.allowed ? "AIToolEnabled" : "AIToolDisabled", requiredPermissions: ["ai_tool_registry.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.get("/ai-governance/prompts", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_prompt_versions"));
-  app.post("/ai-governance/prompts", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_prompt_version", auditAction: "AIPromptVersionCreated", requiredPermissions: ["ai_prompts.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/ai-governance/prompts/:id", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_prompt_version", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AIPromptVersionCreated", requiredPermissions: ["ai_prompts.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.get("/ai-governance/evaluations", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_evaluations"));
-  app.post("/ai-governance/evaluations/:id/run", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_evaluation", entityId: (request.params as { id: string }).id, status: "run", auditAction: "AIEvaluationRun", requiredPermissions: ["ai_evals.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.get("/ai-governance/incidents", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_incidents"));
-  app.post("/ai-governance/incidents", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_incident", auditAction: "AIIncidentCreated", requiredPermissions: ["ai_incidents.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/ai-governance/incidents/:id", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_incident", entityId: (request.params as { id: string }).id, status: "resolved", auditAction: "AIIncidentCreated", requiredPermissions: ["ai_incidents.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.get("/ai-governance/human-review", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_human_review"));
-  app.patch("/ai-governance/human-review/:id", async (request) => {
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_human_review_item", entityId: (request.params as { id: string }).id, status: "resolved", auditAction: "AIHumanReviewResolved", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") });
   });
 
   // AI Operations — pipeline status (Sprint 48, tool-call telemetry)
@@ -3879,16 +3793,6 @@ export async function buildApiServer() {
     });
   });
 
-  app.post("/backoffice/properties/:propertyId/map-positions", async (request) => {
-    const params = request.params as { propertyId: string };
-    return upsertMapPosition({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      position: request.body as Parameters<typeof upsertMapPosition>[0]["position"],
-      correlationId: createId("corr")
-    });
-  });
-
   app.post("/backoffice/properties/:propertyId/rooms/bulk", async (request) => {
     const params = request.params as { propertyId: string };
     const body = request.body as Omit<Parameters<typeof bulkCreateRooms>[0], "context" | "propertyId" | "correlationId">;
@@ -3909,11 +3813,6 @@ export async function buildApiServer() {
       ...body,
       correlationId: createId("corr")
     });
-  });
-
-  app.get("/backoffice/properties/:propertyId/property-map/export", async (request) => {
-    const params = request.params as { propertyId: string };
-    return exportPropertyMap(params.propertyId);
   });
 
   app.get("/backoffice/properties/:propertyId/room-types", async (request) => {
@@ -4018,29 +3917,6 @@ export async function buildApiServer() {
     });
   });
 
-  app.post("/backoffice/properties/:propertyId/imports/property-map/preview", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = request.body as { rows: Parameters<typeof previewPropertyMapImport>[0]["rows"] };
-    return previewPropertyMapImport({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      rows: body.rows,
-      correlationId: createId("corr")
-    });
-  });
-
-  app.post("/backoffice/properties/:propertyId/imports/property-map/commit", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = request.body as { importId: string; createUnknownReferences?: boolean };
-    return commitPropertyMapImport({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      importId: body.importId,
-      createUnknownReferences: body.createUnknownReferences,
-      correlationId: createId("corr")
-    });
-  });
-
   app.get("/backoffice/properties/:propertyId/imports/:importId", async (request) => {
     const params = request.params as { propertyId: string; importId: string };
     return getPropertyImport(params.propertyId, params.importId);
@@ -4101,11 +3977,6 @@ export async function buildApiServer() {
       configurationJson: body.configurationJson ?? {},
       correlationId: createId("corr")
     });
-  });
-
-  app.get("/backoffice/properties/:propertyId/modules/:moduleCode/health", async (request) => {
-    const params = request.params as { propertyId: string; moduleCode: HotelModuleCode };
-    return getModuleHealth(params.propertyId, params.moduleCode);
   });
 
   app.post("/backoffice/properties/:propertyId/modules/:moduleCode/recalculate-health", async (request) => {
@@ -4417,32 +4288,6 @@ export async function buildApiServer() {
     });
   });
 
-  app.get("/backoffice/properties/:propertyId/ai/suggestions", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listBackOfficeAiSuggestions(params.propertyId);
-  });
-
-  app.post("/backoffice/properties/:propertyId/ai/suggestions", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = request.body as { prompt: string };
-    return createBackOfficeAiSuggestion({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      prompt: body.prompt,
-      correlationId: createId("corr")
-    });
-  });
-
-  app.post("/backoffice/properties/:propertyId/ai/suggestions/:suggestionId/apply", async (request) => {
-    const params = request.params as { propertyId: string; suggestionId: string };
-    return applyBackOfficeAiSuggestion({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      suggestionId: params.suggestionId,
-      correlationId: createId("corr")
-    });
-  });
-
   app.get("/backoffice/properties/:propertyId/templates", async (request) => {
     const params = request.params as { propertyId: string };
     return listDocumentTemplates(params.propertyId);
@@ -4465,33 +4310,6 @@ export async function buildApiServer() {
       propertyId: params.propertyId,
       templateId: params.templateId,
       patch: request.body as Parameters<typeof updateDocumentTemplate>[0]["patch"],
-      correlationId: createId("corr")
-    });
-  });
-
-  app.post("/backoffice/properties/:propertyId/qr-codes", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = request.body as Omit<Parameters<typeof generateQrCode>[0], "context" | "propertyId" | "correlationId">;
-    return generateQrCode({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      ...body,
-      correlationId: createId("corr")
-    });
-  });
-
-  app.get("/backoffice/properties/:propertyId/qr-codes", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listQrCodes(params.propertyId);
-  });
-
-  app.post("/backoffice/properties/:propertyId/qr-codes/bulk", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = request.body as { items: Parameters<typeof generateBulkQrCodes>[0]["items"] };
-    return generateBulkQrCodes({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      items: body.items,
       correlationId: createId("corr")
     });
   });
@@ -6487,28 +6305,6 @@ export async function buildApiServer() {
     });
   });
 
-  app.get("/compliance/authority/properties/:propertyId/inbox", async (request) => {
-    const params = request.params as { propertyId: string };
-    return getAuthorityInbox(params.propertyId);
-  });
-
-  app.get("/compliance/authority/properties/:propertyId/submissions", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAuthoritySubmissions(params.propertyId);
-  });
-
-  app.get("/compliance/authority/submissions/:submissionId", async (request) => {
-    await assertEntityAccess(request, { entity: "authoritySubmission", id: (request.params as { submissionId: string }).submissionId });
-    const params = request.params as { submissionId: string };
-    return getAuthoritySubmission({ context: request.userContext, submissionId: params.submissionId, correlationId: createId("corr") });
-  });
-
-  app.post("/compliance/authority/submissions/:submissionId/retry", async (request) => {
-    await assertEntityAccess(request, { entity: "authoritySubmission", id: (request.params as { submissionId: string }).submissionId });
-    const params = request.params as { submissionId: string };
-    return retryAuthoritySubmission({ context: request.userContext, submissionId: params.submissionId, correlationId: createId("corr") });
-  });
-
   app.post("/compliance/ses-hospedajes/properties/:propertyId/batches/generate", async (request) => {
     const params = request.params as { propertyId: string };
     return generateSesHospedajesBatch({ context: request.userContext, propertyId: params.propertyId, correlationId: createId("corr") });
@@ -6578,29 +6374,6 @@ export async function buildApiServer() {
       context: request.userContext,
       guestRegisterRecordId: params.id,
       submissionType: body.submissionType ?? "checkin",
-      correlationId: createId("corr")
-    });
-  });
-
-  app.get("/properties/:propertyId/ses-hospedajes/submissions", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listSesHospedajesSubmissions(params.propertyId);
-  });
-
-  app.patch("/ses-hospedajes/submissions/:id/status", async (request) => {
-    await assertEntityAccess(request, { entity: "sesSubmission", id: (request.params as { id: string }).id });
-    const params = request.params as { id: string };
-    const body = request.body as {
-      status: Parameters<typeof updateSesHospedajesSubmissionStatus>[0]["status"];
-      responsePayloadJson?: Record<string, unknown>;
-      errorMessage?: string;
-    };
-    return updateSesHospedajesSubmissionStatus({
-      context: request.userContext,
-      submissionId: params.id,
-      status: body.status,
-      responsePayloadJson: body.responsePayloadJson,
-      errorMessage: body.errorMessage,
       correlationId: createId("corr")
     });
   });
@@ -8279,9 +8052,12 @@ export async function buildApiServer() {
   // mutations are gated to platform admins (real `admin.tenants.manage` role,
   // carried as `userContext.isPlatformAdmin`) — a tenant user with
   // `ai_prompts.manage` may still list, diff and propose versions.
-  async function requirePlatformAdmin(request: { userContext: UserContext }): Promise<void> {
+  async function requirePlatformAdmin(
+    request: { userContext: UserContext },
+    message = "Solo un administrador de plataforma puede publicar o archivar versiones de prompt."
+  ): Promise<void> {
     if (!(await isPlatformAdmin(request.userContext))) {
-      throw new ForbiddenError("Solo un administrador de plataforma puede publicar o archivar versiones de prompt.");
+      throw new ForbiddenError(message);
     }
   }
 
@@ -8564,15 +8340,115 @@ export async function buildApiServer() {
   });
 
   app.get("/audit-events/integrity", async (request) => verifyAuditIntegrity());
-  // Tenant scope for the in-memory feeds: only the caller's organization (the
-  // integrity checks stay global by design — they verify the whole hash chain).
-  app.get("/events", async (request) =>
-    demoStore.events.filter((event) => event.organizationId === request.userContext.organizationId)
-  );
+
+  // Tanda L2 (L2-02): the event and AI tool-call feeds read the Prisma tables
+  // (event_stream, ai_tool_calls) instead of the in-memory mirrors, with the
+  // shared cursor pagination (bare array by default, `{ items, nextCursor,
+  // total }` with ?cursor= / ?envelope=1, X-Total-Count / X-Next-Cursor
+  // always; keyset createdAt desc + id). Scope: the caller's organization and,
+  // with ?propertyId=, that property after the tenant guard (foreign / out of
+  // scope → opaque 404); without it, the properties the caller is assigned to
+  // (organization-wide assignments and platform admins see every property).
+  // The integrity checks stay global by design — they verify the whole chain.
+  type MirrorScope = { organizationId: string; propertyId: string | null; propertyIds: string[] | null };
+  const mirrorScope = async (request: { userContext: UserContext; query?: unknown }): Promise<MirrorScope> => {
+    const query = (request.query ?? {}) as { propertyId?: unknown };
+    if (query.propertyId !== undefined && (typeof query.propertyId !== "string" || query.propertyId.length === 0)) {
+      throw new BadRequestError("El parámetro propertyId no es válido.");
+    }
+    if (typeof query.propertyId === "string") {
+      await grantPropertyAccess(request, query.propertyId);
+      return { organizationId: request.userContext.organizationId, propertyId: query.propertyId, propertyIds: null };
+    }
+    const context = request.userContext;
+    const organizationWide = context.assignedPropertyIds === undefined || context.orgScope === true || (await isPlatformAdmin(context));
+    if (organizationWide) return { organizationId: context.organizationId, propertyId: null, propertyIds: null };
+    const propertyIds = (context.assignedPropertyIds ?? []).filter((propertyId) => isPropertyAssigned(context, propertyId));
+    return { organizationId: context.organizationId, propertyId: null, propertyIds };
+  };
+  const cursorDate = (cursor: { k: string; id: string } | null): Date | null => {
+    if (!cursor) return null;
+    const value = new Date(cursor.k);
+    if (Number.isNaN(value.getTime())) throw new BadRequestError("El cursor de paginación no es válido.");
+    return value;
+  };
+
+  app.get("/events", async (request, reply) => {
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const scope = await mirrorScope(request);
+    const cursor = decodeCursor(page.cursor);
+    const after = cursorDate(cursor);
+    const { prisma } = await import("@hotelos/database");
+    const where: Prisma.EventStreamWhereInput = {
+      organizationId: scope.organizationId,
+      ...(scope.propertyId ? { propertyId: scope.propertyId } : scope.propertyIds ? { propertyId: { in: scope.propertyIds } } : {})
+    };
+    const [rows, total] = await Promise.all([
+      prisma.eventStream.findMany({
+        where: { ...where, ...(after && cursor ? { OR: [{ createdAt: { lt: after } }, { createdAt: after, eventId: { lt: cursor.id } }] } : {}) },
+        orderBy: [{ createdAt: "desc" }, { eventId: "desc" }],
+        take: page.limit + 1
+      }),
+      prisma.eventStream.count({ where })
+    ]);
+    // EventStream keys on `eventId`; `id` is exposed as an alias so generic
+    // consumers (and buildPage) can treat the feed like every other list.
+    const result = buildPage(rows.map((row) => ({ id: row.eventId, ...row })), page.limit, total, (row) => row.createdAt.toISOString());
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
+  });
   app.get("/events/integrity", async (request) => verifyDomainEventIntegrity());
-  app.get("/ai/tool-calls", async (request) =>
-    demoStore.aiToolCalls.filter((call) => call.organizationId === request.userContext.organizationId)
-  );
+  app.get("/ai/tool-calls", async (request, reply) => {
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const scope = await mirrorScope(request);
+    const cursor = decodeCursor(page.cursor);
+    const after = cursorDate(cursor);
+    const { prisma } = await import("@hotelos/database");
+    const where: Prisma.AiToolCallWhereInput = {
+      organizationId: scope.organizationId,
+      ...(scope.propertyId ? { propertyId: scope.propertyId } : scope.propertyIds ? { propertyId: { in: scope.propertyIds } } : {})
+    };
+    const [rows, total] = await Promise.all([
+      prisma.aiToolCall.findMany({
+        where: { ...where, ...(after && cursor ? { OR: [{ createdAt: { lt: after } }, { createdAt: after, id: { lt: cursor.id } }] } : {}) },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: page.limit + 1
+      }),
+      prisma.aiToolCall.count({ where })
+    ]);
+    const result = buildPage(rows, page.limit, total, (row) => row.createdAt.toISOString());
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
+  });
+
+  // Tanda L2 (L2-02): durable worker runs (worker_job_runs · L2-01 / L2-07) as
+  // the source of the future jobs screen of the platform console. Platform
+  // only: `admin.tenants.manage` in the manifest AND requirePlatformAdmin (the
+  // rows span every tenant, so a tenant admin never lists them). Optional
+  // jobName / status filters, newest first, limit ≤ 200 (strict query).
+  const WorkerJobRunsQuerySchema = z
+    .object({
+      jobName: z.string().trim().min(1).max(200).optional(),
+      status: z.string().trim().min(1).max(50).optional(),
+      limit: z.coerce.number().int().min(1).max(200).optional()
+    })
+    .strict();
+  app.get("/admin/worker/job-runs", async (request, reply) => {
+    await requirePlatformAdmin(request, "Solo un administrador de plataforma puede consultar las ejecuciones del worker.");
+    const query = parse(WorkerJobRunsQuerySchema, request.query ?? {}, "query");
+    const { prisma } = await import("@hotelos/database");
+    const where: Prisma.WorkerJobRunWhereInput = {
+      ...(query.jobName ? { jobName: query.jobName } : {}),
+      ...(query.status ? { status: query.status } : {})
+    };
+    const limit = query.limit ?? 50;
+    const [items, total] = await Promise.all([
+      prisma.workerJobRun.findMany({ where, orderBy: { createdAt: "desc" }, take: limit }),
+      prisma.workerJobRun.count({ where })
+    ]);
+    reply.headers(pageHeaders({ items, total, nextCursor: null }));
+    return { items, total, limit };
+  });
 
   return app;
 }
@@ -8689,10 +8565,16 @@ if (entryFile === argFile) {
   }
   await app.listen({ port, host });
 
-  // HA gate (audit 2026-06 · #13): the five schedulers below must run on EXACTLY
+  // HA gate (audit 2026-06 · #13): the eight schedulers below must run on EXACTLY
   // one instance, or >1 replica would duplicate SES/VeriFactu submissions to the
   // AEAT (sanctionable). Single switch RUN_SCHEDULERS=false disables them on
   // non-leader replicas; default true keeps single-node behaviour unchanged.
+  // Tanda L2 (L2-02): on top of the switch, EVERY tick acquires or renews the
+  // `scheduler_leases` lease (lib/scheduler-leader · holdsSchedulerLease) and
+  // returns without working when another live instance holds it — so two
+  // replicas with RUN_SCHEDULERS=true never run a tick at the same time and a
+  // restarted process takes over when the lease expires. A lease failure
+  // (database down) is logged and the tick is skipped: never fail open.
   const schedulerLeader = isSchedulerLeader(app.log);
 
   // SES Hospedajes scheduler (RD 933/2021 24h deadline): poll "retrying"
@@ -8701,15 +8583,16 @@ if (entryFile === argFile) {
   // move this to the pg-boss worker. Disable with SES_SCHEDULER_DISABLED=true.
   if (schedulerLeader && process.env.SES_SCHEDULER_DISABLED !== "true") {
     const intervalMs = Number(process.env.SES_SCHEDULER_INTERVAL_MS ?? 5 * 60 * 1000);
+    const sesTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      const r = await runDueSesSubmissions(demoStore.userContext);
+      if (r.retried > 0 || r.overdue > 0) app.log.info({ ses: r }, "[ses.scheduler] tick");
+    };
     const timer = setInterval(() => {
-      void runDueSesSubmissions(demoStore.userContext)
-        .then((r) => {
-          if (r.retried > 0 || r.overdue > 0) app.log.info({ ses: r }, "[ses.scheduler] tick");
-        })
-        .catch((error) => app.log.error({ err: error }, "[ses.scheduler] failed"));
+      void sesTick().catch((error) => app.log.error({ err: error }, "[ses.scheduler] failed"));
     }, intervalMs);
     timer.unref();
-    app.log.info(`[ses.scheduler] enabled (every ${Math.round(intervalMs / 1000)}s)`);
+    app.log.info(`[ses.scheduler] enabled (every ${Math.round(intervalMs / 1000)}s · lease-gated)`);
   }
 
   // VeriFactu retry scheduler: re-submit registros in "retrying" once their
@@ -8718,29 +8601,47 @@ if (entryFile === argFile) {
   // Disable with VERIFACTU_SCHEDULER_DISABLED=true.
   if (schedulerLeader && process.env.VERIFACTU_SCHEDULER_DISABLED !== "true") {
     const intervalMs = Number(process.env.VERIFACTU_SCHEDULER_INTERVAL_MS ?? 2 * 60 * 1000);
+    const verifactuTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      const r = await runDueVerifactuRetries();
+      if (r.due > 0 || r.reconciled > 0) app.log.info({ verifactu: r }, "[verifactu.scheduler] tick");
+    };
     const verifactuTimer = setInterval(() => {
-      void runDueVerifactuRetries()
-        .then((r) => {
-          if (r.due > 0 || r.reconciled > 0) app.log.info({ verifactu: r }, "[verifactu.scheduler] tick");
-        })
-        .catch((error) => app.log.error({ err: error }, "[verifactu.scheduler] failed"));
+      void verifactuTick().catch((error) => app.log.error({ err: error }, "[verifactu.scheduler] failed"));
     }, intervalMs);
     verifactuTimer.unref();
-    app.log.info(`[verifactu.scheduler] enabled (every ${Math.round(intervalMs / 1000)}s)`);
+    app.log.info(`[verifactu.scheduler] enabled (every ${Math.round(intervalMs / 1000)}s · lease-gated)`);
   }
 
   // Rate grid v2 · channel delivery drain: batches queued ChannelDelivery rows
   // per channel, calls the adapter (simulator in stub/sandbox) with retries and
   // backoff, and marks sent/confirmed/rejected so the editor shows the state per
-  // cell. Disable with CHANNEL_DRAIN_DISABLED=true.
+  // cell. Disable with CHANNEL_DRAIN_DISABLED=true. Tanda L2 (L2-02): the tick
+  // runs here (drainChannelDeliveries, same anti-overlap as the module's
+  // starter) so the lease gate precedes every drain like the other schedulers.
   if (schedulerLeader && process.env.CHANNEL_DRAIN_DISABLED !== "true") {
-    const channelDrain = startChannelDeliveryDrain({ log: app.log });
+    const drainIntervalMs = readChannelEnv().drainIntervalMs;
+    let draining = false;
+    const drainTick = async () => {
+      if (draining) return;
+      if (!(await holdsSchedulerLease())) return;
+      draining = true;
+      try {
+        await drainChannelDeliveries({}, { log: app.log });
+      } finally {
+        draining = false;
+      }
+    };
+    const drainTimer = setInterval(() => {
+      void drainTick().catch((error) => app.log.error({ err: error }, "[channel.drain] failed"));
+    }, drainIntervalMs);
+    drainTimer.unref();
     // The instance is already listening here, so no Fastify hooks: stop the
     // interval on process shutdown like the other in-process schedulers.
     for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.once(signal, () => channelDrain.stop());
+      process.once(signal, () => clearInterval(drainTimer));
     }
-    app.log.info("[channel.drain] enabled");
+    app.log.info({ intervalMs: drainIntervalMs }, "[channel.drain] enabled (lease-gated)");
   }
 
   // Revenue pace scheduler: capture a daily OTB snapshot per property so PACE has
@@ -8749,25 +8650,25 @@ if (entryFile === argFile) {
   // PACE_SCHEDULER_DISABLED=true.
   if (schedulerLeader && process.env.PACE_SCHEDULER_DISABLED !== "true") {
     const dayMs = 24 * 60 * 60 * 1000;
-    const runCapture = () =>
-      void capturePaceSnapshotsForAllProperties()
-        .then((r) => {
-          // QC-06: per-property failures are no longer swallowed inside the
-          // loop; the service reports them and the tick escalates to warn.
-          if (r.failed.length > 0) app.log.warn({ pace: r }, "[pace.scheduler] tick with failed properties");
-          else app.log.info({ pace: r }, "[pace.scheduler] tick");
-        })
-        // Night-audit writer (H&F contract §5): after the OTB capture, upsert
-        // yesterday's top-level RevenueDailySnapshot per property from real
-        // reservations (dataSource "night_audit") so the audited history feeds
-        // itself without the seed. Idempotent per (property, date).
-        .then(() => writeYesterdayDailySnapshotsForAllProperties())
-        .then((s) => app.log.info({ nightAudit: s }, "[pace.scheduler] daily snapshot upsert"))
-        .catch((error) => app.log.error({ err: error }, "[pace.scheduler] failed"));
+    const paceTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      const r = await capturePaceSnapshotsForAllProperties();
+      // QC-06: per-property failures are no longer swallowed inside the
+      // loop; the service reports them and the tick escalates to warn.
+      if (r.failed.length > 0) app.log.warn({ pace: r }, "[pace.scheduler] tick with failed properties");
+      else app.log.info({ pace: r }, "[pace.scheduler] tick");
+      // Night-audit writer (H&F contract §5): after the OTB capture, upsert
+      // yesterday's top-level RevenueDailySnapshot per property from real
+      // reservations (dataSource "night_audit") so the audited history feeds
+      // itself without the seed. Idempotent per (property, date).
+      const s = await writeYesterdayDailySnapshotsForAllProperties();
+      app.log.info({ nightAudit: s }, "[pace.scheduler] daily snapshot upsert");
+    };
+    const runCapture = () => void paceTick().catch((error) => app.log.error({ err: error }, "[pace.scheduler] failed"));
     runCapture();
     const paceTimer = setInterval(runCapture, dayMs);
     paceTimer.unref();
-    app.log.info("[pace.scheduler] enabled (daily · pace + night-audit snapshot)");
+    app.log.info("[pace.scheduler] enabled (daily · pace + night-audit snapshot · lease-gated)");
   }
 
   // Tanda 6b (R6, fix t6b#13): the End-of-Day schedulers below run over HOTELS
@@ -8791,6 +8692,7 @@ if (entryFile === argFile) {
     const dayMs = 24 * 60 * 60 * 1000;
     const runRelease = async () => {
       try {
+        if (!(await holdsSchedulerLease())) return;
         const properties = await listSchedulerHotels();
         let totalReleasedDays = 0;
         let totalReleasedRooms = 0;
@@ -8814,7 +8716,7 @@ if (entryFile === argFile) {
     void runRelease();
     const releaseTimer = setInterval(() => void runRelease(), dayMs);
     releaseTimer.unref();
-    app.log.info("[allotment.release.scheduler] enabled (daily · auto-release cupos B2B)");
+    app.log.info("[allotment.release.scheduler] enabled (daily · auto-release cupos B2B · lease-gated)");
   }
 
   // Group cut-off scheduler · daily routine that auto-releases group blocks past
@@ -8825,6 +8727,7 @@ if (entryFile === argFile) {
     const dayMs = 24 * 60 * 60 * 1000;
     const runCutoff = async () => {
       try {
+        if (!(await holdsSchedulerLease())) return;
         const properties = await listSchedulerHotels();
         let total = 0;
         for (const p of properties) {
@@ -8839,7 +8742,7 @@ if (entryFile === argFile) {
     void runCutoff();
     const timer = setInterval(() => void runCutoff(), dayMs);
     timer.unref();
-    app.log.info("[group.cutoff.scheduler] enabled (daily · auto-release grupos vencidos)");
+    app.log.info("[group.cutoff.scheduler] enabled (daily · auto-release grupos vencidos · lease-gated)");
   }
 
   // Mailbox poller: read connected Gmail/Microsoft mailboxes, AI-extract bookings
@@ -8847,26 +8750,41 @@ if (entryFile === argFile) {
   // Disable with MAILBOX_POLL_DISABLED=true.
   if (schedulerLeader && process.env.MAILBOX_POLL_DISABLED !== "true") {
     const intervalMs = Number(process.env.MAILBOX_POLL_INTERVAL_MS ?? 5 * 60 * 1000);
+    const mailboxTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      const r = await pollAllEmailConnections(demoStore.userContext);
+      // QC-06: a mailbox that fails to poll (expired token, provider down)
+      // is reported by id; lastError is already persisted on the connection.
+      if (r.failed.length > 0) app.log.warn({ mailbox: r }, "[mailbox.poll] tick with failed connections");
+      else if (r.processed > 0) app.log.info({ mailbox: r }, "[mailbox.poll] tick");
+    };
     const mailboxTimer = setInterval(() => {
-      void pollAllEmailConnections(demoStore.userContext)
-        .then((r) => {
-          // QC-06: a mailbox that fails to poll (expired token, provider down)
-          // is reported by id; lastError is already persisted on the connection.
-          if (r.failed.length > 0) app.log.warn({ mailbox: r }, "[mailbox.poll] tick with failed connections");
-          else if (r.processed > 0) app.log.info({ mailbox: r }, "[mailbox.poll] tick");
-        })
-        .catch((error) => app.log.error({ err: error }, "[mailbox.poll] failed"));
+      void mailboxTick().catch((error) => app.log.error({ err: error }, "[mailbox.poll] failed"));
     }, intervalMs);
     mailboxTimer.unref();
-    app.log.info(`[mailbox.poll] enabled (every ${Math.round(intervalMs / 1000)}s)`);
+    app.log.info(`[mailbox.poll] enabled (every ${Math.round(intervalMs / 1000)}s · lease-gated)`);
   }
 
   // OPERA Cloud · modo sombra (Tanda 7b · L3): job del líder — OPERA_FEED_LATE por
   // feed programado sin fichero y cierre de runs `processing` interrumpidos; cada
   // vuelta bajo pg_try_advisory_xact_lock('pms_shadow.job'). Vive aquí porque
   // apps/worker no depende de @hotelos/api. Disable with PMS_SHADOW_JOB_DISABLED=true.
+  // Tanda L2 (L2-02): el arranque del módulo (anti-solape + log + runNow, fijado
+  // por pms-shadow-routes.test.mts) conserva la cadencia, pero su temporizador
+  // propio se detiene y lo sustituye uno que exige el lease en cada vuelta.
   if (schedulerLeader && process.env.PMS_SHADOW_JOB_DISABLED !== "true") {
-    const job = startPmsShadowJob({ log: app.log, intervalMs: Number(process.env.PMS_SHADOW_JOB_INTERVAL_MS ?? 15 * 60 * 1000) });
+    const pmsShadowIntervalMs = Number(process.env.PMS_SHADOW_JOB_INTERVAL_MS ?? 15 * 60 * 1000);
+    const pmsShadow = startPmsShadowJob({ log: app.log, intervalMs: Number(process.env.PMS_SHADOW_JOB_INTERVAL_MS ?? 15 * 60 * 1000) });
+    pmsShadow.stop();
+    const pmsShadowTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      await pmsShadow.runNow();
+    };
+    const pmsShadowTimer = setInterval(() => {
+      void pmsShadowTick().catch((error) => app.log.error({ err: error }, "[pms-shadow.job] failed"));
+    }, pmsShadowIntervalMs);
+    pmsShadowTimer.unref();
+    const job = { stop: () => clearInterval(pmsShadowTimer) };
     process.once("SIGTERM", job.stop);
     process.once("SIGINT", job.stop);
   }

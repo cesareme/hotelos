@@ -774,37 +774,43 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
 
   // Seed module entitlements (best-effort: any unknown moduleCode is skipped
   // rather than failing the entire creation flow).
-  for (const moduleCode of input.modulesEnabled) {
-    let moduleRow = await prisma.module.findUnique({ where: { code: moduleCode } });
+  // Tanda L2 (L2-06): a fixed number of queries whatever the module count —
+  // one lookup of the `modules` rows, one createMany for the codes missing
+  // there, one createMany + one updateMany for the property entitlements —
+  // instead of findUnique + upsert + upsert per module.
+  const requestedCodes = Array.from(new Set(input.modulesEnabled));
+  if (requestedCodes.length > 0) {
+    const knownModules = await prisma.module.findMany({ where: { code: { in: requestedCodes } }, select: { id: true, code: true } });
+    const knownCodes = new Set(knownModules.map((m) => m.code));
     // Auditoría 2026-07: la tabla `modules` puede estar vacía (el catálogo vive
     // en @hotelos/product y el seed base no lo puebla) — antes el `continue`
     // descartaba TODOS los módulos del alta en silencio. Materializar la fila
-    // desde el manifest canónico cuando el código exista allí.
-    if (!moduleRow) {
-      const manifest = HOTEL_MODULES.find((m) => m.code === moduleCode);
-      if (!manifest) continue; // código desconocido: no inventar filas
-      moduleRow = await prisma.module.upsert({
-        where: { code: moduleCode },
-        update: {},
-        create: {
-          code: manifest.code,
-          name: manifest.name,
-          description: manifest.description,
-          category: manifest.category,
-          isCore: manifest.isCore
-        }
+    // desde el manifest canónico cuando el código exista allí (un código
+    // desconocido no inventa filas).
+    const missingManifests = requestedCodes
+      .filter((code) => !knownCodes.has(code))
+      .map((code) => HOTEL_MODULES.find((m) => m.code === code))
+      .filter((manifest): manifest is NonNullable<typeof manifest> => manifest !== undefined);
+    if (missingManifests.length > 0) {
+      await prisma.module.createMany({
+        data: missingManifests.map((manifest) => ({ code: manifest.code, name: manifest.name, description: manifest.description, category: manifest.category, isCore: manifest.isCore })),
+        skipDuplicates: true
       });
     }
-    await prisma.propertyModule.upsert({
-      where: { propertyId_moduleId: { propertyId: persisted.property.id, moduleId: moduleRow.id } },
-      update: { status: "enabled", enabledAt: new Date(), disabledAt: null },
-      create: {
-        propertyId: persisted.property.id,
-        moduleId: moduleRow.id,
-        status: "enabled",
-        enabledAt: new Date()
-      }
-    });
+    const moduleRows = missingManifests.length > 0
+      ? await prisma.module.findMany({ where: { code: { in: requestedCodes } }, select: { id: true, code: true } })
+      : knownModules;
+    if (moduleRows.length > 0) {
+      const enabledAt = new Date();
+      await prisma.propertyModule.createMany({
+        data: moduleRows.map((moduleRow) => ({ propertyId: persisted.property.id, moduleId: moduleRow.id, status: "enabled", enabledAt })),
+        skipDuplicates: true
+      });
+      await prisma.propertyModule.updateMany({
+        where: { propertyId: persisted.property.id, moduleId: { in: moduleRows.map((moduleRow) => moduleRow.id) } },
+        data: { status: "enabled", enabledAt, disabledAt: null }
+      });
+    }
   }
 
   // Per-property settings (PropertyAiSetting + PropertyComplianceSetting,
@@ -1042,19 +1048,23 @@ export async function toggleTenantModule(input: {
   // the organization level is the platform-admin view; per-property overrides
   // are reserved for the in-tenant module management UI.
   const now = new Date();
-  for (const property of properties) {
-    await prisma.propertyModule.upsert({
-      where: { propertyId_moduleId: { propertyId: property.id, moduleId: moduleRow.id } },
-      update: enabled
-        ? { status: "enabled", enabledAt: now, disabledAt: null }
-        : { status: "disabled", disabledAt: now },
-      create: {
+  // Tanda L2 (L2-06): one createMany (rows that did not exist, same values the
+  // upsert's `create` wrote) + one updateMany (same `update` values, applied to
+  // every property) instead of one upsert per property.
+  if (properties.length > 0) {
+    await prisma.propertyModule.createMany({
+      data: properties.map((property) => ({
         propertyId: property.id,
         moduleId: moduleRow.id,
         status: enabled ? "enabled" : "disabled",
         enabledAt: enabled ? now : null,
         disabledAt: enabled ? null : now
-      }
+      })),
+      skipDuplicates: true
+    });
+    await prisma.propertyModule.updateMany({
+      where: { propertyId: { in: properties.map((property) => property.id) }, moduleId: moduleRow.id },
+      data: enabled ? { status: "enabled", enabledAt: now, disabledAt: null } : { status: "disabled", disabledAt: now }
     });
   }
 

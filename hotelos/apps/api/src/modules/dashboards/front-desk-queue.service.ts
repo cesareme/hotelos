@@ -34,6 +34,7 @@
 // cuántos items mostrar.
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
 
 // ===========================================================================
@@ -100,6 +101,8 @@ export type FrontDeskQueueResult = {
     soon: number;
     total: number;
   };
+  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_orders"). */
+  degraded: string[];
 };
 
 // ===========================================================================
@@ -163,6 +166,7 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
   // ----------------------------------------------------------------------
   // Carga base: llegadas, salidas, in-house, habitaciones, guests, work orders.
   // ----------------------------------------------------------------------
+  const { safe, degraded } = createDegradedCollector("dashboards.front-desk-queue", { propertyId });
   const [arrivalsToday, departuresToday, inHouseAll, allRooms, openWorkOrders] = await Promise.all([
     prisma.reservation.findMany({
       where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["confirmed", "checked_in", "no_show"] } },
@@ -179,12 +183,17 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
       take
     }),
     prisma.room.findMany({ where: { propertyId, active: true }, take: Math.max(take, 500) }),
-    // Work orders — usamos la tabla genérica si existe. Fallback: lista vacía.
-    prisma.workOrder.findMany({
-      where: { propertyId, status: { in: ["open", "in_progress"] } },
-      orderBy: { createdAt: "asc" },
-      take
-    }).catch(() => [])
+    // Work orders. Tanda L2 (L2-06): a failed query is logged and reported in
+    // `degraded[]` (was `.catch(() => [])`: a broken table looked like «sin incidencias»).
+    safe(
+      "work_orders",
+      prisma.workOrder.findMany({
+        where: { propertyId, status: { in: ["open", "in_progress"] } },
+        orderBy: { createdAt: "asc" },
+        take
+      }),
+      []
+    )
   ]);
 
   // Map de habitaciones por id (para resolver número, housekeeping status).
@@ -548,5 +557,5 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
     total: items.length
   };
 
-  return { generatedAt: now.toISOString(), items, counts, summary };
+  return { generatedAt: now.toISOString(), items, counts, summary, degraded };
 }

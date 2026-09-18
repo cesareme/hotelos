@@ -30,14 +30,18 @@ describe("Offline sync contract", () => {
     }
   });
 
-  it("persists offline sync records and audit events", () => {
+  it("persists offline sync records (Prisma) and audit events", () => {
     const service = readFileSync(new URL("../apps/api/src/modules/offline/offline.service.ts", import.meta.url), "utf8");
     const store = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", import.meta.url), "utf8");
     const schema = readFileSync(new URL("../packages/database/prisma/schema.prisma", import.meta.url), "utf8");
 
     assert.match(service, /OFFLINE_ACTION_SYNCED/);
     assert.match(service, /OFFLINE_ACTION_REJECTED/);
-    assert.match(store, /offlineSyncRecords/);
+    // Tanda L2 (L2-04/L2-08): the records live in Prisma (organizationId +
+    // propertyId); the in-memory demoStore.offlineSyncRecords leg was retired.
+    assert.match(service, /prisma\.offlineSyncRecord\.create\(/);
+    assert.match(service, /prisma\.offlineSyncRecord\.findMany\(/);
+    assert.doesNotMatch(store, /\n  offlineSyncRecords: /);
     assert.match(schema, /@@map\("offline_sync_records"\)/);
   });
 

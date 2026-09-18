@@ -13,7 +13,7 @@ API edge permissions are declared in `apps/api/src/security/route-permissions.ts
 - The manifest is additive to service-level validation; backend tools still validate business rules, property scope, confirmations, and audit events.
 - `PUT` is an accepted verb (Tanda 3): it is used for idempotent overrides such as `PUT /backoffice/properties/:propertyId/taxes/rates` and fails closed like any other mutation when unmapped.
 - Forced password rotation (Tanda 3 · CFG-P1-6): a session opened with a temporary password (`User.mustChangePassword`) may only call the routes in `PASSWORD_CHANGE_ALLOWLIST` (`apps/api/src/lib/auth-context.ts`: change-password, password-policy, `/users/me/*`, sessions). Any other route answers `403` with `details.code = "PASSWORD_CHANGE_REQUIRED"`; the front redirects to the change-password screen. Public routes and unknown paths (404) are not gated.
-- Read keys (Tanda 5 · L1b · api-side): a `GET` never requires a write key. The families that used to be gated by `folio.charge.post` or `compliance.ses.submit` now carry their own read key — `folio.read` (`GET /folios/:id/balance`, `GET /reservations/:id/folios`, `GET /reservations/:id/routing-rules`), `pos.read` (`GET /properties/:propertyId/pos/outlets|tickets|cash-summary`), `tourist_tax.read` (`GET /tourist-tax/rates`, `GET /properties/:propertyId/tourist-tax/applications`), `billing.compliance.view` (`GET /properties/:propertyId/verifactu|tbai|igic/submissions`, `GET /verifactu|tbai|igic/submissions/:id`, `GET /invoices/:id/verifactu`) and `guest_register.read` (`GET /properties/:propertyId/guest-register-records`, `GET /properties/:propertyId/compliance/inbox`, `GET /properties/:propertyId/ses-hospedajes/submissions`, `GET /properties/:propertyId/ses/submissions`, `GET /ses/submissions/:id`). The catalogue has 215 keys; the templates that open those screens (manager, receptionist, accountant, compliance, fnb) received the read keys additively (`docs/runbooks/rbac-sync.md`). `GET /developer/keyboard-shortcuts` was removed: the shortcut sheet reads `content/help-articles/keyboard-shortcuts.ts`.
+- Read keys (Tanda 5 · L1b · api-side): a `GET` never requires a write key. The families that used to be gated by `folio.charge.post` or `compliance.ses.submit` now carry their own read key — `folio.read` (`GET /folios/:id/balance`, `GET /reservations/:id/folios`, `GET /reservations/:id/routing-rules`), `pos.read` (`GET /properties/:propertyId/pos/outlets|tickets|cash-summary`), `tourist_tax.read` (`GET /tourist-tax/rates`, `GET /properties/:propertyId/tourist-tax/applications`), `billing.compliance.view` (`GET /properties/:propertyId/verifactu|tbai|igic/submissions`, `GET /verifactu|tbai|igic/submissions/:id`, `GET /invoices/:id/verifactu`) and `guest_register.read` (`GET /properties/:propertyId/guest-register-records`, `GET /properties/:propertyId/compliance/inbox`, `GET /properties/:propertyId/ses/submissions`, `GET /ses/submissions/:id`). The catalogue has 215 keys; the templates that open those screens (manager, receptionist, accountant, compliance, fnb) received the read keys additively (`docs/runbooks/rbac-sync.md`). `GET /developer/keyboard-shortcuts` was removed: the shortcut sheet reads `content/help-articles/keyboard-shortcuts.ts`.
 - Boot policy (Tanda 3 · VeriFactu): `resolveVerifactuSoftware()` validates the `SistemaInformatico` block (producer NIF, `IdSistemaInformatico`, version, installation number). With `VERIFACTU_MODE` other than `sandbox` an invalid block aborts the boot (`process.exit(1)`, like AUTH-04); in sandbox it only logs a warning. `GET /health` exposes it as `checks.verifactu.software = { ok, errors }`. Estructura societaria (Tanda 6b, 2026-09-16): the `NumeroInstalacion` of every record now comes from `verifactu_installations` — the declared installation of the centre (`LegalEntity.verifactuChainScope = per_center`) or of the sociedad (`per_entity`) — and `VERIFACTU_INSTALL_NUMBER` is only the **sandbox** fallback; in `preproduction` / `production` a centre without an active installation leaves its submissions `retrying` with `errorCode = INSTALLATION_NOT_DECLARED` (never the env). The boot check of the env block is unchanged (deployment contract).
 
 ## RBAC por departamento, nivel y ámbito (Tanda 8a · L1)
@@ -85,16 +85,16 @@ Additional app-shell and security endpoints:
 - `GET /users/me` (Tanda 5 · L1a): the signed-in user — `{ userId, email, fullName, organizationId, organizationName, activePropertyId, permissions, grantedPermissions, isPlatformAdmin, mustChangePassword, templateKeys, properties[] }`. `properties[]` lists every property the user is assigned to with `roles[] { id, name, templateKey }` and the distinct `templateKeys` (ROLE_TEMPLATE_KEYS order); `templateKeys` at the top level is the active property's. `permissions` is the effective session set (demo union in dev), `grantedPermissions` the real role grants of the active property — the navigation derives its role tokens (`apps/admin-web/src/navigation/role-tokens.ts`) and its permission filter from them. No permission required; served during the forced password rotation.
 - `GET /users/me/properties`
 - `GET /properties`
-- `GET /notifications`
-- `POST /notifications/:id/read`
+- `GET /notifications` (Tanda L2 · L2-04): filas de Prisma `notifications` del usuario **y** de su organización (`Notification.organizationId`, columna NOT NULL añadida por la migración `20260918130000_persistencia_l2` y rellenada desde `properties`; el escritor la pasa siempre), las 200 más recientes por `createdAt`; ya no se sirven desde memoria. Una fila con el mismo `userId` en otra organización nunca aparece.
+- `POST /notifications/:id/read`: solo la notificación del propio usuario dentro de su organización; cualquier otra responde 404 opaco.
 - `GET /settings/security`
 
 Sensitive roles require MFA policy coverage: owner, manager, accountant, and admin. Session revocation and device registration write audit events.
 
 ## Offline Sync
 
-- `POST /offline/sync`
-- `GET /properties/:propertyId/offline-sync-records`
+- `POST /offline/sync` (`ai.tool.execute`): cuerpo `{ propertyId, deviceId, actions[] }`. Tanda L2 (L2-04): cada acción aceptada, rechazada o en conflicto se persiste en Prisma `offline_sync_records` con `organizationId` (columna NOT NULL de la migración `20260918130000_persistencia_l2`) y `propertyId`; la propiedad del lote debe pertenecer a la organización del usuario y estar en su ámbito (404 opaco «Propiedad no encontrada.» antes de escribir nada). Respuesta `{ accepted, rejected, conflicts, results[] }`.
+- `GET /properties/:propertyId/offline-sync-records` (`ai.tool.execute`): las 200 filas más recientes de la propiedad, filtradas por su organización (404 opaco fuera del ámbito).
 
 Allowed offline action types:
 
@@ -354,16 +354,15 @@ Capex approval requires `asset.capex.approve`. Room profitability rolls up reser
 - `POST /guest-register-records/:id/sign`
 - `PATCH /guest-register-records/:id/correct`
 - `POST /guest-register-records/:id/queue-ses`
-- `GET /properties/:propertyId/ses-hospedajes/submissions` (`guest_register.read`)
 - `GET /ses/submissions/:id` (`guest_register.read`)
-- `PATCH /ses-hospedajes/submissions/:id/status`
+- Envíos SES.HOSPEDAJES — familia canónica única (Tanda L2 · L2-02): `GET /properties/:propertyId/ses/submissions` (abajo), `POST /properties/:propertyId/ses/submissions` (`compliance.ses.submit`), `POST /ses/submissions/:id/retry` (`compliance.ses.submit`), lotes `POST /compliance/ses-hospedajes/properties/:propertyId/batches/generate`, `POST …/batches/:batchId/submit`, `GET …/batches/:batchId/download`, `POST …/batches/:batchId/mark-manually-uploaded` y `POST /compliance/ses-hospedajes/properties/:propertyId/test-connection`. Retiradas en L2-02 (404): la familia F1 `/compliance/authority/properties/:propertyId/inbox|submissions`, `/compliance/authority/submissions/:submissionId(/retry)` y la F2 en memoria `GET /properties/:propertyId/ses-hospedajes/submissions` + `PATCH /ses-hospedajes/submissions/:id/status`.
 - `GET /properties/:propertyId/verifactu/submissions`, `GET /properties/:propertyId/tbai/submissions`, `GET /properties/:propertyId/igic/submissions` and `GET /verifactu|tbai|igic/submissions/:id` (`billing.compliance.view`) — authority submissions of the property (the `tbai` list used to require `compliance.configure`). Tanda 6b: VeriFactu rows carry `installationId` (the `verifactu_installations` row the record was chained under) and `software.numeroInstalacion`; `errorCode` may be `INSTALLATION_NOT_DECLARED` (real mode, no active installation) or `VERIFACTU_EXCLUDED_BY_SII` (record retired because the sociedad joined the SII).
 - `GET /properties/:propertyId/ses/submissions` (Prisma pipeline, `guest_register.read`): cursor-paginated history of what was sent to the MIR — bare array by default, `{ items, nextCursor, total }` with `?cursor=` / `?envelope=1`, `X-Total-Count` / `X-Next-Cursor` headers always, optional `?status=` filter.
 - `GET /properties/:propertyId/ses/establishment` (`guest_register.read`): `{ ok, missing[], establishment: { registryNumber, taxId, legalName, address, municipality, municipalityCode, province, postalCode, country } }` — the block the SES XML carries, resolved from the property, its sociedad (`taxId` and `legalName` come from `resolveIssuerIdentity` → `LegalEntity`, never `Property.legalName`) and the compliance settings, never from environment defaults.
 - `POST /properties/:propertyId/ses/submissions` answers `409` with `details.code = "SES_ESTABLISHMENT_INCOMPLETE"` and the same `missing` list when the establishment profile is incomplete.
 - `GET /audit-events`
-- `GET /events`
-- `GET /ai/tool-calls`
+- `GET /events` (`audit.read`, Tanda L2 · L2-02): lee `event_stream` (Prisma) de la organización del usuario y, con `x-property-id` / ámbito de hotel, solo de esas propiedades; array plano por defecto o `{ items, total, nextCursor }` con `?envelope=1`, `?limit` (100, máx. 500) y `?cursor` (createdAt + eventId, orden descendente); cabeceras `X-Total-Count` / `X-Next-Cursor`. Cada fila es la de `event_stream` con `id` como alias de `eventId` (`eventType`, `entityType`, `entityId`, `payload`, `organizationId`, `propertyId`, `actorType`, `actorUserId`, `correlationId`, `createdAt`). Ya no existe el espejo en memoria.
+- `GET /ai/tool-calls` (`audit.read`, Tanda L2 · L2-02/L2-04): lee `ai_tool_calls` (Prisma) con el mismo ámbito, envelope y cursor (createdAt + id). Fila: `{ id, organizationId, propertyId, userId, conversationId, toolName, inputJson, outputJson, confidence, requiredConfirmation, confirmedBy, status, model, latencyMs, tokensInput, tokensOutput, costEur, errorMessage, automationLevel, createdAt }`. `POST /ai/commands/scan-id-document` (`ai.tool.execute`) persiste una fila por llamada aunque no haya proveedor de IA (`status: skipped`, respuesta 200 `{ configured: false, fields: {}, source: "manual", message }`); las confirmaciones HITL del check-in viven en `ai_pending_confirmations` (`POST /ai/confirmations/:confirmationId/execute` → 404 «Confirmación no encontrada.» con id inexistente, caducada o de otra organización).
 
 Guest register records retain required extracted fields and signature references, not ID images. Failed SES records can be corrected and requeued with audit events.
 
@@ -375,15 +374,15 @@ Guest register records retain required extracted fields and signature references
 - `GET /backoffice/properties/:propertyId/readiness`
 - `POST /backoffice/properties/:propertyId/readiness/recalculate`
 - `POST /backoffice/properties/:propertyId/go-live`
+
+Persistencia (Tanda L2 · L2-04): los pasos de puesta en marcha (`property_setup_steps`), los checks de preparación (`property_readiness_checks`), la salud por módulo (`module_health_checks`, que viaja dentro de `GET …/modules`), las opciones de categorías (`property_category_options` + traducciones, catálogo `category_definitions`), los envíos de la configuración manual (`manual_setup_submissions`: `GET …/manual-setup/options`, `GET|POST …/manual-setup/:optionCode`) y los formularios de configuración (`property_setup_form_submissions`: `listPropertySetupForms` / `savePropertySetupForm`) se leen y escriben en Prisma (`modules/backoffice/setup.store.ts`); el reinicio del API no pierde ninguna pantalla del menú y el demoStore ya no conserva espejos de estas tablas.
 - `GET /backoffice/properties/:propertyId/map`
 - `POST /backoffice/properties/:propertyId/buildings`
 - `POST /backoffice/properties/:propertyId/floors`
 - `POST /backoffice/properties/:propertyId/zones`
 - `POST /backoffice/properties/:propertyId/spaces`
-- `POST /backoffice/properties/:propertyId/map-positions`
 - `POST /backoffice/properties/:propertyId/rooms/bulk`
 - `PATCH /backoffice/properties/:propertyId/rooms/bulk`
-- `GET /backoffice/properties/:propertyId/property-map/export`
 - `GET /backoffice/properties/:propertyId/room-types`
 - `POST /backoffice/properties/:propertyId/room-types`
 - `PATCH /backoffice/properties/:propertyId/room-types/:roomTypeId`
@@ -394,15 +393,12 @@ Guest register records retain required extracted fields and signature references
 - `POST /backoffice/properties/:propertyId/room-features`
 - `GET /backoffice/properties/:propertyId/bed-types`
 - `POST /backoffice/properties/:propertyId/bed-types`
-- `POST /backoffice/properties/:propertyId/imports/property-map/preview`
-- `POST /backoffice/properties/:propertyId/imports/property-map/commit`
-- `GET /backoffice/properties/:propertyId/imports/:importId`
+- `GET /backoffice/properties/:propertyId/imports/:importId` (`property.import`; las importaciones nuevas del mapa entran por `POST /properties/:propertyId/mapper/apply`, `rooms.manage`)
 - `GET /backoffice/properties/:propertyId/modules`
 - `PATCH /backoffice/properties/:propertyId/modules/:moduleCode`
 - `GET /backoffice/properties/:propertyId/modules/:moduleCode/configuration`
 - `PATCH /backoffice/properties/:propertyId/modules/:moduleCode/configuration`
-- `GET /backoffice/properties/:propertyId/modules/:moduleCode/health`
-- `POST /backoffice/properties/:propertyId/modules/:moduleCode/recalculate-health`
+- `POST /backoffice/properties/:propertyId/modules/:moduleCode/recalculate-health` (la salud se lee en `GET …/modules`; `GET …/modules/:moduleCode/health` retirada en L2-02)
 - `GET /backoffice/properties/:propertyId/departments`
 - `POST /backoffice/properties/:propertyId/departments`
 - `POST /backoffice/properties/:propertyId/departments/:departmentId/users`
@@ -434,17 +430,70 @@ Guest register records retain required extracted fields and signature references
 - `PATCH /backoffice/properties/:propertyId/accounting-settings`
 - `GET /backoffice/properties/:propertyId/ai-settings`
 - `PATCH /backoffice/properties/:propertyId/ai-settings`
-- `GET /backoffice/properties/:propertyId/ai/suggestions`
-- `POST /backoffice/properties/:propertyId/ai/suggestions`
-- `POST /backoffice/properties/:propertyId/ai/suggestions/:suggestionId/apply`
 - `GET /backoffice/properties/:propertyId/templates`
 - `POST /backoffice/properties/:propertyId/templates`
 - `PATCH /backoffice/properties/:propertyId/templates/:templateId`
-- `POST /backoffice/properties/:propertyId/qr-codes`
-- `GET /backoffice/properties/:propertyId/qr-codes`
-- `POST /backoffice/properties/:propertyId/qr-codes/bulk`
 - `GET /backoffice/properties/:propertyId/audit`
 
 Back Office routes are permission-protected by `backoffice.access`, `property.configure`, `property.map.manage`, `property.import`, `property.go_live`, module, integration, compliance, billing, accounting, AI, template, and audit permissions. Every mutating Back Office route writes an audit event. Readiness checks with blocking severity prevent go-live approval.
 
-Back Office AI suggestions are preview-first. `POST /backoffice/properties/:propertyId/ai/suggestions` stores a proposed change set, and `POST /backoffice/properties/:propertyId/ai/suggestions/:suggestionId/apply` applies only a previewed suggestion after confirmation. AI cannot apply Back Office changes without preview and confirmation.
+Rutas de Back Office retiradas en la Tanda L2 (L2-02, memoria sin consumidor; responden 404): `POST …/map-positions`, `GET …/property-map/export`, `POST …/imports/property-map/preview`, `POST …/imports/property-map/commit`, `GET …/modules/:moduleCode/health`, `GET|POST …/ai/suggestions`, `POST …/ai/suggestions/:suggestionId/apply`, `POST|GET …/qr-codes` y `POST …/qr-codes/bulk`. Las sugerencias IA de Back Office (vista previa + confirmación) se reconstruirán sobre el asistente único de L6 con `ai_tool_calls`; hasta entonces no existe ruta.
+
+## Tanda L2 · Persistencia y API (2026-09-18)
+
+Fuente: `docs/audits/TANDA-5-PLAN-2026-09-15.md` §3 fila L2. Principio: funcional = persiste en Postgres, responde 2xx/4xx tipado y lo que la pantalla ofrece existe en el API. Toda consulta filtra por `organizationId` y, en recursos de hotel, por `propertyId` dentro del ámbito del usuario; fuera del ámbito → 404 opaco «Propiedad no encontrada.»; sin clave → 403 «No tienes permiso para realizar esta acción (requiere: …)». El manifiesto tiene **935 entradas** = rutas registradas (`tests/api-route-permissions-contract.test.mjs`).
+
+### Rutas retiradas (82, L2-02; todas responden 404 «Not Found», nunca el 403 del manifiesto)
+
+| Familia | Rutas | Motivo |
+|---|---|---|
+| Gobernanza IA duplicada `/ai-governance/*` | 15 (`policies`, `prompts`, `tools`, `evaluations(/:id/run)`, `human-review`, `incidents` y sus PATCH/POST) | duplicado de `/ai-operations/governance/*` (canónica: `policies`, `prompts`, `evaluations`, `incidents`, `cost`) |
+| Webhooks del desarrollador `/developer/webhooks*` | 5 (`GET`, `POST`, `PATCH /:id`, `GET /:id/deliveries`, `POST /:id/test`) + `GET /developer/apps/:id/usage` | duplicado de `/webhooks/subscriptions*` (canónica, `developer.manage_webhooks`) |
+| Recomendaciones sin propiedad `/revenue/recommendations/:recommendationId/apply|approve|reject` | 3 | canónica A: `POST /revenue/properties/:propertyId/recommendations/:id/apply|approve|reject` (`modules/revenue/recommendations.routes.ts`) |
+| Motor en memoria sin tabla | `GET /revenue/properties/:propertyId/dashboard|metrics|channel-profitability|automation-rules|scenarios`, `GET /revenue/scenarios/:scenarioId`, `POST …/scenarios/simulate`, `POST …/automation-rules`, `PATCH /revenue/automation-rules/:ruleId`, `POST …/enable|disable`, `history-forecast/saved-views` (3), `/crm/profiles(/:id)`, `/crm/duplicates`, `POST /crm/profiles/:id/merge`, `/procurement/suppliers` (2), `/inventory/properties/:propertyId/items|stock|stock-counts|stock-movements` (5), `/energy|sustainability|analytics|reputation/properties/:propertyId/dashboard|report`, `POST /analytics/query`, `/workforce/properties/:propertyId/labor-costs|labor-forecast`, `GET /advanced/properties/:propertyId/modules/:moduleCode/health`, `POST /reputation/reviews/:id/ai-draft-response`, `POST /groups/:id/create-reservations` | tablas retiradas en L2-01 (`revenue_scenarios`, `revenue_automation_rules`, `revenue_report_views`…) o rutas que solo servían memoria sin pantalla en el menú; el inventario A&B vive en `/properties/:propertyId/inventory-items|stock-locations|stock-movements|stock-balances` |
+| Portal del huésped y autoservicio | `POST /guest-portal/session/:token/check-in|check-out|invoice-request|upsells/:offerId/purchase`, `GET …/upsells`, `GET|PATCH /guest-self-service/properties/:propertyId/settings` | scaffolds sin backend real (L7 decide) |
+| Envíos a autoridad duplicados | F1 `/compliance/authority/*` (4) y F2 `ses-hospedajes/submissions` (2) | canónica F3 `/properties/:propertyId/ses/submissions` + lotes + `test-connection` (ver Compliance) |
+| Back Office en memoria | 10 (mapa, importación de mapa, salud por módulo, sugerencias IA, códigos QR) | ver «Back Office» |
+
+Consumidores: ningún front (`apps/admin-web`, `apps/guest-web`, `apps/mobile`, `apps/worker`) llama a una ruta retirada (`tests/integration/l2-rutas-api.test.mts` y el build del front lo comprueban). Los servicios que solo servían a esas rutas conservan su función exportada marcada `@deprecated L2` (backoffice.service.ts, compliance.service.ts) y `lib/tenancy.ts` mantiene los resolvers stub `revenueAutomationRule` / `revenueScenario` (`resolve: async () => null`, `@deprecated`), a retirar en la tanda siguiente.
+
+### Motor genérico por familia (L2-03) — Prisma-only, tabla propia
+
+`listAdvancedRecords` / `createAdvancedRecord` / `transitionAdvancedRecord` (`modules/advanced/advanced-modules.service.ts`) despachan por clave `${moduleCode}:${recordType}` a una función por tabla en `modules/advanced/advanced-record-store.ts` (`select` explícito, `organizationId` + `propertyId` en cada consulta, auditoría en cada escritura). Corrector L2: (a) las rutas por id (`PATCH /workforce/shifts|absences/:id`, `PATCH /quality/cases/:id`, `PATCH /safety/incidents/:id`, `POST /events/:id/generate-beo`, `POST /surveys/:id/responses`, `POST /safety/incidents/:id/evidence`, `POST /safety/checks/:id/results`) ejecutan en la propiedad de la FILA resuelta por `assertPropertyEntityAccess` (la cabecera `x-property-id` no manda: un usuario con acceso a A y B edita la entidad de B con la cabecera A y recibe 200, no 404); (b) en las rutas hijas el padre es el id del path (`surveyId`, `incidentId`, `safetyCheckId`, `eventId`): un cuerpo sin él ya no responde 400 y un id distinto en el cuerpo se ignora; (c) la organización de toda escritura es la de la propiedad (Prisma), nunca la del contexto del llamante (un administrador de plataforma sobre otro tenant ya no crea filas huérfanas). Requisito: módulo activado en la propiedad (`property_modules`; 403 «El módulo X no está activado en esta propiedad.»); tipo desconocido → 400. Listas: `{ propertyId, moduleCode, recordType, items, total, nextCursor }` con `?limit` (100, máx. 500) y `?cursor`; cabeceras `X-Total-Count` / `X-Next-Cursor`.
+
+| Módulo (`moduleCode`) | Rutas | Tabla(s) Prisma | Claves | Transiciones |
+|---|---|---|---|---|
+| `workforce_labor` | `GET /workforce/properties/:propertyId/schedule`, `POST …/shifts`, `PATCH /workforce/shifts/:id`, `POST /workforce/time-clock/clock-in|clock-out`, `GET …/time-clock`, `POST /workforce/absences`, `PATCH /workforce/absences/:id` | `shifts`, `time_clock_entries`, `absence_requests` | `workforce.read`, `workforce.schedule.manage`, `workforce.timeclock.use` | `shift` (updated), `absence_request` |
+| `safety_incident_management` | `GET|POST /safety/properties/:propertyId/incidents`, `PATCH /safety/incidents/:id`, `POST /safety/incidents/:id/evidence`, `GET|POST …/checks`, `POST /safety/checks/:id/results` | `safety_incidents`, `incident_evidence`, `safety_checks`, `safety_check_results` | `incidents.read|manage`, `safety_checks.read|manage` | `safety_incident` |
+| `reputation_quality` | `GET /reputation/properties/:propertyId/reviews`, `POST /reputation/reviews/:id/respond`, `GET|POST /quality/properties/:propertyId/cases`, `PATCH /quality/cases/:id`, `GET|POST /surveys/properties/:propertyId`, `POST /surveys/:id/responses` | `guest_reviews`, `quality_cases`, `surveys`, `survey_responses` | `reputation.*`, `quality_cases.manage`, `surveys.manage` | `quality_case`, `guest_review` (responded) |
+| `guest_data_crm_loyalty` | `GET|POST /crm/segments`, `PATCH /crm/segments/:id`, `GET|POST /crm/campaigns`, `PATCH /crm/campaigns/:id`, `GET /crm/loyalty`, `POST /crm/loyalty/programs`, `PATCH /crm/loyalty/memberships/:id` (propiedad por `x-property-id`) | `crm_segments`, `crm_campaigns`, `loyalty_programs`, `loyalty_memberships` | `crm.read`, `crm.manage_profiles|campaigns|loyalty` | `crm_segment`, `crm_campaign`, `loyalty_membership` |
+| `groups_events_sales` | `GET /events/properties/:propertyId/calendar` (+ espacios, eventos y grupos con servicio propio) | `events`, `event_orders` | `events.*`, `groups.*` | — |
+| `procurement_inventory` | `GET|POST /procurement/properties/:propertyId/purchase-orders`, `POST /procurement/purchase-orders/:id/approve|receive` | `purchase_orders`, `purchase_order_lines` | `purchase_orders.create|approve|receive` | `purchase_order` |
+| `energy_sustainability` | `GET|POST /energy/properties/:propertyId/meters`, `POST …/readings`, `POST /sustainability/properties/:propertyId/actions` | `utility_meters`, `utility_readings`, `sustainability_actions` | `energy.read|manage`, `sustainability.report` | — |
+| `hotel_intelligence_platform` | `GET /analytics/properties/:propertyId/metrics`, `POST /analytics/metrics`, `GET …/anomalies`, `PATCH /analytics/anomalies/:id`, `GET|POST …/reports` | `metric_definitions`, `anomaly_events`, `scheduled_reports` | `metrics.manage`, `analytics.configure|read` | `anomaly_event` |
+
+### Plataforma, worker y schedulers (L2-02 · L2-07)
+
+- `GET /admin/worker/job-runs` (`admin.tenants.manage` **y** `requirePlatformAdmin`): ejecuciones durables del worker (`worker_job_runs`, con `organizationId` / `propertyId` opcionales desde L2-04), filtros `?jobName`, `?status`, `?limit` (50, máx. 200; query `.strict()`), respuesta `{ items, total, limit }` + `X-Total-Count`. Un administrador de organización (plantilla `admin`) recibe 403.
+- Líder de schedulers: una sola instancia ejecuta los schedulers (`RUN_SCHEDULERS=true`) y la sostiene un lease en `scheduler_leases` (`lib/scheduler-leader.ts`); `GET /health` lo expone en `checks.schedulers` (`leader (RUN_SCHEDULERS · lease held by this|another instance)` / `no live lease` / `disabled on this instance`) y en `schedulers: { leader, held, thisInstance, expiresAt }` sin adquirirlo nunca. `/health` es pública: el `holder_id` del lease (`hostname:pid` del líder) no se expone (corrector L2, SEC-L2-06).
+- Retención de `worker_job_runs` (corrector L2, DP-06): cada tick escribe un run aunque no haya trabajo (≈3.300 filas/día con los cuatro crons); tras cada tick, como mucho una vez por hora y por cola, el worker borra por `jobName` los runs `completed` de más de `WORKER_JOB_RUN_RETENTION_DAYS` (7) días y los `failed` de más de 4× esa retención (`jobs/job-runs.ts · pruneJobRuns`); nunca toca otro `jobName` (las remesas SEPA `treasury.sepa_remittance` comparten la tabla) ni los runs `running`.
+- Worker (`apps/worker`, pg-boss con `schema: "pgboss"`): 4 colas reales — `notifications.scheduled`, `notifications.retry`, `notifications.sending-sweep`, `webhooks.deliver` — y cada ejecución escribe `worker_job_runs`; el catálogo de 88 nombres «completed sin hacer nada» se retiró. `corepack pnpm --filter @hotelos/worker test` (18 casos).
+
+### Tablas (L2-01, migración `20260918130000_persistencia_l2`)
+
+| Estado | Tablas | Motivo |
+|---|---|---|
+| Retiradas (18, 0 filas, sin lector ni escritor) | `onboarding_migration_batch_records`, `onboarding_migration_batches`, `onboarding_mapping_suggestions`, `onboarding_extracted_entities`, `onboarding_files`, `onboarding_source_connections`, `ai_onboarding_runs`, `room_feature_assignments`, `room_beds`, `reservation_resources`, `property_map_positions`, `property_imports`, `backoffice_ai_suggestions`, `revenue_report_views`, `revenue_scenarios`, `revenue_automation_rules`, `api_usage_logs`, `module_dependencies` | sin consumidor en ningún front, sin filas en Faranda ni org_123, fuera de todo flujo fiscal; cada DROP va precedido de la comprobación de tabla vacía |
+| Nuevas (2) | `scheduler_leases`, `ai_pending_confirmations` | líder de schedulers; confirmaciones HITL del check-in (antes `demoStore.pendingConfirmations`) |
+| Cableadas (escritor y lector reales) | `notifications` (+`organization_id`), `offline_sync_records` (+`organization_id`), `worker_job_runs` (+`organization_id`, `property_id`), `ai_tool_calls`, `property_setup_steps`, `property_readiness_checks`, `module_health_checks`, `manual_setup_submissions`, `property_setup_form_submissions`, `property_category_options`, `guest_portal_actions` (llaves móviles `mkey_<serial>`), ajustes SES / registro de viajeros (`compliance.service.ts`), las 25 tablas propias del motor genérico (`advanced-record-store.ts`) | rutas del menú sobre Prisma (L2-03 / L2-04) |
+| Conservadas con motivo | `onboarding_projects` (resolver `onboardingProject` de tenancy.ts), `invoice_sequences.year` protegido con CHECK en vez de NOT NULL (el cliente sigue `Int?`) | consumidores vivos |
+
+Índices únicos parciales (14, §7 de la migración; en Postgres NULL ≠ NULL, así que el unique de Prisma no protegía las filas de nivel superior / de organización): `revenue_daily_snapshots_top_level_key`, `revenue_forecast_snapshots_top_level_key`, `forecast_accuracy_no_segment_key`, `fiscal_periods_organization_key`, `fiscal_years_organization_key`, `payroll_periods_organization_key`, `notification_templates_organization_key`, `user_role_assignments_live_property_key`, `user_role_assignments_live_property_group_key`, `user_role_assignments_live_legal_entity_key`, `user_role_assignments_live_organization_key`, `exchange_rates_global_key`, `esrs_indicators_organization_key`, `app_installations_organization_key`.
+
+### Listas, N+1 y catches (L2-05 · L2-06)
+
+Listas consumidas por el front con >200 filas potenciales llevan `take` y cursor con envelope `{ items, total, nextCursor }` (`lib/pagination.ts`); los 17 bucles N+1 pasaron a consulta agregada con resultado idéntico. Ningún `catch` en runtime traga en silencio: los servicios de KPI pasan por `createDegradedCollector` (`lib/degraded.ts`, 15 ficheros: dashboards, `/search`, `POST /copilot/ask`…) y nombran en `degraded: string[]` (campo ADITIVO) la consulta que falló; el money-path lanza errores tipados (`details.code = ACCOUNTING_LINK_FAILED` con `correlationId` en `accounting/projection.ts`; un P2025 simulado deja la proyección `posted` y solo avisa).
+
+### Tests de integración por módulo (L2-08)
+
+`tests/integration/l2-modulos-{operaciones,comercial,plataforma,ia,cumplimiento}.test.mts`: 26 módulos × ≥ 3 casos (79 casos) sobre organizaciones aisladas (`helpers/l2-tenant.mts`, `RBAC_STRICT=true`, sin unión demo): (1) crear/leer con ámbito y fila en Prisma con `organizationId` / `propertyId`, (2) 403 sin clave con mensaje en español (nunca el del manifiesto), (3) 404 opaco en propiedad ajena (recepción de A sobre el hotel B; organización B sobre A). Módulos: housekeeping, maintenance, assets, allotment, fnb-inventory, cancellation-policy, mapper · sales, guests, messaging, guest-portal, marketplace, webhooks, advanced · admin-console, gdpr, esrs, reporting, search, offline, mobile-keys · ai, assistant, copilot · tbai, tourist-tax (dashboards: `l2-robustez.test.mts`). Llaves móviles (corrector L2, SEC-L2-01): el resolver `mobileKey` de `lib/tenancy.ts` lee la fila `mkey_<serial>` de `guest_portal_actions` (antes una tabla inexistente → 500 en verify/revoke) y `POST /mobile-keys/:serial/revoke` revoca solo en la propiedad resuelta por el guard (`revokeWalletPass` filtra por `propertyId`); el caso de verify/revoke ya se ejecuta (22/22 en `l2-modulos-plataforma`).

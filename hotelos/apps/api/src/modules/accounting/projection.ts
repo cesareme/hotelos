@@ -67,6 +67,66 @@ import type { ProjectionFailureView, ProjectionStatusView, ReplayItemView, Repla
 const D = Prisma.Decimal;
 
 // ---------------------------------------------------------------------------
+// Document ↔ asiento link (Tanda L2 · L2-06)
+// ---------------------------------------------------------------------------
+//
+// After the engine posts an asiento, the source document (Payment, PosOrder)
+// is stamped with `journalEntryId`. That stamp used to be `.catch(() =>
+// undefined)`: a failed UPDATE left a posted asiento with no back-link and
+// nobody knew. Money path, so now: the failure is logged with the correlation
+// id, the source key and the asiento id, and re-thrown as a typed HttpError
+// 500 (`details.code = "ACCOUNTING_LINK_FAILED"`) — the projection queue
+// retries it and records ACCOUNTING_PROJECTION_FAILED, the replay reports the
+// document as `failed`, a caller's transaction rolls back. Two Prisma errors
+// are idempotent by nature and only WARN: P2025 (the document row disappeared
+// between the post and the link — the asiento stands, there is nothing left to
+// stamp) and P2002 (a concurrent writer already linked the same row).
+
+const PROJECTION_SCOPE = "accounting.projection";
+
+type LinkRef = {
+  sourceType: string;
+  sourceId: string;
+  journalEntryId: string;
+  organizationId: string;
+  propertyId: string | null;
+  correlationId?: string;
+};
+
+function prismaErrorCode(error: unknown): string | null {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" ? code : null;
+}
+
+function describeError(error: unknown): { name: string; message: string; code: string | null } {
+  return error instanceof Error
+    ? { name: error.name, message: error.message, code: prismaErrorCode(error) }
+    : { name: "Error", message: String(error), code: prismaErrorCode(error) };
+}
+
+async function linkDocumentToEntry(link: Promise<unknown>, ref: LinkRef): Promise<void> {
+  try {
+    await link;
+  } catch (error) {
+    const code = prismaErrorCode(error);
+    const fields = { scope: PROJECTION_SCOPE, correlationId: ref.correlationId ?? null, organizationId: ref.organizationId, propertyId: ref.propertyId, sourceType: ref.sourceType, sourceId: ref.sourceId, journalEntryId: ref.journalEntryId, err: describeError(error) };
+    if (code === "P2025" || code === "P2002") {
+      // Idempotent: the row is gone (P2025) or already linked by someone else (P2002); the asiento is posted and consistent.
+      console.warn(`[${PROJECTION_SCOPE}] document→entry link skipped (${code}, idempotent)`, fields);
+      return;
+    }
+    console.error(`[${PROJECTION_SCOPE}] document→entry link failed`, fields);
+    throw new HttpError(500, "No se pudo enlazar el documento con su asiento contable.", false, {
+      code: "ACCOUNTING_LINK_FAILED",
+      sourceType: ref.sourceType,
+      sourceId: ref.sourceId,
+      journalEntryId: ref.journalEntryId,
+      ...(ref.correlationId ? { correlationId: ref.correlationId } : {})
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Queue with retries and recorded failures
 // ---------------------------------------------------------------------------
 
@@ -366,7 +426,10 @@ export async function postInvoiceIssuance(input: { invoiceId: string; actorUserI
     const cashSale = buildInvoiceEntry(doc);
     const posted = await postRuleEntry(cashSale, doc, input.actorUserId ?? null, input.correlationId, input.tx);
     if (posted.created && doc.settledInAct.posOrderId) {
-      await client.posOrder.updateMany({ where: { id: doc.settledInAct.posOrderId, journalEntryId: null }, data: { journalEntryId: posted.id } }).catch(() => undefined);
+      await linkDocumentToEntry(
+        client.posOrder.updateMany({ where: { id: doc.settledInAct.posOrderId, journalEntryId: null }, data: { journalEntryId: posted.id } }),
+        { sourceType: cashSale.sourceType, sourceId: cashSale.sourceId, journalEntryId: posted.id, organizationId: doc.organizationId, propertyId: doc.propertyId, correlationId: input.correlationId }
+      );
     }
     return outcomeOf([posted], cashSale.warnings);
   }
@@ -489,7 +552,10 @@ export async function postPaymentCapture(input: { paymentId: string; actorUserId
   });
   const posted = await postRuleEntry(entry, { organizationId: property.organizationId, propertyId: row.propertyId }, input.actorUserId ?? null, input.correlationId, input.tx);
   if (posted.created && !row.journalEntryId) {
-    await (input.tx ?? prisma).payment.update({ where: { id: row.id }, data: { journalEntryId: posted.id } }).catch(() => undefined);
+    await linkDocumentToEntry(
+      (input.tx ?? prisma).payment.update({ where: { id: row.id }, data: { journalEntryId: posted.id } }),
+      { sourceType: entry.sourceType, sourceId: entry.sourceId, journalEntryId: posted.id, organizationId: property.organizationId, propertyId: row.propertyId, correlationId: input.correlationId }
+    );
   }
   return outcomeOf([posted], entry.warnings);
 }
@@ -542,10 +608,24 @@ export async function postPaymentRefund(input: { paymentId: string; refundId?: s
 
 const FNB_LINE_TYPE = "minibar";
 
-async function outletTypeOf(propertyId: string, outletId: string): Promise<string | null> {
+/**
+ * Outlet type of a TPV ticket: it decides the revenue account (705.2 for F&B
+ * outlets). Tanda L2 (L2-06): the lookup used to be `.catch(() => null)`, so a
+ * storage failure quietly booked the sale to the generic account. Now the
+ * failure is logged with the ticket and correlation id and re-thrown as a
+ * typed 500 (`ACCOUNTING_LOOKUP_FAILED`): the queue retries, the replay
+ * reports the ticket as `failed`. An outlet that simply does not exist keeps
+ * resolving to null (generic account), as before.
+ */
+async function outletTypeOf(propertyId: string, outletId: string, ref: { orderId: string; correlationId?: string }): Promise<string | null> {
   if (outletId.startsWith("out_")) return outletId.slice(4);
-  const outlet = await prisma.outlet.findUnique({ where: { id: outletId }, select: { outletType: true } }).catch(() => null);
-  return outlet?.outletType ?? null;
+  try {
+    const outlet = await prisma.outlet.findUnique({ where: { id: outletId, propertyId }, select: { outletType: true } });
+    return outlet?.outletType ?? null;
+  } catch (error) {
+    console.error(`[${PROJECTION_SCOPE}] outlet lookup failed`, { scope: PROJECTION_SCOPE, correlationId: ref.correlationId ?? null, propertyId, outletId, sourceType: "pos_ticket", sourceId: ref.orderId, err: describeError(error) });
+    throw new HttpError(500, "No se pudo resolver el punto de venta del ticket.", false, { code: "ACCOUNTING_LOOKUP_FAILED", sourceType: "pos_ticket", sourceId: ref.orderId, outletId, ...(ref.correlationId ? { correlationId: ref.correlationId } : {}) });
+  }
 }
 
 export async function postPosTicket(input: { orderId: string; actorUserId?: string | null; correlationId?: string; tx?: Prisma.TransactionClient }): Promise<ProjectionOutcome> {
@@ -556,7 +636,7 @@ export async function postPosTicket(input: { orderId: string; actorUserId?: stri
   const property = await propertyInfo(row.propertyId);
   const closedAt = row.closedAt ?? row.updatedAt;
   const entryDate = row.businessDate ? isoDay(row.businessDate) : localDateInTz(closedAt, property.timezone);
-  const outletType = await outletTypeOf(row.propertyId, row.outletId);
+  const outletType = await outletTypeOf(row.propertyId, row.outletId, { orderId: row.id, correlationId: input.correlationId });
   const category = posRevenueAccount(outletType) === "705.2" ? "food_beverage" : "general_services";
   const resolved = await resolveTaxRate({ propertyId: row.propertyId, lineType: FNB_LINE_TYPE, taxCategory: category, postingDate: closedAt });
   const invoice = row.invoiceId ? await client.invoice.findUnique({ where: { id: row.invoiceId }, select: { invoiceNumber: true } }) : null;
@@ -576,7 +656,10 @@ export async function postPosTicket(input: { orderId: string; actorUserId?: stri
   });
   const posted = await postRuleEntry(entry, { organizationId: property.organizationId, propertyId: row.propertyId }, input.actorUserId ?? null, input.correlationId, input.tx);
   if (posted.created && !row.journalEntryId) {
-    await client.posOrder.update({ where: { id: row.id }, data: { journalEntryId: posted.id } }).catch(() => undefined);
+    await linkDocumentToEntry(
+      client.posOrder.update({ where: { id: row.id }, data: { journalEntryId: posted.id } }),
+      { sourceType: entry.sourceType, sourceId: entry.sourceId, journalEntryId: posted.id, organizationId: property.organizationId, propertyId: row.propertyId, correlationId: input.correlationId }
+    );
   }
   return outcomeOf([posted], entry.warnings);
 }
@@ -792,7 +875,7 @@ async function posCandidates(organizationId: string, propertyIds: string[], time
           const outcome = await postPosTicket({ orderId: row.id, actorUserId: actor, correlationId });
           return { entries: await Promise.all(outcome.journalEntryIds.map((id) => postedView(organizationId, id))), warnings: outcome.warnings };
         }
-        const outletType = await outletTypeOf(row.propertyId, row.outletId);
+        const outletType = await outletTypeOf(row.propertyId, row.outletId, { orderId: row.id, correlationId });
         const category = posRevenueAccount(outletType) === "705.2" ? "food_beverage" : "general_services";
         const resolved = await resolveTaxRate({ propertyId: row.propertyId, lineType: FNB_LINE_TYPE, taxCategory: category, postingDate: row.closedAt ?? row.updatedAt });
         const taxTotal = new D(row.taxTotal);

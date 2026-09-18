@@ -32,6 +32,7 @@ import type { FiscalModelReport } from "@hotelos/shared/src/fiscal-types.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { BadRequestError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
+import { pageHeaders, parsePageQuery } from "../../lib/pagination.js";
 import { requireYear } from "../../lib/query-dates.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { buildModelo111 } from "./modelo-111.service.js";
@@ -40,7 +41,7 @@ import { buildModelo180 } from "./modelo-180.service.js";
 import { buildModelo303 } from "./modelo-303.service.js";
 import { buildModelo347 } from "./modelo-347.service.js";
 import { buildFiscalRegimeReport, buildModelo390 } from "./modelo-390.service.js";
-import { getVatSettings, listVatBook, parseFiscalPeriod, rebuildVatBooks, updateVatSettings } from "./vat-books.service.js";
+import { VAT_BOOK_PAGE_LIMIT, getVatSettings, listVatBook, parseFiscalPeriod, rebuildVatBooks, updateVatSettings } from "./vat-books.service.js";
 import { previewVatSettlement, reverseVatSettlement, settleVatPeriod, type LedgerEngine } from "./vat-settlement.service.js";
 
 export type FiscalRouteDeps = {
@@ -61,13 +62,21 @@ const vatSettingsPatchSchema = z
   })
   .strict();
 
+// Tanda L2 (L2-05): the book is a keyset page on (date, id) — `limit` ≤ 500
+// (default 500: VatBooksScreen sends `book` + `period` and reads `rows`),
+// `cursor` opaque; `period` OR `from`+`to` is mandatory (typed 400). The body
+// keeps the object the front reads (`rows`, `resumen`, `origen`, `avisos`,
+// `periodo`) plus `total` and `nextCursor`; X-Total-Count / X-Next-Cursor go
+// in the headers.
 const vatBooksQuerySchema = z
   .object({
     book: z.enum(["emitidas", "recibidas", "bienes_inversion"]),
     period: z.string().min(4).max(10).optional(),
     from: isoDay.optional(),
     to: isoDay.optional(),
-    propertyId: z.string().min(1).optional()
+    propertyId: z.string().min(1).optional(),
+    limit: z.string().optional(),
+    cursor: z.string().optional()
   })
   .strict();
 
@@ -158,9 +167,18 @@ export function registerFiscalRoutes(app: FastifyInstance, deps: FiscalRouteDeps
     return buildFiscalRegimeReport({ context: request.userContext, year: requireYear(q.year) });
   });
 
-  app.get("/fiscal/vat-books", async (request) => {
-    const q = parseOr400(vatBooksQuerySchema, query(request), "query");
-    return listVatBook({ context: request.userContext, book: q.book, period: q.period, from: q.from, to: q.to, propertyId: q.propertyId ?? null });
+  app.get("/fiscal/vat-books", async (request, reply) => {
+    const raw = query(request);
+    const q = parseOr400(vatBooksQuerySchema, raw, "query");
+    if (!q.period && !(q.from && q.to)) {
+      const error = new BadRequestError("Indica period (2026-Q3 · 2026-09 · 2026) o from y to (YYYY-MM-DD).");
+      error.details = { code: "VALIDATION_ERROR", issues: [{ path: "period", message: "period o from+to son obligatorios." }] };
+      throw error;
+    }
+    const page = parsePageQuery(raw, { limit: VAT_BOOK_PAGE_LIMIT, max: VAT_BOOK_PAGE_LIMIT });
+    const book = await listVatBook({ context: request.userContext, book: q.book, period: q.period, from: q.from, to: q.to, propertyId: q.propertyId ?? null, limit: page.limit, cursor: page.cursor });
+    reply.headers(pageHeaders({ items: book.rows, total: book.total, nextCursor: book.nextCursor }));
+    return book;
   });
 
   app.post("/fiscal/vat-books/rebuild", async (request) => {

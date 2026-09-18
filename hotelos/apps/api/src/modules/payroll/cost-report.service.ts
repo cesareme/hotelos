@@ -438,6 +438,14 @@ async function loadLedgerSales(db: Db, organizationId: string, propertyIds: read
     .map((row) => ({ propertyId: row.property_id, periodCode: row.period_code, netSales: dec(row.net_sales) }));
 }
 
+/**
+ * Cota explícita de las líneas del informe (L2-05): ≤ 24 meses × centros ×
+ * grupos × departamentos; un lote admite PAYROLL_COST_IMPORT_MAX_ROWS filas y
+ * un mes solo tiene un lote contabilizado por centro, así que la cota nunca
+ * corta un informe real. Si se alcanzase, el informe lo dice en `warnings`.
+ */
+export const PAYROLL_COST_REPORT_MAX_LINES = 50_000;
+
 export async function buildPayrollCostReport(input: { context: UserContext; organizationId?: string; from: string; to: string; propertyId?: string | null; group?: PayrollCostGroup | null; db?: Db }): Promise<PayrollCostReport> {
   requireAnyPermission(input.context, PAYROLL_READ_KEYS);
   const db = input.db ?? prisma;
@@ -468,13 +476,20 @@ export async function buildPayrollCostReport(input: { context: UserContext; orga
   const lineRows = propertyIds.length
     ? await db.payrollCostLine.findMany({
         where: { organizationId, propertyId: { in: propertyIds }, periodCode: { in: months }, import: { status: "posted" } },
-        select: { importId: true, propertyId: true, periodCode: true, costGroup: true, usaliDepartment: true, gross: true, employerSs: true, totalCost: true, reportedTotalCost: true, headcount: true }
+        select: { importId: true, propertyId: true, periodCode: true, costGroup: true, usaliDepartment: true, gross: true, employerSs: true, totalCost: true, reportedTotalCost: true, headcount: true },
+        take: PAYROLL_COST_REPORT_MAX_LINES
       })
     : [];
+  const warnings: string[] = [];
+  if (lineRows.length >= PAYROLL_COST_REPORT_MAX_LINES) {
+    warnings.push(`El informe supera ${PAYROLL_COST_REPORT_MAX_LINES} líneas de coste: se calcula con las primeras ${PAYROLL_COST_REPORT_MAX_LINES}; acota el rango o filtra por centro.`);
+  }
+  // Una referencia por celda (centro × mes) contabilizada: la cota es exacta.
   const referenceRows = propertyIds.length
     ? await db.payrollCostReference.findMany({
         where: { organizationId, propertyId: { in: propertyIds }, periodCode: { in: months }, import: { status: "posted" } },
-        select: { propertyId: true, periodCode: true, employeesReported: true, roomsAvailableReported: true, netSalesReported: true, import: { select: { postedAt: true } } }
+        select: { propertyId: true, periodCode: true, employeesReported: true, roomsAvailableReported: true, netSalesReported: true, import: { select: { postedAt: true } } },
+        take: Math.max(1, propertyIds.length * months.length)
       })
     : [];
   const ledgerSales = await loadLedgerSales(db, organizationId, propertyIds, months);
@@ -497,6 +512,6 @@ export async function buildPayrollCostReport(input: { context: UserContext; orga
     propertyId: input.propertyId ?? null,
     imports: importRows.map((row) => ({ importId: row.id, fileName: row.fileName ?? null, periodFrom: row.periodFrom, periodTo: row.periodTo, postedAt: row.postedAt ? row.postedAt.toISOString() : null })),
     generatedAt: new Date().toISOString(),
-    warnings: []
+    warnings
   });
 }

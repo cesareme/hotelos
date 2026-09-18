@@ -27,6 +27,7 @@
 // servicios de modules/accounting/import/; aquí solo se valida la frontera y se enruta.
 
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { BadRequestError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
 import { assertEntityAccess } from "../../lib/tenancy.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
@@ -59,6 +60,11 @@ import {
 import { getReconciliation, listReconciliations, reconcileLedger, reconciliationCsv } from "./import/ledger-reconciliation.service.js";
 
 type IdParams = { id: string };
+
+/** L2-05: el detalle pagina por desplazamiento (`offset`/`limit`); un `cursor` (de otra ruta) responde el 400 canónico de paginación. */
+function rejectCursor(raw: Record<string, unknown>): void {
+  if (raw.cursor !== undefined) throw new BadRequestError("El cursor de paginación no es válido.");
+}
 
 /** Cuerpos de hasta 30 MiB (28 MiB de base64 + JSON) y 30 subidas por minuto en las tres rutas de carga. */
 const UPLOAD_OPTIONS = { bodyLimit: 30 * 1024 * 1024, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } };
@@ -139,11 +145,18 @@ export function registerLedgerImportRoutes(app: FastifyInstance): void {
   });
 
   // ---- Un lote: detalle, contabilizar un borrador y reverso entero ----------
-  app.get("/accounting/ledger-imports/:id", async (request) => {
+  // Detalle: `entries` (y `balances` en un lote balances) paginadas con el mismo ?offset=&limit=; X-Total-Count = entradas,
+  // X-Balance-Total = saldos (Tanda L2 · L2-05).
+  app.get("/accounting/ledger-imports/:id", async (request, reply) => {
     const { id } = request.params as IdParams;
     await assertEntityAccess(request, { entity: "ledgerImport", id });
-    const query = parseOr400(DetailQuerySchema, request.query ?? {}, "query");
-    return getLedgerImport({ context: request.userContext, importId: id, query });
+    const raw = (request.query ?? {}) as Record<string, unknown>;
+    rejectCursor(raw);
+    const query = parseOr400(DetailQuerySchema, raw, "query");
+    const detail = await getLedgerImport({ context: request.userContext, importId: id, query });
+    reply.header("X-Total-Count", String(detail.entryTotal));
+    if (detail.balanceTotal !== undefined) reply.header("X-Balance-Total", String(detail.balanceTotal));
+    return detail;
   });
 
   app.post("/accounting/ledger-imports/:id/post", async (request) => {

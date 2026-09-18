@@ -65,6 +65,10 @@ import type {
   PayrollCostUsaliDepartment
 } from "@hotelos/shared";
 import { PAYROLL_COST_IMPORT_MAX_CELLS, PAYROLL_COST_IMPORT_MAX_MONTHS, PAYROLL_COST_IMPORT_MAX_ROWS } from "@hotelos/shared";
+
+/** GET /payroll/cost-imports/:id (Tanda L2 · L2-05): página de `lines` por offset, como el detalle de ledger-imports. */
+export const PAYROLL_COST_DETAIL_DEFAULT_LIMIT = 500;
+export const PAYROLL_COST_DETAIL_MAX_LIMIT = 2_000;
 import type { UserContext } from "../../lib/demo-store.js";
 import { assertFinanceReadScopeMany, propertyWithinScope, resolveLedgerScope } from "../../lib/finance-scope.js";
 import { NotFoundError } from "../../lib/http-error.js";
@@ -234,7 +238,9 @@ async function importCells(db: Db, importIds: readonly string[]): Promise<Map<st
     where: { importId: { in: [...importIds] } },
     select: { importId: true, propertyId: true, periodCode: true },
     distinct: ["importId", "propertyId", "periodCode"],
-    orderBy: [{ periodCode: "asc" }, { propertyId: "asc" }]
+    orderBy: [{ periodCode: "asc" }, { propertyId: "asc" }],
+    // Cota explícita (L2-05): un lote admite PAYROLL_COST_IMPORT_MAX_ROWS filas.
+    take: importIds.length * PAYROLL_COST_IMPORT_MAX_ROWS
   });
   for (const row of rows) out.set(row.importId, [...(out.get(row.importId) ?? []), { propertyId: row.propertyId, periodCode: row.periodCode }]);
   return out;
@@ -346,7 +352,9 @@ async function findOverlaps(db: Db, organizationId: string, cells: readonly Cell
       OR: cells.map((cell) => ({ propertyId: cell.propertyId, periodCode: cell.periodCode }))
     },
     select: { importId: true, propertyId: true, periodCode: true },
-    distinct: ["importId", "propertyId", "periodCode"]
+    distinct: ["importId", "propertyId", "periodCode"],
+    // Cota explícita (L2-05): a lo sumo un lote contabilizado por celda, cada uno con ≤ PAYROLL_COST_IMPORT_MAX_ROWS filas.
+    take: cells.length * PAYROLL_COST_IMPORT_MAX_ROWS
   });
   if (lines.length === 0) return [];
   const imports = await db.payrollCostImport.findMany({ where: { id: { in: Array.from(new Set(lines.map((l) => l.importId))) } }, select: { id: true, fileName: true, periodFrom: true, periodTo: true } });
@@ -642,21 +650,36 @@ function referenceDto(reference: ReferenceRow, properties: Map<string, PropertyL
 async function ensureUsaliCostCentres(tx: Prisma.TransactionClient, pairs: ReadonlyArray<{ propertyId: string; usaliDepartment: PayrollCostUsaliDepartment }>, properties: Map<string, PropertyLite>): Promise<{ ids: Map<string, string>; warnings: string[] }> {
   const ids = new Map<string, string>();
   const warnings: string[] = [];
+  // L2-05: precarga de los centros existentes de todas las parejas (una consulta), createMany de los que faltan
+  // (skipDuplicates bajo el lock de la organización) y relectura de sus ids: tres consultas en vez de dos por pareja.
+  const wanted = new Map<string, { propertyId: string; code: string; usaliDepartment: PayrollCostUsaliDepartment }>();
   for (const pair of pairs) {
     const key = `${pair.propertyId}|${pair.usaliDepartment}`;
-    if (ids.has(key)) continue;
-    const code = usaliCostCentreCode(pair.usaliDepartment);
-    const existing = await tx.costCenter.findUnique({ where: { propertyId_code: { propertyId: pair.propertyId, code } }, select: { id: true, type: true, active: true } });
-    if (existing) {
-      if (existing.type !== PAYROLL_COST_CENTRE_TYPE || !existing.active) {
-        const centre = properties.get(pair.propertyId)?.code ?? pair.propertyId;
-        warnings.push(`centro de coste ${code} de ${centre} ya existía (tipo «${existing.type}»${existing.active ? "" : ", inactivo"}) y se reutiliza sin modificarlo: sus apuntes ${existing.type === PAYROLL_COST_CENTRE_TYPE ? "" : "no "}se enrutan al departamento USALI`);
-      }
-      ids.set(key, existing.id);
-      continue;
+    if (!wanted.has(key)) wanted.set(key, { propertyId: pair.propertyId, code: usaliCostCentreCode(pair.usaliDepartment), usaliDepartment: pair.usaliDepartment });
+  }
+  if (wanted.size === 0) return { ids, warnings };
+  const propertyIds = Array.from(new Set(Array.from(wanted.values(), (w) => w.propertyId)));
+  const codes = Array.from(new Set(Array.from(wanted.values(), (w) => w.code)));
+  const select = { id: true, propertyId: true, code: true, type: true, active: true } as const;
+  const existing = await tx.costCenter.findMany({ where: { propertyId: { in: propertyIds }, code: { in: codes } }, select, take: propertyIds.length * codes.length });
+  const byPropertyCode = new Map(existing.map((centre) => [`${centre.propertyId}|${centre.code}`, centre]));
+  const missing = Array.from(wanted.values()).filter((w) => !byPropertyCode.has(`${w.propertyId}|${w.code}`));
+  if (missing.length > 0) {
+    await tx.costCenter.createMany({
+      data: missing.map((w) => ({ propertyId: w.propertyId, code: w.code, name: usaliCostCentreName(w.usaliDepartment), type: PAYROLL_COST_CENTRE_TYPE, active: true })),
+      skipDuplicates: true
+    });
+    const created = await tx.costCenter.findMany({ where: { OR: missing.map((w) => ({ propertyId: w.propertyId, code: w.code })) }, select, take: missing.length });
+    for (const centre of created) byPropertyCode.set(`${centre.propertyId}|${centre.code}`, centre);
+  }
+  for (const [key, w] of wanted) {
+    const centre = byPropertyCode.get(`${w.propertyId}|${w.code}`);
+    if (!centre) throw ledgerConflict("PAYROLL_IMPORT_COST_CENTRE_MISSING", `No se pudo resolver el centro de coste ${w.code} del centro ${w.propertyId}.`, { propertyId: w.propertyId, code: w.code });
+    if (centre.type !== PAYROLL_COST_CENTRE_TYPE || !centre.active) {
+      const label = properties.get(w.propertyId)?.code ?? w.propertyId;
+      warnings.push(`centro de coste ${w.code} de ${label} ya existía (tipo «${centre.type}»${centre.active ? "" : ", inactivo"}) y se reutiliza sin modificarlo: sus apuntes ${centre.type === PAYROLL_COST_CENTRE_TYPE ? "" : "no "}se enrutan al departamento USALI`);
     }
-    const created = await tx.costCenter.create({ data: { propertyId: pair.propertyId, code, name: usaliCostCentreName(pair.usaliDepartment), type: PAYROLL_COST_CENTRE_TYPE, active: true }, select: { id: true } });
-    ids.set(key, created.id);
+    ids.set(key, centre.id);
   }
   return { ids, warnings };
 }
@@ -664,8 +687,8 @@ async function ensureUsaliCostCentres(tx: Prisma.TransactionClient, pairs: Reado
 type PostOutcome = { row: ImportRow; entries: PayrollCostImportEntryDto[]; warnings: string[] };
 
 async function postImportInTx(tx: Prisma.TransactionClient, importRow: ImportRow, input: { createdBy: string | null; properties: Map<string, PropertyLite> }): Promise<PostOutcome> {
-  const lines = await tx.payrollCostLine.findMany({ where: { importId: importRow.id }, orderBy: [{ periodCode: "asc" }, { propertyId: "asc" }, { usaliDepartment: "asc" }] });
-  const references = await tx.payrollCostReference.findMany({ where: { importId: importRow.id } });
+  const lines = await tx.payrollCostLine.findMany({ where: { importId: importRow.id }, orderBy: [{ periodCode: "asc" }, { propertyId: "asc" }, { usaliDepartment: "asc" }], take: PAYROLL_COST_IMPORT_MAX_ROWS });
+  const references = await tx.payrollCostReference.findMany({ where: { importId: importRow.id }, take: PAYROLL_COST_IMPORT_MAX_CELLS });
   const pairs = lines.map((line) => ({ propertyId: line.propertyId, usaliDepartment: line.usaliDepartment as PayrollCostUsaliDepartment }));
   const { ids: costCentres, warnings: costCentreWarnings } = await ensureUsaliCostCentres(tx, pairs, input.properties);
 
@@ -753,9 +776,16 @@ async function reverseImportInTx(tx: Prisma.TransactionClient, importRow: Import
   const reversalIds: string[] = [...importRow.reversalJournalEntryIds];
   const reversals: PayrollCostImportEntryDto[] = [];
   if (importRow.status === "posted") {
+    // L2-05: los asientos del lote en una consulta (antes un findUnique por asiento), filtrada por organización.
+    const entryRows = await tx.journalEntry.findMany({
+      where: { id: { in: [...importRow.journalEntryIds] }, organizationId: importRow.organizationId },
+      select: { id: true, organizationId: true, propertyId: true, entryDate: true, reference: true, status: true, reversedById: true },
+      take: Math.max(1, importRow.journalEntryIds.length)
+    });
+    const entryById = new Map(entryRows.map((entry) => [entry.id, entry]));
     for (const journalEntryId of importRow.journalEntryIds) {
-      const entry = await tx.journalEntry.findUnique({ where: { id: journalEntryId }, select: { id: true, organizationId: true, propertyId: true, entryDate: true, reference: true, status: true, reversedById: true } });
-      if (!entry || entry.organizationId !== importRow.organizationId) continue;
+      const entry = entryById.get(journalEntryId);
+      if (!entry) continue;
       if (entry.reversedById) {
         if (!reversalIds.includes(entry.reversedById)) reversalIds.push(entry.reversedById);
         continue;
@@ -794,9 +824,12 @@ async function reverseImportInTx(tx: Prisma.TransactionClient, importRow: Import
 async function replaceImportsInTx(tx: Prisma.TransactionClient, organizationId: string, importIds: readonly string[], input: { newImportId: string; reversedBy: string | null; properties: Map<string, PropertyLite>; scopeContext: UserContext }): Promise<string[]> {
   const replaced: string[] = [];
   const cells = await importCells(tx, importIds);
+  // L2-05: los lotes a sustituir en una consulta (antes un findUnique por lote), filtrados por organización.
+  const rows = await tx.payrollCostImport.findMany({ where: { id: { in: [...importIds] }, organizationId }, take: Math.max(1, importIds.length) });
+  const rowById = new Map(rows.map((row) => [row.id, row]));
   for (const importId of importIds) {
-    const row = await tx.payrollCostImport.findUnique({ where: { id: importId } });
-    if (!row || row.organizationId !== organizationId || row.status === "reversed") continue;
+    const row = rowById.get(importId);
+    if (!row || row.status === "reversed") continue;
     assertFinanceReadScopeMany(input.scopeContext, propertyIdsOf(cells.get(importId) ?? []));
     await reverseImportInTx(tx, row, { reason: `sustituido por ${input.newImportId}`, reversedBy: input.reversedBy, properties: input.properties });
     replaced.push(importId);
@@ -1115,25 +1148,43 @@ export async function listPayrollCostImports(input: { context: UserContext; quer
     .map(({ row, cells: rowCells }) => toImportRecord(row, rowCells));
 }
 
-export async function getPayrollCostImport(input: { context: UserContext; importId: string }): Promise<PayrollCostImportDetail> {
+/** Detalle del lote (el objeto que lee el front) más la página de líneas: `lines` = `lineOffset` … `lineOffset + lines.length` de `lineTotal`. */
+export type PayrollCostImportDetailPage = PayrollCostImportDetail & { lineTotal: number; lineOffset: number };
+
+const DETAIL_LINE_ORDER = [{ periodCode: "asc" }, { workCenterLabel: "asc" }, { costGroup: "asc" }, { departmentLabel: "asc" }] as const;
+
+export async function getPayrollCostImport(input: { context: UserContext; importId: string; query?: { offset?: number; limit?: number } }): Promise<PayrollCostImportDetailPage> {
   requireAnyPermission(input.context, PAYROLL_READ_KEYS);
   const organizationId = input.context.organizationId;
   const row = await loadImportOrThrow(prisma, organizationId, input.importId);
-  const lines = await prisma.payrollCostLine.findMany({ where: { importId: row.id }, orderBy: [{ periodCode: "asc" }, { workCenterLabel: "asc" }, { costGroup: "asc" }, { departmentLabel: "asc" }] });
   const cells = (await importCells(prisma, [row.id])).get(row.id) ?? [];
   assertFinanceReadScopeMany(input.context, propertyIdsOf(cells));
-  const references = await prisma.payrollCostReference.findMany({ where: { importId: row.id }, orderBy: [{ periodCode: "asc" }, { propertyId: "asc" }] });
+  const limit = Math.min(Math.max(Math.trunc(input.query?.limit ?? PAYROLL_COST_DETAIL_DEFAULT_LIMIT), 1), PAYROLL_COST_DETAIL_MAX_LIMIT);
+  const offset = Math.max(Math.trunc(input.query?.offset ?? 0), 0);
+  // Las celdas centro × mes agregan TODAS las líneas del lote: se leen una vez, acotadas por PAYROLL_COST_IMPORT_MAX_ROWS (el máximo que
+  // admite un lote al importarse), y la página de `lines` sale de esa lectura; solo si el lote superase la cota se pagina en SQL.
+  const [allLines, lineTotal, references] = await Promise.all([
+    prisma.payrollCostLine.findMany({ where: { importId: row.id }, orderBy: [...DETAIL_LINE_ORDER], take: PAYROLL_COST_IMPORT_MAX_ROWS }),
+    prisma.payrollCostLine.count({ where: { importId: row.id } }),
+    prisma.payrollCostReference.findMany({ where: { importId: row.id }, orderBy: [{ periodCode: "asc" }, { propertyId: "asc" }], take: PAYROLL_COST_IMPORT_MAX_CELLS })
+  ]);
+  const lines =
+    allLines.length === lineTotal
+      ? allLines.slice(offset, offset + limit)
+      : await prisma.payrollCostLine.findMany({ where: { importId: row.id }, orderBy: [...DETAIL_LINE_ORDER], skip: offset, take: limit });
   const properties = propertyIndex(await loadProperties(prisma, organizationId));
   const costCentreIds = Array.from(new Set(lines.map((line) => line.costCenterId).filter((id): id is string => Boolean(id))));
-  const costCentres = costCentreIds.length ? await prisma.costCenter.findMany({ where: { id: { in: costCentreIds } }, select: { id: true, code: true } }) : [];
+  const costCentres = costCentreIds.length ? await prisma.costCenter.findMany({ where: { id: { in: costCentreIds } }, select: { id: true, code: true }, take: costCentreIds.length }) : [];
   const costCentreCodes = new Map(costCentres.map((centre) => [centre.id, centre.code]));
   const entries = await entryDtosByIds(prisma, row.journalEntryIds, "entry", properties);
   const reversals = await entryDtosByIds(prisma, row.reversalJournalEntryIds, "reversal", properties);
   return {
     ...toImportRecord(row, cells),
     lines: lines.map((line) => lineDto(line, properties, costCentreCodes)),
+    lineTotal,
+    lineOffset: offset,
     references: references.map((reference) => referenceDto(reference, properties)),
-    byCentreMonth: lineCellSources(lines, references).map((cell) => centreMonthDto(cell, properties)),
+    byCentreMonth: lineCellSources(allLines, references).map((cell) => centreMonthDto(cell, properties)),
     entries,
     reversals
   };

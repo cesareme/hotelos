@@ -28,6 +28,14 @@ import { buildRecommendations, summarizeDayRecommendation } from "./rate-recomme
 const MS_DAY = 86_400_000;
 /** Longest board window (inclusive days); the route and the service both enforce it. */
 export const BOARD_MAX_DAYS = 190;
+// Explicit bounds of the board reads (Tanda L2 · L2-05). The window is
+// ≤ BOARD_MAX_DAYS (typed 400 above it, parseBoardWindow) plus the months
+// outlook / STLY / LY ranges, so these caps never cut a real hotel: they
+// only turn an unbounded scan into a bounded one.
+const BOARD_MAX_RESERVATION_ROWS = 50_000;
+const BOARD_MAX_SNAPSHOT_ROWS = 5_000;
+const BOARD_MAX_FORECAST_ROWS = 50_000;
+const BOARD_MAX_PACE_ROWS = 5_000;
 /** Default window when the query omits from/to: today−7 .. today+90. */
 export const BOARD_DEFAULT_PAST_DAYS = 7;
 export const BOARD_DEFAULT_FUTURE_DAYS = 90;
@@ -364,7 +372,8 @@ export async function getHistoryForecastBoard(
         children: true,
         status: true,
         createdAt: true
-      }
+      },
+      take: BOARD_MAX_RESERVATION_ROWS
     }),
     prisma.revenueDailySnapshot.findMany({
       where: {
@@ -392,7 +401,8 @@ export async function getHistoryForecastBoard(
         adr: true,
         revpar: true,
         occupancyPercent: true
-      }
+      },
+      take: BOARD_MAX_SNAPSHOT_ROWS
     }),
     prisma.revenueForecast.findMany({
       where: { propertyId, forecastDate: { gte: today, lte: extTo } },
@@ -410,13 +420,15 @@ export async function getHistoryForecastBoard(
         confidence: true,
         modelVersion: true,
         driversJson: true
-      }
+      },
+      take: BOARD_MAX_FORECAST_ROWS
     }),
     prisma.revenuePaceSnapshot.findMany({
       where: { propertyId, captureDate: { in: captureDates }, stayDate: { gte: today, lte: extTo } },
-      select: { captureDate: true, stayDate: true, roomsOtb: true, revenueOtb: true }
+      select: { captureDate: true, stayDate: true, roomsOtb: true, revenueOtb: true },
+      take: BOARD_MAX_PACE_ROWS
     }),
-    prisma.budget.findMany({ where: { propertyId, periodMonth: { in: budgetMonths } } })
+    prisma.budget.findMany({ where: { propertyId, periodMonth: { in: budgetMonths } }, take: Math.max(1, budgetMonths.length) })
   ]);
 
   // ---- in-memory maps --------------------------------------------------------
@@ -1125,7 +1137,8 @@ export async function writeDailySnapshot(
       adults: true,
       children: true,
       status: true
-    }
+    },
+    take: BOARD_MAX_RESERVATION_ROWS
   });
 
   let rooms = 0;

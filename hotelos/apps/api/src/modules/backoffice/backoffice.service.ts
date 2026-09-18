@@ -50,6 +50,49 @@ import { assertProfileDoesNotWriteLegalIdentity, codeInUse } from "../structure/
 import { STRUCTURE_CODE_PATTERN } from "@hotelos/shared";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
+import { z } from "zod";
+import { parse } from "../../lib/validate.js";
+// Tanda L2 (L2-04): el gestor de categorías, los campos personalizados y las
+// tablas de puesta en marcha (salud de módulos, pasos, envíos manuales y de
+// formularios) viven en Prisma; el acceso a filas está en categories.store.ts y
+// setup.store.ts, los catálogos y los esquemas zod siguen aquí.
+import {
+  countCustomFieldDefinitions,
+  countPropertyCategoryOptions,
+  createCustomFieldDefinition,
+  createPropertyCategoryOption,
+  findCategoryDefinitionByCode,
+  findCategoryDefinitionById,
+  findCustomFieldDefinition,
+  findPropertyCategoryOption,
+  findPropertyCategoryOptionByCode,
+  listCategoryDefinitions,
+  listCustomFieldDefinitions,
+  listCustomFieldValues,
+  listPropertyCategoryOptions,
+  updateCategoryOptionOrder,
+  updateCustomFieldDefinition,
+  updatePropertyCategoryOption,
+  upsertCustomFieldValue,
+  type CategoryDefinitionRecord,
+  type PropertyCategoryOptionRecord,
+  type PropertyCustomFieldDefinitionRecord
+} from "./categories.store.js";
+import {
+  createManualSetupSubmission,
+  createSetupFormSubmission,
+  ensureSetupSteps,
+  findSetupStep,
+  latestManualSetupSubmissionsByOption,
+  latestSetupFormSubmissionsByForm,
+  listManualSetupSubmissions,
+  listModuleHealthChecks,
+  listSetupFormSubmissions,
+  listSetupSteps,
+  replaceModuleHealthChecks,
+  upsertSetupStep,
+  type ModuleHealthCheckInput
+} from "./setup.store.js";
 import {
   describeSesEstablishmentIssue,
   isValidSpanishTaxId,
@@ -805,85 +848,9 @@ const SETUP_STEPS = [
   "go_live"
 ];
 
-type CategoryMode = "system_controlled" | "property_editable" | "property_extendable" | "read_only";
-
-type CategoryDefinitionRecord = {
-  id: string;
-  code: string;
-  name: string;
-  description?: string;
-  categoryGroup:
-    | "Property"
-    | "Rooms"
-    | "Spaces & Resources"
-    | "Operations"
-    | "Maintenance"
-    | "Housekeeping"
-    | "Revenue"
-    | "Distribution"
-    | "Guest Experience"
-    | "Finance"
-    | "Compliance"
-    | "POS"
-    | "Assets"
-    | "Safety"
-    | "Reservations"
-    | "AI";
-  entityType?: string;
-  mode: CategoryMode;
-  valueSchemaJson: Record<string, unknown>;
-  isCore: boolean;
-  active: boolean;
-  sortOrder: number;
-};
-
-type PropertyCategoryOptionRecord = {
-  id: string;
-  propertyId: string;
-  categoryDefinitionId: string;
-  code: string;
-  label: string;
-  description?: string;
-  colorToken?: string;
-  iconName?: string;
-  parentOptionId?: string;
-  metadataJson: Record<string, unknown>;
-  isSystemDefault: boolean;
-  active: boolean;
-  sortOrder: number;
-  createdBy?: string;
-  updatedBy?: string;
-  usageCount: number;
-};
-
-type PropertyCustomFieldDefinitionRecord = {
-  id: string;
-  propertyId: string;
-  entityType: string;
-  fieldKey: string;
-  label: string;
-  description?: string;
-  dataType: "text" | "number" | "boolean" | "date" | "datetime" | "select" | "multi_select" | "money" | "percentage" | "json";
-  required: boolean;
-  searchable: boolean;
-  visibleInList: boolean;
-  visibleInDetail: boolean;
-  optionsCategoryDefinitionId?: string;
-  validationJson: Record<string, unknown>;
-  visibilityRulesJson: Record<string, unknown>;
-  defaultValueJson: Record<string, unknown>;
-  active: boolean;
-  sortOrder: number;
-};
-
-type PropertyCustomFieldValueRecord = {
-  id: string;
-  propertyId: string;
-  entityType: string;
-  entityId: string;
-  fieldDefinitionId: string;
-  valueJson: Record<string, unknown>;
-};
+// Tanda L2 (L2-04): CategoryDefinitionRecord, PropertyCategoryOptionRecord,
+// PropertyCustomFieldDefinitionRecord y PropertyCustomFieldValueRecord se
+// declaran en categories.store.ts (misma forma que la versión en memoria).
 
 type PropertySetupFormField = {
   key: string;
@@ -1348,7 +1315,13 @@ export function invoiceSequencePatchViolations(input: {
   return violations;
 }
 
-const categoryDefinitions: CategoryDefinitionRecord[] = [
+/**
+ * Catálogo de definiciones de categoría (Tanda L2 · L2-04): se siembra en
+ * category_definitions al arrancar (ensureCategoryDefinitions, tenant-hydration.ts,
+ * upsert por code) y las pantallas leen las filas. Los ids fijos solo se usan al
+ * crear; una fila sembrada antes con otro id conserva el suyo.
+ */
+export const CATEGORY_DEFINITION_CATALOG: CategoryDefinitionRecord[] = [
   { id: "catdef_room_type_categories", code: "room_type_categories", name: "Room type categories", categoryGroup: "Rooms", entityType: "room_type", mode: "property_extendable", valueSchemaJson: {}, isCore: true, active: true, sortOrder: 5 },
   { id: "catdef_room_features", code: "room_features", name: "Room features", categoryGroup: "Rooms", entityType: "room", mode: "property_editable", valueSchemaJson: {}, isCore: true, active: true, sortOrder: 10 },
   { id: "catdef_bed_types", code: "bed_types", name: "Bed types", categoryGroup: "Rooms", entityType: "room_type", mode: "property_extendable", valueSchemaJson: {}, isCore: true, active: true, sortOrder: 20 },
@@ -1373,36 +1346,6 @@ const categoryDefinitions: CategoryDefinitionRecord[] = [
   { id: "catdef_asset_categories", code: "asset_categories", name: "Asset categories", categoryGroup: "Assets", entityType: "asset", mode: "property_extendable", valueSchemaJson: {}, isCore: true, active: true, sortOrder: 160 },
   { id: "catdef_safety_incident_categories", code: "safety_incident_categories", name: "Safety incident categories", categoryGroup: "Safety", entityType: "safety_incident", mode: "property_extendable", valueSchemaJson: {}, isCore: true, active: true, sortOrder: 170 },
   { id: "catdef_ai_review_categories", code: "ai_review_categories", name: "AI review categories", categoryGroup: "AI", entityType: "ai_human_review", mode: "property_extendable", valueSchemaJson: {}, isCore: true, active: true, sortOrder: 180 }
-];
-
-const propertyCategoryOptions: PropertyCategoryOptionRecord[] = [
-  { id: "catopt_standard_room_type", propertyId: "prop_123", categoryDefinitionId: "catdef_room_type_categories", code: "standard", label: "Standard", colorToken: "color.surface.raised", iconName: "Hotel", metadataJson: {}, isSystemDefault: true, active: true, sortOrder: 5, usageCount: 30 },
-  { id: "catopt_balcony", propertyId: "prop_123", categoryDefinitionId: "catdef_room_features", code: "balcony", label: "Balcony", colorToken: "color.status.info", iconName: "Building2", metadataJson: {}, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 12 },
-  { id: "catopt_sea_view", propertyId: "prop_123", categoryDefinitionId: "catdef_room_features", code: "sea_view", label: "Sea view", colorToken: "color.brand.electricBlue", iconName: "Waves", metadataJson: {}, isSystemDefault: true, active: true, sortOrder: 20, usageCount: 8 },
-  { id: "catopt_king", propertyId: "prop_123", categoryDefinitionId: "catdef_bed_types", code: "king_bed", label: "King bed", colorToken: "color.brand.deepIndigo", iconName: "BedDouble", metadataJson: { capacity: 2 }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 18 },
-  { id: "catopt_parking", propertyId: "prop_123", categoryDefinitionId: "catdef_space_types", code: "parking_space", label: "Parking space", colorToken: "color.semantic.success", iconName: "SquareParking", metadataJson: {}, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 20 },
-  { id: "catopt_direct", propertyId: "prop_123", categoryDefinitionId: "catdef_channel_categories", code: "direct", label: "Direct", colorToken: "color.semantic.success", iconName: "Globe", metadataJson: {}, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 240 },
-  { id: "catopt_ota", propertyId: "prop_123", categoryDefinitionId: "catdef_channel_categories", code: "ota", label: "OTA", colorToken: "color.semantic.warning", iconName: "Share2", metadataJson: {}, isSystemDefault: true, active: true, sortOrder: 20, usageCount: 380 },
-  { id: "catopt_history", propertyId: "prop_123", categoryDefinitionId: "catdef_revenue_report_fields", code: "history", label: "History", colorToken: "color.brand.nightBlue", iconName: "History", metadataJson: { legacyReportSection: "History" }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 31 },
-  { id: "catopt_forecast", propertyId: "prop_123", categoryDefinitionId: "catdef_revenue_report_fields", code: "forecast", label: "Forecast", colorToken: "color.brand.violet", iconName: "TrendingUp", metadataJson: { legacyReportSection: "Forecast" }, isSystemDefault: true, active: true, sortOrder: 20, usageCount: 31 },
-  { id: "catopt_source_direct_web", propertyId: "prop_123", categoryDefinitionId: "catdef_reservation_source_codes", code: "direct_web", label: "Direct web", colorToken: "color.semantic.success", iconName: "Globe", metadataJson: { channel: "direct" }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 28 },
-  { id: "catopt_source_phone", propertyId: "prop_123", categoryDefinitionId: "catdef_reservation_source_codes", code: "phone", label: "Phone", colorToken: "color.brand.nightBlue", iconName: "Phone", metadataJson: { channel: "direct" }, isSystemDefault: true, active: true, sortOrder: 20, usageCount: 12 },
-  { id: "catopt_res_confirmed", propertyId: "prop_123", categoryDefinitionId: "catdef_reservation_statuses", code: "confirmed", label: "Confirmed", colorToken: "color.semantic.success", iconName: "CircleCheck", metadataJson: { internalStatus: "confirmed" }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 36 },
-  { id: "catopt_res_cancelled", propertyId: "prop_123", categoryDefinitionId: "catdef_reservation_statuses", code: "cancelled", label: "Cancelled", colorToken: "color.semantic.danger", iconName: "CircleX", metadataJson: { internalStatus: "cancelled" }, isSystemDefault: true, active: true, sortOrder: 50, usageCount: 4 },
-  { id: "catopt_guarantee_card", propertyId: "prop_123", categoryDefinitionId: "catdef_guarantee_policies", code: "card_guarantee", label: "Card guarantee", colorToken: "color.semantic.warning", iconName: "CreditCard", metadataJson: { requiresPaymentToken: true }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 30 },
-  { id: "catopt_cancel_flexible", propertyId: "prop_123", categoryDefinitionId: "catdef_cancellation_policies", code: "flexible_18", label: "Flexible until 18:00 previous day", colorToken: "color.semantic.success", iconName: "Undo2", metadataJson: { cutoff: "18:00_previous_day" }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 44 },
-  { id: "catopt_billing_guest", propertyId: "prop_123", categoryDefinitionId: "catdef_billing_instruction_types", code: "guest_pays_checkout", label: "Guest pays at checkout", colorToken: "color.brand.electricBlue", iconName: "Receipt", metadataJson: { invoiceCustomerType: "guest" }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 24 },
-  { id: "catopt_billing_company", propertyId: "prop_123", categoryDefinitionId: "catdef_billing_instruction_types", code: "company_invoice", label: "Company invoice", colorToken: "color.brand.deepIndigo", iconName: "Building2", metadataJson: { invoiceCustomerType: "company" }, isSystemDefault: true, active: true, sortOrder: 20, usageCount: 8 },
-  { id: "catopt_dni", propertyId: "prop_123", categoryDefinitionId: "catdef_document_types", code: "DNI", label: "DNI", colorToken: "color.semantic.warning", iconName: "IdCard", metadataJson: { officialCode: true }, isSystemDefault: true, active: true, sortOrder: 10, usageCount: 42 }
-];
-
-const customFieldDefinitions: PropertyCustomFieldDefinitionRecord[] = [
-  { id: "cf_room_internal_notes", propertyId: "prop_123", entityType: "room", fieldKey: "internal_notes", label: "Internal notes", dataType: "text", required: false, searchable: true, visibleInList: false, visibleInDetail: true, validationJson: {}, visibilityRulesJson: {}, defaultValueJson: {}, active: true, sortOrder: 10 },
-  { id: "cf_guest_vip_reason", propertyId: "prop_123", entityType: "guest", fieldKey: "vip_reason", label: "VIP reason", dataType: "select", required: false, searchable: true, visibleInList: true, visibleInDetail: true, optionsCategoryDefinitionId: "catdef_market_segments", validationJson: {}, visibilityRulesJson: {}, defaultValueJson: {}, active: true, sortOrder: 20 }
-];
-
-const customFieldValues: PropertyCustomFieldValueRecord[] = [
-  { id: "cfv_room_432_notes", propertyId: "prop_123", entityType: "room", entityId: "room_432", fieldDefinitionId: "cf_room_internal_notes", valueJson: { value: "Quiet high-floor guest preference." } }
 ];
 
 const categoryTemplates = [
@@ -1828,24 +1771,41 @@ async function requireProperty(propertyId: string): Promise<PropertyRecord> {
   return mirrorRecord(demoStore.properties, property);
 }
 
-function requireCategoryDefinition(categoryCode: string) {
-  const definition = categoryDefinitions.find((candidate) => candidate.code === categoryCode && candidate.active);
+async function requireCategoryDefinition(categoryCode: string): Promise<CategoryDefinitionRecord> {
+  const definition = await findCategoryDefinitionByCode(categoryCode);
   if (!definition) {
     throw new NotFoundError(`Definición de categoría no encontrada: ${categoryCode}`);
   }
   return definition;
 }
 
-function requireCategoryOption(propertyId: string, optionId: string) {
-  const option = propertyCategoryOptions.find((candidate) => candidate.id === optionId && candidate.propertyId === propertyId);
+async function requireCategoryDefinitionById(definitionId: string): Promise<CategoryDefinitionRecord> {
+  const definition = await findCategoryDefinitionById(definitionId);
+  if (!definition) {
+    throw new NotFoundError("Definición de categoría no encontrada.");
+  }
+  return definition;
+}
+
+async function requireCategoryOption(propertyId: string, optionId: string): Promise<PropertyCategoryOptionRecord> {
+  const option = await findPropertyCategoryOption(propertyId, optionId);
   if (!option) {
     throw new NotFoundError(`Opción de categoría no encontrada: ${optionId}`);
   }
   return option;
 }
 
-function categoryOptionUsage(optionId: string) {
-  return propertyCategoryOptions.find((option) => option.id === optionId)?.usageCount ?? 0;
+/**
+ * Propiedad existente Y de la organización del usuario (admin de plataforma
+ * aparte): 404 opaco para una propiedad ajena. Para las escrituras del gestor
+ * de categorías, campos personalizados y puesta en marcha (Tanda L2 · L2-04).
+ */
+async function requireOrganizationProperty(propertyId: string, context: UserContext): Promise<PropertyRecord> {
+  const property = await requireProperty(propertyId);
+  if (property.organizationId !== context.organizationId && !context.isPlatformAdmin) {
+    throw new NotFoundError("Propiedad no encontrada.");
+  }
+  return property;
 }
 
 function assertCategoryModeAllowsEdit(definition: CategoryDefinitionRecord, patch?: Record<string, unknown>) {
@@ -1857,52 +1817,62 @@ function assertCategoryModeAllowsEdit(definition: CategoryDefinitionRecord, patc
   }
 }
 
-function categoryWithOptions(propertyId: string, definition: CategoryDefinitionRecord) {
-  const options = propertyCategoryOptions
-    .filter((option) => option.propertyId === propertyId && option.categoryDefinitionId === definition.id)
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((option) => ({
-      ...option,
-      canDelete: option.usageCount === 0 && !option.isSystemDefault,
-      canDeactivate: true,
-      linkedRecordsUrl: `/backoffice/properties/${propertyId}/configuration/categories/${definition.code}?option=${option.id}`
-    }));
+function categoryOptionView(propertyId: string, definition: CategoryDefinitionRecord, option: PropertyCategoryOptionRecord) {
   return {
-    ...definition,
-    options,
-    activeOptions: options.filter((option) => option.active).length,
-    inactiveOptions: options.filter((option) => !option.active).length
+    ...option,
+    canDelete: !option.isSystemDefault,
+    canDeactivate: true,
+    linkedRecordsUrl: `/backoffice/properties/${propertyId}/configuration/categories/${definition.code}?option=${option.id}`
   };
 }
 
-function configurationDataQuality(propertyId: string) {
+/** Vista de una definición con las opciones de la propiedad ya cargadas (sin consultas). */
+function buildCategoryView(propertyId: string, definition: CategoryDefinitionRecord, options: PropertyCategoryOptionRecord[]) {
+  const own = options
+    .filter((option) => option.categoryDefinitionId === definition.id)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.createdAt.localeCompare(b.createdAt))
+    .map((option) => categoryOptionView(propertyId, definition, option));
+  return {
+    ...definition,
+    options: own,
+    activeOptions: own.filter((option) => option.active).length,
+    inactiveOptions: own.filter((option) => !option.active).length
+  };
+}
+
+async function categoryWithOptions(propertyId: string, definition: CategoryDefinitionRecord) {
+  return buildCategoryView(propertyId, definition, await listPropertyCategoryOptions(propertyId, { categoryDefinitionId: definition.id }));
+}
+
+async function configurationDataQuality(propertyId: string) {
   const rooms = demoStore.rooms.filter((room) => room.propertyId === propertyId);
   const roomTypes = demoStore.roomTypes.filter((roomType) => roomType.propertyId === propertyId);
+  const inactiveOptions = await countPropertyCategoryOptions(propertyId, { active: false });
   return [
     {
       code: "rooms_without_room_type",
       severity: rooms.some((room) => room.sellable && !room.roomTypeId) ? "blocking" : "info",
-      message: "Sellable rooms must have an active room type."
+      message: "Las habitaciones vendibles deben tener un tipo de habitación activo."
     },
     {
       code: "rooms_without_building_floor_zone",
       severity: rooms.some((room) => !room.buildingId || !room.floorId || !room.zoneId) ? "warning" : "info",
-      message: "Rooms should be mapped to building, floor and zone."
+      message: "Las habitaciones deberían estar asignadas a edificio, planta y zona."
     },
     {
       code: "room_type_without_rooms",
       severity: roomTypes.some((roomType) => !rooms.some((room) => room.roomTypeId === roomType.id)) ? "warning" : "info",
-      message: "Room types without rooms should be reviewed."
+      message: "Conviene revisar los tipos de habitación sin habitaciones."
     },
     {
       code: "inactive_category_still_used_by_active_records",
-      severity: propertyCategoryOptions.some((option) => option.propertyId === propertyId && !option.active && option.usageCount > 0) ? "warning" : "info",
-      message: "Inactive category options remain visible in historical records and should be reviewed."
+      severity: inactiveOptions > 0 ? "warning" : "info",
+      message: "Las opciones de categoría desactivadas siguen visibles en los registros históricos y conviene revisarlas."
     },
     {
       code: "duplicate_option_codes",
       severity: "info",
-      message: "Property/category option codes are unique by database constraint."
+      message: "Los códigos de opción son únicos por propiedad y categoría por restricción de la base de datos."
     }
   ];
 }
@@ -1984,51 +1954,36 @@ function payloadArray(payload: Record<string, unknown>, key: string) {
   return Array.isArray(value) ? value : [];
 }
 
-function completePropertySetupStep(input: BackOfficeMutationInput, stepCode: string, metadataJson: Record<string, unknown>) {
-  let step = demoStore.propertySetupSteps.find((candidate) => candidate.propertyId === input.propertyId && candidate.stepCode === stepCode);
-  if (!step) {
-    step = {
-      id: createId("setup"),
-      propertyId: input.propertyId,
-      stepCode,
-      status: "completed",
-      completedAt: nowIso(),
-      completedBy: input.context.userId,
-      metadataJson
-    };
-    demoStore.propertySetupSteps.push(step);
-  } else {
-    step.status = "completed";
-    step.completedAt = nowIso();
-    step.completedBy = input.context.userId;
-    step.metadataJson = { ...step.metadataJson, ...metadataJson };
-  }
-  return step;
+async function completePropertySetupStep(input: BackOfficeMutationInput, stepCode: string, metadataJson: Record<string, unknown>): Promise<PropertySetupStepRecord> {
+  const existing = await findSetupStep(input.propertyId, stepCode);
+  return upsertSetupStep(input.propertyId, stepCode, {
+    status: "completed",
+    completedAt: new Date(),
+    completedBy: input.context.userId,
+    metadataJson: { ...(existing?.metadataJson ?? {}), ...metadataJson }
+  });
 }
 
-function createCategoryOptionFromSetup(input: BackOfficeMutationInput, categoryCode: string, label: string) {
+async function createCategoryOptionFromSetup(input: BackOfficeMutationInput, categoryCode: string, label: string): Promise<PropertyCategoryOptionRecord | undefined> {
   const trimmedLabel = label.trim();
   if (!trimmedLabel) return undefined;
-  const definition = requireCategoryDefinition(categoryCode);
+  const definition = await requireCategoryDefinition(categoryCode);
   const code = trimmedLabel.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-  const existing = propertyCategoryOptions.find(
-    (option) => option.propertyId === input.propertyId && option.categoryDefinitionId === definition.id && option.code === code
-  );
+  const existing = await findPropertyCategoryOptionByCode(input.propertyId, definition.id, code);
   if (existing) return existing;
-  const record: PropertyCategoryOptionRecord = {
-    id: createId("catopt"),
+  const record = await createPropertyCategoryOption({
     propertyId: input.propertyId,
     categoryDefinitionId: definition.id,
-    code,
-    label: trimmedLabel,
-    metadataJson: { createdFrom: "property_setup_form" },
-    isSystemDefault: false,
-    active: true,
-    sortOrder: propertyCategoryOptions.length + 1,
-    createdBy: input.context.userId,
-    usageCount: 0
-  };
-  propertyCategoryOptions.push(record);
+    userId: input.context.userId,
+    option: {
+      code,
+      label: trimmedLabel,
+      metadataJson: { createdFrom: "property_setup_form" },
+      isSystemDefault: false,
+      active: true,
+      sortOrder: (await countPropertyCategoryOptions(input.propertyId, { categoryDefinitionId: definition.id })) + 1
+    }
+  });
   audit({ ...input, action: "CategoryOptionCreated", entityType: "property_category_option", entityId: record.id, afterJson: record });
   return record;
 }
@@ -2490,9 +2445,9 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
     }
     case "revenue_setup": {
       const createdOptions = [
-        createCategoryOptionFromSetup(input, "market_segments", payloadText(payload, "marketSegmentLabel")),
-        createCategoryOptionFromSetup(input, "channel_categories", payloadText(payload, "channelCategoryLabel")),
-        createCategoryOptionFromSetup(input, "revenue_report_fields", payloadText(payload, "rateCategoryLabel"))
+        await createCategoryOptionFromSetup(input, "market_segments", payloadText(payload, "marketSegmentLabel")),
+        await createCategoryOptionFromSetup(input, "channel_categories", payloadText(payload, "channelCategoryLabel")),
+        await createCategoryOptionFromSetup(input, "revenue_report_fields", payloadText(payload, "rateCategoryLabel"))
       ].filter(Boolean);
       return { targetEntityType: "revenue_category_setup", result: { createdOptions, payload } };
     }
@@ -2520,7 +2475,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
           active: true
         }
       });
-      createCategoryOptionFromSetup(input, "payment_method_categories", payloadText(payload, "paymentMethodCategory"));
+      await createCategoryOptionFromSetup(input, "payment_method_categories", payloadText(payload, "paymentMethodCategory"));
       return { targetEntityType: "property_compliance_settings", targetEntityId: compliance.id, result: { compliance, billing } };
     }
     case "ai_setup": {
@@ -2540,7 +2495,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       return { targetEntityType: "property_ai_settings", targetEntityId: settings.id, result: settings };
     }
     case "custom_field": {
-      const field = createCustomField({
+      const field = await createCustomField({
         ...input,
         field: {
           entityType: payloadText(payload, "entityType"),
@@ -2564,13 +2519,12 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
 
 export async function listPropertySetupForms(propertyId: string) {
   await requireProperty(propertyId);
+  const [steps, latestByForm] = await Promise.all([listSetupSteps(propertyId, SETUP_STEPS), latestSetupFormSubmissionsByForm(propertyId)]);
   return {
     propertyId,
     forms: PROPERTY_SETUP_FORM_DEFINITIONS.map((definition) => {
-      const step = demoStore.propertySetupSteps.find((candidate) => candidate.propertyId === propertyId && candidate.stepCode === definition.setupStepCode);
-      const latestSubmission = demoStore.propertySetupFormSubmissions
-        .filter((submission) => submission.propertyId === propertyId && submission.formCode === definition.code)
-        .at(-1);
+      const step = steps.find((candidate) => candidate.stepCode === definition.setupStepCode);
+      const latestSubmission = latestByForm.get(definition.code);
       return {
         ...definition,
         status: latestSubmission?.status ?? step?.status ?? "not_started",
@@ -2589,11 +2543,9 @@ export async function listManualSetupOptions(propertyId: string) {
       .filter((propertyModule) => propertyModule.propertyId === propertyId && propertyModule.status !== "disabled")
       .map((propertyModule) => propertyModule.moduleId)
   );
+  const latestByOption = await latestManualSetupSubmissionsByOption(propertyId);
   const options = MANUAL_SETUP_OPTIONS.map((option) => {
-    const submissions = demoStore.manualSetupSubmissions.filter(
-      (submission) => submission.propertyId === propertyId && submission.optionCode === option.code
-    );
-    const latestSubmission = submissions.at(-1);
+    const latestSubmission = latestByOption.get(option.code);
     return {
       ...option,
       setupState: latestSubmission?.status ?? "not_started",
@@ -2601,8 +2553,8 @@ export async function listManualSetupOptions(propertyId: string) {
       moduleEnabled: !option.moduleCode || option.moduleCode === "backoffice" || enabledModules.has(option.moduleCode),
       localDemoReason:
         option.moduleCode && option.moduleCode !== "backoffice" && !enabledModules.has(option.moduleCode)
-          ? `Hidden because module ${option.moduleCode} is disabled`
-          : "Visible in local demo"
+          ? `Oculta porque el módulo ${option.moduleCode} está desactivado`
+          : "Visible"
     };
   });
 
@@ -2622,9 +2574,7 @@ export async function listManualSetupOptions(propertyId: string) {
 export async function getManualSetupOptionDetail(propertyId: string, optionCode: string) {
   await requireProperty(propertyId);
   const option = manualSetupOptionDefinition(optionCode);
-  const submissions = demoStore.manualSetupSubmissions.filter(
-    (submission) => submission.propertyId === propertyId && submission.optionCode === option.code
-  );
+  const submissions = await listManualSetupSubmissions(propertyId, option.code);
   return {
     propertyId,
     option,
@@ -2639,29 +2589,28 @@ export async function getManualSetupOptionDetail(propertyId: string, optionCode:
   };
 }
 
+const manualSetupPayloadSchema = z.record(z.string(), z.unknown());
+
 export async function saveManualSetupOption(input: BackOfficeMutationInput & {
   optionCode: string;
   payload: Record<string, unknown>;
 }) {
   const option = manualSetupOptionDefinition(input.optionCode);
-  await requireProperty(input.propertyId);
+  await requireOrganizationProperty(input.propertyId, input.context);
   requirePermissions(input.context, [option.permission as PermissionKey]);
-  const validationErrors = validateManualSetupPayload(option, input.payload);
-  const submission: ManualSetupSubmissionRecord = {
-    id: createId("msetup"),
+  const payload = parse(manualSetupPayloadSchema, input.payload ?? {}, "body");
+  const validationErrors = validateManualSetupPayload(option, payload);
+  const submission = await createManualSetupSubmission({
     propertyId: input.propertyId,
     optionCode: option.code,
     status: validationErrors.length > 0 ? "failed" : "saved",
-    payloadJson: input.payload,
+    payloadJson: payload,
     validationErrorsJson: validationErrors,
-    targetTables: option.targetTables,
-    inputCategories: option.inputCategories,
+    targetTables: [...option.targetTables],
+    inputCategories: [...option.inputCategories],
     completionChecksJson: option.completionChecks.map((check) => ({ ...check })),
-    createdBy: input.context.userId,
-    createdAt: nowIso(),
-    updatedAt: nowIso()
-  };
-  demoStore.manualSetupSubmissions.push(submission);
+    createdBy: input.context.userId
+  });
 
   if (validationErrors.length > 0) {
     audit({
@@ -2705,23 +2654,37 @@ export async function saveManualSetupOption(input: BackOfficeMutationInput & {
 export async function getPropertySetupForm(propertyId: string, formCode: string) {
   await requireProperty(propertyId);
   const definition = propertySetupFormDefinition(formCode);
+  const categoryCodes = definition.fields.map((field) => field.categoryCode).filter((code): code is string => Boolean(code));
+  const [definitions, options, submissions, existingData, dataQuality] = await Promise.all([
+    categoryCodes.length > 0 ? listCategoryDefinitions() : Promise.resolve([] as CategoryDefinitionRecord[]),
+    categoryCodes.length > 0 ? listPropertyCategoryOptions(propertyId) : Promise.resolve([] as PropertyCategoryOptionRecord[]),
+    listSetupFormSubmissions(propertyId, formCode),
+    formExistingData(propertyId, formCode),
+    configurationDataQuality(propertyId)
+  ]);
   return {
     ...definition,
     propertyId,
-    existingData: await formExistingData(propertyId, formCode),
+    existingData,
     categoryOptions: definition.fields
       .filter((field) => field.categoryCode)
-      .map((field) => ({
-        fieldKey: field.key,
-        categoryCode: field.categoryCode,
-        options: field.categoryCode ? categoryWithOptions(propertyId, requireCategoryDefinition(field.categoryCode)).options : []
-      })),
-    dataQuality: configurationDataQuality(propertyId),
-    submissions: demoStore.propertySetupFormSubmissions.filter(
-      (submission) => submission.propertyId === propertyId && submission.formCode === formCode
-    )
+      .map((field) => {
+        const categoryDefinition = definitions.find((candidate) => candidate.code === field.categoryCode);
+        if (!categoryDefinition) {
+          throw new NotFoundError(`Definición de categoría no encontrada: ${field.categoryCode}`);
+        }
+        return {
+          fieldKey: field.key,
+          categoryCode: field.categoryCode,
+          options: buildCategoryView(propertyId, categoryDefinition, options).options
+        };
+      }),
+    dataQuality,
+    submissions
   };
 }
+
+const propertySetupPayloadSchema = z.record(z.string(), z.unknown());
 
 export async function savePropertySetupForm(input: BackOfficeMutationInput & {
   formCode: string;
@@ -2729,42 +2692,36 @@ export async function savePropertySetupForm(input: BackOfficeMutationInput & {
 }) {
   const definition = propertySetupFormDefinition(input.formCode);
   requirePermissions(input.context, [definition.permission]);
-  const validationErrors = validatePropertySetupPayload(definition, input.payload);
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const payload = parse(propertySetupPayloadSchema, input.payload ?? {}, "body");
+  const validationErrors = validatePropertySetupPayload(definition, payload);
   if (validationErrors.length > 0) {
-    const failed: PropertySetupFormSubmissionRecord = {
-      id: createId("psfs"),
+    const failed = await createSetupFormSubmission({
       propertyId: input.propertyId,
       formCode: definition.code,
       status: "failed",
-      payloadJson: input.payload,
+      payloadJson: payload,
       validationErrorsJson: validationErrors,
       targetEntityType: definition.targetEntityType,
-      createdBy: input.context.userId,
-      createdAt: nowIso(),
-      updatedAt: nowIso()
-    };
-    demoStore.propertySetupFormSubmissions.push(failed);
+      createdBy: input.context.userId
+    });
     audit({ ...input, action: "PropertySetupFormValidationFailed", entityType: "property_setup_form_submission", entityId: failed.id, afterJson: failed });
     // Validation failures are a client error (400), never a generic 500.
     throw new BadRequestError(validationErrors.join(" "));
   }
 
-  const target = await applyPropertySetupForm(input, definition, input.payload);
-  const submission: PropertySetupFormSubmissionRecord = {
-    id: createId("psfs"),
+  const target = await applyPropertySetupForm(input, definition, payload);
+  const submission = await createSetupFormSubmission({
     propertyId: input.propertyId,
     formCode: definition.code,
     status: "saved",
-    payloadJson: input.payload,
+    payloadJson: payload,
     validationErrorsJson: [],
     targetEntityType: target.targetEntityType,
     targetEntityId: target.targetEntityId,
-    createdBy: input.context.userId,
-    createdAt: nowIso(),
-    updatedAt: nowIso()
-  };
-  demoStore.propertySetupFormSubmissions.push(submission);
-  const step = completePropertySetupStep(input, definition.setupStepCode, { lastFormCode: definition.code, lastSubmissionId: submission.id });
+    createdBy: input.context.userId
+  });
+  const step = await completePropertySetupStep(input, definition.setupStepCode, { lastFormCode: definition.code, lastSubmissionId: submission.id });
   audit({ ...input, action: "PropertySetupFormSaved", entityType: target.targetEntityType, entityId: target.targetEntityId, afterJson: { submission, target: target.result, step } });
   domain({
     ...input,
@@ -2784,7 +2741,7 @@ export async function savePropertySetupForm(input: BackOfficeMutationInput & {
 /**
  * Readiness checks are persisted in property_readiness_checks (unique per propertyId +
  * checkCode) so every API replica reads the same result instead of a per-process memory
- * copy. The demoStore mirror is refreshed for the legacy in-memory readers.
+ * copy (Tanda L2 · L2-04: no in-memory mirror any more — the 68 real rows are the truth).
  */
 async function upsertReadinessCheck(
   propertyId: string,
@@ -2802,11 +2759,7 @@ async function upsertReadinessCheck(
     create: { propertyId, checkCode: check.checkCode, ...data },
     update: data
   });
-  return mirrorRecord(
-    demoStore.propertyReadinessChecks,
-    mapReadinessCheckRow(row),
-    (candidate) => candidate.propertyId === propertyId && candidate.checkCode === check.checkCode
-  );
+  return mapReadinessCheckRow(row);
 }
 
 const RECENT_AUDIT_EVENTS_LIMIT = 8;
@@ -2870,14 +2823,20 @@ export async function getBackOfficeDashboard(propertyId: string) {
 
 export async function getConfigurationCenter(propertyId: string) {
   await requireProperty(propertyId);
+  const [definitions, optionCount, customFieldCount, dataQuality] = await Promise.all([
+    listCategoryDefinitions(),
+    countPropertyCategoryOptions(propertyId),
+    countCustomFieldDefinitions(propertyId, { active: true }),
+    configurationDataQuality(propertyId)
+  ]);
   return {
     propertyId,
-    title: "Configuration Center",
-    description: "Manage categories, custom fields, room types, spaces, departments, revenue segments, housekeeping rules and maintenance categories.",
-    categoryGroups: Array.from(new Set(categoryDefinitions.map((definition) => definition.categoryGroup))),
-    categoryCount: categoryDefinitions.length,
-    optionCount: propertyCategoryOptions.filter((option) => option.propertyId === propertyId).length,
-    customFieldCount: customFieldDefinitions.filter((field) => field.propertyId === propertyId && field.active).length,
+    title: "Centro de configuración",
+    description: "Gestiona categorías, campos personalizados, tipos de habitación, espacios, departamentos, segmentos de mercado, reglas de pisos y categorías de mantenimiento.",
+    categoryGroups: Array.from(new Set(definitions.map((definition) => definition.categoryGroup))),
+    categoryCount: definitions.length,
+    optionCount,
+    customFieldCount,
     setupForms: [
       "PropertyProfileForm",
       "BuildingForm",
@@ -2892,298 +2851,401 @@ export async function getConfigurationCenter(propertyId: string) {
       "RevenueCategoryForms",
       "ComplianceCategoryForms"
     ],
-    dataQuality: configurationDataQuality(propertyId),
+    dataQuality,
     primaryActions: ["Open Category Manager", "Open Custom Fields", "Apply template", "Import categories", "Ask AI Setup Assistant"]
   };
 }
 
+// ── Gestor de categorías (Tanda L2 · L2-04: Prisma) ─────────────────────────
 // Authorization for these GETs lives in the RBAC route manifest (categories.read); the former
 // requirePermissions(demoStore.userContext) evaluated the demo super-user, not the request.
+
+const jsonRecordSchema = z.record(z.string(), z.unknown());
+const optionalNullableText = (max: number) => z.string().trim().max(max).nullable().optional();
+const CATEGORY_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+const categoryOptionTranslationSchema = z
+  .object({
+    language: z.string().trim().min(2).max(10),
+    label: z.string().trim().min(1).max(200),
+    description: optionalNullableText(500)
+  })
+  .strict();
+
+const categoryOptionCreateSchema = z
+  .object({
+    code: z.string().trim().min(1).max(80).regex(CATEGORY_CODE_PATTERN, "código: solo letras, números, guion, punto y guion bajo"),
+    label: z.string().trim().min(1).max(200),
+    description: optionalNullableText(500),
+    colorToken: optionalNullableText(80),
+    iconName: optionalNullableText(80),
+    parentOptionId: optionalNullableText(64),
+    metadataJson: jsonRecordSchema.optional(),
+    isSystemDefault: z.boolean().optional(),
+    active: z.boolean().optional(),
+    sortOrder: z.number().int().min(0).max(100_000).optional(),
+    translations: z.array(categoryOptionTranslationSchema).max(20).optional()
+  })
+  .strict();
+
+const categoryOptionPatchSchema = categoryOptionCreateSchema.partial().strict();
+
+export type CategoryOptionInput = z.input<typeof categoryOptionCreateSchema>;
+export type CategoryOptionPatch = z.input<typeof categoryOptionPatchSchema>;
+
+const categoryOptionIdsSchema = z.array(z.string().trim().min(1).max(64)).min(1).max(500);
+
 export async function listConfigurationCategories(propertyId: string) {
   await requireProperty(propertyId);
+  const [definitions, options] = await Promise.all([listCategoryDefinitions(), listPropertyCategoryOptions(propertyId)]);
   return {
     propertyId,
-    groups: Array.from(new Set(categoryDefinitions.map((definition) => definition.categoryGroup))).map((group) => ({
+    groups: Array.from(new Set(definitions.map((definition) => definition.categoryGroup))).map((group) => ({
       group,
-      categories: categoryDefinitions
+      categories: definitions
         .filter((definition) => definition.categoryGroup === group)
         .sort((a, b) => a.sortOrder - b.sortOrder)
-        .map((definition) => categoryWithOptions(propertyId, definition))
+        .map((definition) => buildCategoryView(propertyId, definition, options))
     }))
   };
 }
 
 export async function getConfigurationCategory(propertyId: string, categoryCode: string) {
   await requireProperty(propertyId);
-  return categoryWithOptions(propertyId, requireCategoryDefinition(categoryCode));
+  return categoryWithOptions(propertyId, await requireCategoryDefinition(categoryCode));
 }
 
-export function createCategoryOption(input: BackOfficeMutationInput & {
+export async function createCategoryOption(input: BackOfficeMutationInput & {
   categoryCode: string;
-  option: Pick<PropertyCategoryOptionRecord, "code" | "label"> & Partial<PropertyCategoryOptionRecord>;
+  option: CategoryOptionInput;
 }) {
   requirePermissions(input.context, ["categories.manage"]);
-  const definition = requireCategoryDefinition(input.categoryCode);
+  const option = parse(categoryOptionCreateSchema, input.option, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const definition = await requireCategoryDefinition(input.categoryCode);
   assertCategoryModeAllowsEdit(definition);
-  if (definition.mode === "system_controlled" && !input.option.isSystemDefault) {
+  if (definition.mode === "system_controlled" && !option.isSystemDefault) {
     throw new ConflictError("Las categorías legales controladas por el sistema solo se amplían mediante valores por defecto controlados.");
   }
-  if (propertyCategoryOptions.some((option) => option.propertyId === input.propertyId && option.categoryDefinitionId === definition.id && option.code === input.option.code)) {
-    throw new ConflictError("El código de la opción debe ser único por propiedad y categoría.");
+  if (option.parentOptionId) {
+    const parent = await findPropertyCategoryOption(input.propertyId, option.parentOptionId);
+    if (!parent || parent.categoryDefinitionId !== definition.id) {
+      throw new BadRequestError("La opción superior debe pertenecer a la misma propiedad y categoría.");
+    }
   }
-  const record: PropertyCategoryOptionRecord = {
-    id: createId("catopt"),
+  // Duplicate (propertyId, category, code) → 409 from the unique constraint (categories.store).
+  const record = await createPropertyCategoryOption({
     propertyId: input.propertyId,
     categoryDefinitionId: definition.id,
-    code: input.option.code,
-    label: input.option.label,
-    description: input.option.description,
-    colorToken: input.option.colorToken,
-    iconName: input.option.iconName,
-    parentOptionId: input.option.parentOptionId,
-    metadataJson: input.option.metadataJson ?? {},
-    isSystemDefault: input.option.isSystemDefault ?? false,
-    active: input.option.active ?? true,
-    sortOrder: input.option.sortOrder ?? propertyCategoryOptions.length + 1,
-    createdBy: input.context.userId,
-    updatedBy: input.context.userId,
-    usageCount: 0
-  };
-  propertyCategoryOptions.push(record);
+    userId: input.context.userId,
+    option: {
+      ...option,
+      sortOrder: option.sortOrder ?? (await countPropertyCategoryOptions(input.propertyId, { categoryDefinitionId: definition.id })) + 1
+    }
+  });
   audit({ ...input, action: "CategoryOptionCreated", entityType: "property_category_option", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function patchCategoryOption(input: BackOfficeMutationInput & {
+export async function patchCategoryOption(input: BackOfficeMutationInput & {
   optionId: string;
-  patch: Partial<PropertyCategoryOptionRecord>;
+  patch: CategoryOptionPatch;
 }) {
   requirePermissions(input.context, ["categories.manage"]);
-  const option = requireCategoryOption(input.propertyId, input.optionId);
-  const definition = categoryDefinitions.find((candidate) => candidate.id === option.categoryDefinitionId)!;
-  assertCategoryModeAllowsEdit(definition, input.patch as Record<string, unknown>);
-  const before = { ...option };
-  Object.assign(option, input.patch, { updatedBy: input.context.userId });
+  const patch = parse(categoryOptionPatchSchema, input.patch, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const before = await requireCategoryOption(input.propertyId, input.optionId);
+  const definition = await requireCategoryDefinitionById(before.categoryDefinitionId);
+  assertCategoryModeAllowsEdit(definition, patch as Record<string, unknown>);
+  if (patch.parentOptionId) {
+    const parent = await findPropertyCategoryOption(input.propertyId, patch.parentOptionId);
+    if (!parent || parent.categoryDefinitionId !== definition.id || parent.id === before.id) {
+      throw new BadRequestError("La opción superior debe pertenecer a la misma propiedad y categoría.");
+    }
+  }
+  const option = await updatePropertyCategoryOption({ propertyId: input.propertyId, optionId: before.id, userId: input.context.userId, patch });
   audit({ ...input, action: "CategoryOptionUpdated", entityType: "property_category_option", entityId: option.id, beforeJson: before, afterJson: option });
   return option;
 }
 
-export function setCategoryOptionActive(input: BackOfficeMutationInput & { optionId: string; active: boolean }) {
+export async function setCategoryOptionActive(input: BackOfficeMutationInput & { optionId: string; active: boolean }) {
   requirePermissions(input.context, ["categories.manage"]);
-  const option = requireCategoryOption(input.propertyId, input.optionId);
-  const before = { ...option };
-  option.active = input.active;
-  option.updatedBy = input.context.userId;
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const before = await requireCategoryOption(input.propertyId, input.optionId);
+  const option = await updatePropertyCategoryOption({
+    propertyId: input.propertyId,
+    optionId: before.id,
+    userId: input.context.userId,
+    patch: { active: input.active }
+  });
   audit({
     ...input,
     action: input.active ? "CategoryOptionReactivated" : "CategoryOptionDeactivated",
     entityType: "property_category_option",
     entityId: option.id,
     beforeJson: before,
-    afterJson: { ...option, linkedRecordsRemainVisible: categoryOptionUsage(option.id) > 0 }
+    afterJson: { ...option, linkedRecordsRemainVisible: option.usageCount > 0 }
   });
   return option;
 }
 
-export function reorderCategoryOptions(input: BackOfficeMutationInput & { categoryCode: string; optionIds: string[] }) {
+export async function reorderCategoryOptions(input: BackOfficeMutationInput & { categoryCode: string; optionIds: string[] }) {
   requirePermissions(input.context, ["categories.manage"]);
-  const definition = requireCategoryDefinition(input.categoryCode);
+  const optionIds = parse(categoryOptionIdsSchema, input.optionIds, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const definition = await requireCategoryDefinition(input.categoryCode);
   assertCategoryModeAllowsEdit(definition);
-  input.optionIds.forEach((optionId, index) => {
-    const option = requireCategoryOption(input.propertyId, optionId);
+  const options = await listPropertyCategoryOptions(input.propertyId);
+  const byId = new Map(options.map((option) => [option.id, option]));
+  for (const optionId of optionIds) {
+    const option = byId.get(optionId);
+    if (!option) {
+      throw new NotFoundError(`Opción de categoría no encontrada: ${optionId}`);
+    }
     if (option.categoryDefinitionId !== definition.id) {
       throw new BadRequestError("No se pueden reordenar opciones fuera de la categoría seleccionada.");
     }
-    option.sortOrder = index + 1;
-    option.updatedBy = input.context.userId;
-  });
-  const options = propertyCategoryOptions.filter((option) => option.propertyId === input.propertyId && option.categoryDefinitionId === definition.id);
-  audit({ ...input, action: "CategoryOptionsReordered", entityType: "category_definition", entityId: definition.id, afterJson: { optionIds: input.optionIds } });
-  return { status: "reordered" as const, options };
+  }
+  await updateCategoryOptionOrder(
+    input.propertyId,
+    input.context.userId,
+    optionIds.map((id, index) => ({ id, sortOrder: index + 1 }))
+  );
+  const reordered = await listPropertyCategoryOptions(input.propertyId, { categoryDefinitionId: definition.id });
+  audit({ ...input, action: "CategoryOptionsReordered", entityType: "category_definition", entityId: definition.id, afterJson: { optionIds } });
+  return { status: "reordered" as const, options: reordered };
 }
+
+// ── Campos personalizados (Tanda L2 · L2-04: Prisma) ────────────────────────
+
+const CUSTOM_FIELD_DATA_TYPES = ["text", "number", "boolean", "date", "datetime", "select", "multi_select", "money", "percentage", "json"] as const;
+
+const customFieldCreateSchema = z
+  .object({
+    entityType: z.string().trim().min(1).max(60),
+    fieldKey: z.string().trim().min(1).max(80).regex(CATEGORY_CODE_PATTERN, "clave: solo letras, números, guion, punto y guion bajo"),
+    label: z.string().trim().min(1).max(200),
+    description: optionalNullableText(500),
+    dataType: z.enum(CUSTOM_FIELD_DATA_TYPES),
+    required: z.boolean().optional(),
+    searchable: z.boolean().optional(),
+    visibleInList: z.boolean().optional(),
+    visibleInDetail: z.boolean().optional(),
+    optionsCategoryDefinitionId: optionalNullableText(64),
+    validationJson: jsonRecordSchema.optional(),
+    visibilityRulesJson: jsonRecordSchema.optional(),
+    defaultValueJson: jsonRecordSchema.optional(),
+    active: z.boolean().optional(),
+    sortOrder: z.number().int().min(0).max(100_000).optional()
+  })
+  .strict();
+
+const customFieldPatchSchema = customFieldCreateSchema.partial().strict();
+
+export type CustomFieldInput = z.input<typeof customFieldCreateSchema>;
+export type CustomFieldPatch = z.input<typeof customFieldPatchSchema>;
+
+const customFieldValuesSchema = z
+  .array(z.object({ fieldDefinitionId: z.string().trim().min(1).max(64), valueJson: jsonRecordSchema }).strict())
+  .min(1)
+  .max(100);
 
 // Authorization for this GET lives in the RBAC route manifest (custom_fields.read).
 export async function listCustomFields(propertyId: string) {
   await requireProperty(propertyId);
-  return { items: customFieldDefinitions.filter((field) => field.propertyId === propertyId) };
+  return { items: await listCustomFieldDefinitions(propertyId) };
 }
 
-export function createCustomField(input: BackOfficeMutationInput & {
-  field: Pick<PropertyCustomFieldDefinitionRecord, "entityType" | "fieldKey" | "label" | "dataType"> & Partial<PropertyCustomFieldDefinitionRecord>;
-}) {
+export async function createCustomField(input: BackOfficeMutationInput & { field: CustomFieldInput }) {
   requirePermissions(input.context, ["custom_fields.manage"]);
-  if (customFieldDefinitions.some((field) => field.propertyId === input.propertyId && field.entityType === input.field.entityType && field.fieldKey === input.field.fieldKey)) {
-    throw new ConflictError("La clave del campo personalizado debe ser única por propiedad y tipo de entidad.");
+  const field = parse(customFieldCreateSchema, input.field, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
+  if (field.optionsCategoryDefinitionId) {
+    await requireCategoryDefinitionById(field.optionsCategoryDefinitionId);
   }
-  const record: PropertyCustomFieldDefinitionRecord = {
-    id: createId("cf"),
+  // Duplicate (propertyId, entityType, fieldKey) → 409 from the unique constraint (categories.store).
+  const record = await createCustomFieldDefinition({
     propertyId: input.propertyId,
-    entityType: input.field.entityType,
-    fieldKey: input.field.fieldKey,
-    label: input.field.label,
-    description: input.field.description,
-    dataType: input.field.dataType,
-    required: input.field.required ?? false,
-    searchable: input.field.searchable ?? false,
-    visibleInList: input.field.visibleInList ?? false,
-    visibleInDetail: input.field.visibleInDetail ?? true,
-    optionsCategoryDefinitionId: input.field.optionsCategoryDefinitionId,
-    validationJson: input.field.validationJson ?? {},
-    visibilityRulesJson: input.field.visibilityRulesJson ?? {},
-    defaultValueJson: input.field.defaultValueJson ?? {},
-    active: input.field.active ?? true,
-    sortOrder: input.field.sortOrder ?? customFieldDefinitions.length + 1
-  };
-  customFieldDefinitions.push(record);
+    field: {
+      ...field,
+      sortOrder: field.sortOrder ?? (await countCustomFieldDefinitions(input.propertyId)) + 1
+    }
+  });
   audit({ ...input, action: "CustomFieldCreated", entityType: "property_custom_field_definition", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function patchCustomField(input: BackOfficeMutationInput & { fieldId: string; patch: Partial<PropertyCustomFieldDefinitionRecord> }) {
+export async function patchCustomField(input: BackOfficeMutationInput & { fieldId: string; patch: CustomFieldPatch }) {
   requirePermissions(input.context, ["custom_fields.manage"]);
-  const field = customFieldDefinitions.find((candidate) => candidate.id === input.fieldId && candidate.propertyId === input.propertyId);
+  const patch = parse(customFieldPatchSchema, input.patch, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const before = await findCustomFieldDefinition(input.propertyId, input.fieldId);
+  if (!before) throw new NotFoundError("Campo personalizado no encontrado.");
+  if (patch.optionsCategoryDefinitionId) {
+    await requireCategoryDefinitionById(patch.optionsCategoryDefinitionId);
+  }
+  const field = await updateCustomFieldDefinition({ propertyId: input.propertyId, fieldId: before.id, patch });
   if (!field) throw new NotFoundError("Campo personalizado no encontrado.");
-  const before = { ...field };
-  Object.assign(field, input.patch);
-  audit({ ...input, action: input.patch.active === false ? "CustomFieldDeactivated" : "CustomFieldUpdated", entityType: "property_custom_field_definition", entityId: field.id, beforeJson: before, afterJson: field });
+  audit({ ...input, action: patch.active === false ? "CustomFieldDeactivated" : "CustomFieldUpdated", entityType: "property_custom_field_definition", entityId: field.id, beforeJson: before, afterJson: field });
   return field;
 }
 
-export function getEntityCustomFields(propertyId: string, entityType: string, entityId: string) {
-  requirePermissions(demoStore.userContext, ["custom_fields.read"]);
-  return {
-    definitions: customFieldDefinitions.filter((field) => field.propertyId === propertyId && field.entityType === entityType && field.active),
-    values: customFieldValues.filter((value) => value.propertyId === propertyId && value.entityType === entityType && value.entityId === entityId)
-  };
+// Authorization for this GET lives in the RBAC route manifest (custom_fields.read).
+export async function getEntityCustomFields(propertyId: string, entityType: string, entityId: string) {
+  await requireProperty(propertyId);
+  const [definitions, values] = await Promise.all([
+    listCustomFieldDefinitions(propertyId, { entityType, active: true }),
+    listCustomFieldValues(propertyId, entityType, entityId)
+  ]);
+  return { definitions, values };
 }
 
-export function patchEntityCustomFields(input: BackOfficeMutationInput & {
+export async function patchEntityCustomFields(input: BackOfficeMutationInput & {
   entityType: string;
   entityId: string;
   values: Array<{ fieldDefinitionId: string; valueJson: Record<string, unknown> }>;
 }) {
   requirePermissions(input.context, ["custom_fields.manage"]);
-  const updated = input.values.map((value) => {
-    const definition = customFieldDefinitions.find((candidate) => candidate.id === value.fieldDefinitionId && candidate.propertyId === input.propertyId);
+  const values = parse(customFieldValuesSchema, input.values, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const definitions = await listCustomFieldDefinitions(input.propertyId, { entityType: input.entityType });
+  const updated = [];
+  for (const value of values) {
+    const definition = definitions.find((candidate) => candidate.id === value.fieldDefinitionId);
     if (!definition) {
-      throw new NotFoundError("Custom field definition was not found.");
+      throw new NotFoundError("Definición de campo personalizado no encontrada.");
     }
-    let record = customFieldValues.find((candidate) => candidate.propertyId === input.propertyId && candidate.entityType === input.entityType && candidate.entityId === input.entityId && candidate.fieldDefinitionId === value.fieldDefinitionId);
-    if (!record) {
-      record = { id: createId("cfv"), propertyId: input.propertyId, entityType: input.entityType, entityId: input.entityId, fieldDefinitionId: value.fieldDefinitionId, valueJson: value.valueJson };
-      customFieldValues.push(record);
-    } else {
-      record.valueJson = value.valueJson;
-    }
-    return record;
-  });
+    updated.push(
+      await upsertCustomFieldValue({
+        propertyId: input.propertyId,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        fieldDefinitionId: definition.id,
+        valueJson: value.valueJson
+      })
+    );
+  }
   audit({ ...input, action: "CustomFieldUpdated", entityType: input.entityType, entityId: input.entityId, afterJson: updated });
   return { status: "updated" as const, values: updated };
 }
 
-export function seedDefaultCategories(input: BackOfficeMutationInput) {
+export async function seedDefaultCategories(input: BackOfficeMutationInput) {
   requirePermissions(input.context, ["categories.manage"]);
-  const created = categoryDefinitions
-    .filter((definition) => !propertyCategoryOptions.some((option) => option.propertyId === input.propertyId && option.categoryDefinitionId === definition.id))
-    .map((definition) =>
-      createCategoryOption({
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const [definitions, existing] = await Promise.all([listCategoryDefinitions(), listPropertyCategoryOptions(input.propertyId)]);
+  const created: PropertyCategoryOptionRecord[] = [];
+  for (const definition of definitions) {
+    if (definition.mode === "read_only" || existing.some((option) => option.categoryDefinitionId === definition.id)) continue;
+    created.push(
+      await createCategoryOption({
         ...input,
         categoryCode: definition.code,
-        option: { code: "default", label: "Default", isSystemDefault: true, metadataJson: { seededFromDefinition: definition.code } }
+        option: { code: "default", label: "Por defecto", isSystemDefault: true, metadataJson: { seededFromDefinition: definition.code } }
       })
     );
+  }
   return { status: "seeded" as const, createdCount: created.length, created };
 }
 
-export function previewCategoryImport(input: BackOfficeMutationInput & { rows: Array<Record<string, unknown>> }) {
+const categoryImportRowsSchema = z.array(z.record(z.string(), z.unknown())).max(5000);
+
+export async function previewCategoryImport(input: BackOfficeMutationInput & { rows: Array<Record<string, unknown>> }) {
   requirePermissions(input.context, ["categories.import"]);
+  const rows = parse(categoryImportRowsSchema, input.rows, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
   const requiredColumns = ["category_code", "option_code", "label"];
   const errors: string[] = [];
-  const create = input.rows.filter((row) => {
+  const [definitions, existing] = await Promise.all([listCategoryDefinitions(), listPropertyCategoryOptions(input.propertyId)]);
+  const create = rows.filter((row) => {
     for (const column of requiredColumns) {
-      if (!row[column]) errors.push(`Missing ${column}`);
+      if (!row[column]) errors.push(`Falta la columna ${column}`);
     }
-    const definition = categoryDefinitions.find((candidate) => candidate.code === row.category_code);
-    return Boolean(definition && !propertyCategoryOptions.some((option) => option.propertyId === input.propertyId && option.categoryDefinitionId === definition.id && option.code === row.option_code));
+    const definition = definitions.find((candidate) => candidate.code === row.category_code);
+    return Boolean(definition && !existing.some((option) => option.categoryDefinitionId === definition.id && option.code === row.option_code));
   }).length;
-  const update = input.rows.length - create;
+  const update = rows.length - create;
   const preview = { status: errors.length ? "blocked" : "ready", create, update, skip: errors.length, errors, requiredColumns };
   audit({ ...input, action: "CategoryImportPreviewed", entityType: "category_import", afterJson: preview });
   return preview;
 }
 
-export function applyCategoryImport(input: BackOfficeMutationInput & { rows: Array<Record<string, unknown>>; confirmationProvided?: boolean }) {
+export async function applyCategoryImport(input: BackOfficeMutationInput & { rows: Array<Record<string, unknown>>; confirmationProvided?: boolean }) {
   requirePermissions(input.context, ["categories.import"]);
   if (!input.confirmationProvided) {
-    return { status: "confirmation_required" as const, message: "Category import requires preview and confirmation before apply." };
+    return { status: "confirmation_required" as const, message: "La importación de categorías requiere previsualización y confirmación antes de aplicarse." };
   }
-  const created = input.rows.map((row) =>
-    createCategoryOption({
-      ...input,
-      categoryCode: String(row.category_code),
-      option: {
-        code: String(row.option_code),
-        label: String(row.label),
-        description: row.description ? String(row.description) : undefined,
-        parentOptionId: row.parent_option_code ? String(row.parent_option_code) : undefined,
-        colorToken: row.color_token ? String(row.color_token) : undefined,
-        iconName: row.icon_name ? String(row.icon_name) : undefined,
-        active: row.active !== false,
-        sortOrder: row.sort_order ? Number(row.sort_order) : undefined
-      }
-    })
-  );
+  const rows = parse(categoryImportRowsSchema, input.rows, "body");
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const created: PropertyCategoryOptionRecord[] = [];
+  for (const row of rows) {
+    created.push(
+      await createCategoryOption({
+        ...input,
+        categoryCode: String(row.category_code),
+        option: {
+          code: String(row.option_code),
+          label: String(row.label),
+          description: row.description ? String(row.description) : undefined,
+          parentOptionId: row.parent_option_code ? String(row.parent_option_code) : undefined,
+          colorToken: row.color_token ? String(row.color_token) : undefined,
+          iconName: row.icon_name ? String(row.icon_name) : undefined,
+          active: row.active !== false,
+          sortOrder: row.sort_order ? Number(row.sort_order) : undefined
+        }
+      })
+    );
+  }
   audit({ ...input, action: "CategoryImportApplied", entityType: "category_import", afterJson: { createdCount: created.length } });
   return { status: "applied" as const, createdCount: created.length, created };
 }
 
-export function exportCategories(input: BackOfficeMutationInput) {
+export async function exportCategories(input: BackOfficeMutationInput) {
   requirePermissions(input.context, ["categories.export"]);
-  const rows = propertyCategoryOptions
-    .filter((option) => option.propertyId === input.propertyId)
-    .map((option) => ({
-      category_code: categoryDefinitions.find((definition) => definition.id === option.categoryDefinitionId)?.code,
-      option_code: option.code,
-      label: option.label,
-      description: option.description,
-      parent_option_code: option.parentOptionId,
-      color_token: option.colorToken,
-      icon_name: option.iconName,
-      active: option.active,
-      sort_order: option.sortOrder
-    }));
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const [definitions, options] = await Promise.all([listCategoryDefinitions(), listPropertyCategoryOptions(input.propertyId)]);
+  const rows = options.map((option) => ({
+    category_code: definitions.find((definition) => definition.id === option.categoryDefinitionId)?.code,
+    option_code: option.code,
+    label: option.label,
+    description: option.description,
+    parent_option_code: option.parentOptionId,
+    color_token: option.colorToken,
+    icon_name: option.iconName,
+    active: option.active,
+    sort_order: option.sortOrder
+  }));
   audit({ ...input, action: "CategoryExported", entityType: "category_export", afterJson: { rowCount: rows.length } });
   return { format: "json", rows };
 }
 
+// Authorization for this GET lives in the RBAC route manifest (categories.read).
 export function listCategoryTemplates() {
-  requirePermissions(demoStore.userContext, ["categories.read"]);
   return { items: categoryTemplates };
 }
 
-export function previewCategoryTemplate(input: BackOfficeMutationInput & { templateCode: string }) {
+export async function previewCategoryTemplate(input: BackOfficeMutationInput & { templateCode: string }) {
   requirePermissions(input.context, ["categories.manage"]);
+  await requireOrganizationProperty(input.propertyId, input.context);
   const template = categoryTemplates.find((candidate) => candidate.code === input.templateCode);
   if (!template) throw new NotFoundError("Plantilla de categorías no encontrada.");
+  const options = await listPropertyCategoryOptions(input.propertyId);
   const preview = {
     template,
     willCreate: template.creates,
     willUpdate: [],
-    willSkip: template.creates.filter((label) =>
-      propertyCategoryOptions.some((option) => option.propertyId === input.propertyId && option.label.toLowerCase() === label.toLowerCase())
-    ),
+    willSkip: template.creates.filter((label) => options.some((option) => option.label.toLowerCase() === label.toLowerCase())),
     requiresConfirmation: true
   };
   audit({ ...input, action: "CategoryTemplatePreviewed", entityType: "category_template", entityId: template.code, afterJson: preview });
   return preview;
 }
 
-export function applyCategoryTemplate(input: BackOfficeMutationInput & { templateCode: string; confirmationProvided?: boolean }) {
+export async function applyCategoryTemplate(input: BackOfficeMutationInput & { templateCode: string; confirmationProvided?: boolean }) {
   requirePermissions(input.context, ["categories.manage"]);
   if (!input.confirmationProvided) {
-    return { status: "confirmation_required" as const, message: "Category template application requires preview and confirmation." };
+    return { status: "confirmation_required" as const, message: "La aplicación de una plantilla de categorías requiere previsualización y confirmación." };
   }
-  const preview = previewCategoryTemplate(input);
+  const preview = await previewCategoryTemplate(input);
   audit({ ...input, action: "CategoryTemplateApplied", entityType: "category_template", entityId: input.templateCode, afterJson: preview });
   return { status: "applied" as const, created: preview.willCreate, skipped: preview.willSkip };
 }
@@ -3212,85 +3274,66 @@ export function suggestPropertyCategories(input: BackOfficeMutationInput & { pro
   return suggestions;
 }
 
+// ── Pasos de puesta en marcha (Tanda L2 · L2-04: property_setup_steps) ──────
+
+const setupStepStatusSchema = z.enum(["not_started", "in_progress", "completed", "blocked", "needs_review"]);
+const setupStepPatchSchema = z
+  .object({
+    stepCode: z.string().trim().min(1).max(80),
+    status: setupStepStatusSchema,
+    metadataJson: jsonRecordSchema.optional()
+  })
+  .strict();
+
 export async function getSetupProgress(propertyId: string) {
   await requireProperty(propertyId);
-  const steps = SETUP_STEPS.map((stepCode) => {
-    const existing = demoStore.propertySetupSteps.find((step) => step.propertyId === propertyId && step.stepCode === stepCode);
-    return (
-      existing ?? {
-        id: `virtual_${stepCode}`,
-        propertyId,
-        stepCode,
-        status: "not_started",
-        metadataJson: {}
-      }
-    );
-  }) as PropertySetupStepRecord[];
+  // First GET of a property materialises the catalogue as `not_started` rows (idempotent).
+  await ensureSetupSteps(propertyId, SETUP_STEPS);
+  const steps = await listSetupSteps(propertyId, SETUP_STEPS);
   const completed = steps.filter((step) => step.status === "completed").length;
   return {
     propertyId,
     steps,
     completed,
     total: steps.length,
-    progressPercent: Math.round((completed / steps.length) * 100)
+    progressPercent: steps.length === 0 ? 0 : Math.round((completed / steps.length) * 100)
   };
 }
 
-export function updateSetupStep(input: BackOfficeMutationInput & {
+export async function updateSetupStep(input: BackOfficeMutationInput & {
   stepCode: string;
   status: PropertySetupStepRecord["status"];
   metadataJson?: Record<string, unknown>;
 }) {
   requirePermissions(input.context, ["property.configure"]);
-  const existing = demoStore.propertySetupSteps.find(
-    (step) => step.propertyId === input.propertyId && step.stepCode === input.stepCode
-  );
-  const before = existing ? { ...existing } : undefined;
-  const completedAt = input.status === "completed" ? nowIso() : existing?.completedAt;
-  const record =
-    existing ??
-    ({
-      id: createId("setup"),
-      propertyId: input.propertyId,
-      stepCode: input.stepCode,
-      status: input.status,
-      metadataJson: {}
-    } as PropertySetupStepRecord);
-
-  record.status = input.status;
-  record.completedAt = completedAt;
-  record.completedBy = input.status === "completed" ? input.context.userId : record.completedBy;
-  record.metadataJson = input.metadataJson ?? record.metadataJson;
-  if (!existing) {
-    demoStore.propertySetupSteps.push(record);
+  const body = parse(setupStepPatchSchema, { stepCode: input.stepCode, status: input.status, metadataJson: input.metadataJson }, "body");
+  if (!SETUP_STEPS.includes(body.stepCode)) {
+    throw new NotFoundError(`Paso de puesta en marcha desconocido: ${body.stepCode}`);
   }
-
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const existing = await findSetupStep(input.propertyId, body.stepCode);
+  const before = existing ? { ...existing } : undefined;
+  const completed = body.status === "completed";
+  const record = await upsertSetupStep(input.propertyId, body.stepCode, {
+    status: body.status,
+    completedAt: completed ? new Date() : existing?.completedAt ? new Date(existing.completedAt) : null,
+    completedBy: completed ? input.context.userId : (existing?.completedBy ?? null),
+    metadataJson: body.metadataJson ?? existing?.metadataJson ?? {}
+  });
   audit({ ...input, action: "PropertySetupStepUpdated", entityType: "property_setup_step", entityId: record.id, beforeJson: before, afterJson: record });
   return record;
 }
 
 export async function getReadiness(propertyId: string) {
   await requireProperty(propertyId);
-  // Prisma is the source of truth (shared by every replica); the seeded demo checks live only
-  // in memory until the first recalculation persists them, so they fill in by checkCode.
-  const persisted = (
+  // Prisma is the only source (Tanda L2 · L2-04): the seeded in-memory checks are gone.
+  const checks = (
     await prisma.propertyReadinessCheck.findMany({
       where: { propertyId },
-      orderBy: [{ createdAt: "asc" }, { checkCode: "asc" }]
+      orderBy: [{ createdAt: "asc" }, { checkCode: "asc" }],
+      take: 500
     })
   ).map(mapReadinessCheckRow);
-  for (const record of persisted) {
-    mirrorRecord(
-      demoStore.propertyReadinessChecks,
-      record,
-      (candidate) => candidate.propertyId === propertyId && candidate.checkCode === record.checkCode
-    );
-  }
-  const persistedCodes = new Set(persisted.map((check) => check.checkCode));
-  const checks = [
-    ...persisted,
-    ...demoStore.propertyReadinessChecks.filter((check) => check.propertyId === propertyId && !persistedCodes.has(check.checkCode))
-  ];
   const blocking = checks.filter((check) => check.severity === "blocking" && check.status !== "pass");
   return {
     propertyId,
@@ -3710,12 +3753,6 @@ async function computeReadiness(input: BackOfficeMutationInput) {
   }
   const currentCodes = checks.map((check) => check.checkCode);
   await prisma.propertyReadinessCheck.deleteMany({ where: { propertyId: input.propertyId, checkCode: { notIn: currentCodes } } });
-  for (let index = demoStore.propertyReadinessChecks.length - 1; index >= 0; index -= 1) {
-    const candidate = demoStore.propertyReadinessChecks[index]!;
-    if (candidate.propertyId === input.propertyId && !currentCodes.includes(candidate.checkCode)) {
-      demoStore.propertyReadinessChecks.splice(index, 1);
-    }
-  }
   audit({ ...input, action: "PropertyReadinessRecalculated", entityType: "property", entityId: input.propertyId, afterJson: records });
   return await getReadiness(input.propertyId);
 }
@@ -3970,6 +4007,7 @@ export async function createSpace(input: BackOfficeMutationInput & {
   return record;
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira map-positions). */
 export function upsertMapPosition(input: BackOfficeMutationInput & {
   position: Pick<PropertyMapPositionRecord, "entityType" | "entityId" | "x" | "y"> & Partial<PropertyMapPositionRecord>;
 }) {
@@ -4176,6 +4214,7 @@ export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
   return { status: "updated" as const, updatedCount: rooms.length, rooms };
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira GET …/map/export). */
 export function exportPropertyMap(propertyId: string) {
   return demoStore.rooms
     .filter((room) => room.propertyId === propertyId)
@@ -4466,6 +4505,7 @@ export async function createBedType(input: BackOfficeMutationInput & {
   return record;
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira map/imports). */
 export function previewPropertyMapImport(input: BackOfficeMutationInput & { rows: PropertyMapImportRow[] }) {
   requirePermissions(input.context, ["property.import"]);
   const errors: string[] = [];
@@ -4504,6 +4544,7 @@ export function previewPropertyMapImport(input: BackOfficeMutationInput & { rows
   return importRecord;
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira map/imports/:importId/commit). */
 export async function commitPropertyMapImport(input: BackOfficeMutationInput & { importId: string; createUnknownReferences?: boolean }) {
   requirePermissions(input.context, ["property.import"]);
   const importRecord = demoStore.propertyImports.find((candidate) => candidate.id === input.importId && candidate.propertyId === input.propertyId);
@@ -4559,6 +4600,7 @@ export async function commitPropertyMapImport(input: BackOfficeMutationInput & {
   return { status: "committed" as const, import: importRecord, createdRooms };
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira map/imports/:importId). */
 export function getPropertyImport(propertyId: string, importId: string) {
   return demoStore.propertyImports.find((candidate) => candidate.propertyId === propertyId && candidate.id === importId);
 }
@@ -4566,13 +4608,12 @@ export function getPropertyImport(propertyId: string, importId: string) {
 export async function listBackOfficeModules(propertyId: string) {
   // Prisma is the source of truth for PropertyModule: listPropertyModules re-hydrates the
   // demoStore mirror (mapping DB module ids to catalog ids), so Prisma-only hotels see
-  // their real module state instead of an empty mirror.
-  await listPropertyModules(propertyId);
-  const propertyModules = demoStore.propertyModules.filter((propertyModule) => propertyModule.propertyId === propertyId);
+  // their real module state instead of an empty mirror. Tanda L2 (L2-04): the health
+  // checks come from module_health_checks in ONE query for the whole property.
+  const [propertyModules, healthChecks] = await Promise.all([listPropertyModules(propertyId), listModuleHealthChecks(propertyId)]);
   return HOTEL_MODULES.map((manifest) => {
-    const moduleRecord = demoStore.modules.find((module) => module.code === manifest.code);
-    const propertyModule = propertyModules.find((candidate) => candidate.moduleId === moduleRecord?.id);
-    const health = demoStore.moduleHealthChecks.filter((check) => check.propertyId === propertyId && check.moduleCode === manifest.code);
+    const propertyModule = propertyModules.find((candidate) => candidate.module?.code === manifest.code);
+    const health = healthChecks.filter((check) => check.moduleCode === manifest.code);
     const healthStatus = health.some((check) => check.status === "error")
       ? "error"
       : health.some((check) => check.status === "needs_configuration")
@@ -4588,7 +4629,7 @@ export async function listBackOfficeModules(propertyId: string) {
       configurationJson: propertyModule?.configurationJson ?? {},
       healthStatus,
       healthChecks: health,
-      recommendedNextAction: health.find((check) => check.status !== "ok")?.message ?? "No action required."
+      recommendedNextAction: health.find((check) => check.status !== "ok")?.message ?? "No se requiere ninguna acción."
     };
   });
 }
@@ -4613,43 +4654,56 @@ export async function configureModule(input: BackOfficeMutationInput & { moduleC
   return { module: getHotelModuleManifest(input.moduleCode), propertyModule };
 }
 
-export function getModuleConfiguration(propertyId: string, moduleCode: HotelModuleCode) {
-  const moduleRecord = demoStore.modules.find((module) => module.code === moduleCode);
-  const propertyModule = demoStore.propertyModules.find((candidate) => candidate.propertyId === propertyId && candidate.moduleId === moduleRecord?.id);
+export async function getModuleConfiguration(propertyId: string, moduleCode: HotelModuleCode) {
+  const manifest = getHotelModuleManifest(moduleCode);
+  // Tanda L2 (L2-04): PropertyModule row from Prisma (module by unique code), never the mirror.
+  const moduleRow = await prisma.module.findUnique({ where: { code: moduleCode }, select: { id: true } });
+  const propertyModule = moduleRow
+    ? await prisma.propertyModule.findUnique({ where: { propertyId_moduleId: { propertyId, moduleId: moduleRow.id } }, select: { configurationJson: true } })
+    : null;
   return {
-    module: getHotelModuleManifest(moduleCode),
-    configurationJson: propertyModule?.configurationJson ?? {},
-    setupRequirements: getModuleSetupRequirements(moduleCode)
+    module: manifest,
+    configurationJson: propertyModule ? jsonRecord(propertyModule.configurationJson) : {},
+    setupRequirements: getModuleSetupRequirements(moduleCode).map(({ validator: _validator, ...requirement }) => requirement)
   };
 }
 
-export function getModuleHealth(propertyId: string, moduleCode: HotelModuleCode) {
-  return demoStore.moduleHealthChecks.filter((check) => check.propertyId === propertyId && check.moduleCode === moduleCode);
+/** @deprecated L2: sin ruta (L2-02 retira GET …/modules/:moduleCode/health; la salud viaja en GET …/modules). */
+export async function getModuleHealth(propertyId: string, moduleCode: HotelModuleCode) {
+  return listModuleHealthChecks(propertyId, moduleCode);
 }
 
-export function recalculateModuleHealth(input: BackOfficeMutationInput & { moduleCode: HotelModuleCode }) {
+export async function recalculateModuleHealth(input: BackOfficeMutationInput & { moduleCode: HotelModuleCode }) {
   requirePermissions(input.context, ["modules.configure"]);
+  await requireOrganizationProperty(input.propertyId, input.context);
+  getHotelModuleManifest(input.moduleCode);
   const requirements = getModuleSetupRequirements(input.moduleCode);
-  const health = requirements.map((requirement) => ({
-    id: createId("mh"),
-    propertyId: input.propertyId,
-    moduleCode: input.moduleCode,
-    checkCode: requirement.code,
-    status: requirement.validator(input.propertyId) ? "ok" : "needs_configuration",
-    severity: requirement.blocking ? "blocking" : "warning",
-    message: requirement.description,
-    metadataJson: {},
-    updatedAt: nowIso()
-  })) as typeof demoStore.moduleHealthChecks;
-  demoStore.moduleHealthChecks = demoStore.moduleHealthChecks.filter(
-    (check) => !(check.propertyId === input.propertyId && check.moduleCode === input.moduleCode)
-  );
-  demoStore.moduleHealthChecks.push(...health);
+  const checks: ModuleHealthCheckInput[] = [];
+  for (const requirement of requirements) {
+    checks.push({
+      checkCode: requirement.code,
+      status: (await requirement.validator(input.propertyId)) ? "ok" : "needs_configuration",
+      severity: requirement.blocking ? "blocking" : "warning",
+      message: requirement.description,
+      metadataJson: {}
+    });
+  }
+  const health = await replaceModuleHealthChecks(input.propertyId, input.moduleCode, checks);
   audit({ ...input, action: "ModuleHealthRecalculated", entityType: "module", entityId: input.moduleCode, afterJson: health });
   return health;
 }
 
-function getModuleSetupRequirements(moduleCode: HotelModuleCode) {
+type ModuleSetupRequirement = {
+  code: string;
+  label: string;
+  description: string;
+  required: boolean;
+  blocking: boolean;
+  /** Tanda L2 (L2-04): validators read Prisma (rooms, document templates, AI settings), never the in-memory mirrors. */
+  validator: (propertyId: string) => Promise<boolean>;
+};
+
+function getModuleSetupRequirements(moduleCode: HotelModuleCode): ModuleSetupRequirement[] {
   return [
     {
       code: "room_inventory_exists",
@@ -4657,7 +4711,7 @@ function getModuleSetupRequirements(moduleCode: HotelModuleCode) {
       description: "Debe existir al menos una habitación activa y vendible.",
       required: true,
       blocking: true,
-      validator: (propertyId: string) => demoStore.rooms.some((room) => room.propertyId === propertyId && room.active !== false && room.sellable)
+      validator: async (propertyId: string) => (await prisma.room.count({ where: { propertyId, active: true, sellable: true } })) > 0
     },
     {
       code: "signature_template_configured",
@@ -4665,8 +4719,8 @@ function getModuleSetupRequirements(moduleCode: HotelModuleCode) {
       description: "Hay que configurar la plantilla de firma del registro de viajeros.",
       required: moduleCode === "checkin_online",
       blocking: moduleCode === "checkin_online",
-      validator: (propertyId: string) =>
-        demoStore.documentTemplates.some((template) => template.propertyId === propertyId && template.templateCode === "guest_register_signature_form")
+      validator: async (propertyId: string) =>
+        (await prisma.documentTemplate.count({ where: { propertyId, templateCode: "guest_register_signature_form" } })) > 0
     },
     {
       code: "ocr_provider_configured",
@@ -4674,8 +4728,10 @@ function getModuleSetupRequirements(moduleCode: HotelModuleCode) {
       description: "Hay que configurar el proveedor de OCR antes del escaneo asistido de documentos.",
       required: moduleCode === "checkin_online",
       blocking: moduleCode === "checkin_online",
-      validator: (propertyId: string) =>
-        demoStore.propertyAiSettings.some((settings) => settings.propertyId === propertyId && settings.configurationJson.ocrProviderConfigured === true)
+      validator: async (propertyId: string) => {
+        const settings = await prisma.propertyAiSetting.findUnique({ where: { propertyId }, select: { configurationJson: true } });
+        return jsonRecord(settings?.configurationJson).ocrProviderConfigured === true;
+      }
     }
   ];
 }
@@ -6190,6 +6246,7 @@ export function generateQrCode(input: BackOfficeMutationInput & Omit<QrCodeRecor
   return code;
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira GET …/qr-codes). */
 export function listQrCodes(propertyId: string) {
   return demoStore.qrCodes.filter((code) => code.propertyId === propertyId);
 }
@@ -6259,6 +6316,7 @@ function makeBackOfficeProposal(prompt: string): Record<string, unknown> {
   };
 }
 
+/** @deprecated L2: sin ruta (L2-02 retira GET …/ai/suggestions). */
 export function listBackOfficeAiSuggestions(propertyId: string) {
   return demoStore.backOfficeAiSuggestions.filter((suggestion) => suggestion.propertyId === propertyId).slice().reverse();
 }

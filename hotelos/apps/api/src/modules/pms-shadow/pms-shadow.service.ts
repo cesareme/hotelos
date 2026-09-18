@@ -662,7 +662,8 @@ export async function computeReconciliation(input: {
   const runs = await prisma.pmsShadowRun.findMany({
     where: { organizationId, propertyId, businessDate: date, status: { in: ["done", "partial"] } },
     orderBy: [{ finishedAt: "desc" }],
-    select: { id: true, feed: true, resultJson: true }
+    select: { id: true, feed: true, resultJson: true },
+    take: 500
   });
   const declared: PmsShadowDeclaredStats = {};
   // Lo que trae el propio fichero manda sobre lo declarado por cortes anteriores del mismo día (ver el parámetro).
@@ -741,12 +742,15 @@ export async function getOverview(input: { context: UserContext; propertyId: str
   ]);
   const scheduled = profile ? scheduleFeedsOf(profile.scheduleJson) : [];
   const feedNames = new Set<string>(scheduled.map((feed) => feed.feed));
-  const distinct = await prisma.pmsShadowRun.findMany({ where: { organizationId, propertyId }, distinct: ["feed"], select: { feed: true } });
-  for (const row of distinct) if (isKnownFeed(row.feed)) feedNames.add(row.feed);
+  // L2-05: un groupBy da los feeds con runs y el createdAt del último de cada uno; una consulta más trae esas filas
+  // (antes: distinct en memoria + un findFirst por feed).
+  const lastByFeed = await prisma.pmsShadowRun.groupBy({ by: ["feed"], where: { organizationId, propertyId }, _max: { createdAt: true } });
+  for (const row of lastByFeed) if (isKnownFeed(row.feed)) feedNames.add(row.feed);
   const lastRuns = new Map<string, RunRow>();
-  for (const feed of feedNames) {
-    const row = await prisma.pmsShadowRun.findFirst({ where: { organizationId, propertyId, feed }, orderBy: [{ createdAt: "desc" }] });
-    if (row) lastRuns.set(feed, row);
+  const lastKeys = lastByFeed.filter((row) => feedNames.has(row.feed) && row._max.createdAt !== null).map((row) => ({ feed: row.feed, createdAt: row._max.createdAt as Date }));
+  if (lastKeys.length > 0) {
+    const rows = await prisma.pmsShadowRun.findMany({ where: { organizationId, propertyId, OR: lastKeys }, orderBy: [{ createdAt: "desc" }], take: lastKeys.length * 4 });
+    for (const row of rows) if (!lastRuns.has(row.feed)) lastRuns.set(row.feed, row);
   }
   const runKeys = new Set<string>();
   for (const [feed, row] of lastRuns) {
@@ -755,7 +759,7 @@ export async function getOverview(input: { context: UserContext; propertyId: str
   }
   // Runs de hoy (cualquier estado) para la puntualidad: los de la vista de «último run» pueden ser de otro día.
   const todayRuns = profile
-    ? await prisma.pmsShadowRun.findMany({ where: { organizationId, propertyId, createdAt: { gte: new Date(now.getTime() - 2 * 86_400_000) } }, select: { feed: true, businessDate: true } })
+    ? await prisma.pmsShadowRun.findMany({ where: { organizationId, propertyId, createdAt: { gte: new Date(now.getTime() - 2 * 86_400_000) } }, select: { feed: true, businessDate: true }, take: 5_000 })
     : [];
   for (const row of todayRuns) {
     const businessDate = isoDateOf(row.businessDate);
@@ -1143,14 +1147,15 @@ export type PmsShadowLateSweepResult = { profiles: number; late: number; alertsC
 export async function sweepLateFeeds(input: { db: Db; now?: Date }): Promise<PmsShadowLateSweepResult> {
   const { db } = input;
   const now = input.now ?? new Date();
-  const profiles = await db.pmsShadowProfile.findMany({ where: { status: "active" }, select: { organizationId: true, propertyId: true, scheduleJson: true } });
+  const profiles = await db.pmsShadowProfile.findMany({ where: { status: "active" }, select: { organizationId: true, propertyId: true, scheduleJson: true }, take: 5_000 });
   const result: PmsShadowLateSweepResult = { profiles: profiles.length, late: 0, alertsCreated: 0, staleRuns: 0 };
   if (profiles.length > 0) {
-    const properties = await db.property.findMany({ where: { id: { in: profiles.map((profile) => profile.propertyId) } }, select: { id: true, timezone: true } });
+    const properties = await db.property.findMany({ where: { id: { in: profiles.map((profile) => profile.propertyId) } }, select: { id: true, timezone: true }, take: profiles.length });
     const timezoneOf = new Map(properties.map((property) => [property.id, property.timezone]));
     const runs = await db.pmsShadowRun.findMany({
       where: { propertyId: { in: profiles.map((profile) => profile.propertyId) }, createdAt: { gte: new Date(now.getTime() - 3 * 86_400_000) } },
-      select: { propertyId: true, feed: true, businessDate: true }
+      select: { propertyId: true, feed: true, businessDate: true },
+      take: 50_000
     });
     const keys = new Set<string>();
     for (const run of runs) {

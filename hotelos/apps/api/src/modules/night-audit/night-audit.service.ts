@@ -618,12 +618,21 @@ async function stepPostRoomChargesForInHouse(ctx: RunContext, report: NightAudit
   let totalPosted = new Decimal(0);
   const postedLines: Array<{ lineId: string; folioId: string; total: string; description: string; reservationId: string }> = [];
 
+  // Tanda L2 (L2-06): the open folios of every in-house reservation in ONE
+  // query (was one findFirst per reservation). Same selection rule as before:
+  // primary first, then lowest id — the first row per reservation wins.
+  const openFolios = await prisma.folio.findMany({
+    where: { reservationId: { in: inHouse.map((r) => r.id) }, status: "open", deletedAt: null },
+    orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
+    select: { id: true, reservationId: true }
+  });
+  const folioByReservation = new Map<string, { id: string }>();
+  for (const row of openFolios) {
+    if (!folioByReservation.has(row.reservationId)) folioByReservation.set(row.reservationId, { id: row.id });
+  }
+
   for (const reservation of inHouse) {
-    const folio = await prisma.folio.findFirst({
-      where: { reservationId: reservation.id, status: "open", deletedAt: null },
-      orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
-      select: { id: true }
-    });
+    const folio = folioByReservation.get(reservation.id) ?? null;
     if (!folio) {
       items.push({ reservationId: reservation.id, reservationCode: reservation.code, folioId: null, outcome: "no_open_folio", amount: null, priceSource: "none", detail: "Sin folio abierto: no se ha cargado el alojamiento." });
       continue;
@@ -673,9 +682,12 @@ async function stepPostRoomChargesForInHouse(ctx: RunContext, report: NightAudit
   }
 
   // Folio-engine side effects, after the commits (same as folio.service.postFolioLine).
+  // DP-08 (corrector L2): one dynamic import for the whole batch and ONE
+  // folio_lines read after routing (a routed line may have moved folio), instead
+  // of an import + a findUnique per posted line.
+  const { routeLine } = await import("../folio/folio-routing.service.js");
   for (const line of postedLines) {
     try {
-      const { routeLine } = await import("../folio/folio-routing.service.js");
       await routeLine({ lineId: line.lineId, context: ctx.context, correlationId: ctx.correlationId });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -692,7 +704,13 @@ async function stepPostRoomChargesForInHouse(ctx: RunContext, report: NightAudit
         correlationId: ctx.correlationId
       });
     }
-    const finalLine = await prisma.folioLine.findUnique({ where: { id: line.lineId }, select: { folioId: true, postedAt: true } });
+  }
+  const finalRows = postedLines.length > 0
+    ? await prisma.folioLine.findMany({ where: { id: { in: postedLines.map((line) => line.lineId) } }, select: { id: true, folioId: true, postedAt: true } })
+    : [];
+  const finalLines = new Map(finalRows.map((row) => [row.id, row]));
+  for (const line of postedLines) {
+    const finalLine = finalLines.get(line.lineId);
     recordAuditEvent({
       organizationId: ctx.context.organizationId,
       propertyId: ctx.propertyId,

@@ -109,12 +109,6 @@ export type PropertyModuleRecord = {
   createdAt: string;
 };
 
-export type ModuleDependencyRecord = {
-  id: string;
-  moduleId: string;
-  requiredModuleId: string;
-};
-
 export type IntegrationCategoryRecord = {
   id: string;
   code: string;
@@ -266,12 +260,6 @@ export type RoomFeatureRecord = {
   active: boolean;
 };
 
-export type RoomFeatureAssignmentRecord = {
-  id: string;
-  roomId: string;
-  roomFeatureId: string;
-};
-
 export type BedTypeRecord = {
   id: string;
   propertyId: string;
@@ -279,13 +267,6 @@ export type BedTypeRecord = {
   name: string;
   capacity: number;
   active: boolean;
-};
-
-export type RoomBedRecord = {
-  id: string;
-  roomId: string;
-  bedTypeId: string;
-  quantity: number;
 };
 
 export type PropertySetupStepRecord = {
@@ -1051,36 +1032,6 @@ export type AuthorityRoutingRuleRecord = {
   createdAt: string;
 };
 
-export type AiToolCallRecord = {
-  id: string;
-  organizationId: string;
-  propertyId: string;
-  userId: string;
-  toolName: string;
-  inputJson: unknown;
-  outputJson?: unknown;
-  confidence?: number;
-  requiredConfirmation: boolean;
-  confirmedBy?: string;
-  status: "pending_confirmation" | "executed" | "rejected" | "failed";
-  createdAt: string;
-};
-
-export type PendingConfirmation = {
-  id: string;
-  type: "check_in_from_scan";
-  propertyId: string;
-  organizationId: string;
-  userId: string;
-  reservationId: string;
-  roomId: string;
-  guestId: string;
-  guestRegisterRecordId: string;
-  card: unknown;
-  createdAt: string;
-  requiredSignature: boolean;
-};
-
 export type RevenueForecastRecord = {
   id: string;
   propertyId: string;
@@ -1126,20 +1077,6 @@ export type RevenueRecommendationRecord = {
   approvedBy?: string;
   rejectedBy?: string;
   appliedAt?: string;
-  createdAt: string;
-};
-
-export type DemandCalendarEventRecord = {
-  id: string;
-  propertyId: string;
-  name: string;
-  eventType?: string;
-  startDate: string;
-  endDate: string;
-  expectedImpact?: string;
-  impactScore?: number;
-  source?: string;
-  metadataJson: Record<string, unknown>;
   createdAt: string;
 };
 
@@ -1647,18 +1584,37 @@ export type UserContext = {
   mustChangePassword?: boolean;
 };
 
+/**
+ * Tanda L2 (L2-08): el demoStore es solo semilla de demo + espejos hidratados
+ * al arrancar (properties, organization, modules, propertyModules,
+ * propertyAiSettings, propertyComplianceSettings, userContext). Claves retiradas
+ * en L2-08 porque ya no las leía nadie en runtime, tests ni scripts (viven en
+ * Prisma): devices, sessions, mfaChallenges, notifications (auth.service ·
+ * prisma.session/device/mfaChallenge/notification), moduleDependencies
+ * (HOTEL_MODULES), propertySpaces, roomFeatureAssignments, roomBeds,
+ * propertySetupSteps, propertyReadinessChecks, moduleHealthChecks,
+ * propertySetupFormSubmissions, manualSetupSubmissions (backoffice/setup.store),
+ * offlineSyncRecords (offline.service), conversations, messages
+ * (messaging.service), authorityReportingSettings, lodgingLegalProfiles,
+ * authoritySubmissionBatches, authoritySubmissionBatchRecords,
+ * identityDocumentProcessingEvents, authorityRoutingRules (compliance.service),
+ * aiToolCalls, pendingConfirmations (ai-operations/pipeline · check-in.command),
+ * demandCalendarEvents (revenue/demand-calendar.service) y advancedRecords
+ * (advanced/advanced-record-store). Los tipos *Record que otros módulos siguen
+ * importando se conservan. Pendientes (con lector fuera de este lote):
+ * events (audit.service, cadena en memoria), propertyMapPositions,
+ * propertyImports, qrCodes, backOfficeAiSuggestions (backoffice.service,
+ * funciones @deprecated de L2-02), revenueRecommendations (tenancy.ts) y los
+ * espejos de revenue pinados por contratos de texto (revenueReportViews,
+ * revenueScenarios, revenueAutomationRules, rateParityAlerts).
+ */
 export type DemoStore = {
   organization: OrganizationRecord;
   property: PropertyRecord;
   properties: PropertyRecord[];
   users: UserRecord[];
-  devices: DeviceRecord[];
-  sessions: SessionRecord[];
-  mfaChallenges: MfaChallengeRecord[];
-  notifications: NotificationRecord[];
   modules: ModuleRecord[];
   propertyModules: PropertyModuleRecord[];
-  moduleDependencies: ModuleDependencyRecord[];
   integrationCategories: IntegrationCategoryRecord[];
   integrationProviders: IntegrationProviderRecord[];
   integrationConnections: IntegrationConnectionRecord[];
@@ -1666,15 +1622,9 @@ export type DemoStore = {
   buildings: BuildingRecord[];
   floors: FloorRecord[];
   propertyZones: PropertyZoneRecord[];
-  propertySpaces: PropertySpaceRecord[];
   propertyMapPositions: PropertyMapPositionRecord[];
   roomFeatures: RoomFeatureRecord[];
-  roomFeatureAssignments: RoomFeatureAssignmentRecord[];
   bedTypes: BedTypeRecord[];
-  roomBeds: RoomBedRecord[];
-  propertySetupSteps: PropertySetupStepRecord[];
-  propertyReadinessChecks: PropertyReadinessCheckRecord[];
-  moduleHealthChecks: ModuleHealthCheckRecord[];
   departments: DepartmentRecord[];
   userDepartments: UserDepartmentRecord[];
   housekeepingSections: HousekeepingSectionRecord[];
@@ -1692,10 +1642,7 @@ export type DemoStore = {
   documentTemplates: DocumentTemplateRecord[];
   qrCodes: QrCodeRecord[];
   propertyImports: PropertyImportRecord[];
-  propertySetupFormSubmissions: PropertySetupFormSubmissionRecord[];
-  manualSetupSubmissions: ManualSetupSubmissionRecord[];
   backOfficeAiSuggestions: BackOfficeAiSuggestionRecord[];
-  offlineSyncRecords: OfflineSyncRecord[];
   userContext: UserContext;
   roomTypes: RoomTypeRecord[];
   rooms: RoomRecord[];
@@ -1714,7 +1661,6 @@ export type DemoStore = {
   channelSyncJobs: ChannelSyncJobRecord[];
   revenueForecasts: RevenueForecastRecord[];
   revenueRecommendations: RevenueRecommendationRecord[];
-  demandCalendarEvents: DemandCalendarEventRecord[];
   channelProfitabilitySnapshots: ChannelProfitabilitySnapshotRecord[];
   revenueDailySnapshots: RevenueDailySnapshotRecord[];
   revenueForecastSnapshots: RevenueForecastSnapshotRecord[];
@@ -1742,41 +1688,16 @@ export type DemoStore = {
   housekeepingEvents: HousekeepingEventRecord[];
   workOrders: WorkOrderRecord[];
   workOrderMedia: WorkOrderMediaRecord[];
-  /**
-   * Generic persisted records for the "advanced modules" CRUD (workforce shifts,
-   * time-clock, absences, safety incidents/checks, etc.) so create/transition/list
-   * actually round-trip and the boards are live. Keyed by propertyId+moduleCode+entityType.
-   */
-  advancedRecords: Array<{
-    id: string;
-    propertyId: string;
-    moduleCode: string;
-    entityType: string;
-    status: string;
-    payload: Record<string, unknown>;
-    createdAt: string;
-    updatedAt: string;
-  }>;
   assets: AssetRecord[];
   capexProjects: CapexProjectRecord[];
   capexItems: CapexItemRecord[];
   fixedAssets: FixedAssetRecord[];
-  conversations: ConversationRecord[];
-  messages: MessageRecord[];
   serviceRequests: ServiceRequestRecord[];
   guestRegisterRecords: GuestRegisterRecord[];
   sesSubmissions: SesSubmissionRecord[];
-  authorityReportingSettings: AuthorityReportingSettingRecord[];
-  lodgingLegalProfiles: LodgingLegalProfileRecord[];
-  authoritySubmissionBatches: AuthoritySubmissionBatchRecord[];
-  authoritySubmissionBatchRecords: AuthoritySubmissionBatchRecordLink[];
   authoritySubmissions: AuthoritySubmissionRecord[];
-  identityDocumentProcessingEvents: IdentityDocumentProcessingEventRecord[];
-  authorityRoutingRules: AuthorityRoutingRuleRecord[];
-  aiToolCalls: AiToolCallRecord[];
   auditEvents: AuditEvent[];
   events: EventEnvelope[];
-  pendingConfirmations: PendingConfirmation[];
 };
 
 export const demoStore: DemoStore = {
@@ -1841,50 +1762,6 @@ export const demoStore: DemoStore = {
       mfaEnabled: true
     }
   ],
-  devices: [
-    {
-      id: "dev_reception_1",
-      userId: "usr_123",
-      deviceName: "Reception iPhone",
-      platform: "ios",
-      trusted: true,
-      registeredAt: "2026-05-14T08:00:00.000Z",
-      lastSeenAt: "2026-05-14T09:00:00.000Z"
-    }
-  ],
-  sessions: [
-    {
-      id: "sess_demo",
-      userId: "usr_123",
-      deviceId: "dev_reception_1",
-      status: "active",
-      createdAt: "2026-05-14T08:00:00.000Z",
-      lastSeenAt: "2026-05-14T09:00:00.000Z"
-    }
-  ],
-  mfaChallenges: [],
-  notifications: [
-    {
-      id: "notif_compliance_phone",
-      propertyId: "prop_123",
-      userId: "usr_123",
-      type: "compliance",
-      title: "Missing guest phone",
-      body: "Guest register for RES-18392 is missing a phone number.",
-      status: "unread",
-      createdAt: "2026-05-14T09:20:00.000Z"
-    },
-    {
-      id: "notif_maintenance_108",
-      propertyId: "prop_123",
-      userId: "usr_123",
-      type: "maintenance",
-      title: "Room 108 blocked",
-      body: "Bathroom leak work order is open and blocks inventory.",
-      status: "unread",
-      createdAt: "2026-05-14T08:30:00.000Z"
-    }
-  ],
   modules: HOTEL_MODULES.map((module) => ({
     id: `mod_${module.code}`,
     code: module.code,
@@ -1939,13 +1816,6 @@ export const demoStore: DemoStore = {
       createdAt: "2026-05-14T08:00:00.000Z"
     };
   }),
-  moduleDependencies: HOTEL_MODULES.flatMap((module) =>
-    module.dependencies.map((dependency) => ({
-      id: `mdep_${module.code}_${dependency}`,
-      moduleId: `mod_${module.code}`,
-      requiredModuleId: `mod_${dependency}`
-    }))
-  ),
   integrationCategories: [
     { id: "icat_otas", code: "otas", name: "OTAs", description: "Reservation demand channels." },
     { id: "icat_channel_managers", code: "channel_managers", name: "Channel Managers", description: "Rate and availability distribution." },
@@ -2077,21 +1947,6 @@ export const demoStore: DemoStore = {
       updatedAt: "2026-05-14T08:00:00.000Z"
     }
   ],
-  propertySpaces: [
-    {
-      id: "space_reception",
-      propertyId: "prop_123",
-      buildingId: "bld_main",
-      floorId: "floor_1",
-      zoneId: "zone_lobby",
-      name: "Reception",
-      code: "REC",
-      spaceType: "reception",
-      active: true,
-      createdAt: "2026-05-14T08:00:00.000Z",
-      updatedAt: "2026-05-14T08:00:00.000Z"
-    }
-  ],
   propertyMapPositions: [
     {
       id: "pos_room_432",
@@ -2112,85 +1967,7 @@ export const demoStore: DemoStore = {
     { id: "rf_city_view", propertyId: "prop_123", code: "city_view", name: "City view", category: "view", active: true },
     { id: "rf_minibar", propertyId: "prop_123", code: "minibar", name: "Minibar", category: "amenity", active: true }
   ],
-  roomFeatureAssignments: [
-    { id: "rfa_432_city_view", roomId: "room_432", roomFeatureId: "rf_city_view" },
-    { id: "rfa_432_minibar", roomId: "room_432", roomFeatureId: "rf_minibar" }
-  ],
   bedTypes: [{ id: "bed_queen", propertyId: "prop_123", code: "queen", name: "Queen bed", capacity: 2, active: true }],
-  roomBeds: [{ id: "rb_432_queen", roomId: "room_432", bedTypeId: "bed_queen", quantity: 1 }],
-  propertySetupSteps: [
-    { id: "setup_org", propertyId: "prop_123", stepCode: "organization_details", status: "completed", completedAt: "2026-05-14T08:00:00.000Z", completedBy: "usr_123", metadataJson: {} },
-    { id: "setup_property", propertyId: "prop_123", stepCode: "property_legal_details", status: "completed", completedAt: "2026-05-14T08:05:00.000Z", completedBy: "usr_123", metadataJson: {} },
-    { id: "setup_map", propertyId: "prop_123", stepCode: "property_physical_map", status: "in_progress", metadataJson: { roomsMapped: 2 } },
-    { id: "setup_modules", propertyId: "prop_123", stepCode: "modules", status: "completed", completedAt: "2026-05-14T08:20:00.000Z", completedBy: "usr_123", metadataJson: {} },
-    { id: "setup_billing", propertyId: "prop_123", stepCode: "billing_and_invoice_sequences", status: "blocked", metadataJson: { missing: ["invoice_sequence"] } }
-  ],
-  propertyReadinessChecks: [
-    {
-      id: "ready_legal",
-      propertyId: "prop_123",
-      checkCode: "legal_profile_complete",
-      status: "pass",
-      severity: "info",
-      message: "Razón social, NIF, dirección y zona horaria del establecimiento configurados.",
-      createdAt: "2026-05-14T08:00:00.000Z",
-      updatedAt: "2026-05-14T08:00:00.000Z"
-    },
-    {
-      id: "ready_invoice_sequence",
-      propertyId: "prop_123",
-      checkCode: "invoice_sequence_configured",
-      status: "fail",
-      severity: "blocking",
-      message: "No hay ninguna serie de facturación configurada para el módulo de facturación.",
-      createdAt: "2026-05-14T08:00:00.000Z",
-      updatedAt: "2026-05-14T08:00:00.000Z"
-    },
-    {
-      id: "ready_ses_credentials",
-      propertyId: "prop_123",
-      checkCode: "ses_hospedajes_credentials",
-      status: "fail",
-      severity: "blocking",
-      message: "Faltan las credenciales de SES.HOSPEDAJES.",
-      createdAt: "2026-05-14T08:00:00.000Z",
-      updatedAt: "2026-05-14T08:00:00.000Z"
-    },
-    {
-      id: "ready_room_inventory",
-      propertyId: "prop_123",
-      checkCode: "room_inventory_exists",
-      status: "pass",
-      severity: "info",
-      message: "Existe al menos una habitación activa y vendible.",
-      createdAt: "2026-05-14T08:00:00.000Z",
-      updatedAt: "2026-05-14T08:00:00.000Z"
-    }
-  ],
-  moduleHealthChecks: [
-    {
-      id: "mh_checkin_ocr",
-      propertyId: "prop_123",
-      moduleCode: "checkin_online",
-      checkCode: "ocr_provider_configured",
-      status: "needs_configuration",
-      severity: "blocking",
-      message: "Hay que configurar el proveedor de OCR antes del escaneo asistido de documentos.",
-      metadataJson: {},
-      updatedAt: "2026-05-14T08:00:00.000Z"
-    },
-    {
-      id: "mh_pms_rooms",
-      propertyId: "prop_123",
-      moduleCode: "pms_core",
-      checkCode: "room_inventory_exists",
-      status: "ok",
-      severity: "info",
-      message: "El inventario de habitaciones existe.",
-      metadataJson: {},
-      updatedAt: "2026-05-14T08:00:00.000Z"
-    }
-  ],
   departments: [
     { id: "dep_reception", propertyId: "prop_123", name: "Reception", code: "reception", active: true },
     { id: "dep_housekeeping", propertyId: "prop_123", name: "Housekeeping", code: "housekeeping", active: true },
@@ -2293,8 +2070,6 @@ export const demoStore: DemoStore = {
     }
   ],
   propertyImports: [],
-  propertySetupFormSubmissions: [],
-  manualSetupSubmissions: [],
   backOfficeAiSuggestions: [
     {
       id: "boai_rooms_401_440",
@@ -2316,7 +2091,6 @@ export const demoStore: DemoStore = {
       createdAt: "2026-05-14T08:00:00.000Z"
     }
   ],
-  offlineSyncRecords: [],
   userContext: {
     organizationId: "org_123",
     propertyId: "prop_123",
@@ -2948,20 +2722,6 @@ export const demoStore: DemoStore = {
       confidence: 0.76,
       status: "pending",
       createdAt: "2026-05-14T09:22:00.000Z"
-    }
-  ],
-  demandCalendarEvents: [
-    {
-      id: "demand_madrid_congress",
-      propertyId: "prop_123",
-      name: "Madrid design congress",
-      eventType: "city_event",
-      startDate: "2026-05-22",
-      endDate: "2026-05-24",
-      expectedImpact: "high",
-      source: "manual",
-      metadataJson: { expectedCompression: "rooms" },
-      createdAt: "2026-05-14T09:00:00.000Z"
     }
   ],
   channelProfitabilitySnapshots: [
@@ -3610,7 +3370,6 @@ export const demoStore: DemoStore = {
       createdAt: "2026-05-14T10:10:00.000Z"
     }
   ],
-  advancedRecords: [],
   workOrders: [
     {
       id: "wo_108_leak",
@@ -3697,29 +3456,6 @@ export const demoStore: DemoStore = {
       depreciationMethod: "linear",
       usefulLifeMonths: 96,
       accumulatedDepreciation: 1175
-    }
-  ],
-  conversations: [
-    {
-      id: "conv_maria",
-      propertyId: "prop_123",
-      guestId: "guest_maria",
-      reservationId: "res_18392",
-      channel: "app",
-      status: "open",
-      aiEnabled: true,
-      createdAt: "2026-05-14T09:30:00.000Z"
-    }
-  ],
-  messages: [
-    {
-      id: "msg_maria_parking",
-      conversationId: "conv_maria",
-      senderType: "guest",
-      body: "Do you have parking?",
-      language: "en",
-      sentAt: "2026-05-14T09:31:00.000Z",
-      attachments: []
     }
   ],
   serviceRequests: [],
@@ -3833,85 +3569,6 @@ export const demoStore: DemoStore = {
       requestPayloadJson: { recordId: "grr_maria_432", authorityType: "ses_hospedajes" }
     }
   ],
-  authorityReportingSettings: [
-    {
-      id: "ars_prop_123",
-      propertyId: "prop_123",
-      country: "ES",
-      regionCode: "MD",
-      authorityType: "ses_hospedajes",
-      enabled: true,
-      professionalActivity: true,
-      establishmentCode: "EST-DEMO-001",
-      landlordCode: "ARR-DEMO-001",
-      webServiceEnabled: false,
-      webServiceUsername: "hotelos_demo",
-      webServiceSecretRef: "secret://ses-hospedajes/prop_123",
-      batchExportEnabled: true,
-      automaticSubmissionEnabled: false,
-      configurationJson: {
-        defaultBatchTime: "06:00",
-        alertBeforeDeadlineHours: 4,
-        retentionYears: 3,
-        storeIdImageDefault: false,
-        officialSchemaConfigured: false
-      },
-      createdAt: "2026-05-14T08:00:00.000Z",
-      updatedAt: "2026-05-16T08:00:00.000Z"
-    }
-  ],
-  lodgingLegalProfiles: [
-    {
-      id: "llp_prop_123",
-      propertyId: "prop_123",
-      legalName: "Hotel Demo Madrid Centro SL",
-      taxId: "B12345678",
-      municipality: "Madrid",
-      province: "Madrid",
-      phone: "+34910000000",
-      email: "compliance@ehotelos.example",
-      website: "https://ehotelos.example",
-      establishmentType: "hotel",
-      establishmentName: "Hotel Demo Madrid Centro",
-      fullAddress: "Calle Demo 12, Madrid",
-      postalCode: "28013",
-      locality: "Madrid",
-      establishmentProvince: "Madrid",
-      roomCount: 120,
-      internetConnection: true,
-      createdAt: "2026-05-14T08:00:00.000Z",
-      updatedAt: "2026-05-16T08:00:00.000Z"
-    }
-  ],
-  authoritySubmissionBatches: [
-    {
-      id: "asb_daily_20260516",
-      propertyId: "prop_123",
-      authorityType: "ses_hospedajes",
-      batchType: "daily_batch",
-      status: "generated",
-      periodFrom: "2026-05-16T00:00:00.000Z",
-      periodTo: "2026-05-16T23:59:59.000Z",
-      fileFormat: "json",
-      fileObjectKey: "authority-batches/asb_daily_20260516.json",
-      recordCount: 1,
-      idempotencyKey: "prop_123-2026-05-16-daily",
-      generatedBy: "usr_123",
-      generatedAt: "2026-05-16T06:00:00.000Z",
-      responsePayloadJson: {},
-      createdAt: "2026-05-16T06:00:00.000Z",
-      updatedAt: "2026-05-16T06:00:00.000Z"
-    }
-  ],
-  authoritySubmissionBatchRecords: [
-    {
-      id: "asbr_maria_432",
-      batchId: "asb_daily_20260516",
-      guestRegisterRecordId: "grr_maria_432",
-      status: "included",
-      responsePayloadJson: {}
-    }
-  ],
   authoritySubmissions: [
     {
       id: "authsub_maria_432",
@@ -3943,45 +3600,6 @@ export const demoStore: DemoStore = {
       updatedAt: "2026-05-16T16:41:00.000Z"
     }
   ],
-  identityDocumentProcessingEvents: [
-    {
-      id: "idpe_maria_discarded",
-      propertyId: "prop_123",
-      reservationId: "res_18392",
-      guestId: "guest_maria",
-      eventType: "image_discarded",
-      processor: "on_device",
-      fieldsExtractedJson: { firstName: "Maria", surname1: "Lopez", documentType: "DNI" },
-      confidenceJson: { firstName: 0.96, documentNumber: 0.93 },
-      imageStored: false,
-      imageDiscarded: true,
-      createdBy: "usr_123",
-      createdAt: "2026-05-16T16:34:10.000Z"
-    }
-  ],
-  authorityRoutingRules: [
-    {
-      id: "arr_es_default",
-      country: "ES",
-      authorityType: "ses_hospedajes",
-      priority: 100,
-      active: true,
-      configurationJson: { rule: "Default Spain authority route" },
-      createdAt: "2026-05-14T08:00:00.000Z"
-    },
-    {
-      id: "arr_es_ct_mossos",
-      country: "ES",
-      regionCode: "CT",
-      authorityType: "mossos",
-      priority: 10,
-      active: true,
-      configurationJson: { rule: "Catalonia/Mossos placeholder route, configurable in Back Office" },
-      createdAt: "2026-05-14T08:00:00.000Z"
-    }
-  ],
-  aiToolCalls: [],
   auditEvents: [],
   events: [],
-  pendingConfirmations: []
 };

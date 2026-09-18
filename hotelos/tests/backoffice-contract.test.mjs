@@ -76,11 +76,11 @@ describe("Back Office hotel setup layer", () => {
       "model Floor",
       "model PropertyZone",
       "model PropertySpace",
-      "model PropertyMapPosition",
+      // Tanda L2 (L2-01): PropertyMapPosition, RoomFeatureAssignment, RoomBed,
+      // PropertyImport and BackOfficeAiSuggestion were retired by migration
+      // 20260918130000_persistencia_l2 (0 readers / writers, 0 rows).
       "model RoomFeature",
-      "model RoomFeatureAssignment",
       "model BedType",
-      "model RoomBed",
       "model PropertySetupStep",
       "model PropertyReadinessCheck",
       "model ModuleHealthCheck",
@@ -99,9 +99,7 @@ describe("Back Office hotel setup layer", () => {
       "model PropertyAiSetting",
       "model PropertyAiToolSetting",
       "model DocumentTemplate",
-      "model QrCode",
-      "model PropertyImport",
-      "model BackOfficeAiSuggestion"
+      "model QrCode"
     ]) {
       assert.match(schema, new RegExp(model));
     }
@@ -116,6 +114,10 @@ describe("Back Office hotel setup layer", () => {
   });
 
   it("exposes the /backoffice API namespace with route permissions", () => {
+    // Tanda L2 (L2-01): the memory-only / duplicated backoffice legs that L2-04
+    // retires or re-wires (map-positions, property-map/export, imports/
+    // property-map/*, modules/:moduleCode/health, ai/suggestions*, qr-codes*)
+    // are no longer pinned here.
     for (const route of [
       "/backoffice/properties/:propertyId/dashboard",
       "/backoffice/properties/:propertyId/setup",
@@ -126,9 +128,7 @@ describe("Back Office hotel setup layer", () => {
       "/backoffice/properties/:propertyId/floors",
       "/backoffice/properties/:propertyId/zones",
       "/backoffice/properties/:propertyId/spaces",
-      "/backoffice/properties/:propertyId/map-positions",
       "/backoffice/properties/:propertyId/rooms/bulk",
-      "/backoffice/properties/:propertyId/property-map/export",
       "/backoffice/properties/:propertyId/room-types",
       "/backoffice/properties/:propertyId/room-types/:roomTypeId",
       "/backoffice/properties/:propertyId/room-types/:roomTypeId/deactivate",
@@ -136,11 +136,8 @@ describe("Back Office hotel setup layer", () => {
       "/backoffice/room-types/:roomTypeId/rooms",
       "/backoffice/properties/:propertyId/room-features",
       "/backoffice/properties/:propertyId/bed-types",
-      "/backoffice/properties/:propertyId/imports/property-map/preview",
-      "/backoffice/properties/:propertyId/imports/property-map/commit",
       "/backoffice/properties/:propertyId/modules",
       "/backoffice/properties/:propertyId/modules/:moduleCode/configuration",
-      "/backoffice/properties/:propertyId/modules/:moduleCode/health",
       "/backoffice/properties/:propertyId/integrations",
       "/backoffice/properties/:propertyId/departments/:departmentId/users",
       "/backoffice/properties/:propertyId/housekeeping-settings",
@@ -160,11 +157,7 @@ describe("Back Office hotel setup layer", () => {
       "/backoffice/properties/:propertyId/billing-settings",
       "/backoffice/properties/:propertyId/accounting-settings",
       "/backoffice/properties/:propertyId/ai-settings",
-      "/backoffice/properties/:propertyId/ai/suggestions",
-      "/backoffice/properties/:propertyId/ai/suggestions/:suggestionId/apply",
       "/backoffice/properties/:propertyId/templates",
-      "/backoffice/properties/:propertyId/qr-codes",
-      "/backoffice/properties/:propertyId/qr-codes/bulk",
       "/backoffice/properties/:propertyId/audit"
     ]) {
       const escaped = route.replace(/[/:]/g, "\\$&");

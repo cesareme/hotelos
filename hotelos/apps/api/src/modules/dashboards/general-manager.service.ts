@@ -17,6 +17,12 @@
 import { prisma } from "@hotelos/database";
 import { createDegradedCollector } from "../../lib/degraded.js";
 
+// Explicit bounds of the reservation / snapshot reads (Tanda L2 · L2-05): the
+// windows are a month, 7-14 days ahead or ≤ 180 days of pace, so the caps
+// never cut a real hotel; they only make every scan bounded.
+const GM_MAX_RESERVATION_ROWS = 50_000;
+const GM_MAX_SNAPSHOT_ROWS = 10_000;
+
 export type GmKpiCompare = {
   value: number;
   vsYesterday?: { value: number; pct: number };
@@ -171,7 +177,8 @@ async function roomNightsInWindow(propertyId: string, from: Date, to: Date): Pro
       arrivalDate: { lt: to },
       departureDate: { gt: from }
     },
-    select: { arrivalDate: true, departureDate: true, roomsCount: true }
+    select: { arrivalDate: true, departureDate: true, roomsCount: true },
+    take: GM_MAX_RESERVATION_ROWS
   });
   let nights = 0;
   for (const r of res) {
@@ -272,7 +279,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
       arrivalDate: { gte: monthStart, lt: tomorrow },
       status: { in: ["confirmed", "checked_in", "checked_out"] }
     },
-    select: { channel: true, marketSegment: true, totalAmount: true, arrivalDate: true, departureDate: true, roomsCount: true }
+    select: { channel: true, marketSegment: true, totalAmount: true, arrivalDate: true, departureDate: true, roomsCount: true },
+    take: GM_MAX_RESERVATION_ROWS
   });
   const chanMap = new Map<string, { count: number; revenue: number; nights: number }>();
   const segMap = new Map<string, { count: number; revenue: number; nights: number }>();
@@ -351,7 +359,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
       departureDate: { gt: today },
       arrivalDate: { lt: horizonEnd }
     },
-    select: { assignedRoomId: true, arrivalDate: true, departureDate: true }
+    select: { assignedRoomId: true, arrivalDate: true, departureDate: true },
+    take: GM_MAX_RESERVATION_ROWS
   });
   const byRoom = new Map<string, Array<{ a: Date; d: Date }>>();
   for (const r of candidates) {
@@ -375,26 +384,26 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
   const capturedToday = Number(capturedTodayAgg._sum.amount ?? 0);
   const refundedToday = Number(refundedTodayAgg._sum.amount ?? 0);
 
-  // Reputation (best effort)
+  // Reputation: one aggregate (count of the last 30 days, average of the rated
+  // ones). A storage failure no longer hides behind a silent catch: `safe`
+  // logs it, records "reputation.reviews30" in `degraded[]` and leaves the
+  // block absent (L2-05, QC-06).
   let reputation: GmDashboard["reputation"] | undefined;
-  try {
-    const reviews30 = await prisma.guestReview.findMany({
-      where: {
-        propertyId,
-        createdAt: { gte: new Date(today.getTime() - 30 * 86400000) }
-      },
-      select: { rating: true }
-    });
-    if (reviews30.length > 0) {
-      const scores = reviews30.map((r) => Number(r.rating ?? NaN)).filter((n) => Number.isFinite(n));
-      const avg = scores.length > 0 ? scores.reduce((s, x) => s + x, 0) / scores.length : undefined;
-      reputation = {
-        avgScore: avg ? Math.round(avg * 100) / 100 : undefined,
-        reviewsLast30: reviews30.length
-      };
-    }
-  } catch {
-    reputation = undefined;
+  const reviews30 = await safe(
+    "reputation.reviews30",
+    prisma.guestReview.aggregate({
+      where: { propertyId, createdAt: { gte: new Date(today.getTime() - 30 * 86400000) } },
+      _count: { _all: true },
+      _avg: { rating: true }
+    }),
+    null
+  );
+  if (reviews30 && reviews30._count._all > 0) {
+    const avg = reviews30._avg.rating === null ? undefined : Number(reviews30._avg.rating);
+    reputation = {
+      avgScore: avg ? Math.round(avg * 100) / 100 : undefined,
+      reviewsLast30: reviews30._count._all
+    };
   }
   void nightsYtd;
 
@@ -488,7 +497,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
         where: { isPrimary: true },
         select: { guest: { select: { vipCode: true, loyaltyTier: true, email: true } } }
       }
-    }
+    },
+    take: GM_MAX_RESERVATION_ROWS
   });
   // Pull the VIP guest profiles in this org for matching by email — the
   // reservation guest is the operational record, the GuestProfile carries
@@ -651,7 +661,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
       bookerEmail: true,
       depositAmount: true,
       depositPaid: true
-    }
+    },
+    take: GM_MAX_RESERVATION_ROWS
   });
   let atRisk = 0;
   if (upcoming.length > 0) {
@@ -666,7 +677,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
               status: "no_show",
               bookerEmail: { in: emails }
             },
-            select: { bookerEmail: true }
+            select: { bookerEmail: true },
+            take: GM_MAX_RESERVATION_ROWS
           })).map((r) => r.bookerEmail).filter((e): e is string => Boolean(e))
         )
       : new Set<string>();
@@ -812,7 +824,8 @@ export async function buildGmPace(input: { propertyId: string; days?: number; as
       arrivalDate: { lt: end },
       departureDate: { gt: start }
     },
-    select: { arrivalDate: true, departureDate: true, totalAmount: true, roomsCount: true }
+    select: { arrivalDate: true, departureDate: true, totalAmount: true, roomsCount: true },
+    take: GM_MAX_RESERVATION_ROWS
   });
   const otbByDate = new Map<string, number>();
   for (const r of otbReservations) {
@@ -840,7 +853,8 @@ export async function buildGmPace(input: { propertyId: string; days?: number; as
         market: null
       },
       select: { forecastDate: true, expectedTotalRevenue: true, expectedRoomRevenue: true, modelVersion: true, createdAt: true },
-      orderBy: { createdAt: "desc" }
+      orderBy: { createdAt: "desc" },
+      take: GM_MAX_SNAPSHOT_ROWS
     }), [] as Array<{ forecastDate: Date; expectedTotalRevenue: unknown; expectedRoomRevenue: unknown; modelVersion: string | null; createdAt: Date }>),
     safe("pace.lastYearSnapshots", prisma.revenueDailySnapshot.findMany({
       where: {
@@ -852,7 +866,8 @@ export async function buildGmPace(input: { propertyId: string; days?: number; as
         segment: null,
         market: null
       },
-      select: { snapshotDate: true, totalRevenue: true, roomRevenue: true }
+      select: { snapshotDate: true, totalRevenue: true, roomRevenue: true },
+      take: GM_MAX_SNAPSHOT_ROWS
     }), [] as Array<{ snapshotDate: Date; totalRevenue: unknown; roomRevenue: unknown }>)
   ]);
 

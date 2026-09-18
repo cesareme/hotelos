@@ -309,6 +309,8 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "rate-mappings": "la correspondencia de tarifas",
   mappings: "la correspondencia",
   "sync-jobs": "el trabajo de sincronización",
+  // Tanda L2 (corrector): GET /admin/worker/job-runs (worker_job_runs).
+  "job-runs": "la ejecución de trabajo programado",
   deliveries: "la entrega",
   subscriptions: "la suscripción",
   "event-types": "el tipo de evento",

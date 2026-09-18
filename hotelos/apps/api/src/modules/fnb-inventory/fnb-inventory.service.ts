@@ -240,6 +240,15 @@ export async function consumeStockForPosTicket(input: {
   // Default location: first stock location for the property
   const defaultLocation = await prisma.stockLocation.findFirst({ where: { propertyId: input.propertyId, active: true } });
 
+  // Tanda L2 (L2-06): every inventory item referenced by the recipes of the
+  // outlet, preloaded in one query (was one findUnique per recipe line and
+  // ticket line) and scoped to the property.
+  const recipeItemIds = Array.from(new Set(Array.from(recipesByMenu.values()).flatMap((recipe) => recipe.map((r) => r.inventoryItemId))));
+  const inventoryItems = recipeItemIds.length
+    ? await prisma.inventoryItem.findMany({ where: { id: { in: recipeItemIds }, propertyId: input.propertyId }, select: { id: true, name: true, unit: true } })
+    : [];
+  const inventoryById = new Map(inventoryItems.map((item) => [item.id, item]));
+
   const details: ConsumptionResult["details"] = [];
   let matched = 0;
   let unmatched = 0;
@@ -261,7 +270,7 @@ export async function consumeStockForPosTicket(input: {
     const consumed: Array<{ inventoryItemId: string; itemName: string; quantity: number; unit: string }> = [];
     for (const r of recipe) {
       const totalQty = r.quantity * line.quantity;
-      const inv = await prisma.inventoryItem.findUnique({ where: { id: r.inventoryItemId } });
+      const inv = inventoryById.get(r.inventoryItemId);
       if (!inv) continue;
       await recordStockMovement({
         propertyId: input.propertyId,

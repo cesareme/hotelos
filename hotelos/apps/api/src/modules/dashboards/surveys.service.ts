@@ -1,4 +1,5 @@
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 export type SurveysDashboard = {
   kpis: {
@@ -19,6 +20,8 @@ export type SurveysDashboard = {
     submittedAt: string;
   }>;
   topThemes: Array<{ theme: string; count: number }>;
+  /** Tanda L2 (L2-06, QC-06): KPI inputs that fell back to their default in this response ("response_rate"). */
+  degraded: string[];
 };
 
 export type BuildSurveysDashboardInput = {
@@ -48,7 +51,8 @@ function emptyDashboard(): SurveysDashboard {
     },
     scoreDistribution: emptyDistribution(),
     recentResponses: [],
-    topThemes: []
+    topThemes: [],
+    degraded: []
   };
 }
 
@@ -189,22 +193,21 @@ export async function buildSurveysDashboard(
     : 0;
 
   // Response rate: responses / checked-out reservations within the same window.
-  // Falls back to 0 when there are no eligible reservations.
-  let responseRatePct = 0;
-  try {
-    const eligibleReservations = await prisma.reservation.count({
+  // Falls back to 0 when there are no eligible reservations. Tanda L2 (L2-06):
+  // a failed count is logged and reported in `degraded[]` ("response_rate")
+  // instead of silently rendering a 0 % rate.
+  const { safe, degraded } = createDegradedCollector("dashboards.surveys", { propertyId, days });
+  const eligibleReservations = await safe(
+    "response_rate",
+    prisma.reservation.count({
       where: {
         propertyId,
         departureDate: { gte: since, lte: now }
       }
-    });
-    if (eligibleReservations > 0) {
-      responseRatePct = round1((responses.length / eligibleReservations) * 100);
-    }
-  } catch {
-    // If reservation shape differs, leave responseRatePct at 0 rather than failing.
-    responseRatePct = 0;
-  }
+    }),
+    null
+  );
+  const responseRatePct = eligibleReservations !== null && eligibleReservations > 0 ? round1((responses.length / eligibleReservations) * 100) : 0;
 
   const scoreDistribution = Array.from({ length: 11 }, (_, score) => ({
     score,
@@ -245,6 +248,7 @@ export async function buildSurveysDashboard(
     },
     scoreDistribution,
     recentResponses,
-    topThemes
+    topThemes,
+    degraded
   };
 }

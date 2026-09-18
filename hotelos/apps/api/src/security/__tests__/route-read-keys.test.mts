@@ -35,7 +35,8 @@ const READ_GATED_GETS: Expectation[] = [
   { path: "/properties/:propertyId/guest-register-records", permission: "guest_register.read", templates: FINANZAS_AND_FRONT },
   { path: "/properties/:propertyId/compliance/inbox", permission: "guest_register.read", templates: FINANZAS_AND_FRONT },
   { path: "/ses/submissions/:id", permission: "guest_register.read", templates: FINANZAS_AND_FRONT },
-  { path: "/properties/:propertyId/ses-hospedajes/submissions", permission: "guest_register.read", templates: FINANZAS_AND_FRONT }
+  // Tanda L2 (L2-01): canonical SES list; the /ses-hospedajes/submissions duplicate is retired by L2-02.
+  { path: "/properties/:propertyId/ses/submissions", permission: "guest_register.read", templates: FINANZAS_AND_FRONT }
 ];
 
 // Tanda 5 (L1c · api): the GETs that L1b left behind — invoices (were

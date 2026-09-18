@@ -21,8 +21,10 @@
 // frontera y se enruta.
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import type { PayrollCostMapping } from "@hotelos/shared";
 import { assertFinanceReadScope } from "../../lib/finance-scope.js";
+import { BadRequestError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
 import { assertEntityAccess } from "../../lib/tenancy.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
@@ -35,10 +37,45 @@ import {
   ReversePayrollCostImportSchema,
   type PayrollCostMappingInput
 } from "../../schemas/payroll-cost.schemas.js";
-import { createPayrollCostImport, getPayrollCostImport, listPayrollCostImports, postPayrollCostImport, previewPayrollCostImport, reversePayrollCostImport } from "./cost-import.service.js";
+import {
+  PAYROLL_COST_DETAIL_DEFAULT_LIMIT,
+  PAYROLL_COST_DETAIL_MAX_LIMIT,
+  createPayrollCostImport,
+  getPayrollCostImport,
+  listPayrollCostImports,
+  postPayrollCostImport,
+  previewPayrollCostImport,
+  reversePayrollCostImport
+} from "./cost-import.service.js";
 import { buildPayrollCostReport } from "./cost-report.service.js";
 
 type ImportParams = { id: string };
+
+// Tanda L2 (L2-05): página de líneas del detalle, `?offset=&limit=` como
+// GET /accounting/ledger-imports/:id (500 por defecto, 2.000 máximo). El cuerpo
+// sigue siendo el detalle que lee el front (`lines`, `references`,
+// `byCentreMonth`, `entries`, `reversals`) más `lineTotal` / `lineOffset`;
+// X-Total-Count lleva el total de líneas. Un `cursor` (de otra ruta) responde
+// el 400 canónico de paginación: el detalle pagina por desplazamiento.
+const DetailQuerySchema = z
+  .object({
+    offset: z.coerce
+      .number({ invalid_type_error: "offset debe ser un entero ≥ 0." })
+      .int({ message: "offset debe ser un entero ≥ 0." })
+      .min(0, { message: "offset debe ser un entero ≥ 0." })
+      .default(0),
+    limit: z.coerce
+      .number({ invalid_type_error: `limit debe ser un entero entre 1 y ${PAYROLL_COST_DETAIL_MAX_LIMIT}.` })
+      .int({ message: `limit debe ser un entero entre 1 y ${PAYROLL_COST_DETAIL_MAX_LIMIT}.` })
+      .min(1, { message: `limit debe ser un entero entre 1 y ${PAYROLL_COST_DETAIL_MAX_LIMIT}.` })
+      .max(PAYROLL_COST_DETAIL_MAX_LIMIT, { message: `limit debe ser un entero entre 1 y ${PAYROLL_COST_DETAIL_MAX_LIMIT}.` })
+      .default(PAYROLL_COST_DETAIL_DEFAULT_LIMIT)
+  })
+  .strict({ message: "Parámetro de consulta no admitido." });
+
+function rejectCursor(raw: Record<string, unknown>): void {
+  if (raw.cursor !== undefined) throw new BadRequestError("El cursor de paginación no es válido.");
+}
 
 /**
  * El esquema admite cualquier departamento del catálogo USALI (también los que no
@@ -78,11 +115,16 @@ export function registerPayrollCostRoutes(app: FastifyInstance): void {
     return listPayrollCostImports({ context: request.userContext, query });
   });
 
-  // Detalle: lote + líneas + referencias + asientos y reversos.
-  app.get("/payroll/cost-imports/:id", async (request) => {
+  // Detalle: lote + líneas (paginadas) + referencias + asientos y reversos.
+  app.get("/payroll/cost-imports/:id", async (request, reply) => {
     const { id } = request.params as ImportParams;
     await assertEntityAccess(request, { entity: "payrollCostImport", id });
-    return getPayrollCostImport({ context: request.userContext, importId: id });
+    const raw = (request.query ?? {}) as Record<string, unknown>;
+    rejectCursor(raw);
+    const query = parseOr400(DetailQuerySchema, raw, "query");
+    const detail = await getPayrollCostImport({ context: request.userContext, importId: id, query });
+    reply.header("X-Total-Count", String(detail.lineTotal));
+    return detail;
   });
 
   // Borrador → contabilizado (misma transacción: lock, duplicado, solape, asientos).

@@ -398,12 +398,27 @@ async function assertOriginalPeriodOpen(tx: Prisma.TransactionClient, entry: { i
 async function ensureUsaliCostCentres(tx: Prisma.TransactionClient, propertyId: string, hotelLabel: string, lines: readonly PmsShadowRevenueLine[]): Promise<{ ids: Map<string, string>; warnings: string[] }> {
   const ids = new Map<string, string>();
   const warnings: string[] = [];
+  // Tanda L2 (L2-06): the departments of the day (line order, deduplicated),
+  // ONE lookup of their centres and ONE createMany for the missing ones
+  // (was findUnique + create per department, inside the property lock).
+  type Department = Parameters<typeof pmsShadowCostCentreCode>[0];
+  const departments: Department[] = [];
   for (const line of lines) {
     if (line.kind !== "revenue" || !line.usaliDepartment) continue;
-    const department = line.usaliDepartment as Parameters<typeof pmsShadowCostCentreCode>[0];
-    if (ids.has(department)) continue;
-    const code = pmsShadowCostCentreCode(department);
-    const existing = await tx.costCenter.findUnique({ where: { propertyId_code: { propertyId, code } }, select: { id: true, type: true, active: true } });
+    const department = line.usaliDepartment as Department;
+    if (!departments.includes(department)) departments.push(department);
+  }
+  if (departments.length === 0) return { ids, warnings };
+  const codeOf = new Map(departments.map((department) => [department, pmsShadowCostCentreCode(department)]));
+  const existingRows = await tx.costCenter.findMany({
+    where: { propertyId, code: { in: Array.from(codeOf.values()) } },
+    select: { id: true, code: true, type: true, active: true }
+  });
+  const existingByCode = new Map(existingRows.map((row) => [row.code, row]));
+  const missing: Department[] = [];
+  for (const department of departments) {
+    const code = codeOf.get(department)!;
+    const existing = existingByCode.get(code);
     if (existing) {
       if (existing.type !== PMS_SHADOW_COST_CENTRE_TYPE || !existing.active) {
         warnings.push(`centro de coste ${code} de ${hotelLabel} ya existía (tipo «${existing.type}»${existing.active ? "" : ", inactivo"}) y se reutiliza sin modificarlo: sus apuntes ${existing.type === PMS_SHADOW_COST_CENTRE_TYPE ? "" : "no "}se enrutan al departamento USALI`);
@@ -411,8 +426,18 @@ async function ensureUsaliCostCentres(tx: Prisma.TransactionClient, propertyId: 
       ids.set(department, existing.id);
       continue;
     }
-    const created = await tx.costCenter.create({ data: { propertyId, code, name: pmsShadowCostCentreName(department), type: PMS_SHADOW_COST_CENTRE_TYPE, active: true }, select: { id: true } });
-    ids.set(department, created.id);
+    missing.push(department);
+  }
+  if (missing.length > 0) {
+    const created = await tx.costCenter.createManyAndReturn({
+      data: missing.map((department) => ({ propertyId, code: codeOf.get(department)!, name: pmsShadowCostCentreName(department), type: PMS_SHADOW_COST_CENTRE_TYPE, active: true })),
+      select: { id: true, code: true }
+    });
+    const createdByCode = new Map(created.map((row) => [row.code, row.id]));
+    for (const department of missing) {
+      const id = createdByCode.get(codeOf.get(department)!);
+      if (id) ids.set(department, id);
+    }
   }
   return { ids, warnings };
 }
@@ -462,10 +487,18 @@ async function reverseImportInTx(tx: Prisma.TransactionClient, row: ImportRow, i
   const businessDate = isoDay(row.businessDate);
   const reversalIds: string[] = [...row.reversalJournalEntryIds];
   const created: string[] = [];
-  if (row.status === "posted") {
+  if (row.status === "posted" && row.journalEntryIds.length > 0) {
+    // Tanda L2 (L2-06): the entries of the lot in one query, filtered by the
+    // organisation of the import (was one findUnique per id + a check in
+    // memory); the loop keeps the order of row.journalEntryIds.
+    const entries = await tx.journalEntry.findMany({
+      where: { id: { in: row.journalEntryIds }, organizationId: row.organizationId },
+      select: { id: true, organizationId: true, propertyId: true, entryDate: true, status: true, reversedById: true }
+    });
+    const entryById = new Map(entries.map((entry) => [entry.id, entry]));
     for (const journalEntryId of row.journalEntryIds) {
-      const entry = await tx.journalEntry.findUnique({ where: { id: journalEntryId }, select: { id: true, organizationId: true, propertyId: true, entryDate: true, status: true, reversedById: true } });
-      if (!entry || entry.organizationId !== row.organizationId) continue;
+      const entry = entryById.get(journalEntryId);
+      if (!entry) continue;
       if (entry.reversedById) {
         if (!reversalIds.includes(entry.reversedById)) reversalIds.push(entry.reversedById);
         continue;

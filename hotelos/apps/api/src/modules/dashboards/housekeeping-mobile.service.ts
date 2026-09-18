@@ -17,6 +17,7 @@
 // sepa qué buscar antes de entrar (cama extra, minibar, incidencia, etc.).
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 export type HkMobilePriority = "urgent" | "high" | "normal" | "low";
 
@@ -56,6 +57,8 @@ export type HkMobileResult = {
     total: number;
   };
   rooms: HkMobileRoom[];
+  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_orders"). */
+  degraded: string[];
 };
 
 function startOfDayUtc(): Date {
@@ -76,6 +79,7 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
 
+  const { safe, degraded } = createDegradedCollector("dashboards.housekeeping-mobile", { propertyId });
   const [rooms, roomTypes, arrivals, departures, inHouse, openTasks, workOrders] = await Promise.all([
     prisma.room.findMany({ where: { propertyId, active: true } }),
     prisma.roomType.findMany({ where: { propertyId } }),
@@ -101,10 +105,16 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
       where: { propertyId, status: { in: ["pending", "assigned", "in_progress"] } },
       orderBy: { createdAt: "desc" }
     }),
-    prisma.workOrder.findMany({
-      where: { propertyId, status: { in: ["open", "in_progress"] } },
-      select: { id: true, roomId: true, title: true }
-    }).catch(() => [])
+    // Tanda L2 (L2-06): a failed work-order query is logged and reported in
+    // `degraded[]` (was `.catch(() => [])`: a broken table looked like «sin incidencias»).
+    safe(
+      "work_orders",
+      prisma.workOrder.findMany({
+        where: { propertyId, status: { in: ["open", "in_progress"] } },
+        select: { id: true, roomId: true, title: true }
+      }),
+      []
+    )
   ]);
 
   const roomTypeById = new Map(roomTypes.map((t) => [t.id, t]));
@@ -287,5 +297,5 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
     total: items.length
   };
 
-  return { generatedAt: now.toISOString(), summary, rooms: items };
+  return { generatedAt: now.toISOString(), summary, rooms: items, degraded };
 }

@@ -93,8 +93,10 @@ export function fetchRecommendations(propertyId = getActivePropertyId()) {
 export function generateRecommendations(propertyId = getActivePropertyId()) {
   return post<{ generated: number }>(`/revenue/properties/${propertyId}/recommendations/generate`, {});
 }
-export function decideRecommendation(id: string, decision: "approve" | "apply" | "reject") {
-  return post<Recommendation>(`/revenue/recommendations/${id}/${decision}`);
+// Tanda L2 (L2-02): la variante sin propiedad en la ruta se retiró; la canónica
+// lleva el ámbito (propertyId) en el path.
+export function decideRecommendation(id: string, decision: "approve" | "apply" | "reject", propertyId = getActivePropertyId()) {
+  return post<Recommendation>(`/revenue/properties/${propertyId}/recommendations/${id}/${decision}`);
 }
 export function fetchPricingRules(propertyId = getActivePropertyId()) {
   return get<PricingRule[]>(`/revenue/properties/${propertyId}/pricing-rules`);

@@ -8,6 +8,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node --import tsx src/index.ts",
+    "test": "node --import tsx --test \"src/**/__tests__/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

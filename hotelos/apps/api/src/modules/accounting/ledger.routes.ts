@@ -76,6 +76,8 @@ export async function fiscalPeriodsOfRange(input: { organizationId: string; prop
   return { periodsOpen, periodsClosed, provisional: periodsOpen.length > 0 || periodsClosed.length === 0 };
 }
 import {
+  CHART_PAGE_DEFAULT_LIMIT,
+  CHART_PAGE_MAX_LIMIT,
   createChartAccount,
   createManualJournalEntry,
   exportJournal,
@@ -150,7 +152,20 @@ const LedgerQuerySchema = z
   })
   .strict({ message: "Parámetro de consulta no admitido." });
 
-const ChartQuerySchema = z.object({ postableOnly: z.enum(["1", "true", "0", "false"]).optional() }).strict({ message: "Parámetro de consulta no admitido." });
+// Tanda L2 (L2-05): the chart is a keyset page on `code` (default 500, max
+// 2.000 so the payables pickers get every postable account in one page);
+// `q` filters by code prefix or name; `postableOnly` keeps its meaning. The
+// body stays the object the front reads ({ organizationId, chartTemplate,
+// accounts }) plus `total` and `nextCursor`; X-Total-Count / X-Next-Cursor go
+// in the headers.
+const ChartQuerySchema = z
+  .object({
+    postableOnly: z.enum(["1", "true", "0", "false"]).optional(),
+    q: z.string().max(100).optional(),
+    limit: z.string().optional(),
+    cursor: z.string().optional()
+  })
+  .strict({ message: "Parámetro de consulta no admitido." });
 
 const usaliField = z.string().min(2).max(40).nullable();
 
@@ -292,9 +307,13 @@ export function registerLedgerRoutes(app: FastifyInstance): void {
   });
 
   // ---- Plan de cuentas ------------------------------------------------------
-  app.get("/accounting/chart", async (request) => {
-    const q = parse(ChartQuerySchema, request.query ?? {}, "query");
-    return listChartAccounts({ context: request.userContext, postableOnly: flag(q.postableOnly) });
+  app.get("/accounting/chart", async (request, reply) => {
+    const raw = (request.query ?? {}) as Record<string, unknown>;
+    const q = parse(ChartQuerySchema, raw, "query");
+    const page = parsePageQuery(raw, { limit: CHART_PAGE_DEFAULT_LIMIT, max: CHART_PAGE_MAX_LIMIT });
+    const result = await listChartAccounts({ context: request.userContext, postableOnly: flag(q.postableOnly), q: q.q, limit: page.limit, cursor: page.cursor });
+    reply.headers(pageHeaders({ items: result.accounts, total: result.total, nextCursor: result.nextCursor }));
+    return result;
   });
 
   app.post("/accounting/chart", async (request, reply) => {

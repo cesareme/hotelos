@@ -159,9 +159,12 @@ function rowToRecord(row: JobRow, withXml: boolean): SepaRemittanceRecord {
   return {
     id: row.id,
     kind: payload.kind,
-    organizationId: payload.organizationId,
+    // Tanda L2 (L2-04): las columnas organization_id / property_id (L2-01) son
+    // la fuente del ámbito; payloadJson conserva las mismas claves por
+    // compatibilidad con las filas anteriores y con los consumidores del JSON.
+    organizationId: row.organizationId ?? payload.organizationId,
     legalEntityId: payload.legalEntityId ?? null,
-    propertyId: payload.propertyId,
+    propertyId: row.propertyId ?? payload.propertyId,
     bankAccountId: payload.bankAccountId ?? null,
     messageId: payload.messageId,
     status: row.status as SepaRemittanceStatus,
@@ -181,6 +184,8 @@ export const workerJobRunSepaStore: SepaRemittanceStore = {
   async create({ payload, xml, correlationId }) {
     const row = await prisma.workerJobRun.create({
       data: {
+        organizationId: payload.organizationId,
+        propertyId: payload.propertyId,
         jobName: SEPA_JOB_NAME,
         queueName: SEPA_QUEUE_NAME,
         payloadJson: payload as unknown as Prisma.InputJsonValue,
@@ -193,11 +198,13 @@ export const workerJobRunSepaStore: SepaRemittanceStore = {
     return rowToRecord(row, true);
   },
   async list({ organizationId, propertyId, limit }) {
+    // Fail-secure: solo las filas cuya columna organization_id coincide (una
+    // remesa anterior a L2-01 sin columna no aparece hasta que se rellene).
     const rows = await prisma.workerJobRun.findMany({
       where: {
         jobName: SEPA_JOB_NAME,
-        payloadJson: { path: ["organizationId"], equals: organizationId },
-        ...(propertyId ? { AND: [{ payloadJson: { path: ["propertyId"], equals: propertyId } }] } : {})
+        organizationId,
+        ...(propertyId ? { propertyId } : {})
       },
       orderBy: { createdAt: "desc" },
       take: limit
@@ -205,18 +212,15 @@ export const workerJobRunSepaStore: SepaRemittanceStore = {
     return rows.map((r) => rowToRecord(r, false));
   },
   async get(id, organizationId, withXml) {
-    const row = await prisma.workerJobRun.findUnique({ where: { id } });
-    if (!row || row.jobName !== SEPA_JOB_NAME) return null;
-    const record = rowToRecord(row, withXml);
-    return record.organizationId === organizationId ? record : null;
+    const row = await prisma.workerJobRun.findFirst({ where: { id, jobName: SEPA_JOB_NAME, organizationId } });
+    return row ? rowToRecord(row, withXml) : null;
   },
   async setStatus(id, organizationId, status, entry) {
-    const row = await prisma.workerJobRun.findUnique({ where: { id } });
-    if (!row || row.jobName !== SEPA_JOB_NAME) throw new NotFoundError("La remesa no existe.");
+    const row = await prisma.workerJobRun.findFirst({ where: { id, jobName: SEPA_JOB_NAME, organizationId } });
+    if (!row) throw new NotFoundError("La remesa no existe.");
     const payload = row.payloadJson as unknown as StoredPayload;
-    if (payload.organizationId !== organizationId) throw new NotFoundError("La remesa no existe.");
     const updated = await prisma.workerJobRun.update({
-      where: { id },
+      where: { id: row.id },
       data: { status, payloadJson: { ...payload, history: [...(payload.history ?? []), entry] } as unknown as Prisma.InputJsonValue }
     });
     return rowToRecord(updated, false);

@@ -117,11 +117,24 @@ export async function installApp(input: {
       uninstalledAt: null
     }
   });
-  // Bump install counter (best-effort).
-  await prisma.marketplaceListing.update({
-    where: { appId: input.appId },
-    data: { installsCount: { increment: 1 } }
-  }).catch(() => {});
+  // Bump install counter (best-effort: the installation is already persisted;
+  // a failed counter never undoes it). Tanda L2 (L2-06): logged with the ids
+  // instead of `.catch(() => {})`.
+  try {
+    await prisma.marketplaceListing.update({
+      where: { appId: input.appId },
+      data: { installsCount: { increment: 1 } }
+    });
+  } catch (error) {
+    console.warn("[marketplace.install] installsCount bump failed (best-effort, installation kept)", {
+      scope: "marketplace.install",
+      organizationId: input.context.organizationId,
+      propertyId: input.propertyId ?? null,
+      appId: input.appId,
+      installationId: installation.id,
+      err: error instanceof Error ? { name: error.name, message: error.message } : { message: String(error) }
+    });
+  }
   return installation;
 }
 

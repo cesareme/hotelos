@@ -19,6 +19,9 @@ const complianceService = read("apps/api/src/modules/compliance/compliance.servi
 const aiToolNames = read("packages/ai-tools/src/tool-names.ts");
 const aiRegistry = read("packages/ai-tools/src/registry.ts");
 const worker = read("apps/worker/src/index.ts");
+// Tanda L2 (L2-07 · worker honesto): the catalogue is the four pg-boss queues of scheduler.ts.
+const workerScheduler = read("apps/worker/src/scheduler.ts");
+const sesSubmissionService = read("apps/api/src/modules/compliance/ses-submission.service.ts");
 const mobileNavigation = read("packages/product/src/navigation/mobile-navigation.ts");
 const moduleRoutes = read("apps/mobile/src/navigation/ModuleRoutes.tsx");
 // Tanda 5 · L1b: the sidebar renders nav-tree.generated.json, so the menu source is both files.
@@ -154,8 +157,10 @@ describe("Spain Guest Register and SES.HOSPEDAJES compliance module", () => {
       "/compliance/spain/guest-register/:recordId/queue-submission",
       "/compliance/spain/identity-document/temporary-scan",
       "/compliance/spain/identity-document/discard-event",
-      "/compliance/authority/properties/:propertyId/inbox",
-      "/compliance/authority/submissions/:submissionId/retry",
+      // Tanda L2 (L2-01): the F1 authority family (/compliance/authority/
+      // properties/:propertyId/inbox, /compliance/authority/submissions/
+      // :submissionId/retry) is retired by L2-02 (canonical inbox:
+      // /properties/:propertyId/compliance/inbox); batches and test-connection stay.
       "/compliance/ses-hospedajes/properties/:propertyId/batches/generate",
       "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/submit",
       "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/mark-manually-uploaded",
@@ -186,21 +191,18 @@ describe("Spain Guest Register and SES.HOSPEDAJES compliance module", () => {
   });
 
   it("adds workers, AI tools, UI screens and demo markers", () => {
-    for (const job of [
-      "generateDailyGuestRegisterBatch",
-      "submitQueuedGuestRegisterRecords",
-      "submitReservationCommunications",
-      "submitCancellationCommunications",
-      "retryFailedAuthoritySubmissions",
-      "checkGuestRegisterDeadlines",
-      "detectMissingGuestRegisterData",
-      "expireGuestRegisterRetention",
-      "deleteExpiredIdentityDocumentArtifacts",
-      "syncAuthoritySubmissionStatuses",
-      "generateGuestRegisterComplianceReport"
-    ]) {
-      assert.match(worker, new RegExp(job));
+    // Tanda L2 (L2-07 · worker honesto): the scaffolded guest-register job names
+    // (generateDailyGuestRegisterBatch, submitQueuedGuestRegisterRecords…) that
+    // answered «completed» without doing anything were retired from the worker.
+    // The real SES scheduler runs in the API under the schedulers lease
+    // (server.ts · runDueSesSubmissions: retries + overdue report, RD 933/2021).
+    assert.match(server, /runDueSesSubmissions\(demoStore\.userContext\)/);
+    assert.match(server, /SES_SCHEDULER_DISABLED/);
+    assert.match(sesSubmissionService, /export async function runDueSesSubmissions/);
+    for (const queue of ["notifications.scheduled", "notifications.retry", "notifications.sending-sweep", "webhooks.deliver"]) {
+      assert.match(workerScheduler, new RegExp(`"${queue.replace(/\./g, "\\.")}"`));
     }
+    assert.doesNotMatch(worker + workerScheduler, /generateDailyGuestRegisterBatch|submitQueuedGuestRegisterRecords/);
     for (const tool of [
       "extractGuestIdentityFieldsTemporary",
       "validateSpainGuestRegister",

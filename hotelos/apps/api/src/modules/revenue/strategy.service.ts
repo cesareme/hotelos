@@ -199,14 +199,21 @@ export async function seedMarketSegments(input: { context: UserContext; property
   requirePermissions(input.context, ["revenue.configure"]);
   const rows = await prisma.reservation.groupBy({ by: ["marketSegment"], where: { propertyId: input.propertyId } });
   const codes = rows.map((r) => r.marketSegment).filter((s): s is string => !!s && s.trim().length > 0);
-  let created = 0;
-  for (const code of codes) {
-    const existing = await prisma.marketSegment.findUnique({ where: { propertyId_code: { propertyId: input.propertyId, code } } });
-    if (existing) continue;
-    await prisma.marketSegment.create({ data: { propertyId: input.propertyId, code, name: code.charAt(0).toUpperCase() + code.slice(1), category: "transient" } });
-    created++;
-  }
-  return { propertyId: input.propertyId, created, found: codes.length };
+  // Tanda L2 (L2-06): one lookup of the existing codes plus one createMany
+  // (skipDuplicates covers a concurrent seed) instead of findUnique + create
+  // per code. `created` = rows actually inserted, as before.
+  const existing = codes.length
+    ? await prisma.marketSegment.findMany({ where: { propertyId: input.propertyId, code: { in: codes } }, select: { code: true } })
+    : [];
+  const existingCodes = new Set(existing.map((row) => row.code));
+  const missing = Array.from(new Set(codes.filter((code) => !existingCodes.has(code))));
+  const inserted = missing.length
+    ? await prisma.marketSegment.createMany({
+        data: missing.map((code) => ({ propertyId: input.propertyId, code, name: code.charAt(0).toUpperCase() + code.slice(1), category: "transient" })),
+        skipDuplicates: true
+      })
+    : { count: 0 };
+  return { propertyId: input.propertyId, created: inserted.count, found: codes.length };
 }
 
 // ---- Group displacement analysis ------------------------------------------

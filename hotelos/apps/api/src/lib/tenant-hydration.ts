@@ -41,6 +41,7 @@ import {
 } from "./demo-store.js";
 import { NotFoundError } from "./http-error.js";
 import { hydrateAllPropertyModules } from "../modules/product-modules/product-modules.service.js";
+import { ensureCategoryDefinitions } from "../modules/backoffice/categories.store.js";
 import { invalidateTaxCache, planCatalogProvisioning } from "../modules/accounting/tax-rate.service.js";
 
 export type TenantHydrationResult = {
@@ -197,6 +198,14 @@ export async function hydrateTenantMirrors(): Promise<TenantHydrationResult> {
   for (const row of complianceSettings) mirrorComplianceSettings(row);
 
   const modules = await hydrateAllPropertyModules();
+
+  // Tanda L2 (L2-04): the category catalogue is persisted in category_definitions
+  // (upsert by code, once per process) so the category manager and the setup
+  // forms read Prisma rows. Nothing persisted is hydrated back into memory.
+  // Lazy import: backoffice.service.ts imports this module (ensurePropertyTaxes),
+  // so a static import here would create a load-time cycle.
+  const { CATEGORY_DEFINITION_CATALOG } = await import("../modules/backoffice/backoffice.service.js");
+  await ensureCategoryDefinitions(CATEGORY_DEFINITION_CATALOG);
 
   return { properties: properties.length, organizations: organizations.length, modules };
 }

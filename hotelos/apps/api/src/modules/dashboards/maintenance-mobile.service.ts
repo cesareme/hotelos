@@ -11,6 +11,7 @@
 //   low     — preventive / tareas planificadas
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 export type MaintMobilePriority = "urgent" | "high" | "normal" | "low";
 
@@ -38,6 +39,8 @@ export type MaintMobileResult = {
   generatedAt: string;
   summary: { urgent: number; high: number; normal: number; low: number; total: number; blockedRooms: number };
   items: MaintMobileItem[];
+  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_order_media"). */
+  degraded: string[];
 };
 
 function priorityWeight(p: MaintMobilePriority): number {
@@ -51,6 +54,7 @@ export async function buildMaintenanceMobile(input: { propertyId: string }): Pro
   const propertyId = input.propertyId;
   const now = new Date();
 
+  const { safe, degraded } = createDegradedCollector("dashboards.maintenance-mobile", { propertyId });
   const [wos, inHouse] = await Promise.all([
     prisma.workOrder.findMany({
       where: { propertyId, status: { in: ["open", "in_progress"] } },
@@ -63,12 +67,18 @@ export async function buildMaintenanceMobile(input: { propertyId: string }): Pro
   ]);
   // Media counts via separate query — agrupado por workOrderId entre los wos activos.
   const woIds = wos.map((w) => w.id);
+  // Tanda L2 (L2-06): a failed media count is logged and reported in
+  // `degraded[]` (was `.catch(() => [])`: every incident showed 0 photos).
   const mediaCounts = woIds.length
-    ? await prisma.workOrderMedia.groupBy({
-        by: ["workOrderId"],
-        where: { workOrderId: { in: woIds } },
-        _count: { workOrderId: true }
-      }).catch(() => [] as Array<{ workOrderId: string; _count: { workOrderId: number } }>)
+    ? await safe(
+        "work_order_media",
+        prisma.workOrderMedia.groupBy({
+          by: ["workOrderId"],
+          where: { workOrderId: { in: woIds } },
+          _count: { workOrderId: true }
+        }),
+        [] as Array<{ workOrderId: string; _count: { workOrderId: number } }>
+      )
     : [];
 
   const inHouseRoomIds = new Set(
@@ -178,5 +188,5 @@ export async function buildMaintenanceMobile(input: { propertyId: string }): Pro
     blockedRooms: items.filter((i) => i.blocksRoom).length
   };
 
-  return { generatedAt: now.toISOString(), summary, items };
+  return { generatedAt: now.toISOString(), summary, items, degraded };
 }

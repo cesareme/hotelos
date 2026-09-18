@@ -7,8 +7,13 @@
 //   - Genera un manifest JSON para Apple Wallet (.pkpass v1) firmado opcionalmente
 //     con un certificado developer si está configurado.
 //   - Devuelve una representación equivalente para Google Wallet (Class + Object).
-//   - Persiste un `MobileKey` con secreto rotativo para que la cerradura BLE/NFC
-//     pueda validar offline.
+//   - Persiste la llave (Tanda L2 · L2-03) como acción del portal del huésped
+//     (GuestPortalAction, actionType "mobile_key", id `mkey_<serial>`): no
+//     existe un modelo MobileKey ni la tabla advanced_records que el código
+//     anterior insertaba con un catch silencioso (la escritura fallaba en
+//     silencio y verifyUnlock/revokeWalletPass consultaban una tabla
+//     inexistente). El secreto NO se guarda: solo su hash y la firma pública
+//     del QR, para que la cerradura pueda validar cada intento.
 //
 // Honesty principle: SIN certificado de Apple developer + Pass Type ID, el
 // archivo .pkpass que generamos no es 100% válido para Apple Wallet (Apple
@@ -28,6 +33,10 @@ const TEAM_IDENTIFIER = process.env.APPLE_WALLET_TEAM_ID ?? "HOTELOSDEV";
 const SIGNED_BY_APPLE = Boolean(process.env.APPLE_WALLET_CERT_PATH);
 
 const GOOGLE_ISSUER_ID = process.env.GOOGLE_WALLET_ISSUER_ID ?? "3388000000022000000";
+
+/** Fila GuestPortalAction que guarda cada llave (id `mkey_<serial>`, actionType mobile_key). */
+export const MOBILE_KEY_ACTION_TYPE = "mobile_key";
+export const MOBILE_KEY_ID_PREFIX = "mkey_";
 
 type WalletPassResult = {
   // Datos comunes
@@ -196,31 +205,40 @@ export async function issueWalletPass(input: { context: UserContext; reservation
   const validFrom = reservation.arrivalDate.toISOString().slice(0, 10);
   const validUntil = reservation.departureDate.toISOString().slice(0, 10);
 
-  // Persist as advanced record so the audit pipeline picks it up. We don't yet
-  // have a dedicated MobileKey table — that's a P2 improvement.
-  await prisma.$executeRawUnsafe(
-    `INSERT INTO advanced_records (id, property_id, module_code, entity_type, entity_id, status, payload_json, created_at)
-     VALUES ($1, $2, 'guest_self_service', 'mobile_key', $3, 'active',
-       $4::jsonb, NOW())
-     ON CONFLICT (id) DO UPDATE SET payload_json = EXCLUDED.payload_json, status = EXCLUDED.status`,
-    `mkey_${serialNumber}`,
-    reservation.propertyId,
-    serialNumber,
-    JSON.stringify({
+  // Tenant guard (fail-secure): the reservation's property must belong to the
+  // caller's organization (the route already resolved the reservation; this
+  // keeps the service honest when called from elsewhere). Platform admins keep
+  // their cross-organization reach.
+  if (property.organizationId !== input.context.organizationId && input.context.isPlatformAdmin !== true) {
+    throw new NotFoundError("Reserva no encontrada.");
+  }
+
+  // Persisted key (Tanda L2 · L2-03): a GuestPortalAction of type "mobile_key"
+  // in the reservation's property. A Prisma failure aborts the request — a pass
+  // that the door could never validate must not be issued.
+  await prisma.guestPortalAction.create({
+    data: {
+      id: `${MOBILE_KEY_ID_PREFIX}${serialNumber}`,
+      propertyId: reservation.propertyId,
       reservationId: reservation.id,
-      serialNumber,
-      qrPayload,
-      // Public unlock signature (also in the QR) — used by verifyUnlock to reject
-      // serial-only attempts. audit 2026-06 R2 · H1.
-      unlockSig,
-      // We DO NOT store the secret in plain — only its hash for verification.
-      secretHash: createHash("sha256").update(secret).digest("hex"),
-      validFrom,
-      validUntil,
-      issuedAt: new Date().toISOString()
-    })
-  ).catch(() => {
-    // If advanced_records doesn't accept this row, ignore — the pass still works.
+      guestId: reservation.reservationGuests[0]?.guest?.id ?? null,
+      actionType: MOBILE_KEY_ACTION_TYPE,
+      status: "active",
+      payloadJson: {
+        reservationId: reservation.id,
+        serialNumber,
+        qrPayload,
+        // Public unlock signature (also in the QR) — used by verifyUnlock to reject
+        // serial-only attempts. audit 2026-06 R2 · H1.
+        unlockSig,
+        // We DO NOT store the secret in plain — only its hash for verification.
+        secretHash: createHash("sha256").update(secret).digest("hex"),
+        validFrom,
+        validUntil,
+        issuedAt: new Date().toISOString()
+      }
+    },
+    select: { id: true }
   });
 
   const appleWalletPass = buildAppleWalletPass({
@@ -277,15 +295,14 @@ export async function verifyUnlock(input: {
   if (Math.abs(Date.now() - input.timestamp) > 5 * 60 * 1000) {
     return { ok: false, reason: "timestamp_skew_too_large" };
   }
-  const rows = await prisma.$queryRawUnsafe<Array<{ payload_json: Record<string, unknown>; status: string }>>(
-    `SELECT payload_json, status FROM advanced_records
-     WHERE module_code = 'guest_self_service' AND entity_type = 'mobile_key' AND entity_id = $1`,
-    input.serialNumber
-  );
-  const row = rows[0];
+  const row = await prisma.guestPortalAction.findFirst({
+    where: { id: `${MOBILE_KEY_ID_PREFIX}${input.serialNumber}`, actionType: MOBILE_KEY_ACTION_TYPE },
+    select: { status: true, payloadJson: true }
+  });
   if (!row) return { ok: false, reason: "key_not_found" };
   if (row.status !== "active") return { ok: false, reason: "key_revoked" };
-  const payload = row.payload_json as { validUntil: string; unlockSig?: string };
+  const payload = (row.payloadJson ?? {}) as { validUntil?: string; unlockSig?: string };
+  if (typeof payload.validUntil !== "string") return { ok: false, reason: "key_missing_validity" };
   if (new Date(payload.validUntil) < new Date()) return { ok: false, reason: "key_expired" };
   // audit 2026-06 R2 · H1 — FIX bypass de cerradura: antes se hacia
   // `void input.signature` y se devolvia ok:true para cualquier serial activo, asi
@@ -307,12 +324,17 @@ export async function verifyUnlock(input: {
  * rejects subsequent attempts. The pass itself stays in the user's wallet but
  * the door won't open with it.
  */
-export async function revokeWalletPass(input: { context: UserContext; serialNumber: string }) {
+export async function revokeWalletPass(input: { context: UserContext; serialNumber: string; propertyId: string }) {
   requirePermissions(input.context, ["pms.checkin.execute"]);
-  if (!input.serialNumber) throw new BadRequestError("serialNumber required");
-  await prisma.$executeRawUnsafe(
-    `UPDATE advanced_records SET status = 'revoked' WHERE module_code = 'guest_self_service' AND entity_type = 'mobile_key' AND entity_id = $1`,
-    input.serialNumber
-  );
+  if (!input.serialNumber) throw new BadRequestError("Falta el número de serie de la llave.");
+  if (!input.propertyId) throw new BadRequestError("Falta la propiedad de la llave.");
+  // Tenant guard (Tanda L2 · corrector): the row is revoked ONLY in the property
+  // the route guard resolved (assertPropertyEntityAccess · mobileKey); a serial
+  // of another hotel or organisation is the same opaque 404 as a missing key.
+  const result = await prisma.guestPortalAction.updateMany({
+    where: { id: `${MOBILE_KEY_ID_PREFIX}${input.serialNumber}`, actionType: MOBILE_KEY_ACTION_TYPE, propertyId: input.propertyId },
+    data: { status: "revoked" }
+  });
+  if (result.count === 0) throw new NotFoundError("Llave móvil no encontrada.");
   return { ok: true, serialNumber: input.serialNumber };
 }

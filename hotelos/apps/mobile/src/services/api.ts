@@ -347,7 +347,7 @@ export async function getComplianceSnapshot(): Promise<{
     const [issuesResponse, recordsResponse, submissionsResponse] = await Promise.all([
       fetch(`${API_URL}/properties/prop_123/compliance/inbox`),
       fetch(`${API_URL}/properties/prop_123/guest-register-records`),
-      fetch(`${API_URL}/properties/prop_123/ses-hospedajes/submissions`)
+      fetch(`${API_URL}/properties/prop_123/ses/submissions`)
     ]);
 
     if (!issuesResponse.ok || !recordsResponse.ok || !submissionsResponse.ok) {

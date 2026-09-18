@@ -81,7 +81,11 @@ trap cleanup EXIT
 
 started=$(date +%s)
 LOCAL_MIGRATIONS=$(find "$DB_PKG/prisma/migrations" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*_*' | wc -l | tr -d ' ')
-EXPECTED_TABLES=$(cat "$DB_PKG"/prisma/migrations/*/migration.sql | grep -c '^CREATE TABLE ' || true)
+# Tablas vivas = CREATE TABLE − DROP TABLE en toda la cadena (la migración L2
+# 20260918130000_persistencia_l2 es la primera que retira tablas: 18 DROP TABLE).
+EXPECTED_CREATED=$(cat "$DB_PKG"/prisma/migrations/*/migration.sql | grep -c '^CREATE TABLE ' || true)
+EXPECTED_DROPPED=$(cat "$DB_PKG"/prisma/migrations/*/migration.sql | grep -c '^DROP TABLE ' || true)
+EXPECTED_TABLES=$(( EXPECTED_CREATED - EXPECTED_DROPPED ))
 [ "$LOCAL_MIGRATIONS" -ge 1 ] || fail "no hay carpetas de migración en packages/database/prisma/migrations"
 
 log "1/8 recreo la BD temporal $TEST_DB en el servidor de DATABASE_URL"
@@ -117,7 +121,7 @@ TABLES=$(psql "$TEST_URL" -Atc "SELECT count(*) FROM information_schema.tables W
 HISTORY_ROWS=$(psql "$TEST_URL" -Atc "SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL")
 ORGS=$(psql "$TEST_URL" -Atc "SELECT count(*) FROM organizations")
 PERMISSIONS=$(psql "$TEST_URL" -Atc "SELECT count(*) FROM permissions")
-[ "$TABLES" = "$EXPECTED_TABLES" ] || fail "tablas en BD ($TABLES) != CREATE TABLE en migraciones ($EXPECTED_TABLES)"
+[ "$TABLES" = "$EXPECTED_TABLES" ] || fail "tablas en BD ($TABLES) != CREATE TABLE − DROP TABLE en migraciones ($EXPECTED_TABLES = $EXPECTED_CREATED − $EXPECTED_DROPPED)"
 [ "$HISTORY_ROWS" = "$LOCAL_MIGRATIONS" ] || fail "_prisma_migrations tiene $HISTORY_ROWS filas aplicadas, esperaba $LOCAL_MIGRATIONS"
 [ "$ORGS" -ge 1 ] || fail "el seed base no creó ninguna organización"
 [ "$PERMISSIONS" -ge 1 ] || fail "el seed base no creó permisos"

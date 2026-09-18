@@ -215,10 +215,21 @@ export async function validateAccessToken(rawToken: string): Promise<{
   const row = await prisma.oAuthToken.findUnique({ where: { tokenHash } });
   if (!row || row.kind !== "access") return null;
   if (row.revokedAt || row.expiresAt < new Date()) return null;
-  // Update last used (fire and forget).
+  // Update last used (fire and forget: the token is already validated; a
+  // failed stamp never rejects the request). Tanda L2 (L2-06): logged with
+  // the token and app ids instead of `.catch(() => {})`.
   prisma.oAuthToken
     .update({ where: { id: row.id }, data: { lastUsedAt: new Date() } })
-    .catch(() => {});
+    .catch((error: unknown) => {
+      console.warn("[marketplace.oauth] lastUsedAt stamp failed (best-effort, token still valid)", {
+        scope: "marketplace.oauth",
+        organizationId: row.organizationId,
+        propertyId: row.propertyId,
+        appId: row.appId,
+        tokenId: row.id,
+        err: error instanceof Error ? { name: error.name, message: error.message } : { message: String(error) }
+      });
+    });
   return {
     appId: row.appId,
     organizationId: row.organizationId,

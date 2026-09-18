@@ -373,7 +373,7 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     mobileRoute: "ModuleMarketplace",
     screen: "ModuleManager",
     permission: "modules.read",
-    apiEndpoint: "/modules",
+    apiEndpoint: "/modules/catalog",
     saveEndpoint: "/properties/:propertyId/modules/:moduleCode/enable",
     targetTables: ["modules", "property_modules", "module_configuration"],
     inputCategories: ["Módulos", "Dependencias", "Salud", "Estado de configuración"],
@@ -390,8 +390,8 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     mobileRoute: "MarketplaceHome",
     screen: "MarketplaceCatalog",
     permission: "integrations.read",
-    apiEndpoint: "/integrations/properties/:propertyId/providers",
-    saveEndpoint: "/integrations/properties/:propertyId/connect",
+    apiEndpoint: "/integrations/providers",
+    saveEndpoint: "/backoffice/properties/:propertyId/integrations/:providerCode/connect",
     targetTables: ["integration_providers", "property_integrations", "integration_events"],
     inputCategories: ["Proveedores de integración", "Credenciales", "Capacidades", "Salud", "Ajustes de sincronización"],
     requiredInputs: ["Proveedor", "Referencia del secreto", "Capacidades", "Prueba de conexión", "Modo de sincronización", "Estado activo"],
@@ -407,9 +407,10 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     mobileRoute: "RevenueSettings",
     screen: "RatePlans",
     permission: "revenue.manage_rates",
-    apiEndpoint: "/revenue/properties/:propertyId/rate-plans",
-    saveEndpoint: "/revenue/properties/:propertyId/rate-plans",
-    targetTables: ["rate_plans", "property_category_options", "revenue_automation_rules"],
+    apiEndpoint: "/properties/:propertyId/rate-plans",
+    saveEndpoint: "/properties/:propertyId/rate-plans",
+    // Tanda L2 (corrector): `revenue_automation_rules` was dropped by 20260918130000_persistencia_l2.
+    targetTables: ["rate_plans", "property_category_options"],
     inputCategories: ["Planes de tarifas", "Categorías de tarifa", "Reglas de derivación", "Política de cancelación", "Régimen"],
     requiredInputs: ["Código del plan", "Nombre", "Tipo de plan", "Plan superior", "Regla de derivación", "Política de precio mínimo y máximo", "Estado activo"],
     status: "ready"
@@ -442,9 +443,11 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     screen: "RevenueHistoryForecastDashboard",
     permission: "revenue.history_forecast.read",
     apiEndpoint: "/revenue/properties/:propertyId/history-forecast",
-    saveEndpoint: "/revenue/properties/:propertyId/history-forecast/saved-views",
-    targetTables: ["revenue_daily_snapshots", "revenue_forecast_snapshots", "revenue_report_views"],
-    inputCategories: ["Instantáneas de revenue", "Instantáneas de previsión", "Vistas guardadas", "Ajustes de exportación"],
+    // Tanda L2 (L2-02, corrector): the saved-views routes and `revenue_report_views`
+    // were retired; what the hotel configures here is the export (Export Center).
+    saveEndpoint: "/revenue/properties/:propertyId/history-forecast/export",
+    targetTables: ["revenue_daily_snapshots", "revenue_forecast_snapshots"],
+    inputCategories: ["Instantáneas de revenue", "Instantáneas de previsión", "Ajustes de exportación"],
     requiredInputs: ["Fecha desde", "Fecha hasta", "Granularidad", "Filtros", "Periodo de comparación", "Indicadores visibles", "Formato de exportación"],
     status: "ready"
   },
@@ -503,16 +506,19 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     code: "revenue_recommendation_rules",
     group: "Revenue",
     label: "Reglas y recomendaciones",
-    description: "Umbrales de aprobación, automatización de bajo riesgo, precios mínimo y máximo, salud de canales y acciones bloqueadas.",
+    description: "Reglas de precio por ocupación, recomendaciones de tarifa y su aprobación o aplicación sobre el tarifario.",
     moduleCode: "revenue_profit_engine",
     url: "/revenue/reglas",
     mobileRoute: "RevenueRecommendations",
     screen: "RevenueRules",
     permission: "revenue.automation.manage",
-    apiEndpoint: "/revenue/properties/:propertyId/automation-rules",
-    saveEndpoint: "/revenue/properties/:propertyId/automation-rules",
-    targetTables: ["revenue_automation_rules", "revenue_recommendations", "revenue_scenarios"],
-    inputCategories: ["Nivel de automatización", "Umbrales de aprobación", "Límites de seguridad", "Escenarios por defecto", "Acciones bloqueadas"],
+    // Tanda L2 (L2-02, corrector): `/automation-rules` and the tables
+    // `revenue_automation_rules` / `revenue_scenarios` were retired; the screen
+    // reads recommendations and saves pricing rules (services/revenueApi.ts).
+    apiEndpoint: "/revenue/properties/:propertyId/recommendations",
+    saveEndpoint: "/revenue/properties/:propertyId/pricing-rules",
+    targetTables: ["pricing_rules", "revenue_recommendations"],
+    inputCategories: ["Reglas de precio", "Recomendaciones de tarifa", "Umbrales de aprobación", "Límites de seguridad"],
     requiredInputs: ["Nombre de la regla", "Nivel de automatización", "Ámbito", "Precio mínimo y máximo", "Cambio diario máximo", "Umbral de aprobación", "Estado activo"],
     status: "ready"
   },
@@ -600,8 +606,8 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     mobileRoute: "BackOfficePreview",
     screen: "PaymentSettings",
     permission: "payments.configure",
-    apiEndpoint: "/integrations/properties/:propertyId/providers",
-    saveEndpoint: "/integrations/properties/:propertyId/connect",
+    apiEndpoint: "/integrations/providers",
+    saveEndpoint: "/backoffice/properties/:propertyId/integrations/:providerCode/connect",
     targetTables: ["property_integrations", "payments", "payment_intents"],
     inputCategories: ["Pasarelas de pago", "Tokenización", "Reglas de captura", "Reglas de devolución"],
     requiredInputs: ["Proveedor", "Cuenta de comercio", "Referencia del secreto", "Política de captura", "Política de devolución", "Estado del webhook"],
@@ -719,8 +725,9 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     mobileRoute: "AIGovernanceSettings",
     screen: "AiGovernanceScreen",
     permission: "ai_governance.read",
-    apiEndpoint: "/ai-governance/policies",
-    saveEndpoint: "/ai-governance/policies",
+    // Tanda L2 (L2-02, corrector + integrador): `/ai-governance/*` was retired; `/ai-operations/governance/*` is canonical.
+    apiEndpoint: "/ai-operations/governance/policies",
+    saveEndpoint: "/ai-operations/governance/policies",
     targetTables: ["ai_policies", "ai_tool_registry", "ai_prompt_versions", "ai_human_review"],
     inputCategories: ["Políticas de IA", "Registro de herramientas", "Versiones de instrucciones", "Revisión humana", "Incidentes"],
     requiredInputs: ["Política", "Activación de herramientas", "Umbral de riesgo", "Regla de confirmación", "Rol de revisión humana", "Texto de aviso"],
@@ -736,9 +743,12 @@ const RAW_MANUAL_SETUP_OPTIONS: RawManualSetupOption[] = [
     mobileRoute: "GuestJourney",
     screen: "GuestPortalSettingsReal",
     permission: "guest_portal.configure",
-    apiEndpoint: "/guest-self-service/properties/:propertyId/settings",
-    saveEndpoint: "/guest-self-service/properties/:propertyId/settings",
-    targetTables: ["guest_journey_events", "property_modules", "property_custom_field_definitions"],
+    // Tanda L2 (L2-02, corrector): `/guest-self-service/properties/:propertyId/settings`
+    // was retired (scaffold without backend; L7 decides). Until then the option
+    // reads the property configuration and the real upsell catalogue.
+    apiEndpoint: "/backoffice/properties/:propertyId/configuration",
+    saveEndpoint: "/properties/:propertyId/upsell-offers",
+    targetTables: ["properties", "upsell_offers", "property_modules", "property_custom_field_definitions"],
     inputCategories: ["Portal del huésped", "Check-in en línea", "Verificación del pago", "Ventas adicionales", "Avisos al huésped"],
     requiredInputs: ["Portal activo", "Campos obligatorios del check-in", "Regla de verificación del pago", "Regla de firma", "Categorías de ventas adicionales", "Texto de aviso"],
     status: "needs_setup"

@@ -14,7 +14,6 @@ describe("AI Onboarding & Migration module", () => {
     const routeMap = read("packages/product/src/navigation/module-route-map.ts");
     const toolNames = read("packages/ai-tools/src/tool-names.ts");
     const aiRegistry = read("packages/ai-tools/src/registry.ts");
-    const workers = read("apps/worker/src/index.ts");
 
     assert.match(moduleCodes, /"ai_onboarding_migration"/);
     // Tanda 5: the manifest is Spanish and AISetupCenter is retired; the
@@ -39,18 +38,10 @@ describe("AI Onboarding & Migration module", () => {
       assert.match(aiRegistry, new RegExp(`"${toolName}", "ai_onboarding_migration"`));
     });
 
-    [
-      "classifyOnboardingFiles",
-      "extractOnboardingDocuments",
-      "parseOnboardingSpreadsheets",
-      "syncSourcePmsData",
-      "generateHotelBlueprintSuggestions",
-      "runMigrationDryRun",
-      "applyMigrationBatch",
-      "rollbackMigrationBatch",
-      "generateGoLiveReadinessReport",
-      "runCutoverDeltaImport"
-    ].forEach((jobName) => assert.match(workers, new RegExp(`"${jobName}"`)));
+    // Tanda L2 · L2-07 (worker honesto): el catálogo scaffold de jobs de
+    // apps/worker/src/index.ts (85 nombres que respondían «completed» sin hacer
+    // nada, 10 de ellos de onboarding) se retiró; el worker solo declara sus
+    // cuatro colas pg-boss reales, así que aquí ya no se pinnean nombres de jobs.
   });
 
   it("creates canonical onboarding schemas, connector interfaces and AI gateway agents", () => {

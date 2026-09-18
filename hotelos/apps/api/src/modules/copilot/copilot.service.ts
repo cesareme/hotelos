@@ -23,6 +23,7 @@
 
 import { prisma } from "@hotelos/database";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
+import { createDegradedCollector, type DegradedCollector } from "../../lib/degraded.js";
 
 export type CopilotIntent =
   | "arrivals_no_clean_room"
@@ -69,7 +70,17 @@ export type CopilotAnswer = {
   suggestions: CopilotAction[];       // acciones agregadas a nivel respuesta
   generatedAt: string;
   source: string;                     // qué consulta lo respaldó
+  /**
+   * Tanda L2 (L2-06, QC-06): consultas secundarias que fallaron y cayeron a
+   * su valor vacío en esta respuesta (p. ej. "work_orders"). Vacío = todo
+   * respondido desde datos reales; antes un `.catch(() => [])` hacía pasar
+   * una tabla rota por «sin incidencias».
+   */
+  degraded: string[];
 };
+
+/** Respuesta de cada intención antes de añadir `degraded` (lo hace el dispatcher). */
+type CopilotAnswerBody = Omit<CopilotAnswer, "degraded">;
 
 // ============================================================== intent detection
 
@@ -124,9 +135,9 @@ function isCleanHk(value?: string | null, fallbackStatus?: string): boolean {
 
 // ============================================================== resolvers
 
-type Ctx = { propertyId: string };
+type Ctx = { propertyId: string; safe: DegradedCollector["safe"] };
 
-async function listArrivalsNoCleanRoom(ctx: Ctx): Promise<CopilotAnswer> {
+async function listArrivalsNoCleanRoom(ctx: Ctx): Promise<CopilotAnswerBody> {
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
   const arrivals = await prisma.reservation.findMany({
@@ -198,7 +209,7 @@ async function listArrivalsNoCleanRoom(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listArrivalsPendingBalance(ctx: Ctx): Promise<CopilotAnswer> {
+async function listArrivalsPendingBalance(ctx: Ctx): Promise<CopilotAnswerBody> {
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
   const arrivals = await prisma.reservation.findMany({
@@ -256,7 +267,7 @@ async function listArrivalsPendingBalance(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listRoomsReadyForDelivery(ctx: Ctx): Promise<CopilotAnswer> {
+async function listRoomsReadyForDelivery(ctx: Ctx): Promise<CopilotAnswerBody> {
   const rooms = await prisma.room.findMany({ where: { propertyId: ctx.propertyId, active: true, sellable: true } });
   const inHouse = await prisma.reservation.findMany({
     where: { propertyId: ctx.propertyId, status: "checked_in" },
@@ -294,7 +305,7 @@ async function listRoomsReadyForDelivery(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listReservationsAtRisk(ctx: Ctx): Promise<CopilotAnswer> {
+async function listReservationsAtRisk(ctx: Ctx): Promise<CopilotAnswerBody> {
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
   const now = new Date();
@@ -347,7 +358,7 @@ async function listReservationsAtRisk(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function shiftSummary(ctx: Ctx): Promise<CopilotAnswer> {
+async function shiftSummary(ctx: Ctx): Promise<CopilotAnswerBody> {
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
   const [arrivals, departures, inHouseNow, cancelledToday, noShowToday] = await Promise.all([
@@ -380,7 +391,7 @@ async function shiftSummary(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listLateCheckouts(ctx: Ctx): Promise<CopilotAnswer> {
+async function listLateCheckouts(ctx: Ctx): Promise<CopilotAnswerBody> {
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
   const candidates = await prisma.reservation.findMany({
@@ -440,14 +451,20 @@ async function listLateCheckouts(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listBlockedRooms(ctx: Ctx): Promise<CopilotAnswer> {
+async function listBlockedRooms(ctx: Ctx): Promise<CopilotAnswerBody> {
   const [unsellable, ooo, workOrders] = await Promise.all([
     prisma.room.findMany({ where: { propertyId: ctx.propertyId, sellable: false, active: true } }),
     prisma.room.findMany({ where: { propertyId: ctx.propertyId, status: "out_of_order", active: true } }),
-    prisma.workOrder.findMany({
-      where: { propertyId: ctx.propertyId, status: { in: ["open", "in_progress"] }, blocksRoom: true },
-      select: { id: true, roomId: true, title: true }
-    }).catch(() => [])
+    // Tanda L2 (L2-06): a failed work-order query is reported in `degraded[]`
+    // (and logged with the property), never passed off as «sin incidencias».
+    ctx.safe(
+      "work_orders",
+      prisma.workOrder.findMany({
+        where: { propertyId: ctx.propertyId, status: { in: ["open", "in_progress"] }, blocksRoom: true },
+        select: { id: true, roomId: true, title: true }
+      }),
+      []
+    )
   ]);
   const ids = new Set<string>();
   for (const r of [...unsellable, ...ooo]) ids.add(r.id);
@@ -491,7 +508,7 @@ async function listBlockedRooms(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listVipsArriving(ctx: Ctx): Promise<CopilotAnswer> {
+async function listVipsArriving(ctx: Ctx): Promise<CopilotAnswerBody> {
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
   const arrivals = await prisma.reservation.findMany({
@@ -546,11 +563,15 @@ async function listVipsArriving(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listOpenIncidents(ctx: Ctx): Promise<CopilotAnswer> {
-  const wos = await prisma.workOrder.findMany({
-    where: { propertyId: ctx.propertyId, status: { in: ["open", "in_progress"] } },
-    orderBy: { createdAt: "asc" }
-  }).catch(() => []);
+async function listOpenIncidents(ctx: Ctx): Promise<CopilotAnswerBody> {
+  const wos = await ctx.safe(
+    "work_orders",
+    prisma.workOrder.findMany({
+      where: { propertyId: ctx.propertyId, status: { in: ["open", "in_progress"] } },
+      orderBy: { createdAt: "asc" }
+    }),
+    []
+  );
   const roomIds = wos.map((w) => w.roomId).filter((x): x is string => Boolean(x));
   const rooms = roomIds.length
     ? await prisma.room.findMany({ where: { id: { in: roomIds } }, select: { id: true, number: true } })
@@ -576,7 +597,7 @@ async function listOpenIncidents(ctx: Ctx): Promise<CopilotAnswer> {
   };
 }
 
-async function listOverdueHkTasks(ctx: Ctx): Promise<CopilotAnswer> {
+async function listOverdueHkTasks(ctx: Ctx): Promise<CopilotAnswerBody> {
   // "Retrasada" = tarea en pending desde hace > 2h sin asignar, o asignada y sin completar tras > 90 min
   const now = new Date();
   const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
@@ -616,10 +637,11 @@ async function listOverdueHkTasks(ctx: Ctx): Promise<CopilotAnswer> {
 
 // ============================================================== dispatcher
 
-export async function answerCopilot(input: { propertyId: string; question: string }): Promise<CopilotAnswer> {
+export async function answerCopilot(input: { propertyId: string; question: string; correlationId?: string }): Promise<CopilotAnswer> {
   const intent = detectIntent(input.question);
-  const ctx: Ctx = { propertyId: input.propertyId };
-  let result: CopilotAnswer;
+  const collector = createDegradedCollector("copilot.ask", { propertyId: input.propertyId, intent, correlationId: input.correlationId ?? null });
+  const ctx: Ctx = { propertyId: input.propertyId, safe: collector.safe };
+  let result: CopilotAnswerBody;
   switch (intent) {
     case "arrivals_no_clean_room": result = await listArrivalsNoCleanRoom(ctx); break;
     case "arrivals_pending_balance": result = await listArrivalsPendingBalance(ctx); break;
@@ -644,7 +666,7 @@ export async function answerCopilot(input: { propertyId: string; question: strin
       };
   }
   result.question = input.question;
-  return result;
+  return { ...result, degraded: collector.degraded };
 }
 
 export const COPILOT_PRESET_QUESTIONS: Array<{ id: string; label: string; question: string }> = [

@@ -152,6 +152,7 @@ import { recordAuditEvent } from "../../audit/audit.service.js";
 import { requirePermissions } from "../../auth/auth.service.js";
 import { resolveSupplierTaxId } from "../../payables/suppliers.service.js";
 import {
+  CHART_MAX_ACCOUNTS,
   ZERO,
   dateOnlyUtc,
   findJournalEntryBySource,
@@ -323,7 +324,7 @@ async function lockOrganization(tx: Prisma.TransactionClient, organizationId: st
 
 /** Plan de cuentas de la organización como `ChartLookup` (L1) más las filas con id (altas y padres). */
 export async function loadChartLookup(db: Db, organizationId: string): Promise<{ lookup: ChartLookup; rows: ChartRow[] }> {
-  const rows = await db.account.findMany({ where: { organizationId }, select: { id: true, code: true, name: true, kind: true, isPostable: true, usaliDepartment: true, usaliLine: true }, orderBy: { code: "asc" } });
+  const rows = await db.account.findMany({ where: { organizationId }, select: { id: true, code: true, name: true, kind: true, isPostable: true, usaliDepartment: true, usaliLine: true }, orderBy: { code: "asc" }, take: CHART_MAX_ACCOUNTS });
   const lookup = new Map<string, ChartLookupEntry>();
   const out: ChartRow[] = [];
   for (const row of rows) {
@@ -1454,20 +1455,35 @@ function skippedVatEntries(importId: string, organizationId: string, analysis: A
 async function ensureUsaliCostCentres(tx: Prisma.TransactionClient, pairs: ReadonlyArray<{ propertyId: string; code: string }>, properties: readonly PropertyLite[]): Promise<{ ids: Map<string, string>; warnings: string[] }> {
   const ids = new Map<string, string>();
   const warnings: string[] = [];
+  // L2-05: precarga de los centros existentes de todas las parejas (una consulta), createMany de los que faltan
+  // (skipDuplicates bajo el lock de la organización) y relectura de sus ids: tres consultas en vez de dos por pareja.
+  const wanted = new Map<string, { propertyId: string; code: string }>();
   for (const pair of pairs) {
     const key = `${pair.propertyId}|${pair.code}`;
-    if (ids.has(key)) continue;
-    const existing = await tx.costCenter.findUnique({ where: { propertyId_code: { propertyId: pair.propertyId, code: pair.code } }, select: { id: true, type: true, active: true } });
-    if (existing) {
-      if (existing.type !== USALI_COST_CENTRE_TYPE || !existing.active) {
-        warnings.push(`centro de coste ${pair.code} de ${propertyCodeOf(properties, pair.propertyId)} ya existía (tipo «${existing.type}»${existing.active ? "" : ", inactivo"}) y se reutiliza sin modificarlo`);
-      }
-      ids.set(key, existing.id);
-      continue;
+    if (!wanted.has(key)) wanted.set(key, { propertyId: pair.propertyId, code: pair.code });
+  }
+  if (wanted.size === 0) return { ids, warnings };
+  const propertyIds = Array.from(new Set(Array.from(wanted.values(), (w) => w.propertyId)));
+  const codes = Array.from(new Set(Array.from(wanted.values(), (w) => w.code)));
+  const select = { id: true, propertyId: true, code: true, type: true, active: true } as const;
+  const existing = await tx.costCenter.findMany({ where: { propertyId: { in: propertyIds }, code: { in: codes } }, select, take: propertyIds.length * codes.length });
+  const byKey = new Map(existing.map((centre) => [`${centre.propertyId}|${centre.code}`, centre]));
+  const missing = Array.from(wanted.values()).filter((w) => !byKey.has(`${w.propertyId}|${w.code}`));
+  if (missing.length > 0) {
+    await tx.costCenter.createMany({
+      data: missing.map((w) => ({ propertyId: w.propertyId, code: w.code, name: USALI_DEPARTMENTS[w.code.toLowerCase() as UsaliDepartment] ?? w.code, type: USALI_COST_CENTRE_TYPE, active: true })),
+      skipDuplicates: true
+    });
+    const created = await tx.costCenter.findMany({ where: { OR: missing.map((w) => ({ propertyId: w.propertyId, code: w.code })) }, select, take: missing.length });
+    for (const centre of created) byKey.set(`${centre.propertyId}|${centre.code}`, centre);
+  }
+  for (const [key, w] of wanted) {
+    const centre = byKey.get(key);
+    if (!centre) throw ledgerConflict("LEDGER_IMPORT_COST_CENTRE_MISSING", `No se pudo resolver el centro de coste ${w.code} del centro ${w.propertyId}.`, { propertyId: w.propertyId, code: w.code });
+    if (centre.type !== USALI_COST_CENTRE_TYPE || !centre.active) {
+      warnings.push(`centro de coste ${w.code} de ${propertyCodeOf(properties, w.propertyId)} ya existía (tipo «${centre.type}»${centre.active ? "" : ", inactivo"}) y se reutiliza sin modificarlo`);
     }
-    const name = USALI_DEPARTMENTS[pair.code.toLowerCase() as UsaliDepartment] ?? pair.code;
-    const created = await tx.costCenter.create({ data: { propertyId: pair.propertyId, code: pair.code, name, type: USALI_COST_CENTRE_TYPE, active: true }, select: { id: true } });
-    ids.set(key, created.id);
+    ids.set(key, centre.id);
   }
   return { ids, warnings };
 }
@@ -1759,6 +1775,38 @@ async function postThirdPartiesInTx(tx: Prisma.TransactionClient, importRow: Imp
   const organizationId = importRow.organizationId;
   const createSuppliers = analysis.options.createSuppliers === true;
   const entries: EntryCreate[] = [];
+  // L2-05: proveedores precargados por NIF (una consulta), createMany de los NIF que faltan y relectura de sus ids —
+  // tres consultas en vez de findFirst + create por tercero. La semántica fila a fila se conserva: el primer tercero
+  // del fichero con un NIF nuevo lo da de alta (`created`), los siguientes con el mismo NIF y los ya existentes cuentan
+  // como «existente» (`skipped_existing`) y actualizan el nombre si difiere.
+  const supplierByTaxId = new Map<string, { id: string; name: string }>();
+  const preexistingTaxIds = new Set<string>();
+  if (createSuppliers) {
+    const resolvedRows = analysis.thirdParties
+      .filter((row) => row.rol === "supplier")
+      .map((row) => ({ row, resolved: resolveSupplierTaxId(row.nif, (row.pais ?? "ES").toUpperCase()) }))
+      .filter((entry): entry is { row: (typeof analysis.thirdParties)[number]; resolved: ReturnType<typeof resolveSupplierTaxId> & { taxId: string } } => !!entry.resolved.taxId);
+    const taxIds = Array.from(new Set(resolvedRows.map((entry) => entry.resolved.taxId)));
+    if (taxIds.length > 0) {
+      const existingSuppliers = await tx.supplier.findMany({ where: { organizationId, taxId: { in: taxIds } }, select: { id: true, name: true, taxId: true }, take: taxIds.length });
+      for (const supplier of existingSuppliers) {
+        if (!supplier.taxId || supplierByTaxId.has(supplier.taxId)) continue;
+        supplierByTaxId.set(supplier.taxId, { id: supplier.id, name: supplier.name });
+        preexistingTaxIds.add(supplier.taxId);
+      }
+      const toCreate = new Map<string, Prisma.SupplierCreateManyInput>();
+      for (const { row, resolved } of resolvedRows) {
+        if (supplierByTaxId.has(resolved.taxId) || toCreate.has(resolved.taxId)) continue;
+        toCreate.set(resolved.taxId, { organizationId, name: (row.nombre ?? "").trim() || row.codigo, taxId: resolved.taxId, nifValidatedAt: resolved.nifValidatedAt, contactJson: {}, paymentTermsJson: {}, countryCode: (row.pais ?? "ES").toUpperCase(), active: true });
+      }
+      if (toCreate.size > 0) {
+        await tx.supplier.createMany({ data: Array.from(toCreate.values()) });
+        const created = await tx.supplier.findMany({ where: { organizationId, taxId: { in: Array.from(toCreate.keys()) } }, select: { id: true, name: true, taxId: true }, take: toCreate.size });
+        for (const supplier of created) if (supplier.taxId && !supplierByTaxId.has(supplier.taxId)) supplierByTaxId.set(supplier.taxId, { id: supplier.id, name: supplier.name });
+      }
+    }
+  }
+  const createdTaxIds = new Set<string>();
   for (const row of analysis.thirdParties) {
     const countryCode = (row.pais ?? "ES").toUpperCase();
     const name = (row.nombre ?? "").trim() || row.codigo;
@@ -1766,18 +1814,21 @@ async function postThirdPartiesInTx(tx: Prisma.TransactionClient, importRow: Imp
     let status: LedgerImportEntryStatus = "posted";
     const warningsJson: string[] = [];
     if (createSuppliers && row.rol === "supplier") {
-      const { taxId, nifValidatedAt } = resolveSupplierTaxId(row.nif, countryCode);
+      const { taxId } = resolveSupplierTaxId(row.nif, countryCode);
       if (!taxId) {
         warningsJson.push("Proveedor sin NIF: no se da de alta como Supplier.");
       } else {
-        const existing = await tx.supplier.findFirst({ where: { organizationId, taxId }, select: { id: true, name: true } });
-        if (existing) {
-          if (existing.name !== name) await tx.supplier.update({ where: { id: existing.id }, data: { name } });
-          supplierId = existing.id;
+        const supplier = supplierByTaxId.get(taxId);
+        if (!supplier) throw ledgerConflict("LEDGER_IMPORT_SUPPLIER_MISSING", `No se pudo resolver el proveedor con NIF ${taxId}.`, { taxId });
+        supplierId = supplier.id;
+        if (preexistingTaxIds.has(taxId) || createdTaxIds.has(taxId)) {
+          if (supplier.name !== name) {
+            await tx.supplier.update({ where: { id: supplier.id }, data: { name } });
+            supplier.name = name;
+          }
           status = "skipped_existing";
         } else {
-          const created = await tx.supplier.create({ data: { organizationId, name, taxId, nifValidatedAt, contactJson: {}, paymentTermsJson: {}, countryCode, active: true }, select: { id: true } });
-          supplierId = created.id;
+          createdTaxIds.add(taxId);
           outcome.created += 1;
         }
       }
@@ -1925,9 +1976,16 @@ async function reverseImportInTx(tx: Prisma.TransactionClient, importRow: Import
   }
   await tx.fiscalPeriod.updateMany({ where: { organizationId, status: "closed", closingNotes: importClosingNote(importRow.id) }, data: { status: "open", closedAt: null, closedBy: null, closingNotes: null } });
   // 2 · Reverso marcado de cada asiento del lote (nunca los asientos previos del diario).
+  //     L2-05: los asientos del lote en una consulta (antes un findUnique por asiento), filtrada por organización.
+  const entryRows = await tx.journalEntry.findMany({
+    where: { id: { in: [...importRow.journalEntryIds] }, organizationId },
+    select: { id: true, organizationId: true, propertyId: true, entryDate: true, status: true, reversedById: true, entryNumber: true, fiscalYearCode: true },
+    take: Math.max(1, importRow.journalEntryIds.length)
+  });
+  const entryById = new Map(entryRows.map((entry) => [entry.id, entry]));
   for (const journalEntryId of importRow.journalEntryIds) {
-    const entry = await tx.journalEntry.findUnique({ where: { id: journalEntryId }, select: { id: true, organizationId: true, propertyId: true, entryDate: true, status: true, reversedById: true, entryNumber: true, fiscalYearCode: true } });
-    if (!entry || entry.organizationId !== organizationId) continue;
+    const entry = entryById.get(journalEntryId);
+    if (!entry) continue;
     if (entry.reversedById) {
       if (!reversalIds.includes(entry.reversedById)) reversalIds.push(entry.reversedById);
       continue;
@@ -1970,9 +2028,12 @@ async function reverseImportInTx(tx: Prisma.TransactionClient, importRow: Import
 /** Reversa ENTEROS los lotes solapados (`replace`), cada uno con todos sus centros dentro del ámbito del usuario (404 opaco si no). */
 async function replaceImportsInTx(tx: Prisma.TransactionClient, organizationId: string, importIds: readonly string[], input: { newImportId: string; reversedBy: string | null; correlationId?: string; scopeContext: UserContext }): Promise<string[]> {
   const replaced: string[] = [];
+  // L2-05: los lotes a sustituir en una consulta (antes un findUnique por lote), filtrados por organización.
+  const rows = await tx.ledgerImport.findMany({ where: { id: { in: [...importIds] }, organizationId }, take: Math.max(1, importIds.length) });
+  const rowById = new Map(rows.map((row) => [row.id, row]));
   for (const importId of importIds) {
-    const row = await tx.ledgerImport.findUnique({ where: { id: importId } });
-    if (!row || row.organizationId !== organizationId || row.status !== "posted") continue;
+    const row = rowById.get(importId);
+    if (!row || row.status !== "posted") continue;
     assertFinanceReadScopeMany(input.scopeContext, await importPropertyIds(tx, importId));
     await reverseImportInTx(tx, row, { reason: `sustituido por ${input.newImportId}`, reversedBy: input.reversedBy, correlationId: input.correlationId, replacedById: input.newImportId });
     replaced.push(importId);
@@ -2264,7 +2325,10 @@ export async function listLedgerImports(input: { context: UserContext; query?: L
     .map(toImportRecord);
 }
 
-export async function getLedgerImport(input: { context: UserContext; importId: string; query?: LedgerImportDetailQuery }): Promise<LedgerImportDetail> {
+/** Detalle del lote (el objeto que lee el front) más, en un lote balances, la página de `balances`: `balanceOffset` … de `balanceTotal`. */
+export type LedgerImportDetailPage = LedgerImportDetail & { balanceTotal?: number; balanceOffset?: number };
+
+export async function getLedgerImport(input: { context: UserContext; importId: string; query?: LedgerImportDetailQuery }): Promise<LedgerImportDetailPage> {
   requirePermissions(input.context, ["accounting.read"]);
   const row = await loadImportOrThrow(prisma, input.context.organizationId, input.importId);
   assertFinanceReadScopeMany(input.context, await importPropertyIds(prisma, row.id));
@@ -2272,10 +2336,17 @@ export async function getLedgerImport(input: { context: UserContext; importId: s
   const limit = Math.min(Math.max(Math.trunc(input.query?.limit ?? LEDGER_IMPORT_DETAIL_DEFAULT_LIMIT), 1), LEDGER_IMPORT_DETAIL_MAX_LIMIT);
   const offset = Math.max(Math.trunc(input.query?.offset ?? 0), 0);
   const { entries, total } = await entryDtosOf(prisma, row.id, limit, offset);
-  const detail: LedgerImportDetail = { import: toImportRecord(row), entries, entryTotal: total, entryOffset: offset, mapping: mappingOf(row) };
+  const detail: LedgerImportDetailPage = { import: toImportRecord(row), entries, entryTotal: total, entryOffset: offset, mapping: mappingOf(row) };
   if (row.kind === "balances") {
-    const balances = await prisma.ledgerImportBalance.findMany({ where: { importId: row.id }, orderBy: [{ periodCode: "asc" }, { propertyCode: "asc" }, { sourceAccount: "asc" }] });
+    // L2-05: los saldos importados se paginan con el MISMO offset/limit que las entradas (406 filas en un lote de Faranda).
+    const balanceWhere = { importId: row.id, organizationId: row.organizationId };
+    const [balances, balanceTotal] = await Promise.all([
+      prisma.ledgerImportBalance.findMany({ where: balanceWhere, orderBy: [{ periodCode: "asc" }, { propertyCode: "asc" }, { sourceAccount: "asc" }], skip: offset, take: limit }),
+      prisma.ledgerImportBalance.count({ where: balanceWhere })
+    ]);
     detail.balances = balances.map(balanceDto);
+    detail.balanceTotal = balanceTotal;
+    detail.balanceOffset = offset;
   }
   return detail;
 }

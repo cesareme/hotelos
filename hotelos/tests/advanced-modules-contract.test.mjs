@@ -109,29 +109,26 @@ describe("Advanced ehotelOS modules foundation", () => {
   });
 
   it("exposes advanced API namespaces with route permissions for mutations", () => {
+    // Tanda L2 (L2-01): the duplicated / memory-only legs that L2-02 retires
+    // (/revenue/…/dashboard, /crm/profiles/:id/merge, /guest-portal/session/
+    // :token/check-in, /analytics/query, /developer/webhooks/:id/test,
+    // /ai-governance/tools/:toolName) are no longer pinned here.
     for (const route of [
-      "/revenue/properties/:propertyId/dashboard",
       "/revenue/properties/:propertyId/recommendations/:id/apply",
-      "/crm/profiles/:id/merge",
       "/groups/:id/room-blocks",
       "/events/:id/generate-beo",
       "/workforce/time-clock/clock-in",
       "/procurement/purchase-orders/:id/approve",
-      "/guest-portal/session/:token/check-in",
       "/reputation/reviews/:id/respond",
       "/energy/properties/:propertyId/readings",
-      "/safety/properties/:propertyId/incidents",
-      "/analytics/query",
-      "/developer/webhooks/:id/test",
-      "/ai-governance/tools/:toolName"
+      "/safety/properties/:propertyId/incidents"
     ]) {
       assert.match(server, new RegExp(route.replace(/[/:]/g, "\\$&")));
     }
     for (const protectedRoute of [
       "/revenue/properties/:propertyId/recommendations/:id/apply",
       "/groups/:id/room-blocks",
-      "/procurement/purchase-orders/:id/approve",
-      "/ai-governance/tools/:toolName"
+      "/procurement/purchase-orders/:id/approve"
     ]) {
       assert.match(routePermissions, new RegExp(protectedRoute.replace(/[/:]/g, "\\$&")));
     }
@@ -158,9 +155,9 @@ describe("Advanced ehotelOS modules foundation", () => {
     }
     assert.match(aiTools, /canExecuteToolForModules/);
     assert.match(toolNames, /runAiSafetyEvaluation/);
-    assert.match(worker, /ADVANCED_WORKER_JOB_NAMES/);
-    assert.match(worker, /generateRevenueForecasts/);
-    assert.match(worker, /processHumanReviewQueue/);
+    // Tanda L2 (L2-01): the scaffolded job catalogue (ADVANCED_WORKER_JOB_NAMES,
+    // generateRevenueForecasts, processHumanReviewQueue) is retired by L2-07
+    // (worker honesto): no longer pinned here.
     assert.match(sidebar, /Comercial/);
     // The developer/platform zone is now Configuración › Sistema (Webhooks, Aplicaciones, Referencia de API).
     assert.match(sidebar, /Webhooks|Aplicaciones|Plataforma de desarrollador|Desarrollador y sistema/);
@@ -191,19 +188,14 @@ describe("Advanced ehotelOS modules foundation", () => {
       assert.match(demoStore, new RegExp(marker));
     }
 
-    for (const behavior of [
-      "forecastOccupancy",
-      "pendingRecommendations",
-      "duplicateCandidates",
-      "pipelineValue",
-      "blockedRoomNights",
-      "sourceProfileId",
-      "blockedCount = block.pickedUpCount",
-      "Review revenue recommendations",
-      "Review guest duplicate merge",
-      "Review group pickup"
-    ]) {
-      assert.match(advancedService + preview, new RegExp(behavior));
+    // Tanda L2 (L2-03, corrector): the in-memory dashboards of the engine
+    // (forecastOccupancy, pendingRecommendations, duplicateCandidates,
+    // pipelineValue, blockedRoomNights…) were retired with the memory-only
+    // routes (/dashboards/* and the Prisma record store replace them), so only
+    // the browser demo copy is pinned here.
+    for (const behavior of ["Review revenue recommendations", "Review guest duplicate merge", "Review group pickup"]) {
+      assert.match(preview, new RegExp(behavior));
     }
+    assert.doesNotMatch(advancedService, /forecastOccupancy|pendingRecommendations|duplicateCandidates|pipelineValue/, "the engine no longer computes dashboards from memory (L2-03)");
   });
 });

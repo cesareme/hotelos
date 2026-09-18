@@ -698,6 +698,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   SES_SCHEDULER_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva el envío periódico de partes SES." },
   SES_SCHEDULER_INTERVAL_MS: { section: "Schedulers", ...INTERVAL, default: "300000", doc: "Periodo del scheduler SES (ms)." },
   VERIFACTU_SCHEDULER_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva el envío periódico de registros VeriFactu." },
+  WORKER_JOB_RUN_RETENTION_DAYS: { section: "Schedulers", format: "int", min: 1, max: 3650, default: "7", doc: "Retención (días) de las ejecuciones `completed` del worker en worker_job_runs, por cola; las `failed` se conservan 4× (corrector L2 · DP-06)." },
   VERIFACTU_SCHEDULER_INTERVAL_MS: { section: "Schedulers", ...INTERVAL, default: "120000", doc: "Periodo del scheduler VeriFactu (ms)." },
   PACE_SCHEDULER_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva el cálculo diario de pace/night-audit." },
   ALLOTMENT_RELEASE_SCHEDULER_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva la liberación automática de cupos." },

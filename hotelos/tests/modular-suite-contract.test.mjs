@@ -41,7 +41,8 @@ describe("Modular suite organization", () => {
     for (const model of [
       "model Module",
       "model PropertyModule",
-      "model ModuleDependency",
+      // Tanda L2 (L2-01): ModuleDependency was retired by migration
+      // 20260918130000_persistencia_l2 (dependencies live in the product manifest).
       "model IntegrationCategory",
       "model IntegrationProvider",
       "model IntegrationConnection",

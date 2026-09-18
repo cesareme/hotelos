@@ -57,7 +57,9 @@ describe("Migrations squash contract (DATA-01)", () => {
   it("the migration chain covers every model and enum of schema.prisma (Tanda 3 + Role.templateKey included)", () => {
     const models = count(schema, /^model\s+\w+\s*\{/gm);
     const enums = count(schema, /^enum\s+\w+\s*\{/gm);
-    assert.equal(count(chainSql, /^CREATE TABLE "/gm), models, "one CREATE TABLE per model across the chain");
+    // Tanda L2 (20260918130000_persistencia_l2) is the first migration of the chain
+    // that retires tables (18 DROP TABLE): live tables = CREATE TABLE − DROP TABLE.
+    assert.equal(count(chainSql, /^CREATE TABLE "/gm) - count(chainSql, /^DROP TABLE "/gm), models, "one live CREATE TABLE (minus DROP TABLE) per model across the chain");
     assert.equal(count(chainSql, /^CREATE TYPE "/gm), enums, "one CREATE TYPE per enum across the chain");
     assert.ok(count(chainSql, /^CREATE (UNIQUE )?INDEX "/gm) >= 380);
     assert.equal(count(chainSql, /ADD CONSTRAINT "\w+" FOREIGN KEY/g), count(schema, /@relation\([^)]*fields:/g), "one FOREIGN KEY per @relation(fields:)");

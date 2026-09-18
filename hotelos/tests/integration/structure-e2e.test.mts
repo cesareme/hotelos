@@ -980,6 +980,10 @@ describe("H · Backfill idempotente sobre la organización creada por el product
 // 2026-09-16): sociedad CEL · A33615980 · CELUISMA S.A. con 7 hoteles (RA, LT, PG, MC, AS, FN, LL) y la
 // oficina central OC. La Tanda 6c añade a Faranda los asientos `payroll_cost_import` (48 en la carga
 // real): el invariante fiscal son los 61 asientos previos, que se cuentan EXCLUYENDO ese sourceType.
+// Tanda 8a (2026-09-18 10:49, caso provocado §7.1 del informe TANDA-8A-RBAC): un cobro de 480,00 € en
+// efectivo y su devolución en Rías Altas (pagos cmu6u6q7000itfy7zkebh78ie / cmu6u6q8o00j0fy7zlk0nc6bv,
+// asientos 2393 `payment` y 2394 `payment_refund`) forman parte del dataset: la línea base son 63
+// asientos y el saldo de 4300 no cambia (cobro y devolución se anulan).
 describe("I · Equivalencia de Faranda (solo lectura)", () => {
   it("estructura: multi_center, sociedad CEL · A33615980, 7 hoteles + oficina central OC, RA con instalación DEV-001", async () => {
     const structure = await getStructure(farandaCtx);
@@ -994,7 +998,7 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     assert.deepEqual(structure.counts, { properties: 8, hotels: 7, offices: 1, others: 0, legalEntities: 1 });
   });
 
-  it("61 asientos previos (sin payroll_cost_import ni pms_shadow_revenue); 4300 = 379,00; 303 2026-Q3: bases 423,62 + 155,04 = 578,66 · 27 = 71 = 74,94 · 37 registros · declarante CEL", async () => {
+  it("63 asientos previos (61 + cobro y devolución de 480 € de Tanda 8a; sin payroll_cost_import ni pms_shadow_revenue); 4300 = 379,00; 303 2026-Q3: bases 423,62 + 155,04 = 578,66 · 27 = 71 = 74,94 · 37 registros · declarante CEL", async () => {
     // Tanda 7b (modo sombra OPERA, demo del integrador en Rías Altas): Faranda tiene además el asiento diario
     // `pms_shadow_revenue` del 16/09 (posted), el del 15/09 (reversed) y su reverso (`reversal` con reversalOfId):
     // se excluyen como las nóminas; el invariante fiscal siguen siendo los 61 previos y el saldo 379,00 de 4300.
@@ -1006,7 +1010,7 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     const sageEntryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG, sourceType: { in: ["sage200_journal", "sage200_balance"] } }, select: { id: true } })).map((e) => e.id);
     const excludedReversalTargets = [...shadowEntryIds, ...sageEntryIds];
     const baseline = { organizationId: FARANDA_ORG, sourceType: { notIn: ["payroll_cost_import", "pms_shadow_revenue", "sage200_journal", "sage200_balance"] }, ...(excludedReversalTargets.length > 0 ? { OR: [{ reversalOfId: null }, { reversalOfId: { notIn: excludedReversalTargets } }] } : {}) };
-    assert.equal(await prisma.journalEntry.count({ where: baseline }), 61);
+    assert.equal(await prisma.journalEntry.count({ where: baseline }), 63);
     const entryIds = (await prisma.journalEntry.findMany({ where: baseline, select: { id: true } })).map((e) => e.id);
     const lines = await prisma.journalLine.findMany({ where: { accountCode: "4300", journalEntryId: { in: entryIds } }, select: { debit: true, credit: true } });
     const balance = lines.reduce((sum, line) => sum + Number(line.debit) - Number(line.credit), 0);

@@ -72,10 +72,24 @@ export async function getGuestActivity(input: {
     ? { propertyId: res.propertyId, OR: [{ reservationId: res.id }, { guestId }] }
     : { propertyId: res.propertyId, reservationId: res.id };
   const conversations = await prisma.conversation.findMany({ where: convWhere, orderBy: { createdAt: "desc" }, take: 50 });
+  // Tanda L2 (L2-06): one aggregated count and one «last message per
+  // conversation» query for the whole feed instead of two queries per
+  // conversation (N+1 · app-recon-3 §rendimiento). `distinct` keeps the first
+  // row of each conversation in `sentAt desc` order, i.e. the latest message.
+  const conversationIds = conversations.map((c) => c.id);
+  const [messageTotals, lastMessages] =
+    conversationIds.length === 0
+      ? [[], []]
+      : await Promise.all([
+          prisma.message.groupBy({ by: ["conversationId"], where: { conversationId: { in: conversationIds } }, _count: { _all: true } }),
+          prisma.message.findMany({ where: { conversationId: { in: conversationIds } }, orderBy: { sentAt: "desc" }, distinct: ["conversationId"] })
+        ]);
+  const totalByConversation = new Map(messageTotals.map((row) => [row.conversationId, row._count._all]));
+  const lastByConversation = new Map(lastMessages.map((m) => [m.conversationId, m]));
   let messageCount = 0;
   for (const c of conversations) {
-    const [last] = await prisma.message.findMany({ where: { conversationId: c.id }, orderBy: { sentAt: "desc" }, take: 1 });
-    const total = await prisma.message.count({ where: { conversationId: c.id } });
+    const last = lastByConversation.get(c.id);
+    const total = totalByConversation.get(c.id) ?? 0;
     messageCount += total;
     const guestLast = Boolean(last && last.senderType === "guest");
     if (guestLast && c.status !== "closed") unreadGuest++;
