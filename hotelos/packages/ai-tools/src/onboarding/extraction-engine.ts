@@ -1,6 +1,6 @@
 // Deterministic onboarding extraction engine. Parses raw uploaded text
 // (CSV/TSV/JSON) into typed ExtractedEntity records. Pure + framework-free
-// so it can run inside both apps/api (stub mode) and apps/ai-gateway.
+// so it runs in process inside apps/api (modules/onboarding).
 //
 // Rules (Sprint 52):
 //   - NEVER invent values. Missing expected fields -> lower confidence + warning.

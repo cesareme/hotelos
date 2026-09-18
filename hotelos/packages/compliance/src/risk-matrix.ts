@@ -77,6 +77,93 @@ export const RISK_MATRIX: RiskMatrixEntry[] = [
     requiredApproval: "manager",
     requiredPermissions: ["pms.reservation.modify", "ai.high_risk.confirm"],
     riskLevel: "high"
+  },
+  // --- Tanda L6a (lote 3): claves para las herramientas con execute real (mapa camelCase → clave
+  // en packages/ai-tools/src/safety.ts TOOL_RISK_KEYS). Lecturas low con auto; el resto con
+  // confirmación de una persona (las escrituras siempre pasan por awaiting_confirmation en el runner).
+  {
+    key: "create_housekeeping_task",
+    aiMayAutoExecute: true,
+    requiresConfirmation: false,
+    requiredPermissions: ["housekeeping.task.manage", "ai.tool.execute"],
+    riskLevel: "low"
+  },
+  {
+    key: "answer_guest_question",
+    aiMayAutoExecute: true,
+    requiresConfirmation: false,
+    requiredPermissions: ["ai.tool.execute"],
+    riskLevel: "low"
+  },
+  {
+    key: "analyze_review_sentiment",
+    aiMayAutoExecute: true,
+    requiresConfirmation: false,
+    requiredPermissions: ["reputation.read", "ai.tool.execute"],
+    riskLevel: "low"
+  },
+  {
+    key: "classify_document",
+    aiMayAutoExecute: true,
+    requiresConfirmation: false,
+    requiredPermissions: ["ai.tool.execute"],
+    riskLevel: "low"
+  },
+  {
+    key: "mark_room_clean",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["housekeeping.task.manage", "ai.tool.execute"],
+    riskLevel: "medium"
+  },
+  {
+    key: "send_guest_message",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["ai.tool.execute"],
+    riskLevel: "medium"
+  },
+  {
+    key: "draft_review_response",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["reputation.respond", "ai.tool.execute"],
+    riskLevel: "medium"
+  },
+  {
+    key: "extract_identity_document",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["guest_register.create", "ai.tool.execute"],
+    riskLevel: "medium"
+  },
+  {
+    key: "extract_document_fields",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["ai.tool.execute"],
+    riskLevel: "medium"
+  },
+  {
+    key: "block_room_for_maintenance",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["maintenance.workorder.manage", "ai.tool.execute"],
+    riskLevel: "high"
+  },
+  {
+    key: "prepare_guest_register_record",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["guest_register.create", "ai.tool.execute"],
+    riskLevel: "high"
+  },
+  {
+    key: "queue_ses_submission",
+    aiMayAutoExecute: false,
+    requiresConfirmation: true,
+    requiredPermissions: ["guest_register.create", "ai.tool.execute"],
+    riskLevel: "high"
   }
 ];
 

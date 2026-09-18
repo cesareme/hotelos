@@ -33,7 +33,6 @@ npm install
 npm run test
 npm run smoke:demo
 npm run dev:api
-npm run dev:ai
 npm run dev:mobile
 ```
 

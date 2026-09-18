@@ -1,348 +1,147 @@
-// LLM provider abstraction (P2 — real AI).
+// Envoltorio fino sobre @hotelos/ai-core (Tanda L6a, lote 2). Conserva el contrato de los seis
+// llamadores históricos (server.ts, mapper, governance, reservation-agent, compliance, messaging):
+// mismos seis nombres exportados y mismos tipos. Sin fetch directo, sin proveedor OpenAI (se
+// trata como `provider_unsupported`) y sin leer variables de entorno (eso vive en lib/ai-config.ts).
+// Sin clave → { configured:false, reason } y el llamador responde por reglas; nunca se simula.
+// `temperature` se acepta y se reenvía: ai-core la descarta en los modelos sin sampling.
 //
-// This is the single seam where HotelOS talks to a real Large Language Model.
-// It is configured entirely via environment variables and is SAFE BY DEFAULT:
-// when no provider/key is configured (the dev default), `llmComplete` reports
-// `configured: false` and every caller falls back to its deterministic logic, so
-// the product keeps working with zero external dependencies. The moment an
-// operator sets AI_PROVIDER + AI_PROVIDER_API_KEY, real inference lights up.
-//
-// Env:
-//   AI_PROVIDER          "anthropic" | "openai" | "none" (default none)
-//   AI_PROVIDER_API_KEY  provider API key ("change-me"/empty = not configured)
-//   AI_MODEL             optional model override
-//   AI_REQUEST_TIMEOUT_MS optional (default 20000)
+// Corrección 1 (CFC-06 / SEC-01): con clave, una llamada SIN `ctx.organizationId` no tiene ámbito
+// de rate limit ni de presupuesto ni interruptor aiEnabled → no se llama al modelo y se responde
+// `{ configured:false, reason:"context_required" }` (honesto: los handlers deben pasar por el
+// tool runner). Antes esos llamadores compartían el cubo `unscoped` entre organizaciones.
+// Corrección 1 (CFC-02 / CFC-07): `LlmNotConfigured.telemetry` conserva el coste de un rechazo y
+// `llmExtractJsonFromImage` devuelve los tokens/coste reales cuando el JSON no valida (nunca ceros).
 
-export type LlmSuccess = {
+import type { AiContext, AiResult, AiSuccessMeta, AiTelemetry, ClassifyInput, ClassifyOutput, DocFieldConfidence, DocumentTelemetry, ExtractFromDocumentInput, StructuredInput } from "@hotelos/ai-core";
+import { isAiError, parseDataUrl } from "@hotelos/ai-core";
+import { getAiCore } from "./ai-client.js";
+
+export type { DocFields } from "@hotelos/ai-core";
+import type { DocFields } from "@hotelos/ai-core";
+
+export type LlmModelRole = "default" | "classify" | "insights";
+export type LlmContext = Partial<AiContext>;
+type LlmMeta = {
   configured: true;
-  text: string;
   provider: string;
   model: string;
   tokensInput: number;
   tokensOutput: number;
+  costEur?: number | null;
+  costUsd?: number | null;
+  cacheReadTokens?: number;
+  latencyMs?: number;
 };
-export type LlmNotConfigured = { configured: false; reason: string };
+export type LlmSuccess = LlmMeta & { text: string };
+export type LlmNotConfigured = { configured: false; reason: string; message?: string; telemetry?: AiTelemetry };
 export type LlmResult = LlmSuccess | LlmNotConfigured;
-
-const PLACEHOLDER_KEYS = new Set(["", "change-me", "changeme", "todo", "your-key-here"]);
-
-function provider(): string {
-  return (process.env.AI_PROVIDER ?? "none").trim().toLowerCase();
-}
-function apiKey(): string {
-  return (process.env.AI_PROVIDER_API_KEY ?? "").trim();
-}
-
-/** True when a usable LLM provider + key are configured. */
-export function isLlmConfigured(): boolean {
-  const p = provider();
-  if (p !== "anthropic" && p !== "openai") return false;
-  const key = apiKey();
-  return key.length > 0 && !PLACEHOLDER_KEYS.has(key.toLowerCase());
-}
-
-/** Provider name for /health and telemetry ("none" when unconfigured). */
-export function llmProviderName(): string {
-  return isLlmConfigured() ? provider() : "none";
-}
-
-export function llmModelName(): string {
-  if (process.env.AI_MODEL && process.env.AI_MODEL.trim()) return process.env.AI_MODEL.trim();
-  return provider() === "openai" ? "gpt-4o-mini" : "claude-3-5-sonnet-latest";
-}
-
-type CompleteInput = {
-  system?: string;
-  prompt: string;
-  maxTokens?: number;
-  temperature?: number;
-};
-
-/**
- * Run a single completion. Returns `{ configured: false }` when no provider is
- * set up (caller should fall back). Throws only on a genuine provider/network
- * error when configured — callers catch and fall back, recording the failure.
- */
-export async function llmComplete(input: CompleteInput): Promise<LlmResult> {
-  if (!isLlmConfigured()) return { configured: false, reason: "AI provider not configured" };
-  const timeoutMs = Number(process.env.AI_REQUEST_TIMEOUT_MS ?? 20000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return provider() === "openai"
-      ? await callOpenAI(input, controller.signal)
-      : await callAnthropic(input, controller.signal);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function callAnthropic(input: CompleteInput, signal: AbortSignal): Promise<LlmResult> {
-  const model = llmModelName();
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    signal,
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey(),
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: input.maxTokens ?? 400,
-      temperature: input.temperature ?? 0.3,
-      ...(input.system ? { system: input.system } : {}),
-      messages: [{ role: "user", content: input.prompt }]
-    })
-  });
-  if (!response.ok) {
-    throw new Error(`Anthropic API error HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  }
-  const data = (await response.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
-  };
-  const text = (data.content ?? [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text ?? "")
-    .join("")
-    .trim();
-  return {
-    configured: true,
-    text,
-    provider: "anthropic",
-    model,
-    tokensInput: data.usage?.input_tokens ?? 0,
-    tokensOutput: data.usage?.output_tokens ?? 0
-  };
-}
-
-// --- Vision: ID-document OCR -----------------------------------------------
-
-export type DocFields = {
-  documentType?: string;
-  documentNumber?: string;
-  documentSupportNumber?: string;
-  firstName?: string;
-  surname1?: string;
-  surname2?: string;
-  dateOfBirth?: string;
-  nationality?: string;
-  sex?: string;
-};
-export type LlmDocSuccess = {
-  configured: true;
-  fields: DocFields;
-  provider: string;
-  model: string;
-  tokensInput: number;
-  tokensOutput: number;
-};
+export type LlmDocSuccess = LlmMeta & { fields: DocFields; confidence?: DocFieldConfidence };
 export type LlmDocResult = LlmDocSuccess | LlmNotConfigured;
-
-const OCR_INSTRUCTION =
-  "Eres un extractor de datos de documentos de identidad. Extrae los campos del documento (DNI, NIE, " +
-  "pasaporte o TIE) de la imagen y devuelve EXCLUSIVAMENTE un objeto JSON válido, sin texto adicional, con " +
-  "estas claves cuando aparezcan: documentType (uno de: DNI, NIE, PASSPORT, TIE), documentNumber, " +
-  "documentSupportNumber, firstName, surname1, surname2, dateOfBirth (formato YYYY-MM-DD), nationality " +
-  "(código ISO-3, p. ej. ESP), sex (M o F). Omite las claves que no puedas leer con seguridad. No inventes datos.";
-
-function parseDataUrl(dataUrl: string): { mediaType: string; base64: string } | null {
-  const m = /^data:([^;]+);base64,(.+)$/s.exec(dataUrl.trim());
-  if (!m) return null;
-  return { mediaType: m[1]!, base64: m[2]! };
-}
-
-function extractJson(text: string): DocFields {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return {};
-  try {
-    const obj = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>;
-    const pick = (k: string): string | undefined => {
-      const v = obj[k];
-      return typeof v === "string" && v.trim() ? v.trim() : undefined;
-    };
-    return {
-      documentType: pick("documentType"),
-      documentNumber: pick("documentNumber"),
-      documentSupportNumber: pick("documentSupportNumber"),
-      firstName: pick("firstName"),
-      surname1: pick("surname1"),
-      surname2: pick("surname2"),
-      dateOfBirth: pick("dateOfBirth"),
-      nationality: pick("nationality"),
-      sex: pick("sex")
-    };
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Extract ID-document fields from an image using a vision-capable model. Returns
- * `{ configured: false }` when no provider is set up (caller asks the user to
- * type the fields manually). Throws on a genuine provider error when configured.
- */
-export async function llmExtractDocument(imageDataUrl: string): Promise<LlmDocResult> {
-  if (!isLlmConfigured()) return { configured: false, reason: "AI provider not configured" };
-  const parsed = parseDataUrl(imageDataUrl);
-  if (!parsed) return { configured: false, reason: "Invalid image data URL" };
-  const timeoutMs = Number(process.env.AI_REQUEST_TIMEOUT_MS ?? 20000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const model = llmModelName();
-  try {
-    let text = "";
-    let tokensInput = 0;
-    let tokensOutput = 0;
-    if (provider() === "openai") {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        signal: controller.signal,
-        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey()}` },
-        body: JSON.stringify({
-          model,
-          max_tokens: 500,
-          temperature: 0,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: OCR_INSTRUCTION },
-                { type: "image_url", image_url: { url: imageDataUrl } }
-              ]
-            }
-          ]
-        })
-      });
-      if (!response.ok) throw new Error(`OpenAI vision HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      const data = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
-      };
-      text = data.choices?.[0]?.message?.content ?? "";
-      tokensInput = data.usage?.prompt_tokens ?? 0;
-      tokensOutput = data.usage?.completion_tokens ?? 0;
-    } else {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey(),
-          "anthropic-version": "2023-06-01"
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 500,
-          temperature: 0,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.base64 } },
-                { type: "text", text: OCR_INSTRUCTION }
-              ]
-            }
-          ]
-        })
-      });
-      if (!response.ok) throw new Error(`Anthropic vision HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      const data = (await response.json()) as {
-        content?: Array<{ type: string; text?: string }>;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
-      text = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
-      tokensInput = data.usage?.input_tokens ?? 0;
-      tokensOutput = data.usage?.output_tokens ?? 0;
-    }
-    return { configured: true, fields: extractJson(text), provider: provider(), model, tokensInput, tokensOutput };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// --- Vision: generic image → JSON --------------------------------------------
-// Used by the Compliance Center to read issue/expiry dates off a document photo.
-export type LlmJsonSuccess = { configured: true; data: Record<string, unknown>; provider: string; model: string; tokensInput: number; tokensOutput: number };
+export type LlmJsonSuccess = LlmMeta & { data: Record<string, unknown>; document?: DocumentTelemetry };
 export type LlmJsonResult = LlmJsonSuccess | LlmNotConfigured;
+export type LlmStructuredResult<T> = (LlmMeta & { data: T }) | LlmNotConfigured;
+export type LlmClassifyResult = (LlmMeta & ClassifyOutput) | LlmNotConfigured;
 
-export async function llmExtractJsonFromImage(imageDataUrl: string, instruction: string): Promise<LlmJsonResult> {
-  if (!isLlmConfigured()) return { configured: false, reason: "AI provider not configured" };
-  const parsed = parseDataUrl(imageDataUrl);
-  if (!parsed) return { configured: false, reason: "Invalid image data URL" };
-  const timeoutMs = Number(process.env.AI_REQUEST_TIMEOUT_MS ?? 20000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const model = llmModelName();
+type CompleteInput = { system?: string; prompt: string; maxTokens?: number; temperature?: number; ctx?: LlmContext; model?: LlmModelRole };
+type CallOptions = { model?: LlmModelRole; temperature?: number; maxTokens?: number; timeoutMs?: number };
+
+const INVALID_IMAGE: LlmNotConfigured = { configured: false, reason: "invalid_image", message: "La imagen debe ser una URL de datos base64 (data:<tipo>;base64,…)." };
+export const CONTEXT_REQUIRED_MESSAGE = "Sin contexto de organización no se llama al modelo: pase { organizationId, propertyId } o use el tool runner.";
+const CONTEXT_REQUIRED: LlmNotConfigured = { configured: false, reason: "context_required", message: CONTEXT_REQUIRED_MESSAGE };
+
+/** Contexto para ai-core; null cuando falta la organización (sin ámbito de límite ni presupuesto). */
+function toCtx(ctx: LlmContext | undefined, toolName: string, purpose: AiContext["purpose"]): AiContext | null {
+  const organizationId = ctx?.organizationId?.trim();
+  if (!organizationId) return null;
+  return { ...ctx, organizationId, toolName: ctx?.toolName ?? toolName, purpose: ctx?.purpose ?? purpose };
+}
+function callOptions(opts: CallOptions = {}) {
+  return { model: opts.model ?? "default", temperature: opts.temperature, maxTokens: opts.maxTokens, timeoutMs: opts.timeoutMs };
+}
+function metaOf(r: AiSuccessMeta): LlmMeta {
+  return { configured: true, provider: r.provider, model: r.model, tokensInput: r.tokensInput, tokensOutput: r.tokensOutput, costEur: r.costEur, costUsd: r.costUsd, cacheReadTokens: r.usage.cacheReadTokens, latencyMs: r.latencyMs };
+}
+function notConfigured(r: { reason: string; message: string; telemetry?: AiTelemetry }): LlmNotConfigured {
+  return { configured: false, reason: r.reason, message: r.message, ...(r.telemetry ? { telemetry: r.telemetry } : {}) };
+}
+function unwrap<T>(r: AiResult<T>): { ok: true; meta: LlmMeta; value: AiSuccessMeta & T } | { ok: false; result: LlmNotConfigured } {
+  return r.configured ? { ok: true, meta: metaOf(r), value: r } : { ok: false, result: notConfigured(r) };
+}
+/** Sin proveedor → motivo tipado; con proveedor pero sin organización → context_required. */
+function gate(ctx: LlmContext | undefined, toolName: string, purpose: AiContext["purpose"]): { ok: true; ctx: AiContext } | { ok: false; result: LlmNotConfigured } {
+  const core = getAiCore();
+  if (!core.isConfigured()) return { ok: false, result: notConfigured({ reason: core.config.reason ?? "not_configured", message: "Sin modelo configurado" }) };
+  const aiCtx = toCtx(ctx, toolName, purpose);
+  return aiCtx ? { ok: true, ctx: aiCtx } : { ok: false, result: CONTEXT_REQUIRED };
+}
+
+/** True cuando hay proveedor y clave utilizables (nunca con placeholders, modelos vetados ni sin tipo de cambio). */
+export function isLlmConfigured(): boolean {
+  return getAiCore().isConfigured();
+}
+/** Nombre del proveedor para /health y telemetría ("none" sin configuración). */
+export function llmProviderName(): string {
+  return getAiCore().providerName();
+}
+/** Modelo del rol (defecto claude-sonnet-5; classify → Haiku 4.5; insights → Opus 5). */
+export function llmModelName(role: LlmModelRole = "default"): string {
+  return getAiCore().modelName(role);
+}
+
+/** Una completación. Sin proveedor u organización devuelve { configured:false }; con proveedor lanza AiError solo ante fallo real. */
+export async function llmComplete(input: CompleteInput): Promise<LlmResult> {
+  const g = gate(input.ctx, "llmComplete", "complete");
+  if (!g.ok) return g.result;
+  const u = unwrap(await getAiCore().complete({ system: input.system, prompt: input.prompt, maxTokens: input.maxTokens }, g.ctx, callOptions(input)));
+  return u.ok ? { ...u.meta, text: u.value.text } : u.result;
+}
+
+/** Campos de un documento de identidad a partir de una imagen (salida estructurada con confianza por campo). */
+export async function llmExtractDocument(imageDataUrl: string, ctx?: LlmContext): Promise<LlmDocResult> {
+  const g = gate(ctx, "scan_id_document", "extract");
+  if (!g.ok) return g.result;
+  if (!parseDataUrl(imageDataUrl)) return INVALID_IMAGE;
+  const u = unwrap(await getAiCore().extractIdentityDocument(imageDataUrl, g.ctx));
+  return u.ok ? { ...u.meta, fields: u.value.fields, confidence: u.value.confidence } : u.result;
+}
+
+/** Imagen → objeto JSON libre (Centro de cumplimiento). Sin JSON válido devuelve data {} con los tokens y el coste reales. */
+export async function llmExtractJsonFromImage(imageDataUrl: string, instruction: string, ctx?: LlmContext): Promise<LlmJsonResult> {
+  const g = gate(ctx, "extractJsonFromImage", "extract");
+  if (!g.ok) return g.result;
+  if (!parseDataUrl(imageDataUrl)) return INVALID_IMAGE;
   try {
-    let text = "";
-    let tokensInput = 0;
-    let tokensOutput = 0;
-    if (provider() === "openai") {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST", signal: controller.signal,
-        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey()}` },
-        body: JSON.stringify({ model, max_tokens: 400, temperature: 0, messages: [{ role: "user", content: [{ type: "text", text: instruction }, { type: "image_url", image_url: { url: imageDataUrl } }] }] })
-      });
-      if (!response.ok) throw new Error(`OpenAI vision HTTP ${response.status}`);
-      const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
-      text = data.choices?.[0]?.message?.content ?? "";
-      tokensInput = data.usage?.prompt_tokens ?? 0; tokensOutput = data.usage?.completion_tokens ?? 0;
-    } else {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", signal: controller.signal,
-        headers: { "content-type": "application/json", "x-api-key": apiKey(), "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({ model, max_tokens: 400, temperature: 0, messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: parsed.mediaType, data: parsed.base64 } }, { type: "text", text: instruction }] }] })
-      });
-      if (!response.ok) throw new Error(`Anthropic vision HTTP ${response.status}`);
-      const data = (await response.json()) as { content?: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } };
-      text = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
-      tokensInput = data.usage?.input_tokens ?? 0; tokensOutput = data.usage?.output_tokens ?? 0;
+    const u = unwrap(await getAiCore().extractJsonFromImage(imageDataUrl, instruction, g.ctx, { maxTokens: 400 }));
+    return u.ok ? { ...u.meta, data: u.value.data } : u.result;
+  } catch (error) {
+    if (isAiError(error) && (error.code === "invalid_output" || error.code === "truncated") && error.telemetry) {
+      const t = error.telemetry;
+      return { configured: true, provider: getAiCore().providerName(), model: t.model, tokensInput: t.tokensInput, tokensOutput: t.tokensOutput, costEur: t.costEur, costUsd: t.costUsd, cacheReadTokens: t.cacheReadTokens, latencyMs: t.latencyMs, data: {} };
     }
-    let obj: Record<string, unknown> = {};
-    const start = text.indexOf("{"); const end = text.lastIndexOf("}");
-    if (start !== -1 && end > start) { try { obj = JSON.parse(text.slice(start, end + 1)); } catch { obj = {}; } }
-    return { configured: true, data: obj, provider: provider(), model, tokensInput, tokensOutput };
-  } finally {
-    clearTimeout(timer);
+    throw error;
   }
 }
 
-async function callOpenAI(input: CompleteInput, signal: AbortSignal): Promise<LlmResult> {
-  const model = llmModelName();
-  const messages: Array<{ role: string; content: string }> = [];
-  if (input.system) messages.push({ role: "system", content: input.system });
-  messages.push({ role: "user", content: input.prompt });
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    signal,
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey()}`
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: input.maxTokens ?? 400,
-      temperature: input.temperature ?? 0.3,
-      messages
-    })
-  });
-  if (!response.ok) {
-    throw new Error(`OpenAI API error HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  }
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
-  };
-  const text = (data.choices?.[0]?.message?.content ?? "").trim();
-  return {
-    configured: true,
-    text,
-    provider: "openai",
-    model,
-    tokensInput: data.usage?.prompt_tokens ?? 0,
-    tokensOutput: data.usage?.completion_tokens ?? 0
-  };
+/** DOCUMENTOS §5.2: páginas (image) o PDF (document) → JSON validado contra `schema`; telemetría sin bytes. */
+export async function llmExtractJsonFromDocument(input: ExtractFromDocumentInput & CallOptions, ctx?: LlmContext): Promise<LlmJsonResult> {
+  const g = gate(ctx, "extractJsonFromDocument", "extract");
+  if (!g.ok) return g.result;
+  const u = unwrap(await getAiCore().extractFromDocument<Record<string, unknown>>(input, g.ctx, callOptions(input)));
+  return u.ok ? { ...u.meta, data: u.value.data, document: u.value.document } : u.result;
+}
+
+/** Salida estructurada (output_config json_schema + validación local). */
+export async function llmStructured<T = Record<string, unknown>>(input: StructuredInput & CallOptions, ctx?: LlmContext): Promise<LlmStructuredResult<T>> {
+  const g = gate(ctx, "llmStructured", "complete");
+  if (!g.ok) return g.result;
+  const u = unwrap(await getAiCore().structured<T>(input, g.ctx, callOptions(input)));
+  return u.ok ? { ...u.meta, data: u.value.data } : u.result;
+}
+
+/** Clasificación con el modelo barato (rol classify, Haiku 4.5). */
+export async function llmClassify(input: ClassifyInput, ctx?: LlmContext): Promise<LlmClassifyResult> {
+  const g = gate(ctx, "llmClassify", "classify");
+  if (!g.ok) return g.result;
+  const u = unwrap(await getAiCore().classify(input, g.ctx));
+  return u.ok ? { ...u.meta, label: u.value.label, confidence: u.value.confidence, ...(u.value.rationale ? { rationale: u.value.rationale } : {}) } : u.result;
 }

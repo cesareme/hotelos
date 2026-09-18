@@ -50,10 +50,9 @@ describe("Concierge and booking contracts", () => {
     }
   });
 
-  it("does not let the booking agent invent quotes in the gateway", () => {
-    const gateway = readFileSync(new URL("../apps/ai-gateway/src/server.ts", import.meta.url), "utf8");
-    assert.match(gateway, /needs_more_information/);
-    assert.match(gateway, /\/availability\/quote/);
-    assert.match(gateway, /Availability and prices come from the PMS availability tool/);
+  it("does not let the booking AI invent quotes (safety matrix)", () => {
+    const safety = readFileSync(new URL("../packages/ai-tools/src/safety.ts", import.meta.url), "utf8");
+    assert.match(safety, /availability tool/);
+    assert.match(safety, /priceCameFromAvailabilityTool/);
   });
 });

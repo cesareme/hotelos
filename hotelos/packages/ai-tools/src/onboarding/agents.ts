@@ -1,3 +1,8 @@
+// Catálogo de agentes de onboarding (14): nombres y responsabilidades que
+// documentan y auditan los contratos (tests/ai-onboarding-migration-contract).
+// Ningún agente aplica migraciones ni escribe en la base de datos por sí mismo;
+// todo pasa por revisión humana. Movido aquí desde la pasarela retirada (Tanda L6a).
+
 export const AI_ONBOARDING_AGENT_NAMES = [
   "OnboardingOrchestratorAgent",
   "SourceSystemAgent",

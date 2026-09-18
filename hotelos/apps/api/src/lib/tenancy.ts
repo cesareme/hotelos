@@ -869,6 +869,22 @@ const RESOLVERS = {
       return row && row.status === "pending" ? { propertyId: row.propertyId } : null;
     }
   } satisfies Resolver,
+  // Tanda L6a (corrección 1 · WT-08): human decision on a tool-runner row
+  // (POST /ai/tool-calls/:id/confirm, wired by the orchestrator). Distinct from
+  // `aiToolCall` above (read by id, any status): only a row still awaiting
+  // confirmation and not yet claimed is reachable; anything else is the same
+  // opaque 404 (no oracle for decided, expired or foreign rows).
+  aiToolCallConfirmation: {
+    notFound: "Llamada de herramienta no encontrada.",
+    resolve: async (id) => {
+      const row = await prisma.aiToolCall.findUnique({
+        where: { id },
+        select: { propertyId: true, organizationId: true, status: true, confirmedBy: true }
+      });
+      if (!row || row.status !== "awaiting_confirmation" || row.confirmedBy) return null;
+      return row.propertyId ? { propertyId: row.propertyId } : { organizationId: row.organizationId };
+    }
+  } satisfies Resolver,
   // Tanda L2 (L2-01): composite Prisma resolver for the generic by-id legs of
   // the advanced-modules engine (server.ts purchase-orders, anomalies,
   // reviews…). Tried in order over the concrete tables; L2-02 replaces every

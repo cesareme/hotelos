@@ -1,0 +1,22 @@
+{
+  "name": "@hotelos/ai-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --import ./src/__tests__/register-ts-loader.mjs --test 'src/**/__tests__/*.test.mjs'",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@hotelos/shared": "workspace:*",
+    "@hotelos/ai-tools": "workspace:*",
+    "@hotelos/compliance": "workspace:*",
+    "@hotelos/product": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}

@@ -50,34 +50,59 @@
         "scripts/smoke-director-dashboard.mjs"
       ]
     },
-    "AI_GATEWAY_MODE": {
+    "AI_DOCUMENT_TIMEOUT_MS": {
       "section": "IA",
-      "format": "enum",
-      "values": [
-        "stub",
-        "real"
-      ],
-      "default": "stub",
-      "doc": "Motor de onboarding con IA: stub (en proceso) o real (llama al ai-gateway).",
+      "format": "int",
+      "min": 1000,
+      "max": 600000,
+      "default": "120000",
+      "doc": "Timeout de extracción de documentos/imágenes (ms).",
       "readBy": [
-        "apps/api/src/modules/onboarding/ai-engine/dual-mode-engine.ts"
+        "apps/api/src/lib/ai-config.ts"
       ]
     },
-    "AI_GATEWAY_URL": {
+    "AI_INFERENCE_GEO": {
       "section": "IA",
-      "format": "url",
-      "default": "http://localhost:4000",
-      "doc": "URL del ai-gateway cuando AI_GATEWAY_MODE=real.",
+      "format": "string",
+      "doc": "Opcional: región de inferencia (inference_geo) para modelos 4.6+; Haiku 4.5 no la admite.",
       "readBy": [
-        "apps/api/src/modules/onboarding/ai-engine/dual-mode-engine.ts"
+        "apps/api/src/lib/ai-config.ts"
       ]
     },
     "AI_MODEL": {
       "section": "IA",
       "format": "string",
-      "doc": "Modelo a usar. Vacío = claude-3-5-sonnet-latest (anthropic) o gpt-4o-mini (openai).",
+      "doc": "Modelo por defecto para respuestas. Vacío = claude-sonnet-5. Nunca claude-fable-* (retención 30 días).",
       "readBy": [
-        "apps/api/src/lib/llm.ts"
+        "apps/api/src/lib/ai-config.ts"
+      ]
+    },
+    "AI_MODEL_CLASSIFY": {
+      "section": "IA",
+      "format": "string",
+      "default": "claude-haiku-4-5-20251001",
+      "doc": "Modelo de clasificación/enrutado (barato).",
+      "readBy": [
+        "apps/api/src/lib/ai-config.ts"
+      ]
+    },
+    "AI_MODEL_INSIGHTS": {
+      "section": "IA",
+      "format": "string",
+      "default": "claude-opus-5",
+      "doc": "Modelo para informes e insights (L6b).",
+      "readBy": [
+        "apps/api/src/lib/ai-config.ts"
+      ]
+    },
+    "AI_MONTHLY_BUDGET_EUR_DEFAULT": {
+      "section": "IA",
+      "format": "decimal",
+      "min": 0,
+      "default": "25",
+      "doc": "Presupuesto mensual de IA por propiedad en EUR (punto decimal) cuando PropertyAiSetting.configurationJson.monthlyBudgetEur es null; 0 bloquea.",
+      "readBy": [
+        "apps/api/src/lib/ai-config.ts"
       ]
     },
     "AI_PROVIDER": {
@@ -89,11 +114,9 @@
         "openai"
       ],
       "default": "none",
-      "doc": "Proveedor LLM de los asistentes. none = respuestas basadas en reglas. Sin este valor la API key no sirve.",
+      "doc": "Proveedor LLM: none (respuestas por reglas) | anthropic. openai está RETIRADO (L6a): se admite solo por compatibilidad, se trata como none y validate-env lo avisa.",
       "readBy": [
-        "apps/ai-gateway/src/server.ts",
-        "apps/api/src/lib/llm.ts",
-        "apps/api/src/modules/assistant/assistant.service.ts"
+        "apps/api/src/lib/ai-config.ts"
       ]
     },
     "AI_PROVIDER_API_KEY": {
@@ -107,9 +130,18 @@
       ],
       "doc": "API key del proveedor LLM.",
       "readBy": [
-        "apps/ai-gateway/src/server.ts",
-        "apps/api/src/lib/llm.ts",
-        "apps/api/src/modules/assistant/assistant.service.ts"
+        "apps/api/src/lib/ai-config.ts"
+      ]
+    },
+    "AI_RATE_LIMIT_PER_MINUTE": {
+      "section": "IA",
+      "format": "int",
+      "min": 1,
+      "max": 10000,
+      "default": "60",
+      "doc": "Llamadas al modelo por minuto y organización (token bucket en memoria por proceso).",
+      "readBy": [
+        "apps/api/src/lib/ai-config.ts"
       ]
     },
     "AI_REQUEST_TIMEOUT_MS": {
@@ -120,7 +152,20 @@
       "default": "20000",
       "doc": "Timeout de cada llamada al LLM (ms).",
       "readBy": [
-        "apps/api/src/lib/llm.ts"
+        "apps/api/src/lib/ai-config.ts"
+      ]
+    },
+    "AI_USD_EUR_RATE": {
+      "section": "IA",
+      "format": "decimal",
+      "min": 0.01,
+      "max": 10,
+      "required": {
+        "when": "AI_PROVIDER=anthropic"
+      },
+      "doc": "Tipo de cambio USD→EUR (punto decimal, p. ej. 0.92) para persistir cost_eur desde usage y aplicar el presupuesto mensual; sin él la IA queda desactivada (budget_unavailable).",
+      "readBy": [
+        "apps/api/src/lib/ai-config.ts"
       ]
     },
     "ALLOTMENT_RELEASE_SCHEDULER_DISABLED": {
@@ -130,15 +175,6 @@
       "doc": "true desactiva la liberación automática de cupos.",
       "readBy": [
         "apps/api/src/server.ts"
-      ]
-    },
-    "API_BASE_URL": {
-      "section": "IA",
-      "format": "url",
-      "default": "http://localhost:3000",
-      "doc": "Solo la lee el ai-gateway: URL del API contra el que ejecuta las herramientas.",
-      "readBy": [
-        "apps/ai-gateway/src/server.ts"
       ]
     },
     "API_PUBLIC_URL": {
@@ -573,7 +609,6 @@
       "default": "0.0.0.0",
       "doc": "Interfaz de escucha. En un despliegue nativo detrás de Caddy usa 127.0.0.1 para no exponer el puerto 3000; el compose fuerza 0.0.0.0 (red interna de contenedores).",
       "readBy": [
-        "apps/ai-gateway/src/server.ts",
         "apps/api/src/server.ts"
       ]
     },
@@ -783,17 +818,6 @@
         "packages/database/src/crypto-fields.ts"
       ]
     },
-    "OCR_PROVIDER_API_KEY": {
-      "section": "IA",
-      "format": "string",
-      "tags": [
-        "secret"
-      ],
-      "doc": "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured.",
-      "readBy": [
-        "apps/ai-gateway/src/server.ts"
-      ]
-    },
     "PACE_SCHEDULER_DISABLED": {
       "section": "Schedulers",
       "format": "bool",
@@ -892,9 +916,8 @@
       "min": 1,
       "max": 65535,
       "default": "3000",
-      "doc": "Puerto TCP del API (el ai-gateway usa 3100 por defecto).",
+      "doc": "Puerto TCP del API.",
       "readBy": [
-        "apps/ai-gateway/src/server.ts",
         "apps/api/src/server.ts"
       ]
     },
@@ -1266,17 +1289,6 @@
       "doc": "scripts/smoke-director-dashboard.mjs: timeout por petición (ms).",
       "readBy": [
         "scripts/smoke-director-dashboard.mjs"
-      ]
-    },
-    "SPEECH_PROVIDER_API_KEY": {
-      "section": "IA",
-      "format": "string",
-      "tags": [
-        "secret"
-      ],
-      "doc": "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured.",
-      "readBy": [
-        "apps/ai-gateway/src/server.ts"
       ]
     },
     "STRIPE_SECRET_KEY": {

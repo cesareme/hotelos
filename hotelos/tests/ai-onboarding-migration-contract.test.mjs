@@ -44,7 +44,7 @@ describe("AI Onboarding & Migration module", () => {
     // cuatro colas pg-boss reales, así que aquí ya no se pinnean nombres de jobs.
   });
 
-  it("creates canonical onboarding schemas, connector interfaces and AI gateway agents", () => {
+  it("creates canonical onboarding schemas, connector interfaces and onboarding agents", () => {
     const connectors = read("packages/onboarding/src/connectors/pms-source-connector.ts");
     const extraction = read("packages/onboarding/src/extraction/document-extraction-provider.ts");
     const dataQuality = read("packages/onboarding/src/data-quality/checks.ts");
@@ -59,7 +59,7 @@ describe("AI Onboarding & Migration module", () => {
     const safety = read("packages/onboarding/src/security/onboarding-safety.ts");
     const blueprint = read("packages/onboarding/src/schemas/hotel-blueprint.schema.ts");
     const revenueSnapshot = read("packages/onboarding/src/schemas/revenue-snapshot-mapping.schema.ts");
-    const agents = read("apps/ai-gateway/src/onboarding-agents.ts");
+    const agents = read("packages/ai-tools/src/onboarding/agents.ts");
 
     [
       "PmsSourceConnector",

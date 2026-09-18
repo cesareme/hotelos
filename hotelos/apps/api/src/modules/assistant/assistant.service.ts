@@ -7,14 +7,17 @@
 // Diseño honesto:
 //   - Si NO hay LLM configurado → router determinista por keywords + plantilla
 //     de respuesta. Funciona sin red, sin coste, y la respuesta cita la fuente.
-//   - Si SÍ hay LLM configurado → llama al provider con tool-calling; el modelo
-//     elige qué tools invocar; ejecutamos y devolvemos el render natural.
+//   - El modo `llm` solo se declara cuando un modelo ha respondido de verdad
+//     (`deriveAssistantMode`): en la Tanda L6a el asistente sigue siendo
+//     determinista aunque exista clave; la llamada con tool-calling llega en L6b.
 //
-// El usuario siempre ve qué tools se usaron y cuándo (transparencia HITL).
+// El usuario siempre ve qué tools se usaron y cuándo (transparencia HITL); cada
+// turno se registra en ai_tool_calls (answerAnalyticsQuestion) con su latencia.
 
 import { ASSISTANT_TOOLS, findToolsByKeyword, type ToolResult, type ToolDefinition } from "./assistant.tools.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { createId } from "../../lib/ids.js";
+import { recordToolCall } from "../ai-operations/pipeline.service.js";
 
 export type AssistantTurn = {
   question: string;
@@ -30,10 +33,15 @@ export type AssistantTurn = {
   correlationId: string;
 };
 
-function llmConfigured(): boolean {
-  const key = (process.env.AI_PROVIDER_API_KEY ?? "").trim();
-  const provider = (process.env.AI_PROVIDER ?? "none").trim().toLowerCase();
-  return (provider === "anthropic" || provider === "openai") && key.length > 0 && key !== "change-me";
+/** Resultado de herramienta tal como lo ve el modo: `modelAnswered` lo pondrá el modelo (L6b). */
+export type AssistantToolOutcome = { ok: boolean; modelAnswered?: boolean };
+
+/**
+ * Modo honesto del turno: `llm` SOLO si algún resultado lo produjo un modelo
+ * (`modelAnswered: true`); si no, `deterministic`, haya o no clave configurada.
+ */
+export function deriveAssistantMode(results: ReadonlyArray<{ result: AssistantToolOutcome }>): AssistantTurn["mode"] {
+  return results.some(({ result }) => result.modelAnswered === true) ? "llm" : "deterministic";
 }
 
 function fmtMoney(n: number, currency = "EUR"): string {
@@ -136,14 +144,30 @@ export async function answerQuestion(input: { context: UserContext; question: st
       source: result.source,
       summary: renderToolSummary(tool.name, result)
     })),
-    mode: llmConfigured() ? "llm" : "deterministic",
+    mode: deriveAssistantMode(results),
     generatedAt: new Date().toISOString(),
     correlationId
   };
 
-  // Future: register via recordToolCall once we pass the right shape.
-  // For now keep latency on the turn for debugging.
-  void t0;
+  // Telemetría real del pipeline (patrón messaging.service.ts): un fallo al
+  // insertar nunca rompe la respuesta, pero se avisa para que no pase inadvertido.
+  recordToolCall({
+    organizationId: input.context.organizationId,
+    propertyId: input.context.propertyId,
+    userId: input.context.userId,
+    toolName: "answerAnalyticsQuestion",
+    status: "succeeded",
+    inputJson: { question: input.question },
+    outputJson: { toolCalls: turn.toolCalls },
+    latencyMs: Date.now() - t0,
+    automationLevel: "suggest"
+  }).catch((err: unknown) =>
+    console.warn("[ai.telemetry] insert failed", {
+      toolName: "answerAnalyticsQuestion",
+      correlationId,
+      error: err instanceof Error ? err.message : String(err)
+    })
+  );
   return turn;
 }
 

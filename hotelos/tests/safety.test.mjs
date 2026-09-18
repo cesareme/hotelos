@@ -102,13 +102,15 @@ describe("ehotelOS safety rules", () => {
     assert.throws(() => assertBalancedJournal([{ accountCode: "572", debit: 480, credit: 0 }]), /not balanced/);
   });
 
-  it("keeps AI Gateway away from direct database access", () => {
-    const files = readAllFiles(fileURLToPath(new URL("../apps/ai-gateway/src", import.meta.url)));
+  it("keeps AI core away from direct database access and env", () => {
+    const files = readAllFiles(fileURLToPath(new URL("../packages/ai-core/src", import.meta.url))).filter((file) => !file.includes("__tests__"));
+    assert.ok(files.length > 0, "packages/ai-core/src sin ficheros");
     const source = files.map((file) => readFileSync(file, "utf8")).join("\n");
 
     assert.equal(source.includes("@hotelos/database"), false);
     assert.equal(source.includes("@prisma/client"), false);
     assert.equal(source.includes("PrismaClient"), false);
+    assert.equal(source.includes("process.env"), false, "ai-core recibe AiConfig; nunca lee variables de entorno");
   });
 
   it("keeps audit and AI tool call tables in the schema", () => {

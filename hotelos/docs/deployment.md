@@ -68,9 +68,9 @@ tabla la comparte `treasury.sepa_remittance` (remesas SEPA del API): toda lectur
 
 ## Release Gate (observabilidad)
 
-- AI Gateway has no direct DB imports.
-- `/health` returns service name, timestamp, dependency state, and telemetry targets for API, AI Gateway, and worker.
-- `x-correlation-id` is accepted at the edge and echoed so API, AI Gateway, worker events, audit records, and provider calls can be joined.
+- AI core (`packages/ai-core`) has no direct DB imports and reads no environment variables.
+- `/health` returns service name, timestamp, dependency state, and telemetry targets for API and worker.
+- `x-correlation-id` is accepted at the edge and echoed so API and worker events, audit records, and provider calls can be joined.
 - ID scan storage regression test passes; issued invoice immutability test passes.
 - Database restore has been tested; crash reporting and metrics are visible.
 

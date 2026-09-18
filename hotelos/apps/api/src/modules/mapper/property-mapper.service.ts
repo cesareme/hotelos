@@ -10,12 +10,19 @@
 //   - "ai":    LLM extraction of unstructured text (only when a provider is set).
 //   - "none":  nothing parseable + no AI configured → we say so, no fake data.
 
+import type { JsonSchema } from "@hotelos/ai-core";
+import type { ToolRunResult } from "@hotelos/ai-core/runner";
 import { prisma } from "@hotelos/database";
+import { getAiCore } from "../../lib/ai-client.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
-import { BadRequestError } from "../../lib/http-error.js";
-import { isLlmConfigured, llmComplete } from "../../lib/llm.js";
+import { BadRequestError, ForbiddenError, TooManyRequestsError } from "../../lib/http-error.js";
+import { createId } from "../../lib/ids.js";
+import { isLlmConfigured } from "../../lib/llm.js";
+import { runAiTool } from "../ai-operations/tool-runner.service.js";
+import { aiContextFor, apiToolContextFromRunner, fromAiResult } from "../ai-operations/tools/context.js";
+import type { NotConfiguredOutput } from "../ai-operations/tools/context.js";
 
 export type MapperFile = { name: string; mimeType?: string; text?: string };
 
@@ -154,31 +161,111 @@ const AI_SYSTEM = `You map hotel property data. Given raw text describing a hote
 {"rooms":[{"number":"101","floor":"1","building":"Main","zone":"East","roomTypeName":"Double","beds":"Queen x1","features":["balcony"],"sellable":true}],"spaces":["Reception","Spa"]}
 Infer room types from the text. Omit unknown fields. Return strictly valid JSON, no prose.`;
 
-async function extractWithAi(text: string): Promise<PropertyMapProposal | null> {
-  const result = await llmComplete({
-    system: AI_SYSTEM,
-    prompt: text.slice(0, 12000),
-    maxTokens: 1500,
-    temperature: 0.1
-  });
-  if (!result.configured) return null;
-  try {
-    const jsonStart = result.text.indexOf("{");
-    const jsonEnd = result.text.lastIndexOf("}");
-    if (jsonStart < 0 || jsonEnd < 0) return null;
-    const parsed = JSON.parse(result.text.slice(jsonStart, jsonEnd + 1)) as {
-      rooms?: ProposedRoom[];
-      spaces?: string[];
-    };
-    const rooms = Array.isArray(parsed.rooms) ? parsed.rooms.filter((r) => r && r.number) : [];
-    if (!rooms.length && !(parsed.spaces ?? []).length) return null;
-    const proposal = buildProposalFromRooms(rooms, "ai", `ai-${result.model}`);
-    proposal.spaces = Array.isArray(parsed.spaces) ? parsed.spaces.filter(Boolean) : [];
-    proposal.counts.spaces = proposal.spaces.length;
-    return proposal;
-  } catch {
-    return null;
+// Tanda L6a (lote 4): salida estructurada (esquema { rooms: [...], spaces: [] } validado en
+// ai-core) en lugar de recortar llaves del texto; la llamada pasa por el tool runner
+// (extractPropertyMap, lectura medium), que evalúa las puertas y registra la telemetría. La
+// fila no guarda el texto de los documentos: solo su tamaño y los recuentos extraídos.
+
+type ParsedRoom = {
+  number: string;
+  floor: string | null;
+  building: string | null;
+  zone: string | null;
+  roomTypeName: string | null;
+  beds: string | null;
+  features: string[] | null;
+  sellable: boolean | null;
+};
+type ParsedPropertyMap = { rooms: ParsedRoom[]; spaces: string[] };
+
+const nullable = (schema: JsonSchema): JsonSchema => ({ anyOf: [schema, { type: "null" }] });
+
+export const PROPERTY_MAP_SCHEMA: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["rooms", "spaces"],
+  properties: {
+    rooms: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["number", "floor", "building", "zone", "roomTypeName", "beds", "features", "sellable"],
+        properties: {
+          number: { type: "string" },
+          floor: nullable({ type: "string" }),
+          building: nullable({ type: "string" }),
+          zone: nullable({ type: "string" }),
+          roomTypeName: nullable({ type: "string" }),
+          beds: nullable({ type: "string" }),
+          features: nullable({ type: "array", items: { type: "string" } }),
+          sellable: nullable({ type: "boolean" })
+        }
+      }
+    },
+    spaces: { type: "array", items: { type: "string" } }
   }
+};
+
+/** Salida estructurada (nulos) → ProposedRoom (claves ausentes), como el JSON libre de antes. */
+export function roomsFromParsed(parsed: ParsedPropertyMap): ProposedRoom[] {
+  const rooms = Array.isArray(parsed.rooms) ? parsed.rooms : [];
+  return rooms
+    .filter((room) => room && typeof room.number === "string" && room.number.trim())
+    .map((room) => ({
+      number: room.number.trim(),
+      ...(room.floor ? { floor: room.floor } : {}),
+      ...(room.building ? { building: room.building } : {}),
+      ...(room.zone ? { zone: room.zone } : {}),
+      ...(room.roomTypeName ? { roomTypeName: room.roomTypeName } : {}),
+      ...(room.beds ? { beds: room.beds } : {}),
+      ...(Array.isArray(room.features) ? { features: room.features.filter((feature): feature is string => typeof feature === "string" && feature.trim().length > 0) } : {}),
+      ...(typeof room.sellable === "boolean" ? { sellable: room.sellable } : {})
+    }));
+}
+
+function isRunnerDenial(error: unknown): boolean {
+  if (error instanceof TooManyRequestsError) return true;
+  return error instanceof ForbiddenError && typeof error.details === "object" && error.details !== null && (error.details as { code?: unknown }).code === "AI_BUDGET_EXCEEDED";
+}
+
+async function extractWithAi(text: string, context: UserContext, propertyId: string): Promise<PropertyMapProposal | null> {
+  const scoped: UserContext = { ...context, propertyId };
+  type MapOutput = { rooms: ProposedRoom[]; spaces: string[]; model: string };
+  let result: ToolRunResult<MapOutput | NotConfiguredOutput>;
+  try {
+    result = await runAiTool<{ chars: number }, MapOutput | NotConfiguredOutput>({
+      context: scoped,
+      toolName: "extractPropertyMap",
+      input: { chars: Math.min(text.length, 12000) },
+      correlationId: createId("corr"),
+      execute: async (_value, ctx) => {
+        // temperature: ai-core la reenvía solo a los modelos con sampling (Haiku 4.5) y la descarta en Sonnet 5.
+        const aiResult = await getAiCore().structured<ParsedPropertyMap>(
+          { system: AI_SYSTEM, prompt: text.slice(0, 12000), schema: PROPERTY_MAP_SCHEMA, maxTokens: 1500 },
+          aiContextFor(apiToolContextFromRunner(ctx, scoped), "extractPropertyMap", "extract"),
+          { temperature: 0.1 }
+        );
+        const wrapped = fromAiResult(aiResult, (value) => ({
+          rooms: roomsFromParsed(value.data),
+          spaces: Array.isArray(value.data.spaces) ? value.data.spaces.filter((space): space is string => typeof space === "string" && space.trim().length > 0) : [],
+          model: value.model
+        }));
+        if (!("output" in wrapped)) return wrapped;
+        return { ...wrapped, record: { rooms: wrapped.output.rooms.length, spaces: wrapped.output.spaces.length, model: wrapped.output.model } };
+      }
+    });
+  } catch (error) {
+    if (isRunnerDenial(error)) return null;
+    throw error;
+  }
+  if (result.status !== "executed" || !result.configured) return null;
+  const { rooms, spaces, model } = result.output as MapOutput;
+  if (!rooms.length && !spaces.length) return null;
+  const proposal = buildProposalFromRooms(rooms, "ai", `ai-${model}`);
+  proposal.spaces = spaces;
+  proposal.counts.spaces = proposal.spaces.length;
+  return proposal;
 }
 
 export async function extractPropertyMap(input: {
@@ -199,9 +286,10 @@ export async function extractPropertyMap(input: {
     }
   }
 
-  // 2) AI extraction for unstructured text (only when a provider is configured).
+  // 2) AI extraction for unstructured text (only when a provider is configured; a través del
+  //    tool runner: una denegación cae al mensaje honesto de abajo).
   if (combined.trim().length > 0 && isLlmConfigured()) {
-    const aiProposal = await extractWithAi(combined);
+    const aiProposal = await extractWithAi(combined, input.context, input.propertyId);
     if (aiProposal && aiProposal.rooms.length > 0) return aiProposal;
   }
 
