@@ -116,6 +116,8 @@ export type ImportFlags = {
   replace: boolean;
   allowClosed: boolean;
   reason: string | null;
+  /** Nota libre del lote (`ledger_imports.notes`, p. ej. «carga real 2026-09-18»); solo en lotes (--type). */
+  notes: string | null;
   reconcile: boolean;
   balance: string | null;
   from: string | null;
@@ -136,7 +138,7 @@ export const USAGE = [
   `    --type ${CLI_TYPES.join("|")} --file <ruta> --organization <organizationId> \\`,
   "    [--entity <legalEntityId>] [--format sage_excel|sage_ime_csv|sage_xml|canonical_csv|canonical_json] [--sheet <hoja>] \\",
   "    [--mapping <ruta.json>] [--unassigned block|office] [--numbering canal|delegacion] [--dry-run | --apply --confirm <organizationId>] [--replace] \\",
-  "    [--allow-closed --reason \"…\"] [--reconcile --balance <sumas-y-saldos>] [--json]",
+  "    [--allow-closed --reason \"…\"] [--notes \"…\"] [--reconcile --balance <sumas-y-saldos>] [--json]",
   "  node … import-sage200.ts --reconcile --balance <sumas-y-saldos> --from YYYY-MM-DD --to YYYY-MM-DD --organization <organizationId> [--property <código>] [--json]",
   "  node … import-sage200.ts --reverse <importId> --reason \"…\" --confirm <organizationId> [--organization <organizationId>] [--json]",
   "  node … import-sage200.ts --template <type> --out <ruta.csv>",
@@ -164,6 +166,7 @@ export const USAGE = [
   "                         los revierte ENTEROS y crea el lote nuevo en la misma transacción (reimporta siempre el mes completo)",
   `  --allow-closed         (solo con --apply) contabiliza en periodos cerrados de ${BRAND.name}; exige --reason y se audita con el motivo`,
   "  --reason <texto>       motivo del reverso (--reverse) o de --allow-closed",
+  "  --notes <texto>        (solo lotes) nota libre que queda en ledger_imports.notes (p. ej. «carga real 2026-09-18»); con --allow-closed se antepone su motivo",
   "  --reconcile            con --type journal: adjunta --balance <sumas-y-saldos de Sage del mismo rango> y reconcilia tras contabilizar;",
   "                         suelto (sin --type): --balance --from --to [--property <código>] → escribe solo ledger_reconciliations",
   "  --balance <ruta>       sumas y saldos nivel 0 de Sage (Excel, CSV o canónico de saldos)",
@@ -182,7 +185,7 @@ export const USAGE = [
   "Códigos de salida: 0 ok · 1 fallo (validación, cuentas o analítica sin mapear, duplicado / solape sin --replace, periodo cerrado, BD) · 2 flag desconocido / uso."
 ].join("\n");
 
-const VALUE_FLAGS = new Set(["--type", "--file", "--organization", "--entity", "--format", "--sheet", "--mapping", "--unassigned", "--numbering", "--confirm", "--reason", "--balance", "--from", "--to", "--property", "--reverse", "--template", "--out"]);
+const VALUE_FLAGS = new Set(["--type", "--file", "--organization", "--entity", "--format", "--sheet", "--mapping", "--unassigned", "--numbering", "--confirm", "--reason", "--notes", "--balance", "--from", "--to", "--property", "--reverse", "--template", "--out"]);
 const BOOLEAN_FLAGS = new Set(["--dry-run", "--apply", "--replace", "--allow-closed", "--reconcile", "--json"]);
 
 function emptyFlags(): ImportFlags {
@@ -202,6 +205,7 @@ function emptyFlags(): ImportFlags {
     replace: false,
     allowClosed: false,
     reason: null,
+    notes: null,
     reconcile: false,
     balance: null,
     from: null,
@@ -254,6 +258,7 @@ export function parseFlags(argv: readonly string[]): ImportFlags {
   flags.mapping = get("--mapping");
   flags.confirm = get("--confirm");
   flags.reason = get("--reason");
+  flags.notes = get("--notes");
   flags.balance = get("--balance");
   flags.from = get("--from");
   flags.to = get("--to");
@@ -281,7 +286,7 @@ export function parseFlags(argv: readonly string[]): ImportFlags {
   if (flags.template !== null) {
     flags.mode = "template";
     if (flags.out === null) throw new Error("--template exige --out <ruta.csv>.");
-    if (flags.apply || flags.reverse !== null || flags.reconcile) throw new Error("--template no se combina con --apply, --reverse ni --reconcile.");
+    if (flags.apply || flags.reverse !== null || flags.reconcile || flags.notes !== null) throw new Error("--template no se combina con --apply, --reverse, --reconcile ni --notes.");
     return flags;
   }
 
@@ -290,7 +295,7 @@ export function parseFlags(argv: readonly string[]): ImportFlags {
     if (sawDryRun) throw new Error("--reverse siempre escribe: no admite --dry-run.");
     if (flags.reason === null) throw new Error("--reverse exige --reason \"<motivo del reverso>\".");
     if (flags.confirm === null) throw new Error("--reverse exige --confirm <organizationId del lote>.");
-    if (flags.type !== null || flags.file !== null || flags.reconcile || flags.replace || flags.allowClosed) throw new Error("--reverse no se combina con --type, --file, --reconcile, --replace ni --allow-closed.");
+    if (flags.type !== null || flags.file !== null || flags.reconcile || flags.replace || flags.allowClosed || flags.notes !== null) throw new Error("--reverse no se combina con --type, --file, --reconcile, --replace, --allow-closed ni --notes.");
     flags.apply = true;
     return flags;
   }
@@ -302,7 +307,7 @@ export function parseFlags(argv: readonly string[]): ImportFlags {
     if (!ISO_DAY.test(flags.from) || !ISO_DAY.test(flags.to)) throw new Error("--from y --to deben ser fechas YYYY-MM-DD.");
     if (flags.from > flags.to) throw new Error("--from debe ser igual o anterior a --to.");
     if (flags.organization === null) throw new Error("--reconcile suelto exige --organization <organizationId>.");
-    if (flags.file !== null || flags.replace || flags.allowClosed || flags.apply || flags.confirm !== null) throw new Error("--reconcile suelto no se combina con --file, --replace, --allow-closed, --apply ni --confirm (escribe solo ledger_reconciliations).");
+    if (flags.file !== null || flags.replace || flags.allowClosed || flags.apply || flags.confirm !== null || flags.notes !== null) throw new Error("--reconcile suelto no se combina con --file, --replace, --allow-closed, --apply, --confirm ni --notes (escribe solo ledger_reconciliations).");
     return flags;
   }
 
@@ -327,6 +332,17 @@ export function assertConfirmMatches(flags: Pick<ImportFlags, "apply" | "confirm
   if (flags.confirm === null || flags.confirm !== flags.organization) {
     throw new Error(`--confirm "${flags.confirm ?? ""}" no coincide con --organization "${flags.organization ?? ""}". Nada escrito.`);
   }
+}
+
+/**
+ * `notes` del lote (`ledger_imports.notes`): el motivo de --allow-closed (auditado) y la nota libre
+ * de --notes, en ese orden y separados por « · »; undefined si no hay ninguna de las dos.
+ */
+export function lotNotes(flags: Pick<ImportFlags, "allowClosed" | "reason" | "notes">): string | undefined {
+  const parts: string[] = [];
+  if (flags.allowClosed) parts.push(`--allow-closed: ${flags.reason ?? ""}`);
+  if (flags.notes !== null && flags.notes.trim() !== "") parts.push(flags.notes.trim());
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -649,7 +665,7 @@ async function runLot(flags: ImportFlags): Promise<RunOutcome> {
   try {
     const result = await createLedgerImport({
       context,
-      body: { ...body, post: true, notes: flags.allowClosed ? `--allow-closed: ${flags.reason}` : undefined },
+      body: { ...body, post: true, notes: lotNotes(flags) },
       createdBy: CREATED_BY,
       correlationId: CORRELATION_ID,
       legalEntityId: flags.entity ?? null,

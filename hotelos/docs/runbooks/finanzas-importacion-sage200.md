@@ -46,7 +46,7 @@ son ficticios**: empresa Sage `1` «CELUISMA DEMO S.A.» con NIF ficticio `A0000
 | 6 | **Ejercicios a cargar**: cuáles con diario completo y cuáles solo con saldos (§3); fecha de corte del relevo | Plan de lotes y `fiscal_years` | — |
 | 7 | **Decisiones abiertas** de `finanzas-contabilidad.md` §15 / §17.13: `pgc_variant` pymes vs general, régimen y periodicidad de IVA (`VatSettings`, hoy sin fila), SII, y qué hacer con las 25 facturas sandbox de RA y sus asientos | Comparativos y 303 correctos; regla de exclusión de nativos (§5) | El lote `vat_books` responde 409 `LEDGER_IMPORT_VAT_SETTINGS_MISSING` (§9) |
 
-### 1.2 · Instrucción exacta por listado de Sage 200 [S: menús de la ayuda de Sage; confirmar con la primera exportación real]
+### 1.2 · Instrucción exacta por listado de Sage 200 (formato real confirmado 2026-09-18 con la primera exportación de Sage 200 2026.85.000)
 
 | Listado | En Sage 200 | Opciones que hay que marcar | Lote ehotelOS |
 | --- | --- | --- | --- |
@@ -56,6 +56,19 @@ son ficticios**: empresa Sage `1` «CELUISMA DEMO S.A.» con NIF ficticio `A0000
 | **Libro Registro de IVA** del trimestre | Contabilidad › IVA › Libro Registro de IVA | «Enviar a Excel» → **«Formato Libros AEAT»** (hojas `EXPEDIDAS_INGRESOS` y `RECIBIDAS_GASTOS`, cabeceras en las filas 7-8 como el `LSIJ.xlsx` de la AEAT) | `vat_books` |
 | **Clientes y Proveedores** | Mantenimientos de Clientes y de Proveedores (en lista) › Gestor de Exportación a Excel | Código, **Código contable**, NIF / CIF, CIF europeo, Razón social, Sigla nación | `third_parties` |
 | **Opcional: XML «Datos contables»** de un mes | Inicio › Importación / Exportación › Datos contables › Exportar formato XML | Bloques Plan de cuentas, Clientes / Proveedores, Movimientos, Movimientos analítica, Mov. Facturas / IVA; filtro por ejercicio y fechas; genera `Temporal.zip` | ninguno todavía: responde 400 `LEDGER_IMPORT_XML_UNSUPPORTED { blocks }` (§9); sirve para escribir el parser |
+
+**Lo que llegó realmente (formato real confirmado 2026-09-18, Sage 200 2026.85.000, on-premise; sin
+acceso SQL ni Scheduler):**
+
+| Listado | Cómo lo exportó administración | Diferencia con la instrucción de arriba | Entra por |
+| --- | --- | --- | --- |
+| Diario | «Diario General» con «Enviar a Excel», un fichero por mes en 2025 y por mes o **quincena** en 2026 (los meses grandes superan el tope de 5 MiB del lector, §2.1) | La cabecera está en la fila 6 (filas 1-3 con NIF, ejercicio y empresa); `Cuenta` es el **título** y `Código cuenta` el código; trae un segundo par Debe / Haber de totales de página; la columna `Ejercicio` es la del ejercicio abierto al exportar, no la del asiento; sin analítica más allá de `Cód. delegación` / `Cód. departamento` (no usan canal, sección ni proyecto) | canónico `journal` / `fiscal_years` tras el preprocesado de §2.2 |
+| Sumas y saldos | «Balance sumas y saldos» mensual (`AperturaP`, `DebeP`, `HaberP`, `SaldoP`) y anual (`…A`), a nivel de subcuenta | Los mensuales traen **solo el movimiento del mes** (sin acumulado) y **no hay hoja por delegaciones**: la comparación por centro se hace por SQL sobre las Σ 6/7 por delegación del propio diario | canónico `balances` (§6) |
+| Plan de cuentas | Gestor de Exportación a Excel (`PlanCuentas…`, `PlanCuentasListado… completo`) y **rowset ADO XML** `PlanCuentasPGC…` | El gestor **no exporta el NIF** de los terceros aunque se pida la columna: el NIF se toma del rowset de Clientes / Proveedores por `CodigoCuenta` | canónico `plan` |
+| Libro Registro de IVA | «Formato Libros AEAT», hoja `EXPEDIDAS` / `RECIBIDAS`; **emitidas por meses** (el libro anual daba error por tamaño) y recibidas por trimestres | Cabecera en dos filas (grupos / columnas), `Identificación` = NIF, `(Serie-Número)` = número en recibidas, importes vacíos en facturas a cero, fechas como texto | canónico `vat_books` |
+| Clientes y Proveedores | **rowset ADO XML** `CliPro…` (no Excel) | Trae campos de empleado y datos personales: se filtra por cuenta (40x / 41x / 43x / 44x) y solo se exportan código, cuenta, NIF, país y razón social | canónico `third_parties` |
+| Maestros de analítica | rowsets ADO XML `Delegaciones…` y `Departamentos…` | Las delegaciones no llevan nombre útil: la tabla delegación → hotel se deriva del diario (sexta cifra de la cuenta y títulos de subcuenta); los departamentos son los de nóminas (RR. HH.) | mapa analítico (§4.2) |
+| XML «Datos contables» | no se pidió: los rowsets ADO cubren plan, terceros y maestros | — | — |
 
 ## 2 · Formatos aceptados y cabeceras (diseño §4.3)
 
@@ -74,9 +87,20 @@ Límites (`packages/shared/src/ledger-import-types.ts`): fichero ≤ **20 MiB**
 (`LEDGER_IMPORT_MAX_BYTES` → 400 `LEDGER_IMPORT_TOO_LARGE { bytes, max }`), `contentBase64` ≤
 **28 MiB** de caracteres (`LEDGER_IMPORT_MAX_BASE64_CHARS`; las rutas de carga fijan `bodyLimit`
 30 MiB: por encima, 413 de Fastify), ≤ **250.000 filas** (`LEDGER_IMPORT_TOO_MANY_ROWS`), ≤
-**20.000 asientos por lote** (`LEDGER_IMPORT_TOO_MANY_ENTRIES`: trocear por meses), ≤ **500
-líneas por asiento** tras el reparto por centro, transacción `maxWait` 15 s / `timeout` **600 s**
+**20.000 asientos por lote** (`LEDGER_IMPORT_TOO_MANY_ENTRIES`: trocear por meses), ≤ **5.000
+líneas por asiento** en los lotes `journal` / `fiscal_years` (formato real confirmado 2026-09-18:
+las aperturas / cierres de Sage 200 traen miles de líneas; `LEDGER_IMPORT_MAX_LINES_PER_ENTRY_SAGE`
+en `ledger-import.service.ts`; **500** sigue siendo el valor por defecto de la función pura
+`buildJournalEntries` —`LEDGER_IMPORT_MAX_LINES_PER_ENTRY` de `packages/shared`—, que el servicio
+sustituye con `ctx.maxLinesPerEntry`), transacción `maxWait` 15 s / `timeout` **600 s**
 bajo `pg_advisory_xact_lock('ledger_import:<organizationId>')`. Ficheros mayores → CLI (§7).
+
+Tope **efectivo** del lector, por debajo de los 20 MiB del lote: `parseXlsxTable` / `parseCsvTable`
+(lector del importador de reservas, reutilizado por `sage_excel` y por el canónico) rechazan XLSX /
+CSV de más de **5 MiB** (`RESERVATION_IMPORT_MAX_BYTES`, `RESERVATION_IMPORT_TOO_LARGE`) y `xlsx-lite`
+limita cada parte descomprimida a **32 MiB** (`XLSX_LITE_MAX_PART_BYTES`): los diarios reales grandes
+entran por **CSV canónico troceado por número de asiento** (nunca por fecha: un asiento entero va
+siempre en la misma parte).
 
 ### 2.2 · `sage_excel` (Excel o CSV de un listado de Sage): cabeceras por sinónimo [S]
 
@@ -101,6 +125,70 @@ tabla es [S] hasta la necesidad 1):
 | saldos: `titulo`, `apertura_debe` / `apertura_haber`, `debe`, `haber`, `saldo_deudor` / `saldo_acreedor` | Título / Descripción; Saldo apertura, Sumas anteriores (D / H); Debe; Haber; Saldo, Deudor, Acreedor | saldos y reconciliación |
 | plan: `cuenta`, `titulo`, `nif`, `pais`, `longitud` | Cuenta / Código; Título / Descripción; NIF / CIF; País / Sigla nación; Longitud / Nivel | plan |
 | terceros: `codigo`, `cuenta`, `nif`, `pais`, `nombre` | CodigoCliente / CodigoProveedor / Código; CodigoContable / Cuenta; CifDni / NIF; SiglaNacion / País; RazonSocial / Nombre | terceros |
+
+**Formato real confirmado (2026-09-18, Sage 200 2026.85.000, «Enviar a Excel» de los listados):**
+
+- **Diario general**: filas 1-3 con NIF / ejercicio / empresa, cabecera en la fila 6 (42 columnas):
+  `Fecha` (texto `DD/MM/YYYY`), `Número de asiento`, `Tipo documento`, `Cód. diario`, `Documento`,
+  `Fecha grabación`, `Comentario`, **`Cuenta` = título de la subcuenta y `Código cuenta` = código**
+  (tomar siempre `Código cuenta`, nunca `Cuenta`), primer par `Debe` / `Haber` = importes del apunte y
+  **segundo par `Debe` / `Haber` = totales de página** (ignorar), `Ejercicio` (el del listado, no el
+  del asiento), `Número periodo` (0 apertura, 1-12, 98 regularización, 99 cierre), `Período`
+  («Apertura», «Cierre Ejer.», «Cierre Conta»), `Cód. delegación`, `Cód. departamento`, `Serie
+  factura`, `Número de factura` (0 sin factura), `Fecha asiento`. Hay importes negativos (Sage no
+  cambia de lado) y apuntes a 0.
+- **Sumas y saldos**: cabecera en la fila 6: `Cuenta`, `Descripción`, `AperturaP `, `DebeP `,
+  `HaberP `, `SaldoP ` (**con espacio final**) y, en los anuales, `AperturaA`, `DebeA`, `HaberA`,
+  `SaldoA`; 3 filas de totales con `Cuenta` = `*`; los mensuales llevan **solo los movimientos del
+  periodo** (no acumulados) y Sage suma **con signo** (saldo deudor positivo, acreedor negativo).
+- **Libros de IVA**: hoja `EXPEDIDAS` / `RECIBIDAS`, fila 1 grupos y fila 2 columnas;
+  `Identificación` = NIF, `(Serie-Número)` = número, `Cuota IVA Soportado`, `Tipo Retención del
+  IRPF`, `Importe Retenido del IRPF`; rectificativas como `F1` con importes negativos; fechas como
+  texto `dd/mm/yyyy`.
+
+Los sinónimos de la tabla anterior **no** cubren todavía `Número de asiento`, `Código cuenta` frente
+a `Cuenta`-título, las columnas `…P ` ni `Identificación` / `(Serie-Número)`: los ficheros reales
+entran por el **canónico** (§2.4) tras un preprocesado fuera del repo; ampliar los sinónimos es
+opcional y cada sinónimo nuevo lleva su test con datos inventados.
+
+**Preprocesado canónico de la carga real (2026-09-18, scripts fuera del repo en
+`pilots/<empresa>/sage200-real/prep/tools/`; reglas confirmadas con los ficheros reales):**
+
+- **Diario → `journal` / `fiscal_years`**: `ejercicio` = año de la `Fecha` (la columna `Ejercicio`
+  del listado es la del ejercicio abierto al exportar: los meses de 2025 exportados en 2026 dicen
+  2026 y el canónico los rechazaría como «fecha fuera del ejercicio»); `periodo` = `Número periodo`
+  (`normalizeSagePeriod` acepta 0-12, 13-15 y los reales **98** = regularización / **99** = cierre,
+  y los textos «Cierre Ejer.» / «Cierre Conta»); los apuntes a 0,00 en Debe y Haber **se descartan**
+  antes (el canónico rechaza «apunte sin importe») y se cuentan; los importes negativos se dejan tal
+  cual (el importador los pasa al lado contrario, ver §6); la apertura del ejercicio va SOLO en el lote
+  `fiscal_years` (el diario de enero repite el asiento de apertura como periodo 0: se excluye) y se
+  selecciona **por periodo 0**, nunca por número de asiento (en 2026 la apertura era el 69090); la
+  regularización y el cierre se cargan **dentro del diario de diciembre** (periodos 98 / 99 al final
+  de la última parte, para que el lote que cierra el ejercicio sea el último) y nunca además desde
+  los ficheros «ASIENTO REGULARIZACION / CIERRE» sueltos; en 2026 Sage reutiliza números de asiento
+  dentro del mismo periodo con fechas distintas: se renumeran `<asiento>-<MMDD>` (`--numbering
+  delegacion` no los separa todos); partes ≤ 4,7 MB troceadas por asiento (tope de 5 MiB
+  del lector); `nombre` solo en 40x/41x/43x/44x (título de la subcuenta, enmascarado) y vacío en el
+  resto; comentarios y títulos enmascarados por diccionario de nombres de empleados (465/460/555 del
+  plan + CliPro) y por bigrama de apellidos en las cuentas de personal.
+- **Plan → `plan`**: cuentas de 10 cifras (`PPP AA H SSSS`, sexta cifra = hotel); NIF desde CliPro
+  por `CodigoCuenta` (el plan de Sage no lo exporta); mapa explícito (regla 1) para todo lo que no es
+  tercero (regla 4): `map` a la cuenta postable más larga que sea prefijo (4 cifras solo de una lista
+  cerrada, si no 3) o `create` de la cuenta PGC de 3 cifras que falte (una fila sintética por prefijo
+  con el nombre PGC y USALI explícito en 6/7); 472/477 por el **código de tipo** de las dos últimas
+  cifras (01 = 4 %, 11 = 10 %, 12/13/17 = 21 %, 10/14 = ISP/AIB 21 %, 20 = importación; 2 %, 5 %,
+  7,5 % y exentos → 472 / 477 genéricas, listadas).
+- **Libros AEAT → `vat_books`** (el lector AEAT no reconoce `(Serie-Número)`, `Cuota IVA Soportado`
+  ni `Identificación`): `numero` = `Número` (expedidas) o `(Serie-Número)` (recibidas; si falta,
+  `REC-<Número Recepción>`), `nif` = `Identificación`, base / cuota / total vacíos → `0,00`, fecha
+  de expedición inválida → `Fecha Operación`, abonos `F1` con base negativa → `rectificativa = si`.
+- **Delegaciones / Departamentos (rowsets ADO) → mapa analítico**: sin nombres útiles en las delegaciones; la
+  tabla delegación → hotel se deriva del diario (sexta cifra dominante de las líneas 6/7 y títulos de subcuenta) y
+  se pasa en `mapping.json` (`analytics.entries`); departamento → centro de coste USALI solo en 64x.
+- **CliPro → `third_parties`**: solo 400/401/410/411 (proveedor) y 430/431/435/436/440/441 (cliente),
+  sin las filas de cuentas 465/460 (empleados) y sin los campos de persona; `(rol, código)` único
+  (sufijo `~2`, `~3`… si Sage repite el código).
+- **Sumas y saldos → `balances` para reconciliar**: ver §6 (negativos trasladados y saldo acumulado).
 
 ### 2.3 · `sage_ime_csv` (formato de importación de asientos de Sage, 60 columnas)
 
@@ -303,7 +391,12 @@ tal cual duplicaría exactamente esos asientos. Regla:
    `payment/<paymentId>` del mismo importe: heurística, siempre visible en `nativeSkipped[]`;
    cada cobro propio **se consume una sola vez** —dos cobros de Sage de 100,00 no se excluyen
    por un único cobro propio de 100,00— y, a igualdad de importe y fecha, gana el asiento de
-   Sage que cita la factura del cobro en su documento o concepto).
+   Sage que cita la factura del cobro en su documento o concepto; **y solo si el centro coincide**
+   cuando el cobro nativo tiene `propertyId` y todas las líneas con analítica del asiento Sage
+   resuelven al mismo centro —`NativeEntryRef.propertyId`, `sameCentre`—; sin centro en uno de los
+   dos lados se compara como antes. Formato real confirmado 2026-09-18: un cobro en caja de
+   12,50 € de Los Tilos coincidía en importe y fecha con el cobro sandbox de una factura de Rías
+   Altas y habría dejado julio sin cuadrar).
    Las claves nativas son desnudas (`sourceId` = `invoiceId` / `paymentId`): la preview enseña
    el asiento ehotelOS con el que coincide (`sourceType`, `sourceId`, `invoiceNumber`).
    **Libros de IVA:** la misma regla vale para el lote `vat_books` (§2.5): las emitidas propias
@@ -351,7 +444,14 @@ ejercicio» / «Cierre Contabilidad») o, sin columna de periodo, por cuenta 129
 ejercicio, los lista en `closingDetected[]` con su `entryKind` (`regularization` / `closing`; la
 apertura, `opening`, va en el lote `fiscal_years` del ejercicio siguiente) y el usuario confirma.
 El periodo «Regul. y Ajustes» de Sage contiene asientos de ajuste **normales** fechados a fin de
-ejercicio: conservan `entryKind normal`. Tras contabilizarlos, `markFiscalYearClosedFromImport({
+ejercicio: conservan `entryKind normal`. **La heurística por estructura** (cuenta 129 + fecha fin de
+ejercicio → `regularization`; sin 6/7, ≥ 2 grupos de balance y concepto con «cierre» / «apertura» a
+fin / inicio de ejercicio → `closing` / `opening`) **se aplica también cuando el periodo viene
+numérico (1-12)**, no solo sin columna de periodo: un asiento normal de un mes real (p. ej. «cierre
+TPV» del 31/12 entre 430 y 572) puede aparecer en `closingDetected[]`. Por eso `closingDetected` se
+revisa en **cada lote mensual** y nunca se contabiliza un mes con un asiento normal detectado como
+regularización / cierre / apertura: marcaría el ejercicio cerrado antes del cierre real (formato
+real confirmado 2026-09-18). Tras contabilizarlos, `markFiscalYearClosedFromImport({
 fiscalYearId, closingEntryId, openingEntryId, netResult })` deja `fiscal_years.status = closed`
 **sin** generar asientos propios (`closeFiscalYear` produciría regularización, cierre y apertura
 duplicados). Ejercicios sin cierre importado siguen `open` con todos sus periodos `closed`.
@@ -405,6 +505,19 @@ mapa propio no se pliega).
 | Asientos Sage no importados | filas `unmapped` / `error` / `skipped_native` del lote (`importId`) | — | — | `missing_in_ledger` (con `sourceEntryNumber`) |
 | IVA | Libro de IVA de Sage frente a `loadVatBookRows` y el cruce 472 / 477 del 303 | — | **0,01 por tipo impositivo** | `vat_diff` |
 
+**Balance canónico de la carga real (formato real confirmado 2026-09-18).** Los «Balance sumas y
+saldos» reales de Sage no se adjuntan tal cual: (1) Sage **suma con signo** y el importador pasa
+cada apunte negativo al lado contrario, así que Σ `debit` / Σ `credit` de ehotelOS por cuenta =
+Sage + Σ|negativos| de la cuenta en el mes (el saldo neto es idéntico); el preprocesado suma ese
+mismo importe N a **las dos** columnas `debe` / `haber` del balance canónico (tomado de las mismas
+filas del diario que se cargan) y así la comparación con tolerancia 0,00 sigue siendo estricta; (2) los mensuales de Sage traen **solo los movimientos del mes**
+(`AperturaP = 0`, `SaldoP = DebeP − HaberP`) y la reconciliación compara el saldo **acumulado** a
+`to`: el canónico lleva `saldo_deudor / saldo_acreedor` = apertura del ejercicio + Σ (DebeP − HaberP)
+de los meses ≤ M, con una fila para toda cuenta con saldo acumulado aunque no se mueva en el mes
+(`debe = haber = 0`); los anuales («SIN CIERRE» a 31/12 y «A 31072026») se usan con su `SaldoA`
+para la reconciliación del ejercicio entero. Comprobación previa que hace el preprocesado: DebeP /
+HaberP de cada cuenta del mensual = Σ con signo del diario del mes (0 diferencias en 19 meses).
+
 **Por qué no cuadra con la pantalla «Sumas y saldos» de ehotelOS a fin de año.** `buildTrialBalance`
 (Contabilidad › Sumas y saldos) suma **todos** los asientos `posted` de la ventana, incluidos
 `regularization` / `closing` / `opening`, mientras que la reconciliación usa `movements` (que
@@ -444,7 +557,7 @@ corepack pnpm --filter @hotelos/api sage200:import -- \
   --type plan|fiscal_years|journal|vat_books|third_parties|balances --file <ruta> --organization <orgId> \
   [--entity <legalEntityId>] [--format sage_excel|sage_ime_csv|sage_xml|canonical_csv|canonical_json] [--sheet <hoja>] \
   [--mapping <ruta.json>] [--unassigned block|office] [--numbering canal|delegacion] [--dry-run | --apply --confirm <orgId>] [--replace] \
-  [--allow-closed --reason "…"] [--reconcile --balance <fichero> [--from AAAA-MM-DD --to AAAA-MM-DD --property <código>]] [--json]
+  [--allow-closed --reason "…"] [--notes "…"] [--reconcile --balance <fichero> [--from AAAA-MM-DD --to AAAA-MM-DD --property <código>]] [--json]
 corepack pnpm --filter @hotelos/api sage200:import -- --reverse <importId> --reason "…" --confirm <orgId>
 corepack pnpm --filter @hotelos/api sage200:import -- --template <type> --out <ruta.csv>
 ```
@@ -497,7 +610,10 @@ personal en el rango, avisos y `canPost`. Con `--json` sale el `LedgerImportPrev
 delicados: `--replace` reversa **enteros** los lotes que dupliquen o solapen (nunca sobre Faranda
 salvo para sustituir un mes completo); `--allow-closed --reason "…"` contabiliza en periodos
 cerrados de ehotelOS (`ignoreClosedPeriod`, auditado con el motivo; por HTTP `allowClosed` →
-400 `VALIDATION_ERROR`); `--entity` solo si la organización tuviera más de una sociedad.
+400 `VALIDATION_ERROR`); `--notes "…"` (solo lotes; `lotNotes`) deja una nota libre en
+`ledger_imports.notes` —p. ej. «carga real 2026-09-18» para reconocer los lotes de una carga—,
+precedida del motivo de `--allow-closed` si lo hay; `--entity` solo si la organización tuviera
+más de una sociedad.
 
 **Las mismas operaciones por API** (15 rutas del partial `accounting (ledger-import)`; claves
 efectivas y riesgo en `finanzas-contabilidad.md` §13; cuerpos `.strict()` en
@@ -580,9 +696,9 @@ SELECT count(*) FROM vat_book_entries WHERE organization_id = '<orgId>' AND sour
 SELECT code, property_id, status, start_date, end_date, closing_entry_id IS NOT NULL AS cierre_importado,
        opening_entry_id IS NOT NULL AS apertura
 FROM fiscal_years WHERE organization_id = '<orgId>' ORDER BY code;
-SELECT fy.code, count(*) AS periodos, count(*) FILTER (WHERE fp.status = 'closed') AS cerrados
-FROM fiscal_periods fp JOIN fiscal_years fy ON fy.id = fp.fiscal_year_id
-WHERE fp.organization_id = '<orgId>' GROUP BY 1 ORDER BY 1;                                                           -- 12 por ejercicio
+-- fiscal_periods NO tiene fiscal_year_id: el ejercicio se deduce de period_code (YYYY-MM)
+SELECT left(period_code, 4) AS ejercicio, count(*) AS periodos, count(*) FILTER (WHERE status = 'closed') AS cerrados
+FROM fiscal_periods WHERE organization_id = '<orgId>' AND property_id IS NULL GROUP BY 1 ORDER BY 1;                  -- 12 por ejercicio
 
 -- 6. Mapa de cuentas y analítico, terceros
 SELECT action, count(*) FROM ledger_account_maps WHERE organization_id = '<orgId>' AND system = 'sage200' GROUP BY 1;
@@ -721,6 +837,20 @@ front y el CLI muestran `LEDGER_IMPORT_ERROR_LABELS_ES`):
 | 6 | Ejercicios antiguos: diario completo o solo saldos | Saldos (§3 paso 6) para lo anterior al primer ejercicio con diario | El diario completo antiguo cabe por tramos (XML / SQL), con más tiempo de carga |
 | 7 | Fecha de relevo y criterio de «reconciliado» | Dos cierres mensuales `ok` + un trimestre declarado | — |
 | 8 | Periodicidad y régimen de IVA (`vat_settings`, hoy sin fila) | El importador **no** decide: 409 hasta que exista la fila | Fija el `period` de los libros importados y el 303 |
+
+**Resueltas por administración (nota del 2026-09-18, formato real confirmado):** Sage 200 **2026.85.000**
+(necesidad 2 de §1.1); cuentas de **10 dígitos** con el **hotel en la sexta cifra** (`PPP AA H SSSS`; los
+proveedores van ordenados alfabéticamente dentro de cada hotel con esa misma cifra: reglas 2-4 y 6 del mapa
+de §4.1 sobre 10 cifras, necesidad 4); **no usan analítica**: las **delegaciones** separan gastos e ingresos
+por hotel (decisión 2 → `centreDimension = delegacion` y política `office` para lo no imputado, necesidad 3);
+los **departamentos** son los de RR. HH. para las nóminas (`costCentreDimension = departamento` solo en 64x);
+el **347** se presenta desde Sage solo en la parte de proveedores (el 347 de ehotelOS se calcula con el NIF del
+libro de recibidas, `counterpartyNif`); el **libro de emitidas** llega **mensual** (el anual daba error por
+tamaño) y el plan de cuentas **no exporta el NIF** (se toma de Clientes / Proveedores). Decisión 4: el
+informe de coste de personal lee `payroll_cost_lines` de lotes `posted` y no el diario, así que el lote de
+nómina 2026 se reversa entero antes del diario real de 2026 y el mes sin diario de Sage se recarga solo;
+límite conocido: al reversar, el informe deja de ver los meses reversados (no hay modo «sombra» en el lote
+de nómina). Decisión 8: la fila `vat_settings` existe ya en la BD local (trimestral).
 
 Límites conocidos que no cierra el código: columnas de los Excel de Sage y estructura del XML
 sin documentar (hueco 1-2 del diseño §10.3: parser por sinónimos y `LEDGER_IMPORT_XML_UNSUPPORTED`

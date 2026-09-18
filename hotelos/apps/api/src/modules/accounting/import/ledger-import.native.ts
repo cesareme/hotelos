@@ -106,12 +106,13 @@ export async function buildNativeIndex(client: NativeIndexClient, organizationId
   // son filas de reverso; CON o SIN factura (el cobro del folio se proyecta aunque la factura llegue después).
   const payments = await client.payment.findMany({
     where: { propertyId: { in: propertyIds }, deletedAt: null, reversalOfId: null, status: { in: [...NATIVE_PAYMENT_STATUSES] as ("captured" | "refunded")[] } },
-    select: { id: true, amount: true, invoiceId: true, createdAt: true }
+    select: { id: true, amount: true, invoiceId: true, createdAt: true, propertyId: true }
   });
   for (const payment of payments) {
     const amount = payment.amount.toFixed(2);
     const invoice = payment.invoiceId ? invoiceById.get(payment.invoiceId) : undefined;
-    const ref: NativeEntryRef = { invoiceId: payment.invoiceId ?? null, invoiceNumber: invoice?.invoiceNumber ?? null, sourceType: NATIVE_PAYMENT_SOURCE_TYPE, sourceId: payment.id, date: isoDay(payment.createdAt) };
+    // `propertyId`: la heurística importe + fecha solo excluye asientos de Sage del mismo centro (buildJournalEntries).
+    const ref: NativeEntryRef = { invoiceId: payment.invoiceId ?? null, invoiceNumber: invoice?.invoiceNumber ?? null, sourceType: NATIVE_PAYMENT_SOURCE_TYPE, sourceId: payment.id, date: isoDay(payment.createdAt), propertyId: payment.propertyId ?? null };
     paymentAmounts.set(amount, [...(paymentAmounts.get(amount) ?? []), ref]);
   }
   // Devoluciones completadas: asiento `payment_refund` / `<refundId>` (inverso del cobro, mismo importe).
@@ -123,7 +124,7 @@ export async function buildNativeIndex(client: NativeIndexClient, organizationId
     const payment = paymentById.get(refund.paymentId);
     const invoice = payment?.invoiceId ? invoiceById.get(payment.invoiceId) : undefined;
     const amount = refund.amount.toFixed(2);
-    const ref: NativeEntryRef = { invoiceId: payment?.invoiceId ?? null, invoiceNumber: invoice?.invoiceNumber ?? null, sourceType: NATIVE_REFUND_SOURCE_TYPE, sourceId: refund.id, date: isoDay(refund.createdAt) };
+    const ref: NativeEntryRef = { invoiceId: payment?.invoiceId ?? null, invoiceNumber: invoice?.invoiceNumber ?? null, sourceType: NATIVE_REFUND_SOURCE_TYPE, sourceId: refund.id, date: isoDay(refund.createdAt), propertyId: payment?.propertyId ?? null };
     paymentAmounts.set(amount, [...(paymentAmounts.get(amount) ?? []), ref]);
   }
   // Facturas recibidas contabilizadas en Anfitorio (libro de recibidas ya materializado por el documento).

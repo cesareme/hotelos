@@ -265,6 +265,17 @@ describe("buildJournalEntries · reparto con residuo de céntimos", () => {
     const tooMany = buildJournalEntries(groupJournalRows(many), context({ rows: many }));
     assert.equal(tooMany.statuses.get("1:2026:9:92"), "error");
     assert.match(tooMany.errors[0]!.message, new RegExp(`máximo es ${LEDGER_IMPORT_MAX_LINES_PER_ENTRY}`));
+    // Tope configurable (formato real: aperturas / cierres de Sage 200 de miles de líneas): el mismo
+    // asiento de 501 líneas con maxLinesPerEntry 600 se planifica entero; con 500 explícito sigue fallando.
+    const relaxed = buildJournalEntries(groupJournalRows(many), context({ rows: many, maxLinesPerEntry: 600 }));
+    assert.deepEqual(relaxed.errors, []);
+    assert.equal(relaxed.statuses.get("1:2026:9:92"), "planned");
+    const relaxedEntries = relaxed.entries.filter((entry) => entry.source.entryNumber === "92");
+    assert.equal(relaxedEntries.length, 1);
+    assert.equal(relaxedEntries[0]!.lines.length, LEDGER_IMPORT_MAX_LINES_PER_ENTRY + 1);
+    const explicit = buildJournalEntries(groupJournalRows(many), context({ rows: many, maxLinesPerEntry: 500 }));
+    assert.equal(explicit.statuses.get("1:2026:9:92"), "error");
+    assert.match(explicit.errors[0]!.message, /máximo es 500$/);
   });
 });
 
@@ -347,6 +358,30 @@ describe("buildJournalEntries · entryKind, cuentas y analítica sin mapear, err
     const far = buildJournalEntries(groupJournalRows(rows), context({ rows, nativeIndex: { invoiceKeys: new Map(), paymentAmounts: new Map([["1100.00", [{ invoiceNumber: null, sourceType: "payment", sourceId: "payment/pay_2", date: "2026-09-01" }]]]) } }));
     assert.equal(far.skippedNative.length, 0);
     assert.equal(far.entries.length, 1);
+  });
+
+  it("(a) cobros: la heurística importe + fecha exige el mismo centro cuando el cobro nativo y el asiento Sage lo tienen", () => {
+    // Cobro de Sage de la delegación LT (12,50 el 11/09) y cobro nativo del mismo importe y fecha pero de RA: NO se excluye.
+    const rows = [row({ asiento: "86", cuenta: "5700000", debe: "12.50", fecha: "2026-09-11", delegacion: "LT", concepto: "Cobro caja" }), row({ asiento: "86", cuenta: "4300000123", haber: "12.50", fecha: "2026-09-11", delegacion: "LT", concepto: "Cobro caja" })];
+    const ref = { invoiceNumber: "FAC-2026-000015", sourceType: "payment", sourceId: "payment/pay_ra", date: "2026-09-12" };
+    const otherCentre = buildJournalEntries(groupJournalRows(rows), context({ rows, nativeIndex: { invoiceKeys: new Map(), paymentAmounts: new Map([["12.50", [{ ...ref, propertyId: "prop_ra" }]]]) } }));
+    assert.equal(otherCentre.skippedNative.length, 0);
+    assert.equal(otherCentre.entries.length, 1);
+    assert.equal(otherCentre.entries[0]!.propertyId, "prop_lt");
+    // Mismo centro: se excluye como antes.
+    const sameCentre = buildJournalEntries(groupJournalRows(rows), context({ rows, nativeIndex: { invoiceKeys: new Map(), paymentAmounts: new Map([["12.50", [{ ...ref, propertyId: "prop_lt" }]]]) } }));
+    assert.equal(sameCentre.skippedNative.length, 1);
+    assert.equal(sameCentre.skippedNative[0]!.sourceId, "payment/pay_ra");
+    // Cobro nativo sin centro (compatibilidad) o asiento Sage sin analítica de centro: se compara solo por importe y fecha.
+    const noCentre = buildJournalEntries(groupJournalRows(rows), context({ rows, nativeIndex: { invoiceKeys: new Map(), paymentAmounts: new Map([["12.50", [ref]]]) } }));
+    assert.equal(noCentre.skippedNative.length, 1);
+    const plain = rows.map((line) => ({ ...line, delegacion: null }));
+    const noAnalytics = buildJournalEntries(groupJournalRows(plain), context({ rows: plain, nativeIndex: { invoiceKeys: new Map(), paymentAmounts: new Map([["12.50", [{ ...ref, propertyId: "prop_ra" }]]]) } }));
+    assert.equal(noAnalytics.skippedNative.length, 1);
+    // Líneas de dos centros distintos → sin centro único → se compara solo por importe y fecha.
+    const mixed = [rows[0]!, { ...rows[1]!, delegacion: "MC" }];
+    const mixedResult = buildJournalEntries(groupJournalRows(mixed), context({ rows: mixed, nativeIndex: { invoiceKeys: new Map(), paymentAmounts: new Map([["12.50", [{ ...ref, propertyId: "prop_ra" }]]]) } }));
+    assert.equal(mixedResult.skippedNative.length, 1);
   });
 });
 

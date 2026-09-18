@@ -5,7 +5,8 @@
 //   (a) exclusión de documentos nativos (§5.1): Serie+Factura / SuFacturaNo /
 //       Documento / Comentario normalizados contra `nativeIndex.invoiceKeys` →
 //       `skipped_native` con el asiento nativo; cobros: número en documento /
-//       comentario, o importe exacto + fecha ± 3 días contra `paymentAmounts`
+//       comentario, o importe exacto + fecha ± 3 días contra `paymentAmounts` (y el mismo
+//       centro cuando el cobro nativo y el asiento Sage lo tienen: `sameCentre`)
 //       [S heurística, siempre avisada]; cada cobro nativo se CONSUME una sola vez
 //       (dos cobros de Sage del mismo importe no se excluyen por un único cobro
 //       propio) y, a igualdad, gana el cobro cuya factura aparece en el asiento;
@@ -31,8 +32,8 @@
 //       map_by_rate resuelta) debe existir y admitir apuntes: si no, la cuenta Sage
 //       queda `unmapped` con la propuesta (nunca llega al motor como ACCOUNT_NOT_FOUND);
 //       `costCenterCode` (L2 lo resuelve a costCenterId) solo en 6/7, taxRateCode /
-//       taxBase desde el bloque IVA en 472 / 477; > LEDGER_IMPORT_MAX_LINES_PER_ENTRY
-//       líneas → error de asiento;
+//       taxBase desde el bloque IVA en 472 / 477; > `ctx.maxLinesPerEntry` (por defecto
+//       LEDGER_IMPORT_MAX_LINES_PER_ENTRY) líneas → error de asiento;
 //   (e) sourceType sage200_journal y sourceId `<empresa>:<ejercicio>:<periodo>:
 //       <asiento>[:<canal>][:<centro>]`; reference «Sage 200 · asiento E/N · periodo
 //       P · diario D» (≤ 200); description ≤ 500;
@@ -154,6 +155,12 @@ export type NativeEntryRef = {
   sourceId: string;
   /** Fecha del cobro (para la heurística importe + fecha). */
   date?: IsoDate | null;
+  /**
+   * Centro del cobro nativo: la heurística importe + fecha solo excluye un asiento de Sage cuyo centro (todas sus
+   * líneas con la misma delegación / canal mapeados) coincide; sin centro en uno de los dos lados se compara como antes
+   * (formato real confirmado 2026-09-18: un cobro de 12,50 € de otro hotel coincidía en importe y fecha).
+   */
+  propertyId?: string | null;
 };
 
 export type NativeIndex = {
@@ -194,6 +201,12 @@ export type JournalPostingContext = {
   accountNames?: ReadonlyMap<string, string>;
   /** Existencia y postabilidad de la cuenta destino en el plan (L2 pasa el plan de la organización); sin ella se confía en el mapa. */
   isPostableCode?: (accountCode: string) => boolean;
+  /**
+   * Tope de líneas por parte de asiento; por defecto LEDGER_IMPORT_MAX_LINES_PER_ENTRY (500); la
+   * carga real de Sage 200 trae aperturas/cierres de hasta 2.574 líneas y asientos normales de
+   * hasta 1.515 (el servicio pasa su propio tope; la función pura conserva el valor por defecto).
+   */
+  maxLinesPerEntry?: number;
 };
 
 export type JournalEntryStatus = "planned" | "skipped_native" | "unmapped" | "unbalanced" | "centre_required" | "error";
@@ -426,6 +439,20 @@ export function buildJournalEntries(sageEntries: readonly SageJournalEntry[], ct
   const reservedPayments = new Map<string, NativeEntryRef>();
   const isPaymentShaped = (entry: SageJournalEntry): boolean => entry.lines.every((line) => !isPnl(line.cuenta)) && entry.lines.some((line) => /^57/.test(line.cuenta)) && entry.lines.some((line) => /^43/.test(line.cuenta));
   const paymentRefKey = (ref: NativeEntryRef): string => `${ref.sourceType}/${ref.sourceId}`;
+  /** Centro del asiento Sage si TODAS sus líneas con analítica de centro resuelven al mismo centro; null si no hay o hay varios. */
+  const entryPropertyOf = (entry: SageJournalEntry): string | null => {
+    const resolved = new Set<string>();
+    for (const line of entry.lines) {
+      const centreCode = dimensionValue(line, ctx.analytics.centreDimension);
+      if (!centreCode) continue;
+      const propertyId = analyticsIndex.get(`${ctx.analytics.centreDimension}:${centreCode}`)?.propertyId ?? null;
+      if (!propertyId || !propertyIds.has(propertyId)) return null;
+      resolved.add(propertyId);
+    }
+    return resolved.size === 1 ? [...resolved][0]! : null;
+  };
+  /** La heurística importe + fecha exige el mismo centro cuando el cobro nativo y el asiento Sage lo tienen. */
+  const sameCentre = (ref: NativeEntryRef, entryPropertyId: string | null): boolean => !ref.propertyId || !entryPropertyId || ref.propertyId === entryPropertyId;
   if (ctx.nativeIndex?.paymentAmounts) {
     for (const entry of sageEntries) {
       if (!isPaymentShaped(entry)) continue;
@@ -476,8 +503,9 @@ export function buildJournalEntries(sageEntries: readonly SageJournalEntry[], ct
         const day = dayNumber(entry.entryDate);
         // El cobro reservado en la pasada previa (su factura se cita en el asiento) o, si no, el cobro libre más cercano en fecha.
         const reserved = reservedPayments.get(key);
+        const entryPropertyId = entryPropertyOf(entry);
         const match = reserved ?? [...(ctx.nativeIndex.paymentAmounts.get(rawDebit.toFixed(2)) ?? [])]
-          .filter((ref) => ref.date && !consumedPayments.has(paymentRefKey(ref)) && Math.abs(dayNumber(ref.date) - day) <= NATIVE_PAYMENT_DATE_TOLERANCE_DAYS)
+          .filter((ref) => ref.date && !consumedPayments.has(paymentRefKey(ref)) && sameCentre(ref, entryPropertyId) && Math.abs(dayNumber(ref.date) - day) <= NATIVE_PAYMENT_DATE_TOLERANCE_DAYS)
           .sort((a, b) => Math.abs(dayNumber(a.date!) - day) - Math.abs(dayNumber(b.date!) - day))[0];
         if (match) {
           consumedPayments.add(paymentRefKey(match));
@@ -588,9 +616,10 @@ export function buildJournalEntries(sageEntries: readonly SageJournalEntry[], ct
 
     const finish = (parts: Array<{ propertyId: string | null; lines: PlannedLine[]; warnings: string[] }>): void => {
       const planned: PlannedEntry[] = [];
+      const maxLines = ctx.maxLinesPerEntry ?? LEDGER_IMPORT_MAX_LINES_PER_ENTRY;
       for (const part of parts) {
-        if (part.lines.length > LEDGER_IMPORT_MAX_LINES_PER_ENTRY) {
-          result.errors.push({ sourceEntryNumber, sourcePeriod, message: `el asiento tiene ${part.lines.length} líneas y el máximo es ${LEDGER_IMPORT_MAX_LINES_PER_ENTRY}` });
+        if (part.lines.length > maxLines) {
+          result.errors.push({ sourceEntryNumber, sourcePeriod, message: `el asiento tiene ${part.lines.length} líneas y el máximo es ${maxLines}` });
           result.statuses.set(key, "error");
           return;
         }

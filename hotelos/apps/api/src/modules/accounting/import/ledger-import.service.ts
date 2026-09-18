@@ -222,6 +222,13 @@ import { reconcileLedger, type ReconciliationBalanceInput } from "./ledger-recon
 // ---------------------------------------------------------------------------
 
 export const TX_OPTIONS = { maxWait: LEDGER_IMPORT_TX_MAX_WAIT_MS, timeout: LEDGER_IMPORT_TX_TIMEOUT_MS } as const;
+/**
+ * Tope de líneas por asiento en los lotes `journal` / `fiscal_years` (formato real confirmado
+ * 2026-09-18: Sage 200 exporta asientos de apertura/cierre de miles de líneas). Sustituye al
+ * valor por defecto de la función pura (`LEDGER_IMPORT_MAX_LINES_PER_ENTRY`, 500) solo aquí;
+ * `packages/shared` no cambia.
+ */
+export const LEDGER_IMPORT_MAX_LINES_PER_ENTRY_SAGE = 5_000;
 const SYSTEM = LEDGER_IMPORT_DEFAULT_SYSTEM;
 const IMPORT_NOT_FOUND = "Lote de importación no encontrado.";
 const PROPERTY_NOT_FOUND = "Propiedad no encontrada.";
@@ -1027,7 +1034,7 @@ async function analyseRows(input: AnalyseInput): Promise<Analysis> {
       analysis.fiscalYears.set(year, yearInfo);
       const grouped = groupJournalRows(rows.filter((row) => row.ejercicio === year), { numberingDimension: numberingDimension && (LEDGER_NUMBERING_DIMENSIONS as readonly string[]).includes(numberingDimension) ? numberingDimension : null });
       for (const entry of grouped) analysis.sageEntries.set(sageEntryKeyString(entry.key), entry);
-      const result = buildJournalEntries(grouped, { accountMap: analysis.accountMap, analytics: { centreDimension: analysis.analytics.centreDimension, costCentreDimension: analysis.analytics.costCentreDimension ?? null, unassignedPolicy: analysis.analytics.unassignedPolicy, map: analysis.analytics.entries }, properties: postingProperties, officePropertyId, fiscalYear: yearInfo.window, nativeIndex, isPostableCode: (code) => chartLoaded.lookup.get(code)?.isPostable === true });
+      const result = buildJournalEntries(grouped, { accountMap: analysis.accountMap, analytics: { centreDimension: analysis.analytics.centreDimension, costCentreDimension: analysis.analytics.costCentreDimension ?? null, unassignedPolicy: analysis.analytics.unassignedPolicy, map: analysis.analytics.entries }, properties: postingProperties, officePropertyId, fiscalYear: yearInfo.window, nativeIndex, isPostableCode: (code) => chartLoaded.lookup.get(code)?.isPostable === true, maxLinesPerEntry: LEDGER_IMPORT_MAX_LINES_PER_ENTRY_SAGE });
       merged.entries.push(...result.entries);
       merged.skippedNative.push(...result.skippedNative);
       for (const row of result.unmapped) {

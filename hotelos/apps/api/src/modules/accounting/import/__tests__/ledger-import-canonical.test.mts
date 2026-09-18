@@ -190,7 +190,8 @@ describe("normalizadores de celda", () => {
   });
 
   it("normalizeSagePeriod, normalizeBalancePeriod y balancePeriodEndDate", () => {
-    assert.deepEqual(["0", "12", "Apertura", "Regul. y Ajustes", "Cierre ejercicio", "Cierre Contabilidad", "13", "14", "15", "Septiembre", "99", "otra cosa"].map(normalizeSagePeriod), ["0", "12", "0", "ajustes", "regularizacion", "cierre", "ajustes", "regularizacion", "cierre", "9", null, null]);
+    // 98 / 99 = «Número periodo» real del Diario General de Sage 200 (regularización «Cierre Ejer.» / cierre «Cierre Conta»); 16-97 siguen sin reconocerse.
+    assert.deepEqual(["0", "12", "Apertura", "Regul. y Ajustes", "Cierre ejercicio", "Cierre Contabilidad", "13", "14", "15", "Septiembre", "98", "99", "Cierre Ejer.", "Cierre Conta", "16", "97", "otra cosa"].map(normalizeSagePeriod), ["0", "12", "0", "ajustes", "regularizacion", "cierre", "ajustes", "regularizacion", "cierre", "9", "regularizacion", "cierre", "regularizacion", "cierre", null, null, null]);
     assert.equal(normalizeBalancePeriod("9", "2025"), "2025-09");
     assert.equal(normalizeBalancePeriod("09/2025", null), "2025-09");
     assert.equal(normalizeBalancePeriod("2025-03", null), "2025-03");

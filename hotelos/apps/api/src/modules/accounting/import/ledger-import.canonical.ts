@@ -481,6 +481,10 @@ export function normalizeSagePeriod(raw: string | undefined): string | null {
     if (n === 13) return SAGE_PERIOD_CODES.adjustments;
     if (n === 14) return SAGE_PERIOD_CODES.regularization;
     if (n === 15) return SAGE_PERIOD_CODES.closing;
+    // Formato real confirmado (Sage 200 2026.85, «Número periodo» del Diario General): 98 = regularización
+    // («Cierre Ejer.»), 99 = cierre de contabilidad («Cierre Conta»).
+    if (n === 98) return SAGE_PERIOD_CODES.regularization;
+    if (n === 99) return SAGE_PERIOD_CODES.closing;
     return null;
   }
   const folded = foldHeader(text);
@@ -488,8 +492,9 @@ export function normalizeSagePeriod(raw: string | undefined): string | null {
   if (folded.includes("apertura")) return SAGE_PERIOD_CODES.opening;
   if (folded.includes("regul") && folded.includes("ajust")) return SAGE_PERIOD_CODES.adjustments;
   if (folded === "ajustes") return SAGE_PERIOD_CODES.adjustments;
-  if (folded.includes("cierre") && folded.includes("contab")) return SAGE_PERIOD_CODES.closing;
-  if (folded.includes("cierre") && folded.includes("ejerc")) return SAGE_PERIOD_CODES.regularization;
+  // «Cierre Contabilidad» / «Cierre Conta» → cierre; «Cierre ejercicio» / «Cierre Ejer.» → regularización (columna «Período» real de Sage 200).
+  if (folded.includes("cierre") && folded.includes("conta")) return SAGE_PERIOD_CODES.closing;
+  if (folded.includes("cierre") && folded.includes("ejer")) return SAGE_PERIOD_CODES.regularization;
   if (folded.includes("regulariz")) return SAGE_PERIOD_CODES.regularization;
   if (folded === "cierre") return SAGE_PERIOD_CODES.closing;
   const month = MONTH_NAMES[folded];

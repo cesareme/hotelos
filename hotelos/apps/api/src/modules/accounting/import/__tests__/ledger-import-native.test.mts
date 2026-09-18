@@ -58,7 +58,8 @@ describe("buildNativeIndex · cobros nativos (modo sombra, §5.1)", () => {
     const { index, stats } = await buildNativeIndex(client, ORG);
     const refs = index.paymentAmounts.get("12.50") ?? [];
     assert.equal(refs.length, 1, "el cobro sin factura debe estar en el índice");
-    assert.deepEqual(refs[0], { invoiceId: null, invoiceNumber: null, sourceType: "payment", sourceId: "pay_tpv", date: "2026-07-12" });
+    // `propertyId` = centro del cobro: la heurística importe + fecha solo excluye asientos de Sage del mismo centro.
+    assert.deepEqual(refs[0], { invoiceId: null, invoiceNumber: null, sourceType: "payment", sourceId: "pay_tpv", date: "2026-07-12", propertyId: PROPERTY });
     assert.equal(stats.payments, 1);
     // El filtro es el de la proyección: nunca por invoiceId.
     assert.equal(client.calls.length, 1);

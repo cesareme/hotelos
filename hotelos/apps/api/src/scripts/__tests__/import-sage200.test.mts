@@ -27,6 +27,7 @@ import {
   formatMonthTable,
   formatPropertyTable,
   formatReverseResult,
+  lotNotes,
   parseFlags,
   systemContext
 } from "../import-sage200.js";
@@ -81,6 +82,22 @@ describe("parseFlags · lote", () => {
     assert.throws(() => parseFlags([...BASE, "--apply", "--confirm", ORG, "--allow-closed"]), /--allow-closed exige --reason/);
     const apply = parseFlags([...BASE, "--apply", "--confirm", ORG, "--replace", "--allow-closed", "--reason", "ejercicio cerrado en Sage"]);
     assert.deepEqual([apply.apply, apply.confirm, apply.replace, apply.allowClosed, apply.reason], [true, ORG, true, true, "ejercicio cerrado en Sage"]);
+  });
+
+  it("--notes deja una nota libre en el lote (con --allow-closed va tras su motivo) y no se combina con --reverse, --reconcile suelto ni --template", () => {
+    const flags = parseFlags([...BASE, "--notes", "carga de prueba 2026-09"]);
+    assert.equal(flags.notes, "carga de prueba 2026-09");
+    assert.equal(parseFlags([...BASE]).notes, null);
+    assert.equal(lotNotes(flags), "carga de prueba 2026-09");
+    assert.equal(lotNotes(parseFlags([...BASE])), undefined);
+    assert.equal(lotNotes({ allowClosed: false, reason: null, notes: "   " }), undefined, "una nota en blanco no se guarda");
+    const closed = parseFlags([...BASE, "--apply", "--confirm", ORG, "--allow-closed", "--reason", "mes cerrado", "--notes", "carga de prueba 2026-09"]);
+    assert.equal(lotNotes(closed), "--allow-closed: mes cerrado · carga de prueba 2026-09");
+    assert.equal(lotNotes(parseFlags([...BASE, "--apply", "--confirm", ORG, "--allow-closed", "--reason", "mes cerrado"])), "--allow-closed: mes cerrado");
+    assert.throws(() => parseFlags(["--reverse", "imp_1", "--reason", "x", "--confirm", ORG, "--notes", "n"]), /ni --notes/);
+    assert.throws(() => parseFlags(["--reconcile", "--balance", "b.xlsx", "--from", "2026-09-01", "--to", "2026-09-30", "--organization", ORG, "--notes", "n"]), /ni --notes/);
+    assert.throws(() => parseFlags(["--template", "journal", "--out", "p.csv", "--notes", "n"]), /ni --notes/);
+    assert.match(USAGE, /--notes <texto>/);
   });
 
   it("--reconcile dentro de un lote solo con --type journal y --balance; --balance sin --reconcile y --from/--to en un lote se rechazan", () => {
