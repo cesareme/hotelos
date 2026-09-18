@@ -387,6 +387,30 @@ type Structure = {
   scope: string;
 };
 
+
+/**
+ * Corrector L3 (DS-06): el 303 en vivo contrarresta en memoria las originales sustituidas por una rectificativa «S»
+ * cuyas contrafilas `#sustituida` faltan en el libro (libros reconstruidos antes de L3-C). La sonda de Faranda
+ * espera por tanto Σ cuotas del libro del trimestre MENOS la cuota de esas originales (independiente del servicio:
+ * lee facturas y libro por Prisma). Solo lectura.
+ */
+async function missingSupersededQuota(organizationId: string, period: { from: string; to: string }): Promise<number> {
+  const propertyIds = (await prisma.property.findMany({ where: { organizationId }, select: { id: true } })).map((p) => p.id);
+  const substitutes = await prisma.invoice.findMany({
+    where: { propertyId: { in: propertyIds }, deletedAt: null, rectificationType: "S", rectifyingForId: { not: null }, issuedAt: { gte: new Date(`${period.from}T00:00:00.000Z`), lt: new Date(`${period.to}T00:00:00.000Z`) } },
+    select: { rectifyingForId: true }
+  });
+  let quota = 0;
+  for (const substitute of substitutes) {
+    const originalId = substitute.rectifyingForId!;
+    const present = await prisma.vatBookEntry.count({ where: { organizationId, sourceId: `${originalId}#sustituida` } });
+    if (present > 0) continue;
+    const original = await prisma.vatBookEntry.aggregate({ where: { organizationId, book: "emitidas", sourceId: originalId }, _sum: { quota: true } });
+    quota += Number(original._sum.quota ?? 0);
+  }
+  return Number(quota.toFixed(2));
+}
+
 describe("A · Hotel individual (single_hotel): la sociedad implícita y nada más cambia", () => {
   it("GET /organizations/me/structure → single_hotel, NIF pendiente, un solo hotel codificado y sin series todavía", async (t) => {
     if (!ready(t)) return;
@@ -1028,7 +1052,8 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     } else {
       assert.equal(report.fuentes.origen, "libros");
       const emitidas = await prisma.vatBookEntry.aggregate({ where: { organizationId: FARANDA_ORG, book: "emitidas", period: "2026-Q3" }, _sum: { quota: true }, _count: { _all: true } });
-      assert.equal(casilla("27"), Number(Number(emitidas._sum.quota ?? 0).toFixed(2)), "casilla 27 = Σ cuotas del libro de emitidas del trimestre (nativas + Sage)");
+      const superseded = await missingSupersededQuota(FARANDA_ORG, { from: "2026-07-01", to: "2026-10-01" });
+      assert.equal(casilla("27"), Number((Number(emitidas._sum.quota ?? 0) - superseded).toFixed(2)), "casilla 27 = Σ cuotas del libro de emitidas del trimestre (nativas + Sage) − originales sustituidas sin contrafila (derivadas en memoria, corrector L3 · DS-06)");
       assert.ok(report.fuentes.registros >= emitidas._count._all);
     }
     assert.deepEqual(report.declarante, { nif: "A33615980", nombre: "CELUISMA S.A." });

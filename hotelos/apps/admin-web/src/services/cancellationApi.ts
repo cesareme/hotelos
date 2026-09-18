@@ -9,8 +9,13 @@ export type CancellationPolicy = {
   freeCancelHours: number;
   penaltyType: PenaltyType; penaltyValue: number | null;
   noShowPenaltyType: PenaltyType; noShowPenaltyValue: number | null;
-  active: boolean; createdAt: string; updatedAt: string;
+  active: boolean;
+  /** Tanda L3: the hotel's default policy (reservations without a policy of their own). At most one per hotel. */
+  isDefault: boolean;
+  createdAt: string; updatedAt: string;
 };
+
+export type ChargeMode = "cancellation" | "no_show";
 
 export type ChargeBreakdown = {
   amount: number;
@@ -18,6 +23,8 @@ export type ChargeBreakdown = {
   withinFreeWindow: boolean;
   policyCode: string | null; policyName: string | null;
   label: string;
+  /** Instant the free-cancel window is measured against (14:00 hotel time of the arrival day); null without policy / for no-shows. */
+  cutoffAt?: string | null;
 };
 
 export async function fetchCancellationPolicies(propertyId = getActivePropertyId()): Promise<CancellationPolicy[]> {
@@ -33,6 +40,8 @@ export function updateCancellationPolicy(id: string, patch: Partial<Cancellation
 export function deleteCancellationPolicy(id: string) {
   return apiRequest<{ ok: boolean; id: string }>(`/cancellation-policies/${id}`, { method: "DELETE" });
 }
-export function previewCancellationCharge(reservationId: string) {
-  return apiRequest<ChargeBreakdown>(`/reservations/${reservationId}/cancellation-charge`);
+/** Preview of the penalty the policy would apply now: `mode` «cancellation» (default) or «no_show». */
+export function previewCancellationCharge(reservationId: string, mode?: ChargeMode) {
+  const query = mode ? `?mode=${encodeURIComponent(mode)}` : "";
+  return apiRequest<ChargeBreakdown>(`/reservations/${reservationId}/cancellation-charge${query}`);
 }

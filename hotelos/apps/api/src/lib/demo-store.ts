@@ -664,7 +664,21 @@ export type FolioLineRecord = {
   folioId: string;
   // Finanzas (2026-09-16): `invoice_adjustment` is the folio line that
   // reflects a rectificativa (never invoiced again, see FISCAL_REFLECTION_LINE_TYPES).
-  type: "room" | "tax" | "breakfast" | "parking" | "minibar" | "adjustment" | "invoice_adjustment";
+  // Tanda L3 (2026-09-18, lote S): `cancellation_fee` / `no_show_fee` (penalties,
+  // `not_subject`) and `city_tax` (`tourist_tax`) — all three already mapped in
+  // LINE_TYPE_CATEGORY (packages/compliance/src/spain/indirect-tax.ts) — so the
+  // cancellation service can post them through `postFolioLine` without a cast.
+  type:
+    | "room"
+    | "tax"
+    | "breakfast"
+    | "parking"
+    | "minibar"
+    | "adjustment"
+    | "invoice_adjustment"
+    | "cancellation_fee"
+    | "no_show_fee"
+    | "city_tax";
   description: string;
   quantity: number;
   unitPrice: number;

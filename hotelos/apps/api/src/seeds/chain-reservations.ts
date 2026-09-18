@@ -422,6 +422,7 @@ async function seedForHotel(propertyId: string, count: number, today: Date) {
           quantity: nights,
           unitPrice: adr,
           taxCode: "IVA_10",
+          taxCategory: "accommodation",
           total: totalRoom,
           postedAt: plan.arrival
         }
@@ -436,6 +437,7 @@ async function seedForHotel(propertyId: string, count: number, today: Date) {
             quantity: adults * taxableNights,
             unitPrice: taxConfig.perNight,
             taxCode: "EXENTO",
+            taxCategory: "tourist_tax",
             total: Math.round(taxAmount * 100) / 100,
             postedAt: plan.arrival
           }
@@ -452,6 +454,7 @@ async function seedForHotel(propertyId: string, count: number, today: Date) {
             quantity: 1,
             unitPrice: fbAmount,
             taxCode: "IVA_10",
+            taxCategory: "food_beverage",
             total: fbAmount,
             postedAt: addDays(plan.arrival, randInt(0, Math.max(1, nights - 1)))
           }

@@ -1,13 +1,31 @@
-// Libro registro de facturas emitidas (RD 1619/2012) — writer used by the
-// invoicing lote for F1/F2, rectificativas and cancellations. One row per
-// document AND rate (VatBookEntry unique on organisation · book · sourceType ·
-// sourceId · rate); written in the SAME transaction as the fiscal document.
-// The period is computed with the organisation's VatSettings (quarterly by
-// default; the IVA/AEAT lote owns ensureVatSettings — this reader never
-// creates the row, it falls back to the documented defaults).
+// Libro registro de facturas emitidas (RD 1619/2012) — the ONE live writer of
+// the emitidas book, used by invoice.service.ts for F1/F2, rectificativas and
+// cancellations. One row per document AND rate (VatBookEntry unique on
+// organisation · book · sourceType · sourceId · rate); written in the SAME
+// transaction as the fiscal document. The period is computed with the
+// organisation's VatSettings (quarterly by default; the IVA/AEAT lote owns
+// ensureVatSettings — this reader never creates the row, it falls back to the
+// documented defaults).
+//
+// sourceId convention (Tanda L3-C; single source: accounting/vat-books.service.ts,
+// whose `deriveVatBookRows` / `rebuildVatBooks` derive the SAME rows so a rebuild
+// reproduces the live book row by row):
+//   · `<invoiceId>`             — the document's own rows (issue: positive on F1/F2,
+//                                 signed by the document on a rectificativa);
+//   · `<invoiceId>#anulacion`   — negating counter-rows of a cancellation
+//                                 (`negate: true`), dated on the cancellation instant;
+//   · `<originalId>#sustituida` — negating counter-rows of the ORIGINAL replaced by a
+//                                 rectificativa por sustitución («S»), dated on the
+//                                 substitute's issue instant; the substitute writes
+//                                 its own full rows under its own id.
+// `skipDuplicates: true` keeps every write idempotent by (sourceType, sourceId,
+// rate): a retry of the same transaction never doubles a row. The pre-L3 suffix
+// `<id>:anulacion` is never written here; the rebuild purges it.
 
 import type { Prisma } from "@hotelos/database";
 import type { VatBookRowInput } from "./invoice-snapshot.js";
+
+export { VAT_BOOK_CANCELLATION_SUFFIX, VAT_BOOK_SUPERSEDED_SUFFIX, cancellationSourceId, supersededSourceId } from "../accounting/vat-books.service.js";
 
 export type VatPeriodicity = "quarterly" | "monthly";
 
@@ -32,7 +50,11 @@ export type IssuedVatBookInput = {
   organizationId: string;
   propertyId: string | null;
   sourceType: "invoice" | "rectification" | "simplified";
-  /** Invoice id, or `${invoiceId}#anulacion` for the counter-rows of a cancellation. */
+  /**
+   * Invoice id; `${invoiceId}#anulacion` for the counter-rows of a cancellation;
+   * `${originalId}#sustituida` for the counter-rows of an original replaced by a
+   * rectificativa «S» (see the header: `cancellationSourceId` / `supersededSourceId`).
+   */
   sourceId: string;
   date: Date;
   series: string | null;

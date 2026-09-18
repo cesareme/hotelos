@@ -1,4 +1,4 @@
-import { categoryForLineType } from "@hotelos/compliance";
+import { FOLIO_LINE_TYPES, categoryForLineType } from "@hotelos/compliance";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { demoStore, type FolioLineRecord, type FolioRecord, type PaymentRecord, type UserContext } from "../../lib/demo-store.js";
@@ -9,6 +9,7 @@ import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-er
 import { derivePaymentStatus, type InvoicePaymentStatus } from "../invoicing/invoice.service.js";
 import { getLedgerPort } from "../invoicing/ledger.port.js";
 import { CUSTOMER_ACCOUNT_CODE } from "../invoicing/invoice-snapshot.js";
+import { FISCAL_REFLECTION_LINE_TYPES } from "../invoicing/invoice-snapshot.js";
 import { normalizePaymentMethod } from "../payments/payment-method.js";
 import { PRIMARY_FOLIO_LABEL } from "./folio-labels.js";
 import { PAYMENT_METHOD_ACCOUNT_CODES, PAYMENT_METHOD_LABELS_ES, type PaymentMethodCode } from "../../../../../packages/shared/src/payments-types.js";
@@ -181,6 +182,11 @@ function mapFolio(row: NonNullable<Awaited<ReturnType<typeof prisma.folio.findUn
     status: row.status,
     currency: row.currency
   };
+}
+
+/** Prisma FolioLine → wire record (shared with the cancellation engine's idempotent penalty lookup). */
+export function mapFolioLine(row: NonNullable<Awaited<ReturnType<typeof prisma.folioLine.findUnique>>>): FolioLineRecord {
+  return mapLine(row);
 }
 
 function mapLine(row: NonNullable<Awaited<ReturnType<typeof prisma.folioLine.findUnique>>>): FolioLineRecord {
@@ -422,10 +428,51 @@ export async function getFolioBalance(folioId: string): Promise<FolioBalance> {
   };
 }
 
+/** Fiscal categories of operations SUBJECT to VAT (every category but the tourist tax and the indemnities). */
+const SUBJECT_TAX_CATEGORIES: readonly TaxCategoryValue[] = Object.freeze(["accommodation", "food_beverage", "general_services", "transport"]);
+
+/** Generic line types an operator uses for «anything else»: any subject category is plausible. */
+const GENERIC_LINE_TYPES: ReadonlySet<string> = new Set(["extra", "adjustment", "charge", "misc"]);
+
+/**
+ * Corrector L3 (FC-4 / DS-08): fiscal categories a folio line of `lineType`
+ * may carry. The line type keeps the fiscal meaning of the concept:
+ *   · accommodation types → `accommodation` only (a room is never «no sujeto»
+ *     nor a tourist tax);
+ *   · food & beverage → `food_beverage` (10 %) or `general_services` (21 %:
+ *     alcoholic drinks, catering outside the reduced rate);
+ *   · passenger transport → `transport` or `general_services`;
+ *   · the tourist tax types → `tourist_tax` only; the indemnities
+ *     (`cancellation_fee` / `no_show_fee`) → `not_subject` or, if the hotel
+ *     treats a retained stay as consideration (decision §6.4), `accommodation`;
+ *   · specific general services (spa, parking, laundry…) → `general_services`;
+ *   · generic concepts (`extra`, `adjustment`, `charge`, `misc`) and unknown
+ *     types → any SUBJECT category, never `not_subject` nor `tourist_tax`.
+ * Pure; mirrored by the front (`compatibleTaxCategoriesForType`).
+ */
+export function compatibleTaxCategories(lineType: string): readonly TaxCategoryValue[] {
+  const key = (lineType ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const inferred = categoryForLineType(key) as TaxCategoryValue;
+  const known = FOLIO_LINE_TYPES.includes(key);
+  if (!known || GENERIC_LINE_TYPES.has(key)) return SUBJECT_TAX_CATEGORIES;
+  switch (inferred) {
+    case "accommodation": return ["accommodation"];
+    case "food_beverage": return ["food_beverage", "general_services"];
+    case "transport": return ["transport", "general_services"];
+    case "tourist_tax": return ["tourist_tax"];
+    case "not_subject": return ["not_subject", "accommodation"];
+    case "general_services":
+    default: return ["general_services"];
+  }
+}
+
 /**
  * Tanda 3: validate an optional fiscal-category override for a folio line
- * against the indirect-tax catalogue (contract A). Returns the category to
- * persist (null when none was requested) or throws a 400. Pure.
+ * against the indirect-tax catalogue (contract A). Corrector L3 (FC-4): the
+ * override must also be COMPATIBLE with the line type (`compatibleTaxCategories`),
+ * so «Habitación» can no longer be posted as `not_subject` or `tourist_tax`.
+ * Returns the category to persist (null when none was requested) or throws a
+ * 400. Pure.
  */
 export function validateFolioLineTaxCategory(lineType: string, taxCategory: string | null | undefined): string | null {
   const requested = taxCategory?.trim();
@@ -435,7 +482,29 @@ export function validateFolioLineTaxCategory(lineType: string, taxCategory: stri
       `Categoría fiscal no válida: «${requested}». Valores admitidos: ${TAX_CATEGORY_VALUES.join(", ")}.`
     );
   }
+  const compatible = compatibleTaxCategories(lineType);
+  if (!compatible.includes(requested as TaxCategoryValue)) {
+    throw new BadRequestError(
+      `Categoría fiscal «${requested}» incompatible con el tipo de cargo «${lineType}». Admitidas para este tipo: ${compatible.join(", ")}.`
+    );
+  }
   return requested;
+}
+
+/**
+ * L3-T (2026-09-18, decisión §6.8): fiscal category persisted on a NEW folio
+ * line. A validated override wins; otherwise the line-type map of the
+ * indirect-tax catalogue decides (room → accommodation, breakfast / minibar /
+ * restaurant → food_beverage, spa / parking / extra / adjustment →
+ * general_services, city_tax → tourist_tax, no_show_fee / cancellation_fee →
+ * not_subject, unknown type → general_services), so no new row is written
+ * NULL. The column stays nullable and the legacy rows are NOT backfilled:
+ * invoicing keeps inferring for them (invoice.service createInvoiceFromFolio).
+ * Pure.
+ */
+export function resolveFolioLineTaxCategory(lineType: string, taxCategory: string | null | undefined): TaxCategoryValue {
+  const override = validateFolioLineTaxCategory(lineType, taxCategory);
+  return override !== null ? (override as TaxCategoryValue) : categoryForLineType(lineType);
 }
 
 export async function postFolioLine(input: {
@@ -446,13 +515,13 @@ export async function postFolioLine(input: {
   quantity: number;
   unitPrice: number;
   taxCode?: string;
-  /** Tanda 3: optional fiscal-category override (validated against the catalogue). */
+  /** Tanda 3: optional fiscal-category override (validated against the catalogue); L3-T: inferred from `type` when absent. */
   taxCategory?: string | null;
   correlationId: string;
 }): Promise<FolioLineRecord> {
   requirePermissions(input.context, ["folio.charge.post"]);
 
-  const taxCategory = validateFolioLineTaxCategory(input.type, input.taxCategory);
+  const taxCategory = resolveFolioLineTaxCategory(input.type, input.taxCategory);
   const folio = await getOpenFolio(input.folioId);
   const propertyId = await resolveFolioPropertyId(input.folioId);
   const total = roundCurrency(input.quantity * input.unitPrice);
@@ -698,10 +767,45 @@ export async function refundPayment(input: {
   return loadRefundedPayment(input.paymentId);
 }
 
+export type FolioUninvoicedCharges = { lines: number; total: number };
+
+/**
+ * Corrector L3 (FC-2): live BILLABLE charges of a folio (every non-deleted line
+ * but the fiscal reflections of a rectificativa) that no live invoice
+ * (issued or rectified, linked through `Invoice.folioId`) documents. The
+ * invoice is the ONLY mechanism that accrues folio charges into the ledger
+ * (D 4300 / H 705.x): a folio closed with such lines and no invoice leaves the
+ * customer's 4300 as an open creditor and the revenue never recognised.
+ * `{ lines: 0, total: 0 }` when everything is documented (or nothing to bill).
+ */
+export async function folioUninvoicedCharges(folioId: string): Promise<FolioUninvoicedCharges> {
+  const invoiced = await prisma.invoice.count({ where: { folioId, deletedAt: null, status: { in: ["issued", "rectified"] } } });
+  if (invoiced > 0) return { lines: 0, total: 0 };
+  const rows = await prisma.folioLine.findMany({ where: { folioId, deletedAt: null }, select: { type: true, total: true }, take: 500 });
+  const billable = rows.filter((row) => !FISCAL_REFLECTION_LINE_TYPES.includes(row.type) && Math.abs(dec(row.total)) >= 0.005);
+  return { lines: billable.length, total: roundCurrency(billable.reduce((sum, row) => sum + dec(row.total), 0)) };
+}
+
+/** 409 for a folio with charges nobody invoiced (details.code = FOLIO_UNINVOICED_LINES). Pure. */
+export function folioUninvoicedError(pending: FolioUninvoicedCharges): ConflictError {
+  return new ConflictError(
+    `El folio tiene ${pending.lines === 1 ? "1 cargo" : `${pending.lines} cargos`} por ${pending.total.toFixed(2)} € sin facturar: emite la factura (POST /folios/:id/invoice y POST /invoices/:id/issue) antes de cerrarlo.`,
+    { code: "FOLIO_UNINVOICED_LINES", lines: pending.lines, total: pending.total }
+  );
+}
+
 export async function closeFolio(input: {
   context: UserContext;
   folioId: string;
   correlationId: string;
+  /**
+   * Corrector L3 (FC-2): refuse (409 `FOLIO_UNINVOICED_LINES`) when the folio
+   * still has billable charges no invoice documents. The HTTP route
+   * POST /folios/:id/close and the cancellation engine pass `true`; the
+   * check-out route and the OPERA shadow import keep the legacy close
+   * (settled folio, invoice optional) — a decision for César, not this fix.
+   */
+  requireInvoiced?: boolean;
 }): Promise<FolioRecord> {
   const folio = await getOpenFolio(input.folioId);
   const balance = await getFolioBalance(folio.id);
@@ -709,6 +813,10 @@ export async function closeFolio(input: {
   // Tolerate sub-cent rounding noise (and a tiny credit) rather than a strict !== 0.
   if (Math.abs(balance.balanceDue) >= 0.005) {
     throw new BadRequestError(`Folio cannot be closed with balance due ${balance.balanceDue}.`);
+  }
+  if (input.requireInvoiced) {
+    const pending = await folioUninvoicedCharges(folio.id);
+    if (pending.lines > 0) throw folioUninvoicedError(pending);
   }
 
   const before = balance.folio;

@@ -183,6 +183,10 @@ export type AdminReservation = {
   totalAmount: number;
   currency: string;
   primaryGuestId?: string;
+  /** Tanda L3 (lote A): origin of `totalAmount` (`price_source`; absent on legacy rows). */
+  priceSource?: ReservationPriceSource | null;
+  /** Tanda L3 (lote A): only on the creation response. */
+  pricing?: ReservationPricing;
 };
 
 export type AdminRoomType = {
@@ -199,8 +203,40 @@ export type AvailabilityQuote = {
   roomTypeName: string;
   availableRooms: number;
   currency: string;
+  /** Stay total of ONE room of this type (multiply by the rooms booked). */
   totalAmount: number;
   cancellationPolicy: string;
+  // Tanda L3 (lote A): where the quoted price comes from (pms.service
+  // quoteAvailability REC-09). `fallback` = at least one night had no published
+  // rate and was completed with `fallbackNightly` — a filler, NOT a tariff: the
+  // screens must warn instead of presenting it as the published price.
+  priceSource?: "rate_plan" | "fallback";
+  nightsWithoutRate?: number;
+  fallbackNightly?: number | null;
+  // Corrector L3 (FUX-02): the quote is priced by the SAME canonical quoter
+  // that fixes the reservation total on creation (plan → BAR → lowest
+  // published). `quotedRatePlanId` is the plan that priced the stay;
+  // `ratePlanSwitched` = a plan was requested and another one (BAR) priced it.
+  quotedRatePlanId?: string | null;
+  ratePlanSwitched?: boolean;
+};
+
+/** Tanda L3 (lote A): origin of `Reservation.totalAmount` as persisted by the API (`price_source`). */
+export type ReservationPriceSource = "manual" | "rate_plan" | "partial" | "none" | "file" | "quoted";
+
+/**
+ * Tanda L3 (lote A): pricing block of `POST /properties/:id/reservations`.
+ * `source` is the persisted price origin; `nightsWithoutRate` > 0 means the
+ * grid did not price every night (total left at 0 with `none` / `partial`);
+ * `ratePlanId` is the plan that actually priced the first night (it differs
+ * from the requested plan when that plan publishes nothing and BAR priced it).
+ */
+export type ReservationPricing = {
+  source: ReservationPriceSource;
+  nights: number;
+  nightsWithoutRate: number;
+  ratePlanId: string | null;
+  warning: string | null;
 };
 
 /**
@@ -505,17 +541,37 @@ export function balanceDueConflict(err: unknown): BalanceDueConflict | null {
   return null;
 }
 
-export function cancelReservation(reservationId: string, reason?: string): Promise<AdminReservation> {
-  return apiRequest<AdminReservation>(`/reservations/${reservationId}/cancel`, { method: "POST", body: { reason } });
+// Tanda L3 (lote A → B): `applyPolicy` travels in the body under that EXACT key
+// (CancelReservationSchema / NoShowReservationSchema are not strict: a
+// misspelled key would be dropped in silence). Omitted = the API applies the
+// cancellation policy (penalty + folio close); `false` skips it.
+// Corrector L3 (DS-02): waiving a penalty above the operative band answers 409
+// APPROVAL_REQUIRED (kind discount); a supervisor PIN bound to
+// `pms.reservation.override` on the reservation travels as
+// `supervisorAuthorizationId` (CancelReservationSchema / NoShowReservationSchema).
+export type ReservationLifecycleOptions = { applyPolicy?: boolean; supervisorAuthorizationId?: string | null };
+
+function lifecycleBody(reason: string | undefined, options?: ReservationLifecycleOptions): Record<string, unknown> {
+  return {
+    reason,
+    ...(options?.applyPolicy !== undefined ? { applyPolicy: options.applyPolicy } : {}),
+    ...(options?.supervisorAuthorizationId ? { supervisorAuthorizationId: options.supervisorAuthorizationId } : {})
+  };
 }
 
-export function noShowReservation(reservationId: string, reason?: string): Promise<AdminReservation> {
-  return apiRequest<AdminReservation>(`/reservations/${reservationId}/no-show`, { method: "POST", body: { reason } });
+export function cancelReservation(reservationId: string, reason?: string, options?: ReservationLifecycleOptions): Promise<AdminReservation> {
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}/cancel`, { method: "POST", body: lifecycleBody(reason, options) });
+}
+
+export function noShowReservation(reservationId: string, reason?: string, options?: ReservationLifecycleOptions): Promise<AdminReservation> {
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}/no-show`, { method: "POST", body: lifecycleBody(reason, options) });
 }
 
 export function postFolioLine(
   folioId: string,
-  body: { type: string; description: string; quantity: number; unitPrice: number; taxCode?: string }
+  // Tanda L3 (lote A → F1/T): `taxCategory` is the explicit fiscal category of
+  // the line (FolioLine.taxCategory); omitted → the API infers it from `type`.
+  body: { type: string; description: string; quantity: number; unitPrice: number; taxCode?: string; taxCategory?: string }
 ): Promise<unknown> {
   return apiRequest<unknown>(`/folios/${folioId}/lines`, { method: "POST", body });
 }

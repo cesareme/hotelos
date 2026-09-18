@@ -12,9 +12,22 @@
 // list are untouched. On success the page paints `state="empty"` with the
 // success illustration and the two follow-up actions. Hosted inside
 // NuevaReservaTabs the container paints the title.
+//
+// Tanda L3 · lote A («precio de reserva desde tarifa al crear»): the rate plans
+// come from GET /properties/:id/rate-plans (real ids; the fixed rp_* list
+// answered 400), the cancellation policy from GET /cancellation-policies
+// (default preselected), the availability quote carries the selected type /
+// plan and says where its price comes from (`fallback` = filler, warned, never
+// copied into the total), and `totalAmount` travels ONLY when the user typed
+// it: an empty field lets the API price the stay from the rate grid
+// (`pricing.source` on the response). `baseAmount` / `taxAmount` are no longer
+// sent (the API ignored them).
 
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import type { RateGridRatePlan } from "@hotelos/shared";
 import { getActivePropertyId } from "../../services/activeProperty";
+import { fetchRatePlans } from "../../services/rateGridApi";
+import { fetchCancellationPolicies, type CancellationPolicy } from "../../services/cancellationApi";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { fetchConfigurationCategories, type ConfigurationCategoryGroup } from "../../services/backofficeApi";
 import {
@@ -26,7 +39,8 @@ import {
   type AdminReservation,
   type AdminRoom,
   type AdminRoomType,
-  type AvailabilityQuote
+  type AvailabilityQuote,
+  type ReservationPriceSource
 } from "../../services/pmsCommerceApi";
 import { useToast } from "../../components/Toast";
 import { logBreadcrumb } from "../../lib/breadcrumb";
@@ -53,6 +67,7 @@ import {
   CocoaSelect,
   CocoaSpan,
   CocoaStat,
+  CocoaState,
   CocoaStepper,
   CocoaSwitch,
   openTabPath,
@@ -129,7 +144,8 @@ const defaultForm = {
   depositPaid: "",
   depositDueDate: "",
   guaranteeType: "card_guarantee",
-  cancellationPolicyCode: "flexible_18",
+  // Filled with the property's default policy once GET /cancellation-policies answers.
+  cancellationPolicyCode: "",
   billingInstruction: "guest_pays_checkout",
   // ── Primary guest (titular) ────────────────────────────────────────────
   title: "",
@@ -273,12 +289,54 @@ const CHANNEL_OPTIONS = [
   { value: "corporate", label: "Corporativo" }
 ];
 
-const RATE_PLAN_OPTIONS = [
-  { value: "", label: "Sin plan tarifario" },
-  { value: "rp_flexible", label: "Flexible BAR" },
-  { value: "rp_nonref", label: "No reembolsable" },
-  { value: "rp_breakfast", label: "Desayuno incluido" }
-];
+const NO_RATE_PLAN_OPTION = { value: "", label: "Sin plan tarifario (tarifa BAR del hotel)" };
+
+/** Selector options of the property's ACTIVE rate plans (ids of the API, never invented). Pure. */
+function ratePlanOptions(plans: RateGridRatePlan[]) {
+  return [NO_RATE_PLAN_OPTION, ...plans.filter((plan) => plan.active).map((plan) => ({ value: plan.id, label: `${plan.code} · ${plan.name}` }))];
+}
+
+const NO_POLICY_OPTION = { value: "", label: "Sin política (se aplica la del hotel)" };
+
+/** Selector options of the property's ACTIVE cancellation policies (code = what the API stamps). Pure. */
+function policyOptions(policies: CancellationPolicy[]) {
+  return [NO_POLICY_OPTION, ...policies.filter((policy) => policy.active).map((policy) => ({ value: policy.code, label: `${policy.name} (${policy.code})` }))];
+}
+
+/**
+ * Code of the property's default policy (`isDefault`, one per hotel at most)
+ * or "" (= «Sin política»). Corrector L3 (FUX-01): NO alphabetical fallback —
+ * the API resolves a reservation without code through the rate plan's policy
+ * and then the hotel's default, and a hotel without default charges nothing;
+ * preselecting the first active policy stamped a code the hotel never chose
+ * (FLEX before NREF on a BAR-NR plan). Pure.
+ */
+function defaultPolicyCode(policies: CancellationPolicy[]): string {
+  return policies.find((policy) => policy.active && policy.isDefault === true)?.code ?? "";
+}
+
+/** Help of the «Política de cancelación» select: what happens with the selection left empty. Pure. */
+function policyHelp(policies: CancellationPolicy[]): string {
+  if (policies.length === 0) return "Sin políticas de cancelación configuradas en el hotel: la reserva se crea sin política.";
+  if (policies.some((policy) => policy.active && policy.isDefault)) return "Preseleccionada la política por defecto del hotel; «Sin política» deja que decida el plan tarifario o, si no tiene, la del hotel.";
+  return "El hotel no tiene política por defecto: con «Sin política» se aplica la del plan tarifario o, si no la tiene, ninguna (cancelación sin cargo).";
+}
+
+/** Human label of the price origin the API answers on creation (`pricing.source`). Pure. */
+function priceSourceLabel(source: ReservationPriceSource): string {
+  switch (source) {
+    case "rate_plan":
+      return "precio de la tarifa publicada";
+    case "manual":
+      return "precio manual";
+    case "partial":
+      return "sin tarifa publicada para todas las noches (queda a 0 €)";
+    case "none":
+      return "sin tarifa publicada (queda a 0 €)";
+    default:
+      return "precio del origen de la reserva";
+  }
+}
 
 // Steps of the wizard: one CocoaFormSection group each.
 type StepKey = "estancia" | "huespedes" | "tarifa" | "origen" | "pagos" | "solicitudes";
@@ -331,6 +389,9 @@ export function ReservationCreateScreen() {
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
   const [categoryGroups, setCategoryGroups] = useState<ConfigurationCategoryGroup[]>([]);
   const [quotes, setQuotes] = useState<AvailabilityQuote[]>([]);
+  const [quoted, setQuoted] = useState(false);
+  const [ratePlans, setRatePlans] = useState<RateGridRatePlan[]>([]);
+  const [policies, setPolicies] = useState<CancellationPolicy[]>([]);
   const [createdReservation, setCreatedReservation] = useState<AdminReservation | null>(null);
   const [status, setStatus] = useState("Listo para consultar disponibilidad y crear una reserva.");
   const [step, setStep] = useState(0);
@@ -348,13 +409,22 @@ export function ReservationCreateScreen() {
       .then((categoryResponse) => setCategoryGroups(categoryResponse.groups))
       .catch(() => undefined); // opcional: los selects usan sus valores locales
     void fetchRooms(PROPERTY_ID).then(setRooms).catch(() => setRooms([]));
+    // Tanda L3 (lote A): real rate plans and cancellation policies of the hotel.
+    void fetchRatePlans(PROPERTY_ID).then(setRatePlans).catch(() => setRatePlans([]));
+    void fetchCancellationPolicies(PROPERTY_ID)
+      .then((items) => {
+        setPolicies(items);
+        setForm((current) => (current.cancellationPolicyCode ? current : { ...current, cancellationPolicyCode: defaultPolicyCode(items) }));
+      })
+      .catch(() => setPolicies([]));
   }, []);
 
   const sourceOptions = useMemo(() => categoryOptions(categoryGroups, "reservation_source_codes"), [categoryGroups]);
   const marketOptions = useMemo(() => categoryOptions(categoryGroups, "market_segments"), [categoryGroups]);
   const guaranteeOptions = useMemo(() => categoryOptions(categoryGroups, "guarantee_policies"), [categoryGroups]);
-  const cancellationOptions = useMemo(() => categoryOptions(categoryGroups, "cancellation_policies"), [categoryGroups]);
   const billingOptions = useMemo(() => categoryOptions(categoryGroups, "billing_instruction_types"), [categoryGroups]);
+  const ratePlanOptionList = useMemo(() => ratePlanOptions(ratePlans), [ratePlans]);
+  const policyOptionList = useMemo(() => policyOptions(policies), [policies]);
 
   // Auditoría 2026-07: sin tipos de habitación no hay opción inventada; el
   // selector queda vacío con su placeholder y el alta se bloquea.
@@ -380,13 +450,25 @@ export function ReservationCreateScreen() {
     return Math.max(0, diff);
   }, [form.arrivalDate, form.departureDate]);
 
-  // Live taxes preview (IVA reducido 10 % for hospedaje en España).
+  // Tanda L3 (lote A): the quote of the selected type (one room, whole stay);
+  // a `fallback` quote is a filler and never becomes the total. The manual
+  // field wins when the user typed it; otherwise the API prices the stay.
+  const selectedQuote = useMemo(() => quotes.find((quote) => quote.roomTypeId === form.roomTypeId) ?? null, [quotes, form.roomTypeId]);
+  const roomsCountNumber = Number(form.roomsCount) || 1;
+  const quotedTotal = useMemo(
+    () => (selectedQuote && selectedQuote.priceSource !== "fallback" ? Math.round(selectedQuote.totalAmount * roomsCountNumber * 100) / 100 : null),
+    [selectedQuote, roomsCountNumber]
+  );
+  const manualTotal = form.totalAmount.trim() === "" ? null : Number(form.totalAmount);
+  const displayTotal = manualTotal ?? quotedTotal ?? 0;
+
+  // Live taxes preview (IVA reducido 10 % for hospedaje en España) — display only, nothing of it is sent.
   const taxesPreview = useMemo(() => {
-    const total = Number(form.totalAmount) || 0;
+    const total = Number.isFinite(displayTotal) ? displayTotal : 0;
     const base = Math.round((total / 1.1) * 100) / 100;
     const tax = Math.round((total - base) * 100) / 100;
     return { base, tax, total };
-  }, [form.totalAmount]);
+  }, [displayTotal]);
 
   function updateCompanion(id: string, key: keyof Omit<CompanionGuest, "id">, value: string) {
     setCompanions((current) => current.map((c) => (c.id === id ? { ...c, [key]: value } : c)));
@@ -412,14 +494,30 @@ export function ReservationCreateScreen() {
         arrivalDate: form.arrivalDate,
         departureDate: form.departureDate,
         adults: Number(form.adults),
-        children: Number(form.children)
+        children: Number(form.children),
+        // Tanda L3 (lote A): quote the selected type from the selected plan's grid.
+        ...(form.roomTypeId ? { roomTypeId: form.roomTypeId } : {}),
+        ...(form.ratePlanId ? { ratePlanId: form.ratePlanId } : {})
       });
       setQuotes(response);
+      setQuoted(true);
       const firstAvailable = response.find((quote) => quote.availableRooms > 0);
-      if (firstAvailable) {
-        setForm((current) => ({ ...current, roomTypeId: firstAvailable.roomTypeId, totalAmount: String(firstAvailable.totalAmount) }));
+      // The total is NOT copied into the form: an empty total lets the API price
+      // the stay from the rate grid (a `fallback` figure is never a tariff).
+      if (firstAvailable && !form.roomTypeId) {
+        setForm((current) => ({ ...current, roomTypeId: firstAvailable.roomTypeId }));
       }
-      setStatus("Disponibilidad consultada. Revisa tarifa, categorías y datos del huésped antes de confirmar.");
+      const withFallback = response.filter((quote) => quote.availableRooms > 0 && quote.priceSource === "fallback");
+      if (!firstAvailable) {
+        setStatus("Sin disponibilidad para esas fechas y ocupación. Cambia las fechas, la ocupación o el tipo de habitación.");
+      } else if (withFallback.length > 0) {
+        const sample = withFallback[0];
+        setStatus(
+          `Disponibilidad consultada. Aviso: ${plural(sample.nightsWithoutRate ?? 0, "noche", "noches")} sin tarifa publicada en ${withFallback.map((quote) => quote.roomTypeName).join(", ")} — el importe mostrado usa un precio de relleno de ${money(sample.fallbackNightly ?? 0)}/noche, no es tarifa publicada.`
+        );
+      } else {
+        setStatus("Disponibilidad consultada con la tarifa publicada. Deja el precio total vacío para que la reserva tome el precio de la parrilla, o escribe un importe manual.");
+      }
       showToast(firstAvailable ? `Disponibilidad consultada · ${plural(response.length, "tipo de habitación", "tipos de habitación")}` : "Sin disponibilidad para esas fechas", {
         variant: firstAvailable ? "success" : "info"
       });
@@ -461,7 +559,8 @@ export function ReservationCreateScreen() {
       roomTypeId: form.roomTypeId,
       arrivalDate: form.arrivalDate,
       departureDate: form.departureDate,
-      totalAmount: Number(form.totalAmount),
+      totalAmount: manualTotal,
+      ratePlanId: form.ratePlanId || null,
       paymentMethod: form.paymentMethod,
       companionCount: companions.length
     });
@@ -498,12 +597,12 @@ export function ReservationCreateScreen() {
         roomsCount: Number(form.roomsCount) || 1,
         roomTypeId: form.roomTypeId || undefined,
         assignedRoomId: form.assignedRoomId || undefined,
-        // Tarifa
+        // Tarifa · Tanda L3 (lote A): `totalAmount` only when typed (an empty
+        // field → the API prices the stay from the rate grid); the IVA preview
+        // is display only (the API ignored baseAmount / taxAmount).
         ratePlanId: form.ratePlanId || undefined,
         boardType: form.boardType || undefined,
-        totalAmount: Number(form.totalAmount),
-        baseAmount: taxesPreview.base,
-        taxAmount: taxesPreview.tax,
+        totalAmount: manualTotal ?? undefined,
         currency: "EUR",
         // Origen (commercial provenance)
         bookingSource: form.bookingSource,
@@ -523,7 +622,7 @@ export function ReservationCreateScreen() {
         depositPaid: form.depositPaid ? Number(form.depositPaid) : undefined,
         depositDueDate: form.depositDueDate || undefined,
         guaranteeType: form.guaranteeType,
-        cancellationPolicyCode: form.cancellationPolicyCode,
+        cancellationPolicyCode: form.cancellationPolicyCode || undefined,
         billingInstruction: form.billingInstruction,
         // Solicitudes & operativos
         specialRequests: form.specialRequests || undefined,
@@ -581,8 +680,12 @@ export function ReservationCreateScreen() {
         }
       });
       setCreatedReservation(reservation);
-      setStatus(`Reserva ${reservation.code} creada. Se abrió un folio y se registró el evento de auditoría.`);
-      showToast(`Reserva ${reservation.code} creada`, { variant: "success" });
+      const pricing = reservation.pricing;
+      const priceNote = pricing
+        ? `${priceSourceLabel(pricing.source)}: ${money(reservation.totalAmount, reservation.currency)}.${pricing.warning ? ` ${pricing.warning}` : ""}`
+        : `importe ${money(reservation.totalAmount, reservation.currency)}.`;
+      setStatus(`Reserva ${reservation.code} creada (${priceNote}) Se abrió un folio y se registró el evento de auditoría.`);
+      showToast(`Reserva ${reservation.code} creada · ${money(reservation.totalAmount, reservation.currency)}`, { variant: pricing?.warning ? "info" : "success" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo crear la reserva.";
       setStatus(message);
@@ -697,10 +800,14 @@ export function ReservationCreateScreen() {
               </CocoaField>
             </CocoaFormRow>
 
+            {quoted && !quotes.some((quote) => quote.availableRooms > 0) ? (
+              <CocoaState kind="empty" inline title="Sin disponibilidad" message="No hay habitaciones libres para esas fechas y ocupación. Cambia las fechas, la ocupación o el tipo de habitación." />
+            ) : null}
             {quotes.length > 0 ? (
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--cocoa-space-3)" }}>
                 {quotes.map((quote) => {
                   const selected = form.roomTypeId === quote.roomTypeId;
+                  const filler = quote.priceSource === "fallback";
                   return (
                     <CocoaCard key={quote.roomTypeId} variant="bordered" padding="md" role="group" aria-label={quote.roomTypeName}>
                       <div className="cocoa-stack" data-gap="2">
@@ -710,14 +817,28 @@ export function ReservationCreateScreen() {
                             {plural(quote.availableRooms, "disponible", "disponibles")}
                           </CocoaBadge>
                         </span>
-                        <CocoaStat label="Total de la estancia" value={money(quote.totalAmount, quote.currency)} hint={quote.cancellationPolicy} />
+                        <CocoaStat
+                          label="Estancia por habitación"
+                          value={money(quote.totalAmount, quote.currency)}
+                          hint={filler ? "Precio de relleno, no es tarifa publicada" : "Tarifa publicada"}
+                          tone={filler ? "warning" : "neutral"}
+                        />
+                        {filler ? (
+                          <CocoaCallout tone="warning">
+                            {plural(quote.nightsWithoutRate ?? 0, "noche", "noches")} sin tarifa publicada en ningún plan: precio de relleno de {money(quote.fallbackNightly ?? 0, quote.currency)}/noche, no es tarifa publicada. Sin importe manual la reserva se creará a {money(0)} con aviso.
+                          </CocoaCallout>
+                        ) : quote.ratePlanSwitched ? (
+                          <CocoaCallout tone="info">
+                            El plan elegido no publica precio para estas noches: la estimación usa la tarifa BAR, la misma que fijará el precio al crear la reserva.
+                          </CocoaCallout>
+                        ) : null}
                         <div className="cocoa-row" data-gap="2">
                           <CocoaButton
                             variant={selected ? "filled" : "tinted"}
                             tone="accent"
                             size="small"
                             aria-pressed={selected}
-                            onClick={() => setForm((c) => ({ ...c, roomTypeId: quote.roomTypeId, totalAmount: String(quote.totalAmount) }))}
+                            onClick={() => setForm((c) => ({ ...c, roomTypeId: quote.roomTypeId }))}
                           >
                             {selected ? "Tipo seleccionado" : "Seleccionar este tipo"}
                           </CocoaButton>
@@ -897,20 +1018,46 @@ export function ReservationCreateScreen() {
         return (
           <CocoaFormSection title="Tarifa" description={`Plan tarifario, régimen, total y desglose de IVA · ${money(taxesPreview.total)} · ${plural(nightsCount, "noche", "noches")}`}>
             <CocoaFormRow columns={3} min={220}>
-              <CocoaField label={FIELD_LABELS.ratePlan}>
-                <CocoaSelect value={form.ratePlanId} onChange={set("ratePlanId")} options={RATE_PLAN_OPTIONS} />
+              <CocoaField label={FIELD_LABELS.ratePlan} help={ratePlans.length === 0 ? "Sin planes tarifarios cargados: la reserva se cotiza con la tarifa BAR del hotel." : "Sin plan, la reserva se cotiza con la tarifa BAR del hotel."}>
+                <CocoaSelect value={form.ratePlanId} onChange={set("ratePlanId")} options={ratePlanOptionList} />
               </CocoaField>
               <CocoaField label="Régimen">
                 <CocoaSelect value={form.boardType} onChange={set("boardType")} options={BOARD_OPTIONS} />
               </CocoaField>
-              <CocoaField label="Precio total (€)" help="IVA incluido.">
-                <CocoaInput value={form.totalAmount} onChange={set("totalAmount")} type="number" inputMode="decimal" min={0} step="0.01" />
+              <CocoaField label="Precio total (€)" hint="opcional" help="IVA incluido. Déjalo vacío para que la reserva tome el precio de la tarifa publicada.">
+                <CocoaInput
+                  value={form.totalAmount}
+                  onChange={set("totalAmount")}
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step="0.01"
+                  placeholder={quotedTotal !== null ? quotedTotal.toFixed(2) : "Según tarifa"}
+                />
               </CocoaField>
             </CocoaFormRow>
+            {selectedQuote?.priceSource === "fallback" ? (
+              <CocoaCallout tone="warning">
+                Ningún plan publica precio para {plural(selectedQuote.nightsWithoutRate ?? 0, "noche", "noches")} de {plural(nightsCount, "noche", "noches")} (precio de relleno de {money(selectedQuote.fallbackNightly ?? 0, selectedQuote.currency)}/noche, no es tarifa publicada). Sin importe manual la reserva se creará a {money(0)} con aviso.
+              </CocoaCallout>
+            ) : manualTotal !== null && quotedTotal !== null && manualTotal < quotedTotal ? (
+              <CocoaCallout tone="warning">
+                Importe por debajo de la tarifa publicada ({money(quotedTotal)}): se registra como descuento y, según el porcentaje, exige clave de descuento, motivo o autorización.
+              </CocoaCallout>
+            ) : manualTotal === null && quotedTotal !== null ? (
+              <CocoaCallout tone="info">
+                Precio estimado desde la tarifa publicada: {money(quotedTotal)} ({plural(nightsCount, "noche", "noches")} × {plural(roomsCountNumber, "habitación", "habitaciones")}). Al crear la reserva el importe se toma de la parrilla con el mismo cotizador.
+                {selectedQuote?.ratePlanSwitched ? " El plan elegido no publica precio para estas noches: se usa la tarifa BAR (la respuesta del API lo avisa en pricing.warning)." : ""}
+              </CocoaCallout>
+            ) : manualTotal === null ? (
+              <CocoaCallout tone="neutral">
+                Sin importe manual la reserva toma el precio de la tarifa publicada al crearse. Consulta la disponibilidad en el paso Estancia para ver la estimación.
+              </CocoaCallout>
+            ) : null}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "var(--cocoa-space-3)" }}>
               <CocoaStat label="Base imponible" value={money(taxesPreview.base)} />
               <CocoaStat label="IVA (10 %)" value={money(taxesPreview.tax)} />
-              <CocoaStat label={FIELD_LABELS.total} value={money(taxesPreview.total)} tone="accent" />
+              <CocoaStat label={FIELD_LABELS.total} value={money(taxesPreview.total)} tone="accent" hint={manualTotal !== null ? "importe manual" : quotedTotal !== null ? "estimación de tarifa" : "se cotiza al crear"} />
               <CocoaStat label="Precio por noche" value={money(nightsCount > 0 ? taxesPreview.total / nightsCount : 0)} />
             </div>
           </CocoaFormSection>
@@ -994,12 +1141,11 @@ export function ReservationCreateScreen() {
                   options={guaranteeOptions.length ? guaranteeOptions : [{ value: "card_guarantee", label: "Garantía con tarjeta" }]}
                 />
               </CocoaField>
-              <CocoaField label="Política de cancelación">
-                <CocoaSelect
-                  value={form.cancellationPolicyCode}
-                  onChange={set("cancellationPolicyCode")}
-                  options={cancellationOptions.length ? cancellationOptions : [{ value: "flexible_18", label: "Flexible hasta las 18:00 del día anterior" }]}
-                />
+              <CocoaField
+                label="Política de cancelación"
+                help={policyHelp(policies)}
+              >
+                <CocoaSelect value={form.cancellationPolicyCode} onChange={set("cancellationPolicyCode")} options={policyOptionList} />
               </CocoaField>
               <CocoaField label="Instrucción de cobro">
                 <CocoaSelect
@@ -1071,7 +1217,9 @@ export function ReservationCreateScreen() {
       state={createdReservation ? "empty" : "ready"}
       empty={{
         title: `Reserva ${createdReservation?.code ?? ""} creada`,
-        message: "Reserva guardada, huésped principal vinculado y folio abierto.",
+        message: createdReservation
+          ? `Reserva guardada, huésped principal vinculado y folio abierto · ${createdReservation.pricing ? priceSourceLabel(createdReservation.pricing.source) : "importe"}: ${money(createdReservation.totalAmount, createdReservation.currency)}.`
+          : "Reserva guardada, huésped principal vinculado y folio abierto.",
         illustration: "success",
         primaryAction: { label: "Abrir el detalle de la reserva", onClick: openCreated },
         secondaryAction: { label: "Abrir facturación", onClick: () => navigateTo("BillingCenter") }

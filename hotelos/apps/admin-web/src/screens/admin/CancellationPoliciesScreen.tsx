@@ -65,6 +65,8 @@ type Draft = {
   noShowPenaltyType: PenaltyType; noShowPenaltyValue: string;
   slidingScale: SlidingWindow[];
   active: boolean;
+  /** Tanda L3: default policy of the hotel (one at most; marking one unmarks the previous). */
+  isDefault: boolean;
 };
 
 const SLIDING_PREFIX = "::SLIDING::";
@@ -94,7 +96,8 @@ function emptyDraft(): Draft {
     penaltyType: "first_night", penaltyValue: "",
     noShowPenaltyType: "first_night", noShowPenaltyValue: "",
     slidingScale: [],
-    active: true
+    active: true,
+    isDefault: false
   };
 }
 
@@ -105,7 +108,21 @@ function penaltyText(type: PenaltyType, value: number | null): string {
 }
 
 const COLUMNS: CocoaTableColumn<CancellationPolicy>[] = [
-  { key: "code", label: "Código", fit: true, render: (p) => <strong>{p.code}</strong> },
+  {
+    key: "code",
+    label: "Código",
+    fit: true,
+    render: (p) => (
+      <span className="cocoa-cluster">
+        <strong>{p.code}</strong>
+        {p.isDefault ? (
+          <CocoaBadge tone="accent" size="small" uppercase={false}>
+            Por defecto
+          </CocoaBadge>
+        ) : null}
+      </span>
+    )
+  },
   { key: "name", label: FIELD_LABELS.name, minWidth: 160 },
   {
     key: "freeCancelHours",
@@ -191,7 +208,8 @@ export function CancellationPoliciesScreen() {
       penaltyType: p.penaltyType, penaltyValue: p.penaltyValue?.toString() ?? "",
       noShowPenaltyType: p.noShowPenaltyType, noShowPenaltyValue: p.noShowPenaltyValue?.toString() ?? "",
       slidingScale: sliding,
-      active: p.active
+      active: p.active,
+      isDefault: p.isDefault
     };
     setEditing(p);
     setDraft(next);
@@ -252,7 +270,8 @@ export function CancellationPoliciesScreen() {
         penaltyValue: draft.penaltyValue ? Number(draft.penaltyValue) : null,
         noShowPenaltyType: draft.noShowPenaltyType,
         noShowPenaltyValue: draft.noShowPenaltyValue ? Number(draft.noShowPenaltyValue) : null,
-        active: draft.active
+        active: draft.active,
+        isDefault: draft.isDefault
       };
       if (editing) await updateCancellationPolicy(editing.id, payload);
       else await createCancellationPolicy(payload);
@@ -373,7 +392,7 @@ export function CancellationPoliciesScreen() {
         open={showForm}
         onClose={closeForm}
         title={editing ? `Editar «${editing.name}»` : "Nueva política"}
-        subtitle={editing ? `${editing.code} · ${editing.active ? "Activa" : "Inactiva"}` : undefined}
+        subtitle={editing ? `${editing.code} · ${editing.active ? "Activa" : "Inactiva"}${editing.isDefault ? " · Por defecto" : ""}` : undefined}
         side="right"
         size="lg"
         dismissible={!busy}
@@ -416,6 +435,14 @@ export function CancellationPoliciesScreen() {
               </CocoaField>
               <CocoaField label="Política activa" inline help="Una política inactiva no se puede asignar a nuevos planes.">
                 <CocoaSwitch checked={draft.active} onChange={(v) => set("active", v)} size="small" disabled={busy} />
+              </CocoaField>
+              <CocoaField
+                label="Política por defecto"
+                inline
+                fullWidth
+                help="Se aplica a las reservas sin política propia. Solo puede haber una por hotel: al activarla se desmarca la anterior."
+              >
+                <CocoaSwitch checked={draft.isDefault} onChange={(v) => set("isDefault", v)} size="small" disabled={busy} />
               </CocoaField>
               <CocoaField label="Penalización por cancelación (por defecto)">
                 <CocoaSelect value={draft.penaltyType} onChange={(v) => set("penaltyType", v as PenaltyType)} options={PENALTY_OPTIONS} disabled={busy} />

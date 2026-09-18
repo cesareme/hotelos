@@ -258,6 +258,8 @@ export async function applyTouristTaxToFolio(input: {
       unitPrice: computed.totalAmount / peopleTimesNights,
       total: computed.totalAmount,
       taxCode: null,
+      // L3-T: tasa turística repercutida al huésped → «tourist_tax» (4759, sin IVA).
+      taxCategory: "tourist_tax",
       postedBy: input.context.userId
     }
   });

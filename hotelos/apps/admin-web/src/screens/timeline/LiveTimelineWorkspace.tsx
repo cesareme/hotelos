@@ -11,9 +11,16 @@
 // dragging the right edge resizes it. Every write (move, resize, check-in,
 // check-out, cancel, no-show, assign) passes through a CocoaDialog. Same API
 // calls as before; hosted inside ReservasTabs the container paints the title.
+// Tanda L3 · lote F1: the cancel / no-show dialogs read the penalty preview
+// (GET /reservations/:id/cancellation-charge?mode=) when they open and show
+// it before confirming; confirm sends `applyPolicy: true` (L3-B) and the toast
+// names the penalty posted and the folio outcome.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
+import { previewCancellationCharge, type ChargeBreakdown } from "../../services/cancellationApi";
+import { financeErrorMessage } from "../../services/finance-contracts";
+import { lifecycleOutcomeSummary, penaltyPreviewSummary, type LifecycleOutcomeLike } from "../../components/billing/charge-types";
 import {
   assignReservationRoom,
   cancelReservation,
@@ -37,7 +44,7 @@ import { useToast } from "../../components/Toast";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { navigateTo } from "../../lib/navigate";
 import { channelLabel, date, dateRange, marketSegmentLabel, money, plural, time, type DateStyle } from "../../lib/format";
-import { ACTIONS, STATUS_LABELS, TIME_LABELS } from "../../content/actions";
+import { ACTIONS, TIME_LABELS } from "../../content/actions";
 import {
   CocoaBadge,
   CocoaButton,
@@ -367,6 +374,28 @@ export function LiveTimelineWorkspace() {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  // Penalty preview of the cancel / no-show dialog (read only; the API applies the policy on confirm).
+  const [penaltyPreview, setPenaltyPreview] = useState<{ loading: boolean; data: ChargeBreakdown | null; error: string | null }>({ loading: false, data: null, error: null });
+  const pendingLifecycle = pending && (pending.type === "cancel" || pending.type === "noshow") ? { id: pending.res.id, mode: pending.type === "noshow" ? ("no_show" as const) : ("cancellation" as const) } : null;
+  useEffect(() => {
+    if (!pendingLifecycle) {
+      setPenaltyPreview({ loading: false, data: null, error: null });
+      return;
+    }
+    setPenaltyPreview({ loading: true, data: null, error: null });
+    let stale = false;
+    previewCancellationCharge(pendingLifecycle.id, pendingLifecycle.mode)
+      .then((data) => {
+        if (!stale) setPenaltyPreview({ loading: false, data, error: null });
+      })
+      .catch((err: unknown) => {
+        if (!stale) setPenaltyPreview({ loading: false, data: null, error: financeErrorMessage(err, "No se pudo calcular la penalización.") });
+      });
+    return () => {
+      stale = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLifecycle?.id, pendingLifecycle?.mode]);
 
   const dayCount = granularity === "day" ? 7 : granularity === "week" ? 14 : 30;
   const cellWidth = granularity === "month" ? 64 : granularity === "day" ? 150 : 118;
@@ -685,6 +714,7 @@ export function LiveTimelineWorkspace() {
     setBusy(true);
     setActionMsg(null);
     try {
+      let done = dialogCopy(pending).done;
       if (pending.type === "resize") {
         await updateReservation(pending.res.id, { departureDate: pending.newDepartureDate });
       } else if (pending.type === "move") {
@@ -699,16 +729,19 @@ export function LiveTimelineWorkspace() {
         await checkInReservation(pending.res.id, { roomId: pending.res.assignedRoomId });
       } else if (pending.type === "checkout") {
         await checkOutReservation(pending.res.id);
-      } else if (pending.type === "cancel") {
-        await cancelReservation(pending.res.id, reason || undefined);
-      } else if (pending.type === "noshow") {
-        await noShowReservation(pending.res.id, reason || undefined);
+      } else if (pending.type === "cancel" || pending.type === "noshow") {
+        // Tanda L3 (lote B): `applyPolicy` posts the penalty line and closes the
+        // folio at balance 0; the answer carries `cancellation` (not declared
+        // by the shared client type, narrowed here).
+        const request = pending.type === "cancel" ? cancelReservation(pending.res.id, reason.trim(), { applyPolicy: true }) : noShowReservation(pending.res.id, reason.trim(), { applyPolicy: true });
+        const result = (await request) as AdminReservation & { cancellation?: LifecycleOutcomeLike };
+        done = lifecycleOutcomeSummary(pending.type === "noshow" ? "no_show" : "cancellation", result.cancellation ?? null, (amount) => money(amount, pending.res.currency));
       } else if (pending.type === "assign") {
         if (!assignRoomId) throw new Error("Selecciona una habitación.");
         await assignReservationRoom(pending.res.id, { roomId: assignRoomId });
       }
       await refresh();
-      showToast(dialogCopy(pending).done, { variant: "success" });
+      showToast(done, { variant: "success" });
       setPending(null);
       setReason("");
       setAssignRoomId("");
@@ -1039,7 +1072,7 @@ export function LiveTimelineWorkspace() {
           confirmLabel={dialog.verb}
           cancelLabel={ACTIONS.cancel}
           busy={busy}
-          confirmDisabled={pending.type === "assign" && !assignRoomId}
+          confirmDisabled={(pending.type === "assign" && !assignRoomId) || ((pending.type === "cancel" || pending.type === "noshow") && !reason.trim())}
           initialFocus={
             pending.type === "assign" || pending.type === "cancel" || pending.type === "noshow"
               ? () => document.getElementById(pending.type === "assign" ? "cronograma-assign-room" : "cronograma-reason")
@@ -1062,9 +1095,23 @@ export function LiveTimelineWorkspace() {
             </CocoaField>
           ) : null}
           {pending.type === "cancel" || pending.type === "noshow" ? (
-            <CocoaField label="Motivo" hint={STATUS_LABELS.optional.toLowerCase()}>
-              <CocoaInput id="cronograma-reason" value={reason} onChange={setReason} placeholder="Motivo…" />
-            </CocoaField>
+            <>
+              {penaltyPreview.loading ? (
+                <CocoaState kind="loading" inline title="Calculando la penalización prevista…" />
+              ) : (
+                <CocoaCallout
+                  tone={penaltyPreview.error ? "warning" : penaltyPreview.data && penaltyPreview.data.amount > 0 && !penaltyPreview.data.withinFreeWindow ? "warning" : "info"}
+                  title={penaltyPreview.data ? (penaltyPreview.data.policyName ? `Política «${penaltyPreview.data.policyName}»` : "Sin política de cancelación") : "Penalización no calculada"}
+                  role="status"
+                >
+                  {penaltyPreview.error ?? penaltyPreviewSummary(pending.type === "noshow" ? "no_show" : "cancellation", penaltyPreview.data, (amount) => money(amount, pending.res.currency))}
+                  {penaltyPreview.data?.label ? ` ${penaltyPreview.data.label}` : ""}
+                </CocoaCallout>
+              )}
+              <CocoaField label="Motivo" required help="Queda en la auditoría de la reserva (la misma regla que la ficha de la reserva).">
+                <CocoaInput id="cronograma-reason" value={reason} onChange={setReason} placeholder={pending.type === "cancel" ? "El huésped anula el viaje" : "No se ha presentado ni ha avisado"} maxLength={1000} />
+              </CocoaField>
+            </>
           ) : null}
           {actionMsg ? (
             <CocoaCallout tone="danger" role="alert">

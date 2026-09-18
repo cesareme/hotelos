@@ -22,9 +22,23 @@
 // 477x / 472x journal lines of the period and lists the differences. Both
 // halves of a reversed pair count, each on its own date (status `posted` or
 // `reversed`): a cancelled invoice nets to zero only when its cancellation
-// falls in the same period, exactly as in the books (t6#8). The settlement
-// entry and the year-end close/open entries (and their reversals) are left
-// out: they move VAT between accounts without accruing it.
+// falls in the same period, exactly as in the books (t6#8). Left out of the
+// cross-check, each exclusion named with its count in `avisos` (Tanda L3-C):
+//   · the settlement entry (`vat_settlement`) and the year-end close / open
+//     entries — they move VAT between accounts without accruing it;
+//   · the OPERA shadow revenue entries (`pms_shadow_revenue`, Tanda 7b) — they
+//     accrue 477 from the PMS daily revenue with NO book row (the invoices
+//     live in the other PMS), so they can never match the books;
+//   · the settlement entries imported from Sage 200 (`sage200_journal` whose
+//     lines touch 4750x / 4700x together with 477x / 472x, and their
+//     reversals) — the importer fills `taxRateCode` from `tipo_iva`, so the
+//     rate is NOT the discriminator: the account pattern is;
+//   · and their reversals (the reversed target may be dated outside the
+//     period, so it is looked up by id).
+// The cross-check is bounded (`LEDGER_CROSS_CHECK_MAX_ENTRIES` /
+// `LEDGER_CROSS_CHECK_MAX_LINES`): a hit is reported in `avisos`. An original
+// replaced by a rectificativa «S» whose `#sustituida` counter-rows are missing
+// from the books (books rebuilt before Tanda L3-C) is named in `avisos` too.
 // Periodicity (quarterly / monthly REDEME) comes from VatSettings; a period
 // of the wrong kind is a 400 `PERIOD_MISMATCH`. Read-only: never writes.
 
@@ -50,7 +64,12 @@ import {
   regimeAvisos,
   round2,
   summarizeVatRows,
+  supersededSourceId,
   toWire,
+  vatRowsFromInvoice,
+  INVOICE_FOR_BOOKS_SELECT,
+  type InvoiceForBooks,
+  type InvoiceLineForBooks,
   type Money,
   type VatBookRow
 } from "./vat-books.service.js";
@@ -344,14 +363,52 @@ function rateOfLedgerLine(line: { taxRateCode: string | null; description: strin
 export const LEDGER_CROSS_CHECK_STATUSES = ["posted", "reversed"] as const;
 /** Year-end carry-over kinds: they close and reopen the 477x/472x balances without accruing anything. */
 const CARRY_OVER_ENTRY_KINDS: ReadonlySet<string> = new Set(["closing", "opening"]);
+/** OPERA shadow mode (Tanda 7b): daily revenue accrued on 477 from the PMS with no book row behind it. */
+export const PMS_SHADOW_REVENUE_SOURCE_TYPE = "pms_shadow_revenue";
+/** Sage 200 imported journal entries (Tanda 7c): only these are screened for the settlement pattern. */
+export const SAGE_JOURNAL_SOURCE_TYPE = "sage200_journal";
+/** Explicit bound of the entries a cross-check reads (≈ 3.000 a quarter at Faranda with Sage loaded); a hit is reported in `avisos`. */
+export const LEDGER_CROSS_CHECK_MAX_ENTRIES = 25_000;
+/** Explicit bound of the 477x / 472x / 4750x / 4700x lines a cross-check reads; a hit is reported in `avisos`. */
+export const LEDGER_CROSS_CHECK_MAX_LINES = 50_000;
 
 /**
  * Entries that move VAT without accruing it, so they must not enter the
- * cross-check: the settlement (477/472 → 4750/4700) and the year-end
- * closing / opening entries. Pure.
+ * cross-check: the settlement (477/472 → 4750/4700), the year-end closing /
+ * opening entries, and the OPERA shadow revenue entries (`pms_shadow_revenue`),
+ * which accrue 477 without any row in the books (the invoices live in the
+ * other PMS: the books can never match them). Pure.
  */
 export function isNonAccrualVatEntry(entry: { sourceType: string; entryKind: string }): boolean {
-  return entry.sourceType === "vat_settlement" || CARRY_OVER_ENTRY_KINDS.has(entry.entryKind);
+  return entry.sourceType === "vat_settlement" || entry.sourceType === PMS_SHADOW_REVENUE_SOURCE_TYPE || CARRY_OVER_ENTRY_KINDS.has(entry.entryKind);
+}
+
+const isSettlementAccount = (code: string): boolean => code.startsWith("4750") || code.startsWith("4700");
+const isAccrualVatAccount = (code: string): boolean => code.startsWith("477") || code.startsWith("472");
+
+/**
+ * Settlement pattern of an entry imported from Sage 200: a `sage200_journal`
+ * entry (or the reversal of one — `sourceType` is the target's) whose lines
+ * touch a settlement account (4750x Hacienda acreedora / 4700x deudora) TOGETHER
+ * with an accrual account (477x / 472x). Such an entry («Liquidación IVA
+ * 2026-Q2») nets the quarter's quotas against the Treasury: it is not a
+ * devengo. The rate is NOT the discriminator (the importer fills `taxRateCode`
+ * from `tipo_iva`); the account pattern is. Pure.
+ */
+export function isSageSettlementPattern(sourceType: string, accountCodes: readonly string[]): boolean {
+  if (sourceType !== SAGE_JOURNAL_SOURCE_TYPE) return false;
+  return accountCodes.some(isSettlementAccount) && accountCodes.some(isAccrualVatAccount);
+}
+
+/** Spanish `avisos` naming every exclusion of the cross-check with its count (only the non-zero ones). Pure. */
+export function crossCheckExclusionAvisos(excluded: { liquidacion: number; cierreApertura: number; pmsSombra: number; liquidacionSage: number }): string[] {
+  const avisos: string[] = [];
+  const plural = (n: number, singular: string, pluralForm: string): string => `${n} ${n === 1 ? singular : pluralForm}`;
+  if (excluded.liquidacion > 0) avisos.push(`${plural(excluded.liquidacion, "asiento de liquidación del IVA excluido", "asientos de liquidación del IVA excluidos")} del cotejo (mueven las cuotas a 4750/4700 sin devengarlas).`);
+  if (excluded.cierreApertura > 0) avisos.push(`${plural(excluded.cierreApertura, "asiento de cierre o apertura de ejercicio excluido", "asientos de cierre o apertura de ejercicio excluidos")} del cotejo (arrastran saldos de 477/472 sin devengarlos).`);
+  if (excluded.pmsSombra > 0) avisos.push(`${plural(excluded.pmsSombra, "asiento de ingresos de OPERA en modo sombra (pms_shadow_revenue) excluido", "asientos de ingresos de OPERA en modo sombra (pms_shadow_revenue) excluidos")} del cotejo: devengan 477 desde el PMS sin fila en el libro de emitidas.`);
+  if (excluded.liquidacionSage > 0) avisos.push(`${plural(excluded.liquidacionSage, "asiento de liquidación importado de Sage excluido", "asientos de liquidación importados de Sage excluidos")} del cotejo (patrón 4750/4700 junto a 477/472).`);
+  return avisos;
 }
 
 /**
@@ -366,10 +423,12 @@ export function isNonAccrualVatEntry(entry: { sourceType: string; entryKind: str
  * and kept the reversal, so every invoice cancelled inside the period
  * subtracted its quota twice and broke `cuadra` (t6#8).
  *
- * The settlement entries and the year-end close/open entries are excluded
- * together with their reversals — they move the same quotas to 4750/4700
- * (or carry them over the year end) and would cancel the comparison. The
+ * Excluded together with their reversals (see the header; every exclusion is
+ * named with its count in `avisos`): the settlement entries, the year-end
+ * close/open entries, the OPERA shadow revenue entries and the settlement
+ * entries imported from Sage 200 (account pattern 4750/4700 + 477/472). The
  * reversed target may be dated outside the period, so it is looked up by id.
+ * Bounded by `LEDGER_CROSS_CHECK_MAX_ENTRIES` / `LEDGER_CROSS_CHECK_MAX_LINES`.
  */
 export async function ledgerCrossCheck(input: { organizationId: string; periodo: FiscalPeriodDto; propertyId?: string | null; computation: Modelo303Computation }): Promise<{ check: FiscalLedgerCrossCheck; avisos: string[] }> {
   const avisos: string[] = [];
@@ -380,22 +439,61 @@ export async function ledgerCrossCheck(input: { organizationId: string; periodo:
       entryDate: { gte: dateColumn(input.periodo.from), lte: dateColumn(input.periodo.to) },
       ...(input.propertyId ? { propertyId: input.propertyId } : {})
     },
-    select: { id: true, sourceType: true, entryKind: true, reversalOfId: true }
+    select: { id: true, sourceType: true, entryKind: true, reversalOfId: true },
+    orderBy: [{ entryDate: "asc" }, { id: "asc" }],
+    take: LEDGER_CROSS_CHECK_MAX_ENTRIES + 1
   });
-  const reversalTargets = entries.map((entry) => entry.reversalOfId).filter((id): id is string => Boolean(id));
-  const nonAccrualTargets = new Set(
-    reversalTargets.length > 0
-      ? (await prisma.journalEntry.findMany({ where: { id: { in: reversalTargets } }, select: { id: true, sourceType: true, entryKind: true } })).filter(isNonAccrualVatEntry).map((entry) => entry.id)
+  if (entries.length > LEDGER_CROSS_CHECK_MAX_ENTRIES) {
+    entries.length = LEDGER_CROSS_CHECK_MAX_ENTRIES;
+    avisos.push(`El diario del periodo ${input.periodo.code} supera ${LEDGER_CROSS_CHECK_MAX_ENTRIES} asientos: el cotejo con el diario usa los primeros ${LEDGER_CROSS_CHECK_MAX_ENTRIES} por fecha y no es concluyente; acota el periodo o el centro.`);
+  }
+  // Reversal targets (possibly dated outside the period) decide the nature of a reversal entry.
+  const reversalTargetIds = Array.from(new Set(entries.map((entry) => entry.reversalOfId).filter((id): id is string => Boolean(id))));
+  const targets = new Map<string, { sourceType: string; entryKind: string }>(
+    reversalTargetIds.length > 0
+      ? (await prisma.journalEntry.findMany({ where: { id: { in: reversalTargetIds } }, select: { id: true, sourceType: true, entryKind: true } })).map((entry) => [entry.id, { sourceType: entry.sourceType, entryKind: entry.entryKind }])
       : []
   );
-  const relevant = entries.filter((entry) => !isNonAccrualVatEntry(entry) && !(entry.reversalOfId && nonAccrualTargets.has(entry.reversalOfId)));
-  const accounts = await vatAccountIds(input.organizationId, ["477", "472"]);
-  const lines = relevant.length > 0 && accounts.size > 0
+  /** The entry that gives a journal entry its nature: itself, or the reversed target of a reversal. */
+  const natureOf = (entry: { sourceType: string; entryKind: string; reversalOfId: string | null }): { sourceType: string; entryKind: string } =>
+    (entry.reversalOfId && targets.get(entry.reversalOfId)) || entry;
+  const excluded = { liquidacion: 0, cierreApertura: 0, pmsSombra: 0, liquidacionSage: 0 };
+  const relevant: typeof entries = [];
+  for (const entry of entries) {
+    const nature = natureOf(entry);
+    if (nature.sourceType === "vat_settlement") excluded.liquidacion += 1;
+    else if (CARRY_OVER_ENTRY_KINDS.has(nature.entryKind)) excluded.cierreApertura += 1;
+    else if (nature.sourceType === PMS_SHADOW_REVENUE_SOURCE_TYPE) excluded.pmsSombra += 1;
+    else if (isNonAccrualVatEntry(nature)) excluded.liquidacion += 1;
+    else relevant.push(entry);
+  }
+  // Accrual accounts plus the settlement accounts: the latter only serve the Sage pattern, never the sums.
+  const accounts = await vatAccountIds(input.organizationId, ["477", "472", "4750", "4700"]);
+  const allLines = relevant.length > 0 && accounts.size > 0
     ? await prisma.journalLine.findMany({
         where: { journalEntryId: { in: relevant.map((entry) => entry.id) }, accountId: { in: Array.from(accounts.keys()) } },
-        select: { accountId: true, debit: true, credit: true, taxRateCode: true, description: true }
+        select: { journalEntryId: true, accountId: true, debit: true, credit: true, taxRateCode: true, description: true },
+        orderBy: [{ journalEntryId: "asc" }, { id: "asc" }],
+        take: LEDGER_CROSS_CHECK_MAX_LINES + 1
       })
     : [];
+  if (allLines.length > LEDGER_CROSS_CHECK_MAX_LINES) {
+    allLines.length = LEDGER_CROSS_CHECK_MAX_LINES;
+    avisos.push(`Los apuntes de IVA del periodo ${input.periodo.code} superan ${LEDGER_CROSS_CHECK_MAX_LINES}: el cotejo con el diario usa los primeros ${LEDGER_CROSS_CHECK_MAX_LINES} y no es concluyente; acota el periodo o el centro.`);
+  }
+  // Sage settlement pattern, decided per entry over its own lines.
+  const codesByEntry = new Map<string, string[]>();
+  for (const line of allLines) {
+    const bucket = codesByEntry.get(line.journalEntryId) ?? [];
+    bucket.push(accounts.get(line.accountId) ?? "");
+    codesByEntry.set(line.journalEntryId, bucket);
+  }
+  const sageSettlementIds = new Set<string>();
+  for (const entry of relevant) {
+    if (isSageSettlementPattern(natureOf(entry).sourceType, codesByEntry.get(entry.id) ?? [])) sageSettlementIds.add(entry.id);
+  }
+  excluded.liquidacionSage = sageSettlementIds.size;
+  const lines = allLines.filter((line) => !sageSettlementIds.has(line.journalEntryId) && isAccrualVatAccount(accounts.get(line.accountId) ?? ""));
   const repercutido = new Map<string, Money>();
   const soportado = new Map<string, Money>();
   let guessed = 0;
@@ -438,10 +536,70 @@ export async function ledgerCrossCheck(input: { organizationId: string; periodo:
     avisos.push(`Los libros de IVA y el diario difieren en ${diferencias.length} tipo(s) (ver fuentes.diario.diferencias): revisa los asientos antes de liquidar.`);
   }
   if (guessed > 0) avisos.push(`${guessed} apunte(s) de IVA heredados sin tipo (taxRateCode) — tipo deducido de la subcuenta o de la descripción solo para el cotejo.`);
+  avisos.push(...crossCheckExclusionAvisos(excluded));
   return {
     check: { apuntes: lines.length, cuotaRepercutida: toWire(cuotaRepercutida), cuotaSoportada: toWire(cuotaSoportada), diferencias, cuadra: diferencias.length === 0 },
     avisos
   };
+}
+
+/**
+ * Tanda L3-C / corrector L3 (DS-06): an original replaced by a rectificativa
+ * por sustitución («S») must carry its `<originalId>#sustituida` counter-rows
+ * in the books (the live writer materialises them; a rebuild derives them).
+ * Books rebuilt before L3-C lack them, so the replaced invoice would be
+ * counted in full while the ledger reversed it. Instead of only NAMING the
+ * gap, the missing counter-rows are DERIVED IN MEMORY for this computation
+ * (same `vatRowsFromInvoice` the rebuild uses, dated on the substitute's issue
+ * day, kept when they fall in the period) and the aviso says so — the live
+ * 303 no longer overstates the quota until `POST /fiscal/vat-books/rebuild`
+ * persists them. Nothing is written. Rows already present are never doubled.
+ */
+export async function supersededRowsInMemory(input: { organizationId: string; periodo: FiscalPeriodDto; rows: readonly VatBookRow[]; periodicity: VatSettingsDto["periodicity"] }): Promise<{ rows: VatBookRow[]; avisos: string[] }> {
+  const rectificationIds = Array.from(new Set(input.rows.filter((row) => row.book === "emitidas" && row.sourceType === "rectification").map((row) => row.sourceId)));
+  if (rectificationIds.length === 0) return { rows: [], avisos: [] };
+  const substitutes = await prisma.invoice.findMany({
+    where: { id: { in: rectificationIds }, rectificationType: "S", rectifyingForId: { not: null }, deletedAt: null },
+    select: { id: true, invoiceNumber: true, rectifyingForId: true, issuedAt: true }
+  });
+  if (substitutes.length === 0) return { rows: [], avisos: [] };
+  const present = new Set(input.rows.map((row) => row.sourceId));
+  const missing = substitutes.filter((substitute) => !present.has(supersededSourceId(substitute.rectifyingForId!)));
+  if (missing.length === 0) return { rows: [], avisos: [] };
+  const originalIds = missing.map((substitute) => substitute.rectifyingForId!);
+  const originals = await prisma.invoice.findMany({ where: { id: { in: originalIds }, deletedAt: null }, select: INVOICE_FOR_BOOKS_SELECT });
+  const lines = await prisma.invoiceLine.findMany({
+    where: { invoiceId: { in: originalIds } },
+    select: { invoiceId: true, total: true, taxRate: true, taxCode: true, taxCalificacion: true, taxFigure: true }
+  });
+  const linesByInvoice = new Map<string, InvoiceLineForBooks[]>();
+  for (const line of lines) {
+    const bucket = linesByInvoice.get(line.invoiceId) ?? [];
+    bucket.push(line);
+    linesByInvoice.set(line.invoiceId, bucket);
+  }
+  const forBooks = new Map<string, InvoiceForBooks>(originals.map((invoice) => [invoice.id, { ...invoice, lines: linesByInvoice.get(invoice.id) ?? [] }]));
+  const inRange = (day: string): boolean => day >= input.periodo.from && day <= input.periodo.to;
+  const rows: VatBookRow[] = [];
+  const avisos: string[] = [];
+  for (const substitute of missing) {
+    const originalId = substitute.rectifyingForId!;
+    const original = forBooks.get(originalId);
+    const originalLabel = original?.invoiceNumber ?? originalId;
+    if (!original || !substitute.issuedAt) {
+      avisos.push(`Factura ${originalLabel} sustituida por ${substitute.invoiceNumber ?? substitute.id} sin contrafilas #sustituida en el libro de emitidas y sin documento original legible: ejecuta POST /fiscal/vat-books/rebuild del periodo ${input.periodo.code}.`);
+      continue;
+    }
+    const derived = vatRowsFromInvoice({ invoice: original, organizationId: input.organizationId, periodicity: input.periodicity, kind: "superseded", supersededAt: substitute.issuedAt }).rows.filter((row) => inRange(row.date));
+    const quota = round2(derived.reduce((sum, row) => sum.plus(row.quota), ZERO));
+    rows.push(...derived);
+    avisos.push(
+      derived.length > 0
+        ? `Factura ${originalLabel} sustituida por ${substitute.invoiceNumber ?? substitute.id} sin contrafilas #sustituida en el libro de emitidas: ${derived.length} contrafila(s) derivadas en memoria para este cálculo (cuota ${quota.toFixed(2)} €); ejecuta POST /fiscal/vat-books/rebuild del periodo ${input.periodo.code} para persistirlas.`
+        : `Factura ${originalLabel} sustituida por ${substitute.invoiceNumber ?? substitute.id} sin contrafilas #sustituida en el libro de emitidas (fuera del periodo ${input.periodo.code}): ejecuta POST /fiscal/vat-books/rebuild del periodo de la sustitutiva.`
+    );
+  }
+  return { rows, avisos };
 }
 
 export async function existingSettlement(organizationId: string, periodCode: string): Promise<FiscalModelReport["fuentes"]["liquidacion"]> {
@@ -483,6 +641,10 @@ export async function modelo303ForPeriod(input: { organizationId: string; period
   const ivaRows = loaded.rows.filter((row) => row.taxFigure === "IVA");
   const otherFigures = loaded.rows.length - ivaRows.length;
   if (otherFigures > 0) avisos.push(`${otherFigures} fila(s) con IGIC/IPSI excluidas del Modelo 303.`);
+  // Corrector L3 (DS-06): counter the originals replaced by a rectificativa «S» whose #sustituida rows the book lacks.
+  const superseded = await supersededRowsInMemory({ organizationId: input.organizationId, periodo: input.periodo, rows: ivaRows, periodicity: input.settings.periodicity });
+  ivaRows.push(...superseded.rows.filter((row) => row.taxFigure === "IVA"));
+  avisos.push(...superseded.avisos);
   const compensacion = input.propertyId ? ZERO : await pendingVatCompensation(input.organizationId, input.periodo.from);
   const computation = compute303({ rows: ivaRows, settings: input.settings, compensacionPendiente: compensacion });
   avisos.push(...computation.avisos);

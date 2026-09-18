@@ -388,6 +388,30 @@ after(async () => {
   }
 });
 
+
+/**
+ * Corrector L3 (DS-06): el 303 en vivo contrarresta en memoria las originales sustituidas por una rectificativa «S»
+ * cuyas contrafilas `#sustituida` faltan en el libro (libros reconstruidos antes de L3-C). La sonda de Faranda
+ * espera por tanto Σ cuotas del libro del trimestre MENOS la cuota de esas originales (independiente del servicio:
+ * lee facturas y libro por Prisma). Solo lectura.
+ */
+async function missingSupersededQuota(organizationId: string, period: { from: string; to: string }): Promise<number> {
+  const propertyIds = (await prisma.property.findMany({ where: { organizationId }, select: { id: true } })).map((p) => p.id);
+  const substitutes = await prisma.invoice.findMany({
+    where: { propertyId: { in: propertyIds }, deletedAt: null, rectificationType: "S", rectifyingForId: { not: null }, issuedAt: { gte: new Date(`${period.from}T00:00:00.000Z`), lt: new Date(`${period.to}T00:00:00.000Z`) } },
+    select: { rectifyingForId: true }
+  });
+  let quota = 0;
+  for (const substitute of substitutes) {
+    const originalId = substitute.rectifyingForId!;
+    const present = await prisma.vatBookEntry.count({ where: { organizationId, sourceId: `${originalId}#sustituida` } });
+    if (present > 0) continue;
+    const original = await prisma.vatBookEntry.aggregate({ where: { organizationId, book: "emitidas", sourceId: originalId }, _sum: { quota: true } });
+    quota += Number(original._sum.quota ?? 0);
+  }
+  return Number(quota.toFixed(2));
+}
+
 describe("C1 · un 303 por sociedad que agrega centros (declarante = LegalEntity)", () => {
   it("las casillas del 303 de la sociedad son la suma exacta de las tres vistas parciales y el declarante es la sociedad", async () => {
     const total = await buildModelo303({ context: directora, period: "2026-Q2" });
@@ -804,8 +828,9 @@ describe("C9 · equivalencia (solo lectura): Faranda y org_123 tras L1-L5", () =
       assert.deepEqual([m390.totales.volumenOperaciones, m390.totales.resultadoLiquidaciones, m390.presentacion.noSePresenta], [805.76, 74.94, undefined]);
     } else {
       const emitidas = await prisma.vatBookEntry.aggregate({ where: { organizationId: FARANDA_ORG, book: "emitidas", period: "2026-Q3" }, _sum: { quota: true } });
+      const superseded = await missingSupersededQuota(FARANDA_ORG, { from: "2026-07-01", to: "2026-10-01" });
       assert.equal(report.fuentes.origen, "libros");
-      assert.equal(casilla(report, "27"), Number(Number(emitidas._sum.quota ?? 0).toFixed(2)), "27 = Σ cuotas de emitidas del trimestre en los libros");
+      assert.equal(casilla(report, "27"), Number((Number(emitidas._sum.quota ?? 0) - superseded).toFixed(2)), "27 = Σ cuotas de emitidas del trimestre en los libros − originales sustituidas sin contrafila (derivadas en memoria, corrector L3 · DS-06)");
       assert.equal(Number((casilla(report, "27") - casilla(report, "45")).toFixed(2)), casilla(report, "71"));
       assert.ok(m390.totales.volumenOperaciones > 805.76, "el 390 suma también las emitidas importadas de Sage");
       assert.equal(m390.presentacion.noSePresenta, undefined);

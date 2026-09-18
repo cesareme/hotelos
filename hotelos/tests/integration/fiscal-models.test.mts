@@ -354,7 +354,9 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
     assert.equal(derived.origen, "documentos");
     assert.equal(derived.rows.length, 6);
     assert.deepEqual(derived.rows.map((row) => row.sourceType).sort(), ["invoice", "invoice", "invoice", "invoice", "rectification", "simplified"]);
-    const cancellation = derived.rows.find((row) => row.sourceId.endsWith(":anulacion"))!;
+    // Tanda L3-C: ONE cancellation convention (`#anulacion`), the same the live writer uses; `:anulacion` is legacy and purged by the rebuild.
+    const cancellation = derived.rows.find((row) => row.sourceId.endsWith("#anulacion"))!;
+    assert.equal(derived.rows.some((row) => row.sourceId.endsWith(":anulacion")), false);
     assert.deepEqual([cancellation.date, cancellation.base, cancellation.quota, cancellation.rate], ["2026-05-22", -100, -21, 21]);
     assert.equal(derived.resumen.cuota, 309.2);
 

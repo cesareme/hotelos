@@ -36,9 +36,25 @@ import {
   PREFLIGHT_TEXTS as T,
   arrivalTimeHint,
   blockingMessage as composeBlockingMessage,
+  countNoun,
   expectedArrivalHint,
-  expectedDepartureHint
+  expectedDepartureHint,
+  formatEur
 } from "./night-audit-preflight.texts.js";
+
+/**
+ * Tanda L3 (lote B): reservation statuses whose stay is over — a folio of a
+ * cancelled / no-show reservation that still carries a balance (penalty not
+ * collected yet, historical fixture) does NOT block the close: nothing of that
+ * stay moves tonight. Reported apart as a warning (see settledStayFoliosHint).
+ */
+const SETTLED_STAY_STATUSES: ReadonlySet<string> = new Set(["cancelled", "no_show"]);
+
+/** Sentence appended to the open-folios detail for the non-blocking folios of cancelled / no-show reservations («» when none). Pure. */
+export function settledStayFoliosHint(count: number, owed: number): string {
+  if (count <= 0) return "";
+  return ` Además, ${countNoun(count, "folio", "folios")} de reservas canceladas o no presentadas ${count === 1 ? "conserva" : "conservan"} ${formatEur(owed)} sin cobrar: no ${count === 1 ? "bloquea" : "bloquean"} el cierre.`;
+}
 
 export type PreflightStatus = "ok" | "warning" | "blocker";
 
@@ -161,20 +177,29 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   };
 
   // ---- 3) Folios abiertos con saldo -----------------------------------
+  // Tanda L3 (lote B): only the folios of LIVE reservations block; those of
+  // cancelled / no-show reservations with a balance are counted apart in the
+  // detail as a warning (count and items stay the blocking ones).
   const openFolios = await prisma.folio.findMany({
-    where: { reservation: { propertyId }, status: "open" },
-    select: { id: true, reservationId: true }
+    where: { reservation: { propertyId }, status: "open", deletedAt: null },
+    select: { id: true, reservationId: true, reservation: { select: { status: true } } }
   });
   const reservationIds = Array.from(new Set(openFolios.map((f) => f.reservationId)));
   const balances = await computeBalancesForReservations(reservationIds);
-  const foliosWithBalance = openFolios.filter((f) => (balances.get(f.reservationId) ?? 0) > 0.01);
-  const totalOwed = foliosWithBalance.reduce((s, f) => s + (balances.get(f.reservationId) ?? 0), 0);
+  const owedOf = (f: { reservationId: string }): number => balances.get(f.reservationId) ?? 0;
+  const anyWithBalance = openFolios.filter((f) => owedOf(f) > 0.01);
+  const foliosWithBalance = anyWithBalance.filter((f) => !SETTLED_STAY_STATUSES.has(f.reservation.status));
+  const settledStayFolios = anyWithBalance.filter((f) => SETTLED_STAY_STATUSES.has(f.reservation.status));
+  const totalOwed = foliosWithBalance.reduce((s, f) => s + owedOf(f), 0);
+  const settledOwed = settledStayFolios.reduce((s, f) => s + owedOf(f), 0);
   const checkFolios: PreflightCheck = {
     id: "open_folios_with_balance",
     title: T.open_folios_with_balance.title,
-    status: foliosWithBalance.length === 0 ? "ok" : "blocker",
+    status: foliosWithBalance.length > 0 ? "blocker" : settledStayFolios.length > 0 ? "warning" : "ok",
     count: foliosWithBalance.length,
-    detail: foliosWithBalance.length === 0 ? T.open_folios_with_balance.ok : T.open_folios_with_balance.some(foliosWithBalance.length, totalOwed),
+    detail:
+      (foliosWithBalance.length === 0 ? T.open_folios_with_balance.ok : T.open_folios_with_balance.some(foliosWithBalance.length, totalOwed)) +
+      settledStayFoliosHint(settledStayFolios.length, settledOwed),
     items: await namesForReservations(foliosWithBalance.slice(0, 5).map((f) => f.reservationId)).then((names) =>
       foliosWithBalance.slice(0, 5).map((f) => ({
         ref: f.reservationId,

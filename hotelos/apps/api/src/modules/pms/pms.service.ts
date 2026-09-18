@@ -30,6 +30,9 @@ import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
 import { consumeSupervisorAuthorization } from "../rbac/supervisor.service.js";
 import { getThresholds } from "../rbac/thresholds.service.js";
 import { canAssignRoom, type RoomAssignmentInput, type RoomAssignmentValidation } from "./inventory.engine.js";
+// Tanda L3 (lote A): canonical stay quote and price decision. room-charge
+// imports only @hotelos/database / @prisma/client → no cycle with this module.
+import { decideReservationPrice, quoteReservationTotal, quotedRatePlanIdOf, type ReservationPriceSource, type ReservationTotalQuote } from "./room-charge.service.js";
 
 type ReservationRow = NonNullable<Awaited<ReturnType<typeof prisma.reservation.findUnique>>>;
 type RoomRow = NonNullable<Awaited<ReturnType<typeof prisma.room.findUnique>>>;
@@ -267,7 +270,15 @@ function mapGuest(row: NonNullable<Awaited<ReturnType<typeof prisma.guest.findUn
   };
 }
 
-function mapReservation(row: NonNullable<Awaited<ReturnType<typeof prisma.reservation.findUnique>>> & { primaryGuestId?: string | null }): ReservationRecord {
+/**
+ * Tanda L3 (lote A): origin of `totalAmount` as persisted in
+ * `reservations.price_source` (room-charge.decideReservationPrice values plus
+ * the importer's `quoted`, T7 `totalSource quoted`). Legacy rows carry none.
+ */
+export type ReservationPersistedPriceSource = ReservationPriceSource | "quoted";
+export type ReservationRecordWithPricing = ReservationRecord & { priceSource?: ReservationPersistedPriceSource };
+
+function mapReservation(row: NonNullable<Awaited<ReturnType<typeof prisma.reservation.findUnique>>> & { primaryGuestId?: string | null }): ReservationRecordWithPricing {
   return {
     id: row.id,
     propertyId: row.propertyId,
@@ -303,6 +314,7 @@ function mapReservation(row: NonNullable<Awaited<ReturnType<typeof prisma.reserv
     specialRequests: row.specialRequests ?? undefined,
     notes: row.notes ?? undefined,
     totalAmount: dec(row.totalAmount),
+    priceSource: (row.priceSource as ReservationPersistedPriceSource | null) ?? undefined,
     currency: row.currency,
     primaryGuestId: row.primaryGuestId ?? undefined,
     // REC-01a: parity columns accepted by UpdateReservationSchema must round-trip.
@@ -712,29 +724,83 @@ export async function assertOverbookingAuthorized(
   return { mode: "override_key", supervisorAuthorizationId: null, authorizerUserId: null };
 }
 
-/** Published quote of the stay for the discount gate: lowest published price per night × rooms; null without a published rate. */
-async function quotedTotalForStay(input: { propertyId: string; arrivalDate: string; departureDate: string; roomTypeId: string | null | undefined; ratePlanId?: string | null; roomsCount: number }): Promise<number | null> {
+/**
+ * Canonical stay quote (Tanda L3 · lote A, decisión §6.1) shared by the price of
+ * a reservation created without `totalAmount` and by the T8a discount gate:
+ * room-charge.service.quoteReservationTotal — plan of the reservation → active
+ * BAR plan → lowest published price, never a filler — for ONE room. Null
+ * without a room type or with malformed dates. A type / plan of another
+ * property simply finds no grid cell here (`priceSource: "none"`); the
+ * reservation writers keep answering their own 400 for the foreign id.
+ */
+async function quoteStayFromGrid(input: { propertyId: string; arrivalDate: string; departureDate: string; roomTypeId: string | null | undefined; ratePlanId?: string | null }): Promise<ReservationTotalQuote | null> {
   if (!input.roomTypeId) return null;
-  let items: AvailabilityQuoteItem[];
-  try {
-    items = await quoteAvailability({
-      propertyId: input.propertyId,
-      arrivalDate: input.arrivalDate,
-      departureDate: input.departureDate,
-      // Occupancy is irrelevant for the published price: quote the type itself.
-      adults: 1,
-      roomTypeId: input.roomTypeId,
-      ...(input.ratePlanId ? { ratePlanId: input.ratePlanId } : {})
-    });
-  } catch (error) {
-    // A type / plan that is not of this property has no published rate here;
-    // the reservation writers keep answering their own 400 for the foreign id.
-    if (error instanceof NotFoundError || error instanceof BadRequestError) return null;
-    throw error;
+  if (!isIsoDateString(input.arrivalDate) || !isIsoDateString(input.departureDate) || input.arrivalDate >= input.departureDate) return null;
+  return quoteReservationTotal({ propertyId: input.propertyId, roomTypeId: input.roomTypeId, ratePlanId: input.ratePlanId ?? null, arrivalDate: input.arrivalDate, departureDate: input.departureDate });
+}
+
+/** Published total of the stay for the discount gate: canonical quote × rooms; null unless EVERY night has a published rate (gate `skipped: "no_published_rate"`). Pure. */
+function publishedTotalOf(quote: ReservationTotalQuote | null, roomsCount: number): number | null {
+  if (!quote || quote.priceSource !== "rate_plan") return null;
+  return pct2(Number(quote.total) * Math.max(1, roomsCount));
+}
+
+/** Published quote of the stay for the discount gate (create / PATCH): canonical quote × rooms; null without a published rate. */
+async function quotedTotalForStay(input: { propertyId: string; arrivalDate: string; departureDate: string; roomTypeId: string | null | undefined; ratePlanId?: string | null; roomsCount: number }): Promise<number | null> {
+  return publishedTotalOf(await quoteStayFromGrid(input), input.roomsCount);
+}
+
+/** Pricing block of the creation response (`pricing`) and of the RESERVATION_CREATED audit. */
+export type ReservationPricing = {
+  source: ReservationPersistedPriceSource;
+  nights: number;
+  nightsWithoutRate: number;
+  /** Plan that priced the first quoted night; differs from the requested plan when that plan publishes nothing and BAR priced it (riesgo 16). */
+  ratePlanId: string | null;
+  /** Spanish warning for the client (0 € stay, plan jump); null when the price is clean. */
+  warning: string | null;
+};
+
+export type ReservationCreated = ReservationRecordWithPricing & { pricing: ReservationPricing };
+
+/** Spanish warning of a creation price. Pure. */
+export function reservationPricingWarning(input: { priceSource: ReservationPersistedPriceSource; nights: number; nightsWithoutRate: number; requestedRatePlanId: string | null; quotedRatePlanId: string | null }): string | null {
+  if (input.priceSource === "none") return "Sin tarifa publicada para estas fechas: la reserva queda a 0 € hasta que se fije el importe.";
+  if (input.priceSource === "partial") {
+    return `La tarifa no publica precio para ${input.nightsWithoutRate} de ${input.nights} noches: la reserva queda a 0 € hasta que se fije el importe.`;
   }
-  const item = items.find((candidate) => candidate.roomTypeId === input.roomTypeId);
-  if (!item || item.priceSource !== "rate_plan") return null;
-  return pct2(item.totalAmount * Math.max(1, input.roomsCount));
+  if (input.priceSource === "rate_plan" && input.requestedRatePlanId && input.quotedRatePlanId && input.quotedRatePlanId !== input.requestedRatePlanId) {
+    return "El plan tarifario elegido no publica precio para estas noches: se ha cotizado con otro plan de la propiedad. Revisa la tarifa.";
+  }
+  return null;
+}
+
+/** Cancellation policy stamped on a new reservation and how it was resolved (audit). */
+export type StampedCancellationPolicy = { id: string | null; code: string | null; source: "code" | "rate_plan" | "property_default" | "none" };
+
+/**
+ * Tanda L3 (lote A): policy of a NEW reservation, resolved inside the creation
+ * transaction — the code sent by the caller when it names an ACTIVE policy of
+ * the property → `RatePlan.cancellationPolicyId` of the plan → the property's
+ * active default (`cancellation_policies.is_default`, lote S) → none (an
+ * unknown code is kept as sent, informational, without id, as before this lote).
+ * Direct Prisma reads on purpose: no coupling with cancellation-policy.service (lote B).
+ */
+async function resolveCreationPolicy(tx: Prisma.TransactionClient, input: { propertyId: string; requestedCode: string | null; ratePlanId: string | null }): Promise<StampedCancellationPolicy> {
+  if (input.requestedCode) {
+    const byCode = await tx.cancellationPolicy.findFirst({ where: { propertyId: input.propertyId, code: input.requestedCode, active: true }, select: { id: true, code: true } });
+    if (byCode) return { id: byCode.id, code: byCode.code, source: "code" };
+  }
+  if (input.ratePlanId) {
+    const plan = await tx.ratePlan.findUnique({ where: { id: input.ratePlanId }, select: { cancellationPolicyId: true } });
+    if (plan?.cancellationPolicyId) {
+      const ofPlan = await tx.cancellationPolicy.findFirst({ where: { id: plan.cancellationPolicyId, propertyId: input.propertyId, active: true }, select: { id: true, code: true } });
+      if (ofPlan) return { id: ofPlan.id, code: ofPlan.code, source: "rate_plan" };
+    }
+  }
+  const fallback = await tx.cancellationPolicy.findFirst({ where: { propertyId: input.propertyId, active: true, isDefault: true }, orderBy: [{ code: "asc" }], select: { id: true, code: true } });
+  if (fallback) return { id: fallback.id, code: fallback.code, source: "property_default" };
+  return { id: null, code: input.requestedCode, source: "none" };
 }
 
 function isImportFlow(bookingSource: string | null | undefined): boolean {
@@ -823,8 +889,15 @@ export async function createReservation(input: {
   discountReasonCode?: string;
   supervisorAuthorizationId?: string | null;
   rbac?: RbacDeps;
+  /**
+   * Tanda L3 (lote A): explicit origin of `totalAmount` for callers that already
+   * know it (the T7 importer may pass `quoted` / `file` in the future). Omitted
+   * → decided here: sent total → `manual` (`file` in the import flow); no total
+   * → canonical quote (`rate_plan`) or 0 € with `partial` / `none` (§6.2).
+   */
+  priceSource?: ReservationPersistedPriceSource;
   correlationId: string;
-}): Promise<ReservationRecord> {
+}): Promise<ReservationCreated> {
   requirePermissions(input.context, ["pms.reservation.create"]);
 
   if (input.arrivalDate >= input.departureDate) {
@@ -841,9 +914,26 @@ export async function createReservation(input: {
   const overbookingAuthorization = input.allowOverbooking
     ? await assertOverbookingAuthorized({ context: input.context, ...createEntity, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null, importFlow }, rbac)
     : null;
-  const quotedTotal = importFlow || input.totalAmount === undefined
+  // Tanda L3 (lote A): ONE canonical quote (room-charge.quoteReservationTotal)
+  // feeds both the price of a reservation created without `totalAmount` and
+  // the discount gate of a negotiated one (same figure on both sides). The
+  // import flow never quotes here (T7 annotateTotals already did; its totals
+  // land as `file`). Without a published rate the stay is created at 0 € with
+  // `priceSource none | partial` and a warning (§6.2, like T7 TOTAL_NOT_QUOTED).
+  const roomsCount = input.roomsCount ?? 1;
+  const stayQuote = importFlow
     ? null
-    : await quotedTotalForStay({ propertyId: input.propertyId, arrivalDate: input.arrivalDate, departureDate: input.departureDate, roomTypeId: input.roomTypeId, ratePlanId: input.ratePlanId ?? null, roomsCount: input.roomsCount ?? 1 });
+    : await quoteStayFromGrid({ propertyId: input.propertyId, arrivalDate: input.arrivalDate, departureDate: input.departureDate, roomTypeId: input.roomTypeId, ratePlanId: input.ratePlanId ?? null });
+  const quotedTotal = input.totalAmount === undefined ? null : publishedTotalOf(stayQuote, roomsCount);
+  const price = decideReservationPrice({ requestedTotal: input.totalAmount, quote: stayQuote, roomsCount, importFlow });
+  const priceSource: ReservationPersistedPriceSource = input.priceSource ?? price.priceSource;
+  const pricing: ReservationPricing = {
+    source: priceSource,
+    nights: stayQuote?.nights ?? nightsBetween(input.arrivalDate, input.departureDate),
+    nightsWithoutRate: stayQuote?.nightsWithoutRate ?? 0,
+    ratePlanId: price.quotedRatePlanId,
+    warning: reservationPricingWarning({ priceSource, nights: stayQuote?.nights ?? 0, nightsWithoutRate: stayQuote?.nightsWithoutRate ?? 0, requestedRatePlanId: input.ratePlanId ?? null, quotedRatePlanId: price.quotedRatePlanId })
+  };
   const discount = await assertReservationDiscountAuthorized(
     { context: input.context, propertyId: input.propertyId, ...createEntity, quotedTotal, requestedTotal: input.totalAmount, discountReasonCode: input.discountReasonCode ?? null, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null, importFlow },
     rbac
@@ -1024,6 +1114,11 @@ export async function createReservation(input: {
 
     const code = await allocateReservationCode(tx, input.propertyId);
 
+    // Tanda L3 (lote A): the cancellation policy is stamped at birth (id + code)
+    // so the cancel / no-show penalty (lote B) never depends on «the first active
+    // policy by code».
+    const policy = await resolveCreationPolicy(tx, { propertyId: input.propertyId, requestedCode: input.cancellationPolicyCode ?? null, ratePlanId: input.ratePlanId ?? null });
+
     const created = await tx.reservation.create({
       data: {
         propertyId: input.propertyId,
@@ -1049,7 +1144,8 @@ export async function createReservation(input: {
         purposeOfStay: input.purposeOfStay ?? null,
         guaranteeType: input.guaranteeType ?? null,
         depositAmount: input.depositAmount ?? null,
-        cancellationPolicyCode: input.cancellationPolicyCode ?? null,
+        cancellationPolicyCode: policy.code,
+        cancellationPolicyId: policy.id,
         billingInstruction: input.billingInstruction ?? null,
         companyName: input.companyName ?? null,
         travelAgentName: input.travelAgentName ?? null,
@@ -1059,7 +1155,8 @@ export async function createReservation(input: {
         bookerEmail: input.bookerEmail ?? null,
         specialRequests: input.specialRequests ?? null,
         notes: input.notes ?? null,
-        totalAmount: input.totalAmount ?? 0,
+        totalAmount: price.totalAmount,
+        priceSource,
         currency: input.currency ?? "EUR",
         bookingSource: input.bookingSource ?? null,
         internalNotes: input.internalNotes ?? null,
@@ -1104,7 +1201,7 @@ export async function createReservation(input: {
       });
     }
 
-    return Object.assign(created, { primaryGuestId: guestId, overbooking });
+    return Object.assign(created, { primaryGuestId: guestId, overbooking, policy });
   }));
 
   const mapped = mapReservation(reservation);
@@ -1141,7 +1238,10 @@ export async function createReservation(input: {
       ...(reservation.overbooking ? { overbooking: reservation.overbooking } : {}),
       ...(overbookingAuthorization ? { overbookingAuthorization } : {}),
       ...(input.historical ? { historical: true } : {}),
-      discount
+      discount,
+      // Tanda L3 (lote A): where the price came from and which policy was stamped.
+      pricing,
+      cancellationPolicy: { requestedCode: input.cancellationPolicyCode ?? null, ...reservation.policy }
     },
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
@@ -1159,7 +1259,7 @@ export async function createReservation(input: {
     correlationId: input.correlationId
   });
 
-  return mapped;
+  return { ...mapped, pricing };
 }
 
 type ReservationPatchFields = Omit<UpdateReservationInput, "assignedRoomId" | "roomId" | "masterFolioId" | "status">;
@@ -1211,7 +1311,8 @@ const RESERVATION_PATCH_MAPPERS: ReservationPatchMappers = {
   accessibilityNeeds: (v) => ({ accessibilityNeeds: v }),
   dietaryRequirements: (v) => ({ dietaryRequirements: v }),
   vipFlag: (v) => ({ vipFlag: v }),
-  totalAmount: (v) => ({ totalAmount: v }),
+  // Tanda L3 (lote A): a total edited by hand is a manual price (price_source).
+  totalAmount: (v) => ({ totalAmount: v, priceSource: "manual" }),
   currency: (v) => ({ currency: v })
 };
 
@@ -2463,6 +2564,9 @@ export async function checkOutReservation(input: CheckOutReservationInput): Prom
   return (await checkOutReservationDetailed(input)).reservation;
 }
 
+/** Statuses a reservation can leave towards cancelled / no_show (everything else is a 409 RESERVATION_NOT_ACTIVE). */
+export const TRANSITION_SOURCE_STATUSES: readonly ReservationStatus[] = Object.freeze(["draft", "confirmed"]);
+
 export async function transitionReservation(input: {
   context: UserContext;
   reservationId: string;
@@ -2476,15 +2580,33 @@ export async function transitionReservation(input: {
   if (!reservation) {
     throw new NotFoundError("Reserva no encontrada.");
   }
-  if (["checked_in", "checked_out"].includes(reservation.status)) {
-    throw new ConflictError(`La reserva ${reservation.code} no se puede pasar a ${input.status} estando ${reservation.status}.`);
+  // Corrector L3 (DS-01 / FC-1): only a LIVE reservation transitions to
+  // cancelled / no_show. cancelled → cancelled, cancelled → no_show and the
+  // in-house statuses are a 409 (RESERVATION_NOT_ACTIVE) — a repeated call
+  // never re-runs the cancellation side effects (SES baja, penalty).
+  if (!TRANSITION_SOURCE_STATUSES.includes(reservation.status)) {
+    throw new ConflictError(`La reserva ${reservation.code} no se puede pasar a ${input.status} estando ${reservation.status}.`, {
+      code: "RESERVATION_NOT_ACTIVE",
+      status: reservation.status
+    });
   }
 
   const before = await withPrimaryGuestId(reservation);
-  const updated = await prisma.reservation.update({
-    where: { id: reservation.id },
+  // Conditional write: two concurrent calls both read `confirmed`; only the
+  // first one flips the row, the second sees 0 rows and answers the same 409
+  // (DS-07: the transition is atomic on the live status).
+  const flipped = await prisma.reservation.updateMany({
+    where: { id: reservation.id, status: { in: [...TRANSITION_SOURCE_STATUSES] } },
     data: { status: input.status }
   });
+  if (flipped.count !== 1) {
+    const now = await prisma.reservation.findUnique({ where: { id: reservation.id }, select: { status: true } });
+    throw new ConflictError(`La reserva ${reservation.code} cambió de estado mientras se procesaba (${now?.status ?? "desconocido"}): vuelve a cargarla.`, {
+      code: "RESERVATION_NOT_ACTIVE",
+      status: now?.status ?? null
+    });
+  }
+  const updated = await prisma.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
   const after = await withPrimaryGuestId(updated);
   mirrorReservation(after);
 
@@ -2546,6 +2668,15 @@ export async function transitionReservation(input: {
 // FALLBACK_NIGHTLY_RATE and the item is flagged `priceSource: "fallback"` with
 // `nightsWithoutRate` / `fallbackNightly` so clients can warn instead of
 // presenting an invented price as a published rate.
+//
+// Corrector L3 (FUX-02, risk 1 of the recon): the price of each night comes
+// from the SAME canonical quoter that fixes `Reservation.totalAmount` on
+// creation (room-charge.quoteReservationTotal: plan of the request → active
+// BAR plan → lowest published price), so the estimate the form shows is the
+// figure the API persists. A plan without cells (BAR-NR / BAR-BB of RA) is
+// priced from BAR and the item says so (`quotedRatePlanId` ≠ the requested
+// plan, `ratePlanSwitched: true`); the filler only completes nights NOTHING
+// prices — exactly the nights the creation leaves at 0 € with a warning.
 const FALLBACK_NIGHTLY_RATE = 136;
 
 export type AvailabilityQuoteItem = {
@@ -2556,6 +2687,10 @@ export type AvailabilityQuoteItem = {
   totalAmount: number;
   /** "rate_plan": every night priced from RateDay; "fallback": at least one night used FALLBACK_NIGHTLY_RATE. */
   priceSource: "rate_plan" | "fallback";
+  /** Plan that priced the first priced night (BAR when the requested plan publishes nothing); null when no night has a price. */
+  quotedRatePlanId: string | null;
+  /** True when a plan was requested and the price came from another one (BAR / lowest published): the creation prices the same way. */
+  ratePlanSwitched: boolean;
   nights: number;
   nightsWithoutRate: number;
   /** The per-night fallback actually applied, null when every night had a published rate. */
@@ -2636,44 +2771,24 @@ export async function quoteAvailability(input: {
       const bookedRooms = overlapping._sum.roomsCount ?? 0;
       const available = Math.max(0, totalRooms - bookedRooms);
 
-      // PRICING: read the real rate grid (RateDay) for this room type over the
-      // stay. Per night we take the lowest published price across rate plans.
-      // Nights without a published rate use FALLBACK_NIGHTLY_RATE and are
-      // reported explicitly (priceSource / nightsWithoutRate).
-      const nights = nightsBetween(input.arrivalDate, input.departureDate);
-      const rateDays = await prisma.rateDay.findMany({
-        where: {
-          propertyId: input.propertyId,
-          roomTypeId: roomType.id,
-          date: { gte: arrival, lt: departure },
-          ...(input.ratePlanId ? { ratePlanId: input.ratePlanId } : {})
-        },
-        select: { date: true, price: true, currency: true }
-      });
-      const minPriceByDate = new Map<string, number>();
-      let currency = "EUR";
-      for (const rd of rateDays) {
-        const key = rd.date.toISOString().slice(0, 10);
-        const price = dec(rd.price);
-        if (!minPriceByDate.has(key) || price < (minPriceByDate.get(key) as number)) minPriceByDate.set(key, price);
-        currency = rd.currency || currency;
-      }
-      let totalAmount = 0;
-      let nightsWithoutRate = 0;
-      for (let i = 0; i < nights; i++) {
-        const d = new Date(arrival.getTime() + i * 86_400_000).toISOString().slice(0, 10);
-        const published = minPriceByDate.get(d);
-        if (published === undefined) nightsWithoutRate += 1;
-        totalAmount += published ?? FALLBACK_NIGHTLY_RATE;
-      }
+      // PRICING (corrector L3 · FUX-02): the canonical stay quote of ONE room
+      // (plan → BAR → lowest published), night by night; nights nothing prices
+      // use FALLBACK_NIGHTLY_RATE and are reported explicitly.
+      const quote = await quoteReservationTotal({ propertyId: input.propertyId, roomTypeId: roomType.id, ratePlanId: input.ratePlanId ?? null, arrivalDate: input.arrivalDate, departureDate: input.departureDate });
+      const nights = quote.nights;
+      const nightsWithoutRate = quote.nightsWithoutRate;
+      const totalAmount = Number(quote.total) + nightsWithoutRate * FALLBACK_NIGHTLY_RATE;
+      const quotedRatePlanId = quotedRatePlanIdOf(quote);
 
       return {
         roomTypeId: roomType.id,
         roomTypeName: roomType.name,
         availableRooms: available,
-        currency,
+        currency: quote.currency,
         totalAmount: Math.round(totalAmount * 100) / 100,
         priceSource: nightsWithoutRate > 0 ? "fallback" : "rate_plan",
+        quotedRatePlanId,
+        ratePlanSwitched: Boolean(input.ratePlanId && quotedRatePlanId && quotedRatePlanId !== input.ratePlanId),
         nights,
         nightsWithoutRate,
         fallbackNightly: nightsWithoutRate > 0 ? FALLBACK_NIGHTLY_RATE : null,

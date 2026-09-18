@@ -12,8 +12,14 @@
 //   · postNightlyRoomChargeTx: the FolioLine of that night on the caller's
 //     transaction (type "room", taxCategory "accommodation", Spanish
 //     description, idempotent per folio + business day + reservation code).
-//   · quoteReservationTotal: the stay total for reservation creation (handoff:
-//     pms.service.createReservation still writes `totalAmount ?? 0`).
+//   · quoteReservationTotal: the CANONICAL stay quote (Tanda L3 · lote A,
+//     decisión §6.1): plan of the reservation → active BAR plan → lowest
+//     published price, NEVER a filler. pms.service.createReservation prices a
+//     reservation with it when the caller sends no `totalAmount`, and the T8a
+//     discount gate measures a negotiated price against the SAME quote; the
+//     mass import (T7 `annotateTotals`) and the night audit read it too.
+//   · decideReservationPrice: pure decision of what `Reservation.totalAmount`
+//     and `price_source` become from (requested total, quote, rooms, flow).
 // Money is Prisma.Decimal; the wire shapes carry decimal strings.
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
@@ -258,4 +264,69 @@ export async function quoteReservationTotal(input: {
     priceSource: nightsWithoutRate === 0 ? "rate_plan" : nightsWithoutRate === nights ? "none" : "partial",
     nightly
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reservation price decision (Tanda L3 · lote A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Origin of `Reservation.totalAmount` (column `reservations.price_source`,
+ * migration 20260918150000_dinero_fiscal):
+ *   manual    — total sent by the caller (typed / negotiated; the T8a discount
+ *               gate has already measured it against the quote);
+ *   rate_plan — quoted from the grid, every night priced;
+ *   partial   — the grid priced only some nights → total left at 0 (§6.2: no
+ *               invented price; the caller warns);
+ *   none      — no night priced → 0;
+ *   file      — total read from an import file / PMS feed (import flow).
+ * The importer may pass its own `quoted` (T7 `totalSource quoted`) through
+ * `createReservation({ priceSource })`; this helper never produces it.
+ */
+export type ReservationPriceSource = "manual" | "rate_plan" | "partial" | "none" | "file";
+
+export type ReservationPriceDecision = {
+  /** Two-decimal number, ≥ 0. */
+  totalAmount: number;
+  priceSource: ReservationPriceSource;
+  /** Plan that priced the first quoted night (null when nothing priced) — differs from the requested plan when BAR / lowest stepped in. */
+  quotedRatePlanId: string | null;
+};
+
+/** Plan that priced the first night with a price (rate_plan / lowest_published), null when no night has one. Pure. */
+export function quotedRatePlanIdOf(quote: ReservationTotalQuote | null): string | null {
+  if (!quote) return null;
+  const priced = quote.nightly.find((night) => night.price !== null);
+  return priced?.ratePlanId ?? null;
+}
+
+/**
+ * What a new reservation costs and where the figure comes from. Pure:
+ *   · a requested total wins (rounded to the cent): `manual`, or `file` in the
+ *     import flow (the PMS/file figure is not a decision of the actor);
+ *   · otherwise a fully priced quote → `Number(quote.total) × roomsCount`
+ *     (quote.total is the stay of ONE room), rounded half-up to 2 decimals,
+ *     `rate_plan`;
+ *   · a partial / empty quote (or no quote at all) → 0 with that source, so the
+ *     caller can warn instead of persisting an invented price (§6.2, coherent
+ *     with T7 `TOTAL_NOT_QUOTED`).
+ */
+export function decideReservationPrice(input: {
+  requestedTotal?: number;
+  quote: ReservationTotalQuote | null;
+  roomsCount: number;
+  importFlow: boolean;
+}): ReservationPriceDecision {
+  const quotedRatePlanId = quotedRatePlanIdOf(input.quote);
+  const rooms = Number.isInteger(input.roomsCount) && input.roomsCount >= 1 ? input.roomsCount : 1;
+  if (input.requestedTotal !== undefined) {
+    if (!Number.isFinite(input.requestedTotal) || input.requestedTotal < 0) throw new Error(`Importe de reserva no válido: ${String(input.requestedTotal)}`);
+    const total = new Decimal(input.requestedTotal).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber();
+    return { totalAmount: total, priceSource: input.importFlow ? "file" : "manual", quotedRatePlanId };
+  }
+  if (input.quote && input.quote.priceSource === "rate_plan") {
+    const total = new Decimal(input.quote.total).mul(rooms).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber();
+    return { totalAmount: total, priceSource: "rate_plan", quotedRatePlanId };
+  }
+  return { totalAmount: 0, priceSource: input.quote ? input.quote.priceSource : "none", quotedRatePlanId };
 }

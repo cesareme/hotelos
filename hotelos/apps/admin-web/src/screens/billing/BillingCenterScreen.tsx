@@ -17,8 +17,20 @@
 // with kind / refundedAmount), GET /properties/:id/invoices (enveloped, with
 // `summary`), GET /properties/:id/invoice-branding and GET /backoffice/properties/:id/taxes.
 // Hosted inside FacturacionTabs the container paints the head.
+//
+// Tanda L3 · lote F1 (2026-09-18, decisiones §6.13 / §6.14):
+//   · the reservation picker is a search: free text (code, holder, primary
+//     guest) → GET /properties/:id/reservations?q=…&limit=25&sort=arrival_desc
+//     and «Más resultados» walks `nextCursor` (helpers in ./billingSearch.ts);
+//   · «Registrar pago» is the visible label of the same PaymentDialog
+//     (POST /folios/:id/payments, payment.capture);
+//   · «Añadir cargo» lives here too: POST /folios/:id/lines with the type of
+//     `MANUAL_CHARGE_TYPES` and an explicit `taxCategory` (folio.charge.post);
+//   · Anular resends with `supervisorAuthorizationId` after a 409
+//     APPROVAL_REQUIRED / RBAC_SOD_CONFLICT (SupervisorPinDialog, key
+//     invoice.cancel_approve) — the separation of duties stays in the API.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelInvoice,
   createInvoiceDraft,
@@ -30,9 +42,11 @@ import {
   getInvoicePdf,
   issueInvoice,
   markInvoicePaid,
+  postFolioLine,
   saveInvoiceBranding,
   sendInvoiceEmail,
   type AdminReservation,
+  type CancelInvoiceOptions,
   type CreateInvoiceDraftLine,
   type FolioBalance,
   type InvoiceDraft,
@@ -41,10 +55,13 @@ import {
   type InvoiceListSummary,
   type InvoiceTaxBreakdownGroup
 } from "../../services/pmsCommerceApi";
-import type { InvoiceCancellationPayments, PaymentMethodCode } from "@hotelos/shared";
+import type { InvoiceCancellationPayments, PaymentMethodCode, SupervisorAuthorizationDto } from "@hotelos/shared";
 import { ApiError } from "../../services/api-client";
-import { financeErrorMessage } from "../../services/finance-contracts";
+import { financeErrorCode, financeErrorMessage } from "../../services/finance-contracts";
 import { TAX_CATEGORY_LABELS, TAX_CATEGORY_OPTIONS, buildTaxCodeClient, fetchPropertyTaxes, isSuspiciousTaxLine, rateForCategory, type PropertyTaxProfile, type TaxCategory } from "../../services/taxesApi";
+import { chargeTypeLabel, defaultTaxCategoryForType, manualChargeTypeOptions, taxCategoryOptionsForType } from "../../components/billing/charge-types";
+import { SupervisorPinDialog } from "../../components/SupervisorPinDialog";
+import { buildReservationSearchQuery, mergeReservationPages, pickSearchSelection, reservationResultLabel, searchResultsSummary } from "./billingSearch";
 import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
 import { verifactuExclusionText } from "../../services/finance-contracts";
 import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
@@ -107,8 +124,29 @@ const TAB_DEFS: Array<{ key: InvoiceTab; label: string }> = [
 // Rows per page for the invoice listing (API caps at 500); «Cargar más» walks
 // the cursor. The enveloped response also carries the aggregate `summary`.
 const INVOICE_PAGE_SIZE = 200;
-// Reservations shown in the folio selector (most recent arrivals first).
-const RESERVATION_PAGE_SIZE = 200;
+// The reservation picker searches the API (25 rows per page, cursor for the
+// rest): see ./billingSearch.ts. The select only lists what the search found.
+const MANUAL_CHARGE_OPTIONS = manualChargeTypeOptions();
+
+// --- «Añadir cargo» on the selected folio (Tanda L3 · F1) -------------------
+// Gross unit price like every folio line; `taxCategory` travels explicitly
+// (preselected from the type, editable) so the line never reaches invoicing
+// without a category.
+type ChargeForm = { type: string; description: string; quantity: string; unitPrice: string; taxCategory: TaxCategory };
+
+function newChargeForm(type: string = MANUAL_CHARGE_OPTIONS[0]?.value ?? "room"): ChargeForm {
+  return { type, description: chargeTypeLabel(type), quantity: "1", unitPrice: "", taxCategory: defaultTaxCategoryForType(type) };
+}
+
+/** 409 of POST /invoices/:id/cancel that a present supervisor can lift with their PIN (or an approved request). */
+type CancelApproval = { code: "APPROVAL_REQUIRED" | "RBAC_SOD_CONFLICT"; tier: string | null; message: string };
+
+function readCancelApproval(error: unknown): CancelApproval | null {
+  const code = financeErrorCode(error);
+  if (code !== "APPROVAL_REQUIRED" && code !== "RBAC_SOD_CONFLICT") return null;
+  const details = (error as { details?: { tier?: unknown } }).details;
+  return { code, tier: typeof details?.tier === "string" ? details.tier : null, message: financeErrorMessage(error, "La anulación necesita autorización.") };
+}
 
 const FOLIO_URL = urlForScreen("FolioDetail") ?? "/finanzas/facturacion/folios/:id";
 const ROUTING_URL = urlForScreen("FolioRouting") ?? "/finanzas/facturacion/enrutamiento";
@@ -248,9 +286,25 @@ export function BillingCenterScreen() {
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Reservation search (Tanda L3 · F1): `reservationSearch` is the debounced
+  // text, `reservations` the pages loaded so far, `reservationsCursor` the
+  // next page. A stale answer (the operator kept typing) is dropped by `searchSeq`.
+  const [reservationSearch, setReservationSearch] = useState("");
   const [reservations, setReservations] = useState<AdminReservation[]>([]);
+  const [reservationsCursor, setReservationsCursor] = useState<string | null>(null);
+  const [reservationsTotal, setReservationsTotal] = useState<number | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [loadingMoreReservations, setLoadingMoreReservations] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const searchSeq = useRef(0);
   const [selectedReservationId, setSelectedReservationId] = useState("");
   const [folio, setFolio] = useState<FolioBalance | null>(null);
+  const [chargeForm, setChargeForm] = useState<ChargeForm>(() => newChargeForm());
+  const [postingCharge, setPostingCharge] = useState(false);
+  // Anulación with supervisor PIN: the 409 of the last attempt and the authorisation obtained.
+  const [cancelApproval, setCancelApproval] = useState<CancelApproval | null>(null);
+  const [cancelPinOpen, setCancelPinOpen] = useState(false);
+  const [cancelAuthorization, setCancelAuthorization] = useState<SupervisorAuthorizationDto | null>(null);
   const [folioError, setFolioError] = useState<string | null>(null);
   const [folioView, setFolioView] = useState<"charges" | "payments">("charges");
   const [invoices, setInvoices] = useState<InvoiceDraft[]>([]);
@@ -337,19 +391,7 @@ export function BillingCenterScreen() {
   async function refresh() {
     setLoading(true);
     setLoadError(null);
-    const results = await Promise.allSettled([fetchReservations(propertyId, { limit: RESERVATION_PAGE_SIZE }), loadInvoices()]);
-    const reservationsResult = results[0];
-    if (reservationsResult.status === "fulfilled") {
-      const items = reservationsResult.value.items;
-      setReservations(items);
-      const selected = items.find((reservation) => reservation.id === selectedReservationId) ?? items[0];
-      if (selected) {
-        setSelectedReservationId(selected.id);
-        await loadFolio(selected.id);
-      } else {
-        setFolio(null);
-      }
-    }
+    const results = await Promise.allSettled([searchReservations(reservationSearch), loadInvoices()]);
     if (results.every((result) => result.status === "rejected")) {
       setLoadError("No se pudieron cargar los datos de facturación. Comprueba la conexión con el servidor.");
     }
@@ -383,6 +425,106 @@ export function BillingCenterScreen() {
     setSelectedReservationId(reservationId);
     setFolio(null);
     void loadFolio(reservationId);
+  }
+
+  /**
+   * First page of a search (Tanda L3 · F1): `q` over code / holder / primary
+   * guest, 25 most recent arrivals. Keeps the selected reservation when it is
+   * still in the page, otherwise selects the first row. Rethrows so
+   * `refresh()` can tell a total failure from a partial one.
+   */
+  async function searchReservations(rawQuery: string): Promise<void> {
+    const seq = ++searchSeq.current;
+    setSearching(true);
+    setSearchError(null);
+    try {
+      const page = await fetchReservations(propertyId, buildReservationSearchQuery(rawQuery));
+      if (seq !== searchSeq.current) return;
+      setReservations(page.items);
+      setReservationsCursor(page.nextCursor);
+      setReservationsTotal(page.total);
+      const nextSelected = pickSearchSelection(page.items, selectedReservationId);
+      if (nextSelected !== selectedReservationId) {
+        setSelectedReservationId(nextSelected);
+        setFolio(null);
+        setFolioError(null);
+      }
+      if (nextSelected) await loadFolio(nextSelected);
+      else setFolio(null);
+    } catch (error) {
+      if (seq === searchSeq.current) setSearchError(financeErrorMessage(error, "No se pudieron buscar las reservas."));
+      throw error;
+    } finally {
+      if (seq === searchSeq.current) setSearching(false);
+    }
+  }
+
+  async function loadMoreReservations() {
+    if (!reservationsCursor || loadingMoreReservations) return;
+    setLoadingMoreReservations(true);
+    try {
+      const page = await fetchReservations(propertyId, buildReservationSearchQuery(reservationSearch, { cursor: reservationsCursor }));
+      setReservations((current) => mergeReservationPages(current, page.items));
+      setReservationsCursor(page.nextCursor);
+      setReservationsTotal(page.total);
+    } catch (error) {
+      showToast(financeErrorMessage(error, "No se pudieron cargar más reservas."), { variant: "error" });
+    } finally {
+      setLoadingMoreReservations(false);
+    }
+  }
+
+  // The debounced text drives the search; the first load belongs to refresh()
+  // (skipped here while the page is still loading).
+  useEffect(() => {
+    if (finance.loading || loading) return;
+    void searchReservations(reservationSearch).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reservationSearch]);
+
+  function updateChargeType(type: string) {
+    setChargeForm((current) => ({
+      ...current,
+      type,
+      // Keep a description the operator already edited; refresh the default one.
+      description: current.description.trim() === "" || current.description === chargeTypeLabel(current.type) ? chargeTypeLabel(type) : current.description,
+      taxCategory: defaultTaxCategoryForType(type)
+    }));
+  }
+
+  /** POST /folios/:id/lines with the explicit fiscal category (folio.charge.post). */
+  async function handleAddCharge() {
+    if (!folio || folio.folio.status !== "open") return;
+    const description = chargeForm.description.trim();
+    const quantity = parseAmount(chargeForm.quantity);
+    const unitPrice = parseAmount(chargeForm.unitPrice);
+    if (!description) {
+      showToast("Indica el concepto del cargo.", { variant: "error" });
+      return;
+    }
+    if (quantity === null || quantity <= 0) {
+      showToast("Indica una cantidad mayor que cero.", { variant: "error" });
+      return;
+    }
+    if (unitPrice === null || unitPrice < 0) {
+      showToast("Indica el precio bruto del cargo (0 o más).", { variant: "error" });
+      return;
+    }
+    logBreadcrumb("folio.charge.post", "mutation", { folioId: folio.folio.id, type: chargeForm.type, taxCategory: chargeForm.taxCategory });
+    setPostingCharge(true);
+    try {
+      await postFolioLine(folio.folio.id, { type: chargeForm.type, description, quantity, unitPrice, taxCategory: chargeForm.taxCategory });
+      const message = `Cargo «${description}» añadido al folio (${money(round2(quantity * unitPrice), folio.folio.currency)} · ${TAX_CATEGORY_LABELS[chargeForm.taxCategory]}).`;
+      setStatus(message);
+      showToast(message, { variant: "success" });
+      setChargeForm(newChargeForm(chargeForm.type));
+      setFolioView("charges");
+      await loadFolio(folio.folio.reservationId);
+    } catch (error) {
+      showToast(financeErrorMessage(error, "No se pudo añadir el cargo al folio."), { variant: "error" });
+    } finally {
+      setPostingCharge(false);
+    }
   }
 
   async function handleCreateDraft() {
@@ -574,12 +716,31 @@ export function BillingCenterScreen() {
     }
   }
 
-  async function handleCancel() {
+  function openCancel(invoice: InvoiceDraft) {
+    setCancelApproval(null);
+    setCancelAuthorization(null);
+    setCancelPinOpen(false);
+    setCancelForm({ invoice, reason: "", refundPayments: false });
+  }
+
+  /**
+   * POST /invoices/:id/cancel. A 409 APPROVAL_REQUIRED / RBAC_SOD_CONFLICT is
+   * not a failure of the form: the dialog offers the supervisor PIN
+   * (invoice.cancel_approve) and the same call is resent with
+   * `supervisorAuthorizationId` (CancelInvoiceSchema admits it). The
+   * separation of duties (issuer ≠ canceller, tiers) is decided by the API.
+   */
+  async function handleCancel(supervisorAuthorizationId?: string) {
     if (!cancelForm) return;
-    logBreadcrumb("invoice.cancel", "mutation", { invoiceId: cancelForm.invoice.id, refundPayments: cancelForm.refundPayments });
+    logBreadcrumb("invoice.cancel", "mutation", { invoiceId: cancelForm.invoice.id, refundPayments: cancelForm.refundPayments, supervised: Boolean(supervisorAuthorizationId) });
     setBusy(true);
     try {
-      const result = await cancelInvoice(cancelForm.invoice.id, cancelForm.reason.trim() || undefined, { refundPayments: cancelForm.refundPayments });
+      // `CancelInvoiceOptions` (services/pmsCommerceApi, lot A) does not name the key yet; the API contract does.
+      const options: CancelInvoiceOptions & { supervisorAuthorizationId?: string } = {
+        refundPayments: cancelForm.refundPayments,
+        ...(supervisorAuthorizationId ? { supervisorAuthorizationId } : {})
+      };
+      const result = await cancelInvoice(cancelForm.invoice.id, cancelForm.reason.trim() || undefined, options);
       setInvoices((current) => current.map((invoice) => (invoice.id === result.id ? { ...invoice, ...result, lines: undefined } as InvoiceDraft : invoice)));
       void loadInvoices().catch(() => undefined);
       setCancelNotice(result.payments ?? null);
@@ -588,9 +749,18 @@ export function BillingCenterScreen() {
       setStatus(message);
       showToast(message, { variant: "success" });
       setCancelForm(null);
+      setCancelApproval(null);
+      setCancelAuthorization(null);
       if (folio) void loadFolio(folio.folio.reservationId);
     } catch (error) {
-      showToast(financeErrorMessage(error, "No se pudo anular la factura."), { variant: "error" });
+      const approval = readCancelApproval(error);
+      if (approval) {
+        setCancelApproval(approval);
+        setCancelAuthorization(null);
+        showToast(approval.message, { variant: "warning" });
+      } else {
+        showToast(financeErrorMessage(error, "No se pudo anular la factura."), { variant: "error" });
+      }
     } finally {
       setBusy(false);
     }
@@ -674,9 +844,10 @@ export function BillingCenterScreen() {
   }
 
   const reservationOptions = useMemo(
-    () => reservations.map((reservation) => ({ value: reservation.id, label: `${reservation.code} · ${reservation.bookerName ?? reservation.companyName ?? "Huésped"} · ${date(reservation.arrivalDate, "dayMonth")}` })),
+    () => reservations.map((reservation) => ({ value: reservation.id, label: reservationResultLabel(reservation, (iso) => date(iso, "dayMonth")) })),
     [reservations]
   );
+  const reservationSummary = searchResultsSummary({ shown: reservations.length, total: reservationsTotal, hasMore: Boolean(reservationsCursor), q: reservationSearch });
 
   const invoiceColumns = useMemo<CocoaTableColumn<InvoiceDraft>[]>(
     () => [
@@ -751,7 +922,7 @@ export function BillingCenterScreen() {
       error={{ title: STATUS_LABELS.loadError, message: loadError ?? undefined, onRetry: () => void refresh() }}
       commands={[
         { id: "billing-export-csv", label: "Exportar facturas a CSV", run: handleExportInvoicesCsv },
-        { id: "billing-cobrar", label: "Cobrar en el folio seleccionado", run: () => setPaymentOpen(true) }
+        { id: "billing-cobrar", label: "Registrar pago en el folio seleccionado", run: () => setPaymentOpen(true) }
       ]}
     >
       <CocoaScreenInstructionsCard
@@ -778,6 +949,7 @@ export function BillingCenterScreen() {
 
       <CocoaGrid align="start" aria-label="Folio y borrador de factura">
         <CocoaSpan cols={7} min={480}>
+          <div className="cocoa-stack" data-gap="3">
           <CocoaSection
             title="Folio de la reserva"
             meta={folio ? `${folio.folio.status === "open" ? "abierto" : "cerrado"} · ${folio.folio.currency}` : undefined}
@@ -791,8 +963,8 @@ export function BillingCenterScreen() {
             footer={
               folio ? (
                 <div className="cocoa-row" data-gap="2">
-                  <CocoaButton variant="filled" tone="accent" size="small" disabled={busy || !folioOpen} onClick={() => setPaymentOpen(true)}>
-                    Cobrar
+                  <CocoaButton variant="filled" tone="accent" size="small" disabled={busy || !folioOpen} title="Cobrar en el folio (efectivo, datáfono, transferencia, enlace de pago)" onClick={() => setPaymentOpen(true)}>
+                    Registrar pago
                   </CocoaButton>
                   <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy || refundable.length === 0} onClick={() => setRefundOpen(true)}>
                     Devolver
@@ -804,13 +976,32 @@ export function BillingCenterScreen() {
               ) : undefined
             }
           >
-            <CocoaField label={FIELD_LABELS.reservation} help={reservations.length === 0 ? "No hay reservas cargadas en la propiedad." : undefined}>
-              <CocoaSelect value={selectedReservationId} onChange={handleReservationChange} options={reservationOptions} placeholder="Elige una reserva" disabled={reservations.length === 0} />
-            </CocoaField>
+            <CocoaFormRow columns={2} min={220}>
+              <CocoaField label={FIELD_LABELS.reservation} help="Busca por código, titular o huésped principal.">
+                <CocoaSearchInput value={reservationSearch} onChange={setReservationSearch} debounceMs={300} placeholder="RES-00012, García…" aria-label="Buscar reserva" />
+              </CocoaField>
+              <CocoaField
+                label="Resultados"
+                help={searchError ?? (searching ? "Buscando…" : reservationSummary)}
+                hint={
+                  reservationsCursor ? (
+                    <CocoaButton variant="plain" size="small" loading={loadingMoreReservations} disabled={searching} onClick={() => void loadMoreReservations()}>
+                      Más resultados
+                    </CocoaButton>
+                  ) : undefined
+                }
+              >
+                <CocoaSelect value={selectedReservationId} onChange={handleReservationChange} options={reservationOptions} placeholder={searching ? "Buscando…" : "Elige una reserva"} disabled={reservations.length === 0} />
+              </CocoaField>
+            </CocoaFormRow>
             {folioError ? (
               <CocoaState kind="error" inline title={folioError} onRetry={() => (selectedReservationId ? void loadFolio(selectedReservationId) : undefined)} />
             ) : !folio ? (
-              selectedReservationId ? <CocoaState kind="loading" inline title="Cargando folio…" /> : <CocoaState kind="empty" inline title="Elige una reserva para ver su folio." />
+              selectedReservationId ? (
+                <CocoaState kind="loading" inline title="Cargando folio…" />
+              ) : (
+                <CocoaState kind="empty" inline illustration={reservationSearch.trim() ? "search" : "box"} title={reservationSearch.trim() ? "Sin reservas para esa búsqueda." : "Elige una reserva para ver su folio."} />
+              )
             ) : (
               <>
                 <div className="cocoa-row" data-gap="4" data-align="start">
@@ -830,13 +1021,22 @@ export function BillingCenterScreen() {
                 />
                 {folioView === "charges" ? (
                   folio.lines.length === 0 ? (
-                    <CocoaState kind="empty" inline title="Sin cargos registrados." />
+                    <CocoaState kind="empty" inline title="Sin cargos registrados." message={folioOpen ? "Añade el primero con «Añadir cargo»." : undefined} />
                   ) : (
                     <ul className="c22-section__list">
                       {folio.lines.map((line) => (
                         <li key={line.id}>
-                          <span>
-                            <strong>{line.description}</strong> · {line.quantity} × {money(line.unitPrice, folio.folio.currency)}
+                          <span className="cocoa-cluster">
+                            <strong>{line.description}</strong>
+                            <CocoaBadge tone="neutral" size="small">
+                              {chargeTypeLabel(line.type)}
+                            </CocoaBadge>
+                            {line.taxCategory && line.taxCategory in TAX_CATEGORY_LABELS ? (
+                              <CocoaBadge tone={line.taxCategory === "not_subject" ? "info" : "neutral"} size="small" uppercase={false}>
+                                {TAX_CATEGORY_LABELS[line.taxCategory as TaxCategory]}
+                              </CocoaBadge>
+                            ) : null}
+                            {line.quantity} × {money(line.unitPrice, folio.folio.currency)}
                           </span>
                           <strong>{money(line.total, folio.folio.currency)}</strong>
                         </li>
@@ -844,7 +1044,7 @@ export function BillingCenterScreen() {
                     </ul>
                   )
                 ) : folioPayments.length === 0 ? (
-                  <CocoaState kind="empty" inline title="Sin cobros registrados." message={folioOpen ? "Registra el primero con «Cobrar»." : undefined} />
+                  <CocoaState kind="empty" inline title="Sin cobros registrados." message={folioOpen ? "Registra el primero con «Registrar pago»." : undefined} />
                 ) : (
                   <ul className="c22-section__list">
                     {folioPayments.map((payment) => {
@@ -867,6 +1067,55 @@ export function BillingCenterScreen() {
               </>
             )}
           </CocoaSection>
+
+          {folio && folioOpen ? (
+            <CocoaFormSection
+              title="Añadir cargo"
+              description={`Se registra en el folio de la reserva ${selectedReservation?.code ?? ""} con su categoría fiscal; el tipo impositivo lo aporta el perfil fiscal de la propiedad al facturar.`.replace("  ", " ")}
+              actions={
+                <CocoaButton variant="filled" tone="accent" size="small" loading={postingCharge} disabled={postingCharge || busy} onClick={() => void handleAddCharge()}>
+                  Añadir cargo
+                </CocoaButton>
+              }
+            >
+              {/* Corrector L3 (FUX-06): two rows — the fiscal category sits next to the type it depends on, never alone on a wrapped line. */}
+              <div className="cocoa-stack" data-gap="3">
+                <CocoaFormRow columns={3} min={150}>
+                  <CocoaField label={FIELD_LABELS.type} required>
+                    <CocoaSelect value={chargeForm.type} onChange={updateChargeType} options={MANUAL_CHARGE_OPTIONS} disabled={postingCharge} />
+                  </CocoaField>
+                  <CocoaField label="Concepto" required>
+                    <CocoaInput value={chargeForm.description} onChange={(value) => setChargeForm((current) => ({ ...current, description: value }))} placeholder="Minibar 14/09" maxLength={500} disabled={postingCharge} autoComplete="off" />
+                  </CocoaField>
+                  <CocoaField
+                    label="Categoría fiscal"
+                    required
+                    help={(() => {
+                      const rate = rateForCategory(taxProfile, chargeForm.taxCategory);
+                      return `${rate ? (rate.calificacion === "N1" ? "no sujeta" : `${rate.ratePercent} %`) : "sin tipo configurado"} · solo las compatibles con el tipo`;
+                    })()}
+                  >
+                    {/* Corrector L3 (FC-4): only the categories the API accepts for this type (no «Habitación» as «No sujeto» / «Tasa turística»). */}
+                    <CocoaSelect
+                      value={chargeForm.taxCategory}
+                      onChange={(value) => setChargeForm((current) => ({ ...current, taxCategory: value as TaxCategory }))}
+                      options={taxCategoryOptionsForType(chargeForm.type, TAX_CATEGORY_OPTIONS).map((option) => ({ value: option.value, label: option.label }))}
+                      disabled={postingCharge}
+                    />
+                  </CocoaField>
+                </CocoaFormRow>
+                <CocoaFormRow columns={2} min={150}>
+                  <CocoaField label="Cantidad" required>
+                    <CocoaInput value={chargeForm.quantity} onChange={(value) => setChargeForm((current) => ({ ...current, quantity: value }))} inputMode="decimal" disabled={postingCharge} />
+                  </CocoaField>
+                  <CocoaField label="Precio bruto" required help="Con impuestos incluidos, como las líneas del folio.">
+                    <CocoaInput value={chargeForm.unitPrice} onChange={(value) => setChargeForm((current) => ({ ...current, unitPrice: value }))} inputMode="decimal" placeholder="12,00" disabled={postingCharge} />
+                  </CocoaField>
+                </CocoaFormRow>
+              </div>
+            </CocoaFormSection>
+          ) : null}
+          </div>
         </CocoaSpan>
 
         <CocoaSpan cols={5} min={320}>
@@ -1157,7 +1406,7 @@ export function BillingCenterScreen() {
                 </CocoaButton>
               ) : null}
               {detail.status === "issued" ? (
-                <CocoaButton variant="bordered" tone="destructive" size="small" onClick={() => setCancelForm({ invoice: detail, reason: "", refundPayments: false })}>
+                <CocoaButton variant="bordered" tone="destructive" size="small" onClick={() => openCancel(detail)}>
                   Anular
                 </CocoaButton>
               ) : null}
@@ -1312,10 +1561,10 @@ export function BillingCenterScreen() {
         title={cancelForm ? `¿Anular la factura ${cancelForm.invoice.invoiceNumber ?? ""}?`.replace("  ", " ") : "¿Anular la factura?"}
         description="La anulación entra en la cadena VeriFactu y contabiliza el asiento inverso. Los cobros vinculados se desvinculan y quedan en el folio; también pueden devolverse."
         size="md"
-        confirmLabel={busy ? "Anulando…" : "Anular factura"}
+        confirmLabel={busy ? "Anulando…" : cancelAuthorization ? "Anular con autorización" : "Anular factura"}
         cancelLabel={ACTIONS.cancel}
         busy={busy}
-        onConfirm={handleCancel}
+        onConfirm={() => void handleCancel(cancelAuthorization?.id)}
       >
         {cancelForm ? (
           <div className="cocoa-stack" data-gap="3">
@@ -1325,9 +1574,50 @@ export function BillingCenterScreen() {
             <CocoaField label="Devolver también los cobros vinculados" inline help="Crea una devolución por cada cobro capturado de la factura.">
               <CocoaSwitch checked={cancelForm.refundPayments} onChange={(value) => setCancelForm({ ...cancelForm, refundPayments: value })} size="small" />
             </CocoaField>
+            {cancelApproval && !cancelAuthorization ? (
+              <CocoaCallout
+                tone="warning"
+                title={cancelApproval.code === "RBAC_SOD_CONFLICT" ? "Separación de funciones" : "Esta anulación supera tu tramo"}
+                role="alert"
+                actions={
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setCancelPinOpen(true)} disabled={busy}>
+                    Autorizar con PIN de supervisor
+                  </CocoaButton>
+                }
+              >
+                {cancelApproval.message}
+                {cancelApproval.tier ? ` Tramo: ${cancelApproval.tier}.` : ""}
+                {" "}
+                Un supervisor presente puede autorizar solo esta anulación con su PIN; si no, quien tenga la clave de aprobación de anulaciones (jefatura o dirección) debe anularla desde su sesión: esta pantalla todavía no crea solicitudes de anulación para Hoy › Pendientes de aprobación. Si quien emitió la factura es quien la anula, la regla se mantiene y debe anularla otra persona.
+              </CocoaCallout>
+            ) : null}
+            {cancelAuthorization ? (
+              <CocoaCallout tone="success" title="Autorización de supervisor concedida" role="status">
+                Válida hasta {date(cancelAuthorization.expiresAt, "medium")} y solo para esta factura. Pulsa «Anular con autorización».
+              </CocoaCallout>
+            ) : null}
           </div>
         ) : null}
       </CocoaDialog>
+
+      {cancelForm ? (
+        <SupervisorPinDialog
+          open={cancelPinOpen}
+          onClose={() => setCancelPinOpen(false)}
+          permissionKey="invoice.cancel_approve"
+          entityType="invoice"
+          entityId={cancelForm.invoice.id}
+          propertyId={propertyId}
+          amount={Math.abs(Number(cancelForm.invoice.total) || 0).toFixed(2)}
+          actionLabel={`Anular la factura ${cancelForm.invoice.invoiceNumber ?? cancelForm.invoice.id}`}
+          onAuthorized={(granted) => {
+            setCancelAuthorization(granted);
+            setCancelPinOpen(false);
+            setCancelApproval(null);
+            showToast("Autorización de supervisor concedida: confirma la anulación", { variant: "success" });
+          }}
+        />
+      ) : null}
     </CocoaPage>
   );
 }

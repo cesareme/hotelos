@@ -48,7 +48,10 @@ import { Prisma as PrismaRuntime } from "@prisma/client";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import { processNoShows } from "../cancellation-policy/cancellation-policy.service.js";
+// Tanda L3 (lote B): the no-show step lives in reservation-lifecycle.service.ts
+// (transitionReservation + policy + folio close); the pure engine stays in
+// cancellation-policy.service.ts. No cycle: that file imports pms.service dynamically.
+import { processNoShows } from "../cancellation-policy/reservation-lifecycle.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { isOperationalKind } from "../../lib/tenancy.js";
 import { postNightlyRoomChargeTx, quoteNightlyRate, type NightlyPriceSource } from "../pms/room-charge.service.js";

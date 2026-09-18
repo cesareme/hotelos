@@ -4,30 +4,47 @@
 // Contract (docs/runbooks/finanzas-contabilidad.md §1.4): `VatBookEntry` is ONE
 // row per document AND tax rate, unique by (organizationId, book, sourceType,
 // sourceId, rate), and it is the single source of the Modelo 303 / 390 / 347.
-// The invoicing lot writes the emitidas rows in the same transaction that
-// issues / rectifies / cancels an invoice and the suppliers lot writes the
-// recibidas / bienes_inversion rows when a bill is posted or an expense is
-// registered. Until those writers land (today nothing writes the table) this
-// module offers:
-//   · `registerInvoiceInVatBooks` / `registerInvoiceCancellationInVatBooks` /
-//     `registerSupplierBillInVatBooks` / `registerExpenseInVatBooks` — the
-//     in-transaction writers the other lots call (idempotent: delete + insert
-//     by source key);
+// The emitidas rows are written LIVE by the invoicing module in the same
+// transaction that issues / rectifies / cancels an invoice
+// (`invoicing/vat-book.ts` writeIssuedVatBookRows, called from
+// invoice.service.ts); the suppliers lot writes the recibidas /
+// bienes_inversion rows when a bill is posted or an expense is registered
+// (`payables/vat-book.ts`). This module offers:
+//   · the PURE row builders (`vatRowsFromInvoice`, `vatRowsFromSupplierBill`,
+//     `vatRowsFromExpense`) that derive the SAME rows the live writers
+//     materialise, so a rebuild and the live book always agree;
 //   · `rebuildVatBooks` — materialises a date range from the documents
-//     (invoices, supplier bills, expenses) of the organisation;
+//     (invoices, supplier bills, expenses) of the organisation, keeping the
+//     rows imported from Sage 200 (`sourceType sage200`, Tanda 7c);
 //   · `loadVatBookRows` — what the models read: the materialised rows of a
 //     book when they exist for the range, otherwise the SAME rows derived in
 //     memory from the documents (flagged `origen: "documentos"` + aviso), so
-//     Faranda gets a real 303 today without a single write.
+//     Faranda gets a real 303 today without a single write;
+//   · `registerSupplierBillInVatBooks` / `registerExpenseInVatBooks` — the
+//     in-transaction writers of the payables side (idempotent: delete + insert
+//     by source key). The invoice counterparts (`registerInvoiceInVatBooks`,
+//     `registerInvoiceCancellationInVatBooks`) were retired in Tanda L3-C: the
+//     emitidas book has ONE live writer (invoicing/vat-book.ts).
 //
 // Money: Prisma.Decimal everywhere, rounded to 2 decimals per group (the same
 // per-group rounding as computeInvoiceTotals, contract B of Tanda 3: base =
 // round2(gross / (1 + t)), quota = round2(gross − base)); never floats.
 // Rectificativas carry NEGATIVE base/quota in the book (the ledger posts the
-// inverse entry with positive amounts instead). A cancellation (VeriFactu
-// RegistroAnulacion) is a negating row dated on the cancellation day whose
-// sourceId is `<invoiceId>:anulacion` (VatBookSourceType has no `cancellation`
-// value; see openItems of the lot report).
+// inverse entry with positive amounts instead).
+//
+// sourceId convention of the counter-rows (Tanda L3-C, ONE convention shared
+// with the live writer in invoice.service.ts — `VatBookSourceType` has no
+// `cancellation` value, so the document id carries a suffix):
+//   · `<invoiceId>#anulacion`  — negating rows of a cancelled invoice (VeriFactu
+//     RegistroAnulacion), dated on the cancellation day (Europe/Madrid);
+//   · `<invoiceId>#sustituida` — negating rows of an invoice replaced by a
+//     rectificativa por sustitución («S»), dated on the substitute's issue day
+//     (the substitute posts its own full rows under its own id), so the book
+//     nets like the ledger (original reversed + substitute posted);
+//   · `<expenseId>#anulacion`  — negating row of a cancelled expense.
+// The pre-L3 convention `<id>:anulacion` (rebuilds before 2026-09-18) is LEGACY:
+// `rebuildVatBooks` and `replaceRows` purge it so a live `#` row and a derived
+// `:` row never coexist (that would count the cancellation twice).
 
 import { Prisma } from "@prisma/client";
 import { BRAND } from "../../lib/brand.js";
@@ -631,6 +648,8 @@ export type InvoiceForBooks = {
   seriesCode: string | null;
   simplified: boolean;
   rectifyingForId: string | null;
+  /** VeriFactu TipoRectificativa of a rectificativa: «I» (diferencias) or «S» (sustitución); null on ordinary invoices. */
+  rectificationType?: string | null;
   lines: InvoiceLineForBooks[];
 };
 
@@ -688,26 +707,73 @@ export function invoiceSourceType(invoice: Pick<InvoiceForBooks, "invoiceType" |
   return "invoice";
 }
 
+// ── sourceId convention of the counter-rows (Tanda L3-C) ────────────────────
+//
+// ONE convention for the live writer (invoice.service.ts → invoicing/vat-book.ts)
+// and the derived rows of this module; see the header. The legacy `:anulacion`
+// suffix of the rebuilds before 2026-09-18 is only recognised to be purged.
+
+/** Suffix of the negating rows of a cancelled invoice / expense: `<id>#anulacion`. */
+export const VAT_BOOK_CANCELLATION_SUFFIX = "#anulacion";
+/** Suffix of the negating rows of an invoice replaced by a rectificativa «S»: `<id>#sustituida`. */
+export const VAT_BOOK_SUPERSEDED_SUFFIX = "#sustituida";
+/** Pre-L3 cancellation suffix (`<id>:anulacion`), written by rebuilds before 2026-09-18: purged, never written. */
+export const LEGACY_VAT_BOOK_CANCELLATION_SUFFIX = ":anulacion";
+
+export function cancellationSourceId(documentId: string): string {
+  return `${documentId}${VAT_BOOK_CANCELLATION_SUFFIX}`;
+}
+
+export function supersededSourceId(documentId: string): string {
+  return `${documentId}${VAT_BOOK_SUPERSEDED_SUFFIX}`;
+}
+
+export function legacyCancellationSourceId(documentId: string): string {
+  return `${documentId}${LEGACY_VAT_BOOK_CANCELLATION_SUFFIX}`;
+}
+
+/** Document id behind a sourceId of any convention (`<id>`, `<id>#anulacion`, `<id>#sustituida`, `<id>:anulacion`). */
+export function vatBookDocumentId(sourceId: string): string {
+  for (const suffix of [VAT_BOOK_CANCELLATION_SUFFIX, VAT_BOOK_SUPERSEDED_SUFFIX, LEGACY_VAT_BOOK_CANCELLATION_SUFFIX]) {
+    if (sourceId.endsWith(suffix)) return sourceId.slice(0, -suffix.length);
+  }
+  return sourceId;
+}
+
+export type VatRowKind = "issue" | "cancellation" | "superseded";
+
 /**
  * Emitidas rows of an invoice: one per (rate), merging the S1 and N1 groups
  * of the same rate (the unique key has no calificación). `avisos` collects
  * the fiscal problems that do not stop the book (S1 lines at 0 %, missing
  * customer NIF on a full invoice).
+ *
+ * `kind`:
+ *   · `issue` (default) — the document's own rows, dated on `issuedAt`;
+ *   · `cancellation` — the negating rows (`<id>#anulacion`) dated on
+ *     `cancelledAt`; none when the invoice is not cancelled;
+ *   · `superseded` — the negating rows (`<id>#sustituida`) of an original
+ *     replaced by a rectificativa por sustitución («S»), dated on the
+ *     substitute's issue instant (`supersededAt`); none without it.
  */
 export function vatRowsFromInvoice(input: {
   invoice: InvoiceForBooks;
   organizationId: string;
   periodicity: VatPeriodicityCode;
-  /** `issue` rows (default) or the negating `cancellation` rows. */
-  kind?: "issue" | "cancellation";
+  /** `issue` rows (default), the negating `cancellation` rows or the negating `superseded` rows. */
+  kind?: VatRowKind;
+  /** Issue instant of the substitute rectificativa (kind `superseded` only). */
+  supersededAt?: Date | null;
 }): { rows: VatBookRow[]; avisos: string[] } {
   const { invoice } = input;
   const kind = input.kind ?? "issue";
   const avisos: string[] = [];
   if (invoice.status === "draft" || !invoice.issuedAt) return { rows: [], avisos };
   if (kind === "cancellation" && !invoice.cancelledAt) return { rows: [], avisos };
-  const day = kind === "cancellation" ? madridDay(invoice.cancelledAt!) : madridDay(invoice.issuedAt);
-  const sign = kind === "cancellation" ? new Prisma.Decimal(-1) : new Prisma.Decimal(1);
+  if (kind === "superseded" && !input.supersededAt) return { rows: [], avisos };
+  const day = kind === "cancellation" ? madridDay(invoice.cancelledAt!) : kind === "superseded" ? madridDay(input.supersededAt!) : madridDay(invoice.issuedAt);
+  const sign = kind === "issue" ? new Prisma.Decimal(1) : new Prisma.Decimal(-1);
+  const sourceId = kind === "cancellation" ? cancellationSourceId(invoice.id) : kind === "superseded" ? supersededSourceId(invoice.id) : invoice.id;
   const sourceType = invoiceSourceType(invoice);
   const label = invoice.invoiceNumber ?? invoice.id;
   const groups = taxGroupsOfInvoice(invoice);
@@ -745,7 +811,7 @@ export function vatRowsFromInvoice(input: {
       surchargeRate: null,
       surchargeQuota: null,
       sourceType,
-      sourceId: kind === "cancellation" ? `${invoice.id}:anulacion` : invoice.id,
+      sourceId,
       period: periodCodeForDate(day, input.periodicity),
       deductible: true
     });
@@ -893,7 +959,7 @@ export function vatRowsFromExpense(input: { expense: ExpenseForBooks; organizati
         surchargeRate: null,
         surchargeQuota: null,
         sourceType: "expense",
-        sourceId: kind === "cancellation" ? `${expense.id}:anulacion` : expense.id,
+        sourceId: kind === "cancellation" ? cancellationSourceId(expense.id) : expense.id,
         period: periodCodeForDate(day, input.periodicity),
         deductible
       }
@@ -958,10 +1024,40 @@ export type DerivedVatRows = {
   documentos: { facturas: number; anulaciones: number; facturasRecibidas: number; gastos: number };
 };
 
+/** Invoice columns `vatRowsFromInvoice` needs (exported for the Modelo 303 in-memory `#sustituida` synthesis, corrector L3 · DS-06). */
+export const INVOICE_FOR_BOOKS_SELECT = {
+  id: true,
+  propertyId: true,
+  invoiceNumber: true,
+  invoiceType: true,
+  status: true,
+  issuedAt: true,
+  cancelledAt: true,
+  customerTaxId: true,
+  customerName: true,
+  taxBreakdownJson: true,
+  seriesCode: true,
+  simplified: true,
+  rectifyingForId: true,
+  rectificationType: true
+} as const;
+
+/** A rectificativa por sustitución («S»): its original's rows are countered on the substitute's issue day. */
+function isSubstituteRectification(invoice: Pick<InvoiceForBooks, "rectifyingForId" | "rectificationType" | "status" | "issuedAt">): invoice is Pick<InvoiceForBooks, "rectifyingForId" | "rectificationType" | "status" | "issuedAt"> & { rectifyingForId: string; issuedAt: Date } {
+  return Boolean(invoice.rectifyingForId) && invoice.rectificationType === "S" && invoice.status !== "draft" && Boolean(invoice.issuedAt);
+}
+
 /**
  * Derive the book rows of a date range straight from the documents (what the
  * writers would have materialised). Rows outside the range (a cancellation
  * after `to`, an issue before `from`) are dropped.
+ *
+ * Tanda L3-C: for every rectificativa por sustitución («S») issued in the
+ * range the ORIGINAL's negating rows (`<originalId>#sustituida`, dated on the
+ * substitute's issue day) are derived too — exactly what the live writer
+ * materialises (invoice.service.ts createRectifyingInvoice) — so a rebuild
+ * never counts the replaced invoice twice. The original may have been issued
+ * before `from`: it is loaded by id when the window did not bring it.
  */
 export async function deriveVatBookRows(input: { organizationId: string; from: string; to: string; propertyId?: string | null; periodicity: VatPeriodicityCode; taxFigure?: string; client?: DocumentClient }): Promise<DerivedVatRows> {
   const client = input.client ?? prisma;
@@ -982,24 +1078,17 @@ export async function deriveVatBookRows(input: { organizationId: string; from: s
         status: { in: ["issued", "rectified", "cancelled"] },
         OR: [{ issuedAt: { gte: windowStart, lt: windowEnd } }, { cancelledAt: { gte: windowStart, lt: windowEnd } }]
       },
-      select: {
-        id: true,
-        propertyId: true,
-        invoiceNumber: true,
-        invoiceType: true,
-        status: true,
-        issuedAt: true,
-        cancelledAt: true,
-        customerTaxId: true,
-        customerName: true,
-        taxBreakdownJson: true,
-        seriesCode: true,
-        simplified: true,
-        rectifyingForId: true
-      },
+      select: INVOICE_FOR_BOOKS_SELECT,
       orderBy: [{ issuedAt: "asc" }]
     });
-    const invoiceIds = invoices.map((invoice) => invoice.id);
+    // Originals of the substitute rectificativas of the window that the window itself did not bring
+    // (issued in an earlier range, or rectified before `from` — the rectified status has no date column).
+    const loadedIds = new Set(invoices.map((invoice) => invoice.id));
+    const missingOriginalIds = Array.from(new Set(invoices.filter(isSubstituteRectification).map((invoice) => invoice.rectifyingForId).filter((id): id is string => Boolean(id) && !loadedIds.has(id!))));
+    const originals = missingOriginalIds.length > 0
+      ? await client.invoice.findMany({ where: { id: { in: missingOriginalIds }, propertyId: { in: propertyIds }, deletedAt: null }, select: INVOICE_FOR_BOOKS_SELECT })
+      : [];
+    const invoiceIds = [...invoices, ...originals].map((invoice) => invoice.id);
     const lines = invoiceIds.length > 0
       ? await (client as Prisma.TransactionClient).invoiceLine.findMany({
           where: { invoiceId: { in: invoiceIds } },
@@ -1012,8 +1101,10 @@ export async function deriveVatBookRows(input: { organizationId: string; from: s
       bucket.push(line);
       linesByInvoice.set(line.invoiceId, bucket);
     }
+    const forBooksById = new Map<string, InvoiceForBooks>();
+    for (const invoice of [...invoices, ...originals]) forBooksById.set(invoice.id, { ...invoice, lines: linesByInvoice.get(invoice.id) ?? [] });
     for (const invoice of invoices) {
-      const forBooks: InvoiceForBooks = { ...invoice, lines: linesByInvoice.get(invoice.id) ?? [] };
+      const forBooks = forBooksById.get(invoice.id)!;
       const issue = vatRowsFromInvoice({ invoice: forBooks, organizationId: input.organizationId, periodicity: input.periodicity });
       const issueRows = issue.rows.filter((row) => inRange(row.date));
       if (issueRows.length > 0) {
@@ -1026,6 +1117,20 @@ export async function deriveVatBookRows(input: { organizationId: string; from: s
       if (cancellationRows.length > 0) {
         documentos.anulaciones += 1;
         rows.push(...cancellationRows);
+      }
+      // Rectificativa «S»: counter the original on the substitute's issue day (same rows as the live writer).
+      if (isSubstituteRectification(invoice)) {
+        const original = forBooksById.get(invoice.rectifyingForId);
+        if (!original) {
+          avisos.push(`Rectificativa ${invoice.invoiceNumber ?? invoice.id} por sustitución: la factura original ${invoice.rectifyingForId} no existe o está borrada; el libro no puede contrarrestarla.`);
+          continue;
+        }
+        const superseded = vatRowsFromInvoice({ invoice: original, organizationId: input.organizationId, periodicity: input.periodicity, kind: "superseded", supersededAt: invoice.issuedAt });
+        const supersededRows = superseded.rows.filter((row) => inRange(row.date));
+        if (supersededRows.length > 0) {
+          documentos.anulaciones += 1;
+          rows.push(...supersededRows);
+        }
       }
     }
 
@@ -1133,44 +1238,26 @@ export async function loadVatBookRows(input: { organizationId: string; from: str
 
 type WriterClient = Prisma.TransactionClient;
 
+/**
+ * delete + insert by source key. A `<id>#anulacion` key also purges the legacy
+ * `<id>:anulacion` row of the same book / sourceType (rebuilds before Tanda L3-C),
+ * so the two conventions never add up.
+ */
 async function replaceRows(tx: WriterClient, organizationId: string, keys: Array<{ book: VatBookName; sourceType: VatBookSourceTypeCode; sourceId: string }>, rows: VatBookRow[]): Promise<number> {
   for (const key of keys) {
-    await tx.vatBookEntry.deleteMany({ where: { organizationId, book: key.book, sourceType: key.sourceType, sourceId: key.sourceId } });
+    const sourceIds = key.sourceId.endsWith(VAT_BOOK_CANCELLATION_SUFFIX) ? [key.sourceId, legacyCancellationSourceId(vatBookDocumentId(key.sourceId))] : [key.sourceId];
+    await tx.vatBookEntry.deleteMany({ where: { organizationId, book: key.book, sourceType: key.sourceType, sourceId: { in: sourceIds } } });
   }
   if (rows.length === 0) return 0;
   const created = await tx.vatBookEntry.createMany({ data: rows.map(toCreateInput) });
   return created.count;
 }
 
-async function loadInvoiceForBooks(tx: WriterClient, invoiceId: string): Promise<{ invoice: InvoiceForBooks; organizationId: string }> {
-  const invoice = await tx.invoice.findUnique({
-    where: { id: invoiceId },
-    select: { id: true, propertyId: true, invoiceNumber: true, invoiceType: true, status: true, issuedAt: true, cancelledAt: true, customerTaxId: true, customerName: true, taxBreakdownJson: true, seriesCode: true, simplified: true, rectifyingForId: true }
-  });
-  if (!invoice) throw new ConflictError("La factura no existe.", { code: "INVOICE_NOT_FOUND" });
-  const property = await tx.property.findUnique({ where: { id: invoice.propertyId }, select: { organizationId: true } });
-  if (!property) throw new ConflictError("El establecimiento de la factura no existe.", { code: "PROPERTY_NOT_FOUND" });
-  const lines = await tx.invoiceLine.findMany({ where: { invoiceId }, select: { total: true, taxRate: true, taxCode: true, taxCalificacion: true, taxFigure: true } });
-  return { invoice: { ...invoice, lines }, organizationId: property.organizationId };
-}
-
-/** Emitidas rows of an issued / rectifying / simplified invoice (call inside the issuing transaction). Idempotent. */
-export async function registerInvoiceInVatBooks(tx: WriterClient, invoiceId: string): Promise<{ rows: number; avisos: string[] }> {
-  const { invoice, organizationId } = await loadInvoiceForBooks(tx, invoiceId);
-  const settings = await getVatSettings(organizationId, tx);
-  const derived = vatRowsFromInvoice({ invoice, organizationId, periodicity: settings.periodicity });
-  const rows = await replaceRows(tx, organizationId, [{ book: "emitidas", sourceType: invoiceSourceType(invoice), sourceId: invoice.id }], derived.rows);
-  return { rows, avisos: derived.avisos };
-}
-
-/** Negating rows of a cancelled invoice, dated on the cancellation day (call inside the cancelling transaction). */
-export async function registerInvoiceCancellationInVatBooks(tx: WriterClient, invoiceId: string): Promise<{ rows: number }> {
-  const { invoice, organizationId } = await loadInvoiceForBooks(tx, invoiceId);
-  const settings = await getVatSettings(organizationId, tx);
-  const derived = vatRowsFromInvoice({ invoice, organizationId, periodicity: settings.periodicity, kind: "cancellation" });
-  const rows = await replaceRows(tx, organizationId, [{ book: "emitidas", sourceType: invoiceSourceType(invoice), sourceId: `${invoice.id}:anulacion` }], derived.rows);
-  return { rows };
-}
+// The invoice writers (`registerInvoiceInVatBooks`, `registerInvoiceCancellationInVatBooks`)
+// were retired in Tanda L3-C (no caller: invoice.service.ts writes the emitidas
+// book live through invoicing/vat-book.ts). The two payables writers below have
+// no external caller either (payables/vat-book.ts writes its own rows) but stay
+// out of the L3 scope: they are kept for the suppliers lot, unchanged.
 
 /** Recibidas / bienes_inversion rows of a posted supplier bill (call inside the posting transaction). */
 export async function registerSupplierBillInVatBooks(tx: WriterClient, supplierBillId: string): Promise<{ rows: number; avisos: string[] }> {
@@ -1198,7 +1285,7 @@ export async function registerExpenseInVatBooks(tx: WriterClient, expenseId: str
   if (!expense) throw new ConflictError("El gasto no existe.", { code: "EXPENSE_NOT_FOUND" });
   const settings = await getVatSettings(expense.organizationId, tx);
   const derived = vatRowsFromExpense({ expense, organizationId: expense.organizationId, periodicity: settings.periodicity, kind, taxFigure: settings.taxFigure });
-  const sourceId = kind === "cancellation" ? `${expense.id}:anulacion` : expense.id;
+  const sourceId = kind === "cancellation" ? cancellationSourceId(expense.id) : expense.id;
   const rows = await replaceRows(tx, expense.organizationId, [{ book: "recibidas", sourceType: "expense", sourceId }], derived.rows);
   return { rows, avisos: derived.avisos };
 }
@@ -1220,15 +1307,26 @@ export async function rebuildVatBooks(input: { context: UserContext; from: strin
       const deleted = await tx.vatBookEntry.deleteMany({
         where: { organizationId, sourceType: { not: "sage200" }, date: { gte: dateColumn(input.from), lte: dateColumn(input.to) }, ...(input.propertyId ? { propertyId: input.propertyId } : {}) }
       });
+      // Tanda L3-C: the legacy `<id>:anulacion` rows (rebuilds before 2026-09-18) of the documents whose
+      // `<id>#anulacion` rows are materialised now are purged whatever their date (a legacy row dated
+      // outside the range would otherwise survive next to the new one and count the cancellation twice).
+      const legacyIds = derived.rows.filter((row) => row.sourceId.endsWith(VAT_BOOK_CANCELLATION_SUFFIX)).map((row) => legacyCancellationSourceId(vatBookDocumentId(row.sourceId)));
+      const legacy = legacyIds.length > 0
+        ? await tx.vatBookEntry.deleteMany({ where: { organizationId, sourceType: { not: "sage200" }, sourceId: { in: Array.from(new Set(legacyIds)) } } })
+        : { count: 0 };
       const created: Record<VatBookName, number> = { emitidas: 0, recibidas: 0, bienes_inversion: 0 };
       if (derived.rows.length > 0) {
         await tx.vatBookEntry.createMany({ data: derived.rows.map(toCreateInput) });
         for (const row of derived.rows) created[row.book] += 1;
       }
-      return { deleted: deleted.count, created, derived };
+      return { deleted: deleted.count + legacy.count, legacyPurged: legacy.count, created, derived };
     },
     { maxWait: 15_000, timeout: 120_000 }
   );
+  const avisos = [...result.derived.avisos];
+  if (result.legacyPurged > 0) {
+    avisos.push(`${result.legacyPurged} fila(s) de anulación con la convención anterior (\`:anulacion\`) retiradas fuera del rango: sustituidas por sus contrafilas \`#anulacion\`.`);
+  }
   recordAuditEvent({
     organizationId,
     propertyId: input.context.propertyId,
@@ -1237,7 +1335,7 @@ export async function rebuildVatBooks(input: { context: UserContext; from: strin
     action: "VAT_BOOKS_REBUILT",
     entityType: "vat_book",
     entityId: `${organizationId}:${input.from}:${input.to}`,
-    afterJson: { from: input.from, to: input.to, deleted: result.deleted, created: result.created, documentos: result.derived.documentos },
+    afterJson: { from: input.from, to: input.to, deleted: result.deleted, legacyPurged: result.legacyPurged, created: result.created, documentos: result.derived.documentos },
     correlationId: input.correlationId
   });
   return {
@@ -1248,7 +1346,7 @@ export async function rebuildVatBooks(input: { context: UserContext; from: strin
     deleted: result.deleted,
     created: result.created,
     documentos: result.derived.documentos,
-    avisos: result.derived.avisos
+    avisos
   };
 }
 

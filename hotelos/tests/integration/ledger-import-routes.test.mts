@@ -206,13 +206,21 @@ async function createUser(email: string, fullName: string, keys: readonly string
 }
 
 type Invariants = { entries: number; imports: number; reconciliations: number; org123Entries: number };
+/**
+ * Invariantes de OTRAS organizaciones. Faranda: recuentos totales (solo lectura en toda
+ * la suite). org_123: SOLO los asientos que este importador podría escribir
+ * (`source_type` sage200_*) — las suites hermanas de `test:integration` (billing-money,
+ * fiscal-models, structure-*) emiten y anulan facturas en org_123 en paralelo, así que
+ * el recuento total de asientos de org_123 oscila durante la pasada completa (corrector
+ * L3 · Puerta 9: 63 vs 57) sin que este fichero haya escrito nada allí.
+ */
 async function invariants(): Promise<Invariants> {
   const [row] = await prisma.$queryRaw<Array<Record<string, bigint>>>`
     SELECT
       (SELECT count(*) FROM journal_entries WHERE organization_id = ${FARANDA}) AS entries,
       (SELECT count(*) FROM ledger_imports WHERE organization_id = ${FARANDA}) AS imports,
       (SELECT count(*) FROM ledger_reconciliations WHERE organization_id = ${FARANDA}) AS reconciliations,
-      (SELECT count(*) FROM journal_entries WHERE organization_id = 'org_123') AS org123_entries`;
+      (SELECT count(*) FROM journal_entries WHERE organization_id = 'org_123' AND source_type LIKE 'sage200%') AS org123_entries`;
   return { entries: Number(row!.entries), imports: Number(row!.imports), reconciliations: Number(row!.reconciliations), org123Entries: Number(row!.org123_entries) };
 }
 

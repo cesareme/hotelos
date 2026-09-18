@@ -396,8 +396,7 @@ import {
   listRoomTypes,
   listRooms,
   patchReservation,
-  quoteAvailability,
-  transitionReservation
+  quoteAvailability
 } from "./modules/pms/pms.service.js";
 import { listGuests, getGuest, createGuest, updateGuest } from "./modules/guests/guests.service.js";
 import { extractPropertyMap, applyPropertyMap, type MapperFile, type PropertyMapProposal } from "./modules/mapper/property-mapper.service.js";
@@ -433,6 +432,9 @@ import {
   applyCancellationFee,
   applyNoShowFee
 } from "./modules/cancellation-policy/cancellation-policy.service.js";
+// Tanda L3 (lote B): cancel / no-show with policy (penalty line, folio closed at
+// balance 0, SoD before writing). Separate file: see its header (import cycle).
+import { cancelReservationWithPolicy, markNoShowWithPolicy } from "./modules/cancellation-policy/reservation-lifecycle.service.js";
 import {
   listTourOperators, getTourOperator, createTourOperator, updateTourOperator,
   listAllotments, getAllotment, createAllotment, updateAllotment, deleteAllotment,
@@ -459,6 +461,10 @@ const isReservationStatus = (v: string): v is ReservationStatusValue =>
   (RESERVATION_STATUSES as readonly string[]).includes(v);
 // NOTE: `parse()` takes ZodSchema<T> (input === output), so no transform/default
 // here — the csv is validated as a string and split by the handler.
+// Tanda L3 (lote B): GET /reservations/:id/cancellation-charge?mode=cancellation|no_show.
+const CancellationChargeQuerySchema = z.object({
+  mode: z.enum(["cancellation", "no_show"], { errorMap: () => ({ message: "modo no válido; valores: cancellation, no_show" }) }).optional()
+});
 // ---- Tanda 3 (server-rutas) body/query schemas -----------------------------
 // Fiscal categories of packages/compliance indirect-tax.ts (contract A). Typed
 // against the package so a catalogue change fails the typecheck here instead of
@@ -4930,11 +4936,14 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(CancelReservationSchema, request.body ?? {});
-    return transitionReservation({
+    // Tanda L3 (lote B): policy applied by default (penalty line + folio closed at 0);
+    // `applyPolicy: false` waives it (pms.reservation.discount + reason). Response = record + `cancellation`.
+    return cancelReservationWithPolicy({
       context: request.userContext,
       reservationId: params.id,
-      status: "cancelled",
       reason: body.reason,
+      applyPolicy: body.applyPolicy ?? true,
+      supervisorAuthorizationId: body.supervisorAuthorizationId ?? null,
       correlationId: createId("corr")
     });
   });
@@ -4943,11 +4952,12 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(NoShowReservationSchema, request.body ?? {});
-    return transitionReservation({
+    return markNoShowWithPolicy({
       context: request.userContext,
       reservationId: params.id,
-      status: "no_show",
       reason: body.reason,
+      applyPolicy: body.applyPolicy ?? true,
+      supervisorAuthorizationId: body.supervisorAuthorizationId ?? null,
       correlationId: createId("corr")
     });
   });
@@ -5126,10 +5136,13 @@ export async function buildApiServer() {
   app.post("/folios/:id/close", async (request) => {
     const params = request.params as { id: string };
     await assertBillingAccess(request, "folio", params.id);
+    // Corrector L3 (FC-2): a settled folio with charges no invoice documents
+    // answers 409 FOLIO_UNINVOICED_LINES (issue the F1/F2 first).
     return closeFolio({
       context: request.userContext,
       folioId: params.id,
-      correlationId: createId("corr")
+      correlationId: createId("corr"),
+      requireInvoiced: true
     });
   });
 
@@ -5809,7 +5822,8 @@ export async function buildApiServer() {
   });
   app.get("/reservations/:id/cancellation-charge", async (request) => {
     await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
-    return computeCancellationCharge({ reservationId: (request.params as { id: string }).id });
+    const query = parse(CancellationChargeQuerySchema, request.query ?? {}, "query");
+    return computeCancellationCharge({ reservationId: (request.params as { id: string }).id, mode: query.mode ?? "cancellation" });
   });
   app.post("/reservations/:id/apply-cancellation-fee", async (request) => {
     await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });

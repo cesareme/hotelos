@@ -200,23 +200,27 @@ emitida/rectificativa/simplificada, la factura recibida contabilizada o el
 gasto; las cuotas de una rectificativa van con signo negativo en `base`/`quota`
 (en el libro sí; en el asiento, en sentido contrario).
 
-Escritores (todos dentro de la transacción del documento; `delete + insert`
-por clave, idempotentes): `invoicing/vat-book.ts` (`writeIssuedVatBookRows`:
-emitidas F1/F2/R, contra-filas negativas de anulación y sustitución) y, para
-otros lotes, `accounting/vat-books.service.ts` (`registerInvoiceInVatBooks`,
-`registerInvoiceCancellationInVatBooks` — fila negativa fechada en `cancelledAt`
-con `sourceId = <invoiceId>:anulacion`, porque `VatBookSourceType` no tiene
-valor `cancellation` —, `registerSupplierBillInVatBooks` — recibidas +
-bienes_inversion por línea y tipo; solo `posted`/`paid` —,
-`registerExpenseInVatBooks`); `payables/vat-book.ts` escribe recibidas y
-bienes de inversión al contabilizar la factura recibida o el gasto y **borra**
-sus filas al anular (decisión del lote; si el periodo ya se declaró, el lote
-IVA puede preferir filas negativas). `POST /fiscal/vat-books/rebuild
-{ period | from,to }` rematerializa un rango por transacción (auditoría
-`VAT_BOOKS_REBUILT`). Cuando un rango no tiene filas materializadas, los
-modelos derivan las mismas filas en memoria desde `Invoice`+`InvoiceLine` /
-`SupplierBill` / `Expense` y lo declaran (`fuentes.origen = "documentos"` +
-aviso): nunca responden 409 por falta de libro.
+Escritores (todos dentro de la transacción del documento; idempotentes):
+`invoicing/vat-book.ts` (`writeIssuedVatBookRows`, ÚNICO escritor vivo de
+emitidas: F1/F2/R, contra-filas negativas de anulación y sustitución, con
+`skipDuplicates`) y, para el lado de proveedores, `accounting/vat-books.service.ts`
+(`registerSupplierBillInVatBooks` — recibidas + bienes_inversion por línea y
+tipo; solo `posted`/`paid` — y `registerExpenseInVatBooks`, `delete + insert`
+por clave); `payables/vat-book.ts` escribe recibidas y bienes de inversión al
+contabilizar la factura recibida o el gasto y **borra** sus filas al anular
+(decisión del lote; si el periodo ya se declaró, el lote IVA puede preferir
+filas negativas). Los escritores de factura de `vat-books.service.ts`
+(`registerInvoiceInVatBooks`, `registerInvoiceCancellationInVatBooks`) se
+retiraron en la Tanda L3-C (sin llamadores): la convención de `sourceId` de
+las contra-filas es UNA (`<id>#anulacion` / `<id>#sustituida`, §11.1).
+`POST /fiscal/vat-books/rebuild { period | from,to }` rematerializa un rango
+por transacción (auditoría `VAT_BOOKS_REBUILT`) derivando las MISMAS filas que
+el escritor vivo (`deriveVatBookRows`), conserva las filas importadas de Sage
+(`sourceType sage200`) y purga las filas `<id>:anulacion` de la convención
+anterior. Cuando un rango no tiene filas materializadas, los modelos derivan
+las mismas filas en memoria desde `Invoice`+`InvoiceLine` / `SupplierBill` /
+`Expense` y lo declaran (`fuentes.origen = "documentos"` + aviso): nunca
+responden 409 por falta de libro.
 
 ### 1.5 Facturación y cobros
 
@@ -871,6 +875,99 @@ Qué quedó cableado en el working tree (sin commit):
   5 skipped) · env-census 136/136 · drift 0 · fresh-install: pasos 1-7 OK, el
   paso 8 (`adopt-baseline` en dry-run) está corregido en esta pasada (trataba
   como «stale» toda fila de `_prisma_migrations` que no fuese la baseline).
+
+### 11.1 Modelo 303 desde libros sin doble cómputo (Tanda L3-C · 2026-09-18)
+
+Qué cambia y dónde vive:
+
+- **Convención única de `sourceId` en las contra-filas del libro de emitidas**
+  (`accounting/vat-books.service.ts`: `VAT_BOOK_CANCELLATION_SUFFIX`,
+  `VAT_BOOK_SUPERSEDED_SUFFIX`, `cancellationSourceId()`, `supersededSourceId()`,
+  `vatBookDocumentId()`; re-exportadas por `invoicing/vat-book.ts`):
+  · `<invoiceId>#anulacion` — filas negativas de una factura anulada, fechadas
+    el día de la anulación (Europe/Madrid); las escribe en vivo `cancelInvoice`
+    y las deriva `vatRowsFromInvoice({ kind: "cancellation" })`;
+  · `<originalId>#sustituida` — filas negativas de la factura ORIGINAL
+    sustituida por una rectificativa «S», fechadas el día de expedición de la
+    sustitutiva (la sustitutiva escribe sus propias filas íntegras bajo su id):
+    las escribe en vivo `createRectifyingInvoice` y, desde L3-C, también las
+    deriva `deriveVatBookRows` (`vatRowsFromInvoice({ kind: "superseded",
+    supersededAt })`, cargando la original por id aunque esté fuera del rango);
+    así el libro netea igual que el diario (original revertida + sustitutiva
+    asentada) y un rebuild reproduce el libro vivo fila a fila;
+  · `<expenseId>#anulacion` — fila negativa de un gasto anulado;
+  · `<id>:anulacion` es la convención de los rebuilds anteriores al 18/09
+    (**8 filas en Faranda**, decisión §6.9 del integrador): `rebuildVatBooks`
+    la purga en el rango y, para los documentos cuyas `#anulacion` materializa,
+    también fuera de él (aviso «filas de anulación con la convención anterior
+    retiradas»); `replaceRows` borra la variante `:` al escribir la `#`.
+    Nunca se vuelve a escribir.
+- **Exclusiones del cotejo con el diario** (`modelo-303.service.ts`
+  `ledgerCrossCheck`), cada una nombrada con su recuento en `avisos`
+  (`crossCheckExclusionAvisos`; el reverso de un asiento excluido se excluye
+  con él aunque el asiento revertido esté fechado fuera del periodo):
+  · `vat_settlement` (liquidación nativa) y cierre / apertura de ejercicio
+    (`entryKind closing|opening`), como antes;
+  · `pms_shadow_revenue` (OPERA en modo sombra, Tanda 7b): devenga 477 desde
+    el PMS sin fila en el libro de emitidas — `isNonAccrualVatEntry` lo excluye;
+  · asientos `sage200_journal` con **patrón de liquidación**: líneas en
+    4750x/4700x junto a 477x/472x (`isSageSettlementPattern`; p. ej.
+    «Liquidación IVA 2026-Q2»). El importador SÍ rellena `taxRateCode` desde
+    `tipo_iva`, así que el tipo NO es el discriminador (excluir por
+    `taxRateCode` nulo tiraría devengos legítimos): lo es el patrón de cuentas.
+    Un «Pago liquidación IVA» (4750 contra 572, sin 477/472) no entra en el
+    cotejo y no se cuenta como exclusión.
+  · Topes explícitos `LEDGER_CROSS_CHECK_MAX_ENTRIES` (25.000 asientos) y
+    `LEDGER_CROSS_CHECK_MAX_LINES` (50.000 apuntes): al superarlos el cotejo usa
+    los primeros por fecha y lo dice en `avisos` («no es concluyente»).
+- **Cómo leer `avisos` del 303**: «N asientos de ingresos de OPERA en modo
+  sombra (pms_shadow_revenue) excluidos del cotejo» y «N asientos de
+  liquidación importados de Sage excluidos del cotejo (patrón 4750/4700 junto a
+  477/472)» son exclusiones estructurales (no diferencias); «Los libros de IVA y
+  el diario difieren en N tipo(s)» remite a `fuentes.diario.diferencias`
+  (`libros − diario` por tipo); «Factura X sustituida por Y sin contrafilas
+  #sustituida en el libro de emitidas (…): ejecuta POST /fiscal/vat-books/rebuild»
+  (`supersededGapAvisos`) nombra un libro rebuildeado antes de L3-C y explica la
+  diferencia restante; «apuntes de IVA heredados sin tipo» sigue siendo el tipo
+  deducido de la subcuenta solo para el cotejo. `compute303` no cambia.
+- **Faranda 2026-Q3 (lectura, script Node fuera del repo, 18/09)**: casillas
+  27 / 45 / 71 = 239.499,58 / 76.220,42 / 163.279,16 con 196 registros, sin
+  cambio; los deltas del cotejo −12,60 (21 %) y −363,45 (10 %) eran el asiento
+  `pms_shadow_revenue` del 16/09 (477.21 12,60 · 477.10 368,00) menos la cuota
+  4,55 de FAC-2026-000018 sustituida por REC-2026-000003 sin `#sustituida` en
+  el libro: tras L3-C el 21 % cuadra, el 10 % queda en +4,55 nombrado en
+  `avisos` (desaparece al regenerar el trimestre, decisión §6.9); 2026-Q2 y
+  2026-Q1 pasan a `cuadra = true` (antes el diario sumaba 0 porque el asiento
+  «Liquidación IVA» de Sage anulaba el trimestre: ahora 1 y 3 asientos
+  excluidos y nombrados). `vat_book_entries` de Faranda idéntico antes y
+  después (invoice 34 · rectification 3 · sage200 2.918).
+- **Tests**: `tests/integration/l3-factura-303.test.mts` (tenant aislado
+  `helpers/l2-tenant.mts`: dos facturas por `createInvoiceFromFolio` +
+  `issueInvoice` al 10 % y al 21 %, `cancelInvoice` → `#anulacion`,
+  `createRectifyingInvoice` «S» → `#sustituida`, 303 con 27 = Σ cuotas netas y
+  `cuadra = true`, `rebuildVatBooks` idéntico fila a fila e idempotente, purga
+  de una `:anulacion` heredada fuera del rango, Faranda solo lectura);
+  unitarios `accounting/__tests__/{modelo-303,vat-books}.test.mts`
+  (convención, filas `superseded`, `isSageSettlementPattern`, avisos de
+  exclusión, topes); `fiscal-models.test.mts` pina `#anulacion` y que un
+  rebuild no deja `:anulacion`.
+- **Verificado por el integrador L3 por HTTP (`:3903`, `contabilidad`,
+  2026-09-18 23:0x; informe `docs/audits/TANDA-L3-DINERO-FISCAL-2026-09-18.md`
+  §5.6)**: `GET /fiscal/models/303?period=2026-Q3` → casillas 27 / 45 / 71 =
+  **239.495,03 / 76.220,42 / 163.274,61**, 197 registros (98 emitidas + 1
+  contrafila `#sustituida` derivada en memoria por DS-06 + 98 recibidas),
+  `fuentes.diario.cuadra = true` (497 apuntes, `diferencias: []`), 33 avisos
+  (la contrafila derivada de −4,55 con la orden de rebuild, 3 asientos
+  `pms_shadow_revenue` excluidos y los rutinarios de las heredadas). Por origen
+  (SQL sobre `vat_book_entries`, `date` en el trimestre): emitidas nativas 37
+  filas / cuota 74,94 + `sage200` 61 filas / 239.424,64 = 239.499,58 − 4,55
+  derivados = 239.495,03; recibidas `sage200` 98 filas / 76.220,42; **0 números
+  de factura nativos entre las filas `sage200`** (sin doble cómputo). Tres
+  simplificadas de prueba emitidas en RA durante la verificación (`FS-RA-2026-
+  000001…3`: cuotas 0,27 + 35,45 + 0,00) subieron la casilla 27 a 239.530,75 y
+  los registros a 200 con `cuadra = true`, y se borraron después (secuencia SIM
+  restaurada). El rebuild de Faranda Q3 (§6.9 del recon) sigue sin ejecutarse:
+  hasta entonces el −4,55 vive solo en memoria y en `avisos`.
 
 ## 12. Correcciones de la revisión adversarial (fix lots, 2026-09-16)
 

@@ -14,8 +14,26 @@
 // file (no importer) was retired in this lot. fix:3-A qa#7: the meta of
 // «Resumen» and the Huéspedes view name the primary guest the API joins in
 // /reservations/:id, never its internal id.
+//
+// Tanda L3 · lote F1 (2026-09-18):
+//   · «Cobrar» / «Devolver» also live in the «Importes» aside, visible from
+//     the initial Resumen view → list row → «Cobrar» → confirm = 3 clicks
+//     (decision §6.13; the ⌘K «Cobrar en RES-x» shortcut stays);
+//   · «Añadir cargo» offers the manual charge types of the fiscal catalogue
+//     (components/billing/charge-types) and an explicit «Categoría fiscal»
+//     sent as `taxCategory` (POST /folios/:id/lines);
+//   · cancel / no-show dialogs read GET /reservations/:id/cancellation-charge
+//     (?mode=) when they open and show the penalty, the policy and the free
+//     window; the reason is required; confirm sends `applyPolicy` (L3-B) and
+//     the toast names the penalty posted and the folio outcome.
 
 import { useEffect, useMemo, useState } from "react";
+import { previewCancellationCharge, type ChargeBreakdown, type ChargeMode } from "../../services/cancellationApi";
+import { financeErrorCode, financeErrorMessage } from "../../services/finance-contracts";
+import { TAX_CATEGORY_LABELS, TAX_CATEGORY_OPTIONS, type TaxCategory } from "../../services/taxesApi";
+import { chargeTypeLabel, defaultTaxCategoryForType, lifecycleOutcomeSummary, manualChargeTypeOptions, penaltyPreviewSummary, taxCategoryOptionsForType, type LifecycleOutcomeLike } from "../../components/billing/charge-types";
+import { SupervisorPinDialog } from "../../components/SupervisorPinDialog";
+import type { SupervisorAuthorizationDto } from "@hotelos/shared";
 import { usePathname } from "../tabs/usePathname";
 import { reservationIdFromPathname } from "./reservation-route";
 import { guestFullName, reservationGuestLabel, type GuestNameParts } from "./reservation-guest-label";
@@ -63,6 +81,7 @@ import {
   CocoaSpan,
   CocoaStat,
   CocoaState,
+  CocoaSwitch,
   CocoaTable,
   openTabPath,
   type CocoaTableColumn,
@@ -106,13 +125,23 @@ function guestLabel(reservation: ReservationDetail): string {
   return reservationGuestLabel(reservation, primaryGuestName(reservation));
 }
 
-const CHARGE_TYPES = [
-  { value: "minibar", label: "Minibar" },
-  { value: "breakfast", label: "Desayuno" },
-  { value: "parking", label: "Aparcamiento" },
-  { value: "room", label: "Alojamiento" },
-  { value: "adjustment", label: "Ajuste" }
-];
+// «Añadir cargo»: the manual types of the fiscal catalogue, labelled like the
+// folio column (components/billing/charge-types; every code is inferable by
+// the API). The fiscal category is preselected from the type and editable.
+const CHARGE_TYPE_OPTIONS = manualChargeTypeOptions();
+const DEFAULT_CHARGE_TYPE = "minibar";
+
+// Penalty preview of the cancel / no-show dialogs (GET /reservations/:id/cancellation-charge?mode=).
+type PenaltyPreview = { loading: boolean; data: ChargeBreakdown | null; error: string | null };
+const IDLE_PREVIEW: PenaltyPreview = { loading: false, data: null, error: null };
+
+// POST /cancel · /no-show answer the record plus `cancellation` (L3-B); the
+// shared client type only declares the record, so it is narrowed here.
+type LifecycleResponse = AdminReservation & { cancellation?: LifecycleOutcomeLike };
+
+function confirmMode(confirm: "cancel" | "noshow"): ChargeMode {
+  return confirm === "noshow" ? "no_show" : "cancellation";
+}
 
 // Inner views of the reservation workspace. Routing is local (no URL
 // segment) so deep-linking still lands on Resumen by default. Order follows a
@@ -175,12 +204,26 @@ export function ReservationDetailWorkspaceScreen() {
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [chargeType, setChargeType] = useState("minibar");
-  const [chargeDesc, setChargeDesc] = useState("Minibar");
+  const [chargeType, setChargeType] = useState(DEFAULT_CHARGE_TYPE);
+  const [chargeDesc, setChargeDesc] = useState(chargeTypeLabel(DEFAULT_CHARGE_TYPE));
   const [chargeAmount, setChargeAmount] = useState("12");
+  const [chargeTaxCategory, setChargeTaxCategory] = useState<TaxCategory>(defaultTaxCategoryForType(DEFAULT_CHARGE_TYPE));
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [confirm, setConfirm] = useState<"cancel" | "noshow" | null>(null);
+  // Cancel / no-show dialog: required reason, whether the policy penalty is
+  // applied (waiving it needs pms.reservation.discount on the API) and the preview.
+  const [confirmReason, setConfirmReason] = useState("");
+  const [applyPolicy, setApplyPolicy] = useState(true);
+  const [preview, setPreview] = useState<PenaltyPreview>(IDLE_PREVIEW);
+  // Corrector L3 (DS-02): waiving a penalty above the operative band answers
+  // 409 APPROVAL_REQUIRED (discount engine of T8a). The dialog offers the
+  // supervisor PIN (pms.reservation.override on this reservation) and resends
+  // the same call with `supervisorAuthorizationId`; above the supervisor band
+  // only an approved request lifts it (the API says so in the message).
+  const [waiverApproval, setWaiverApproval] = useState<{ tier: string | null; message: string } | null>(null);
+  const [waiverPinOpen, setWaiverPinOpen] = useState(false);
+  const [waiverAuthorization, setWaiverAuthorization] = useState<SupervisorAuthorizationDto | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>("summary");
   // Activity feed is fetched lazily on tab open to avoid pulling the audit log
   // when the user is just glancing at the summary.
@@ -276,6 +319,75 @@ export function ReservationDetailWorkspaceScreen() {
     }
   }
 
+  // Preview of the penalty when a cancel / no-show dialog opens (read only:
+  // GET /reservations/:id/cancellation-charge). A closed dialog resets it.
+  useEffect(() => {
+    if (!confirm || !reservation) {
+      setPreview(IDLE_PREVIEW);
+      return;
+    }
+    setConfirmReason("");
+    setApplyPolicy(true);
+    setPreview({ loading: true, data: null, error: null });
+    let stale = false;
+    previewCancellationCharge(reservation.id, confirmMode(confirm))
+      .then((data) => {
+        if (!stale) setPreview({ loading: false, data, error: null });
+      })
+      .catch((error: unknown) => {
+        if (!stale) setPreview({ loading: false, data: null, error: financeErrorMessage(error, "No se pudo calcular la penalización.") });
+      });
+    return () => {
+      stale = true;
+    };
+    // The reservation id is what matters; the record object changes on every reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirm, reservation?.id]);
+
+  /**
+   * POST /reservations/:id/cancel · /no-show with `applyPolicy` (L3-B): the
+   * API posts the penalty line, closes the folio at balance 0 and answers
+   * `cancellation` (charge, folio status / balance), which the toast names.
+   */
+  /** Closes the cancel / no-show dialog and forgets any pending waiver authorisation (single use, bound to that attempt). */
+  function closeLifecycleDialog() {
+    setConfirm(null);
+    setWaiverApproval(null);
+    setWaiverAuthorization(null);
+    setWaiverPinOpen(false);
+  }
+
+  async function handleLifecycle(kind: "cancel" | "noshow") {
+    if (!reservation) return;
+    const reason = confirmReason.trim();
+    if (!reason) {
+      showToast(kind === "cancel" ? "Indica el motivo de la cancelación." : "Indica el motivo del no-show.", { variant: "error" });
+      return;
+    }
+    const mode = confirmMode(kind);
+    setBusy(true);
+    setBalancePrompt(null);
+    try {
+      const options = { applyPolicy, ...(waiverAuthorization ? { supervisorAuthorizationId: waiverAuthorization.id } : {}) };
+      const request = kind === "cancel" ? cancelReservation(reservation.id, reason, options) : noShowReservation(reservation.id, reason, options);
+      const result = (await request) as LifecycleResponse;
+      closeLifecycleDialog();
+      await reload();
+      showToast(lifecycleOutcomeSummary(mode, result.cancellation ?? null, (amount) => money(amount, reservation.currency)), { variant: "success" });
+    } catch (error) {
+      if (!applyPolicy && financeErrorCode(error) === "APPROVAL_REQUIRED") {
+        const details = (error as { details?: { tier?: unknown } }).details;
+        setWaiverApproval({ tier: typeof details?.tier === "string" ? details.tier : null, message: financeErrorMessage(error, "La renuncia a la penalización necesita autorización.") });
+        setWaiverAuthorization(null);
+        showToast("La renuncia a la penalización supera tu tramo: pide la autorización de un supervisor.", { variant: "warning" });
+      } else {
+        showToast(financeErrorMessage(error, kind === "cancel" ? "No se pudo cancelar la reserva." : "No se pudo registrar el no-show."), { variant: "error" });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const status = reservation?.status ?? "";
   const canAssign = status === "confirmed";
   const canCheckIn = status === "confirmed";
@@ -311,7 +423,21 @@ export function ReservationDetailWorkspaceScreen() {
   const lineColumns = useMemo<CocoaTableColumn<FolioLine>[]>(
     () => [
       { key: "description", label: FIELD_LABELS.description, minWidth: 160, render: (line) => <strong>{line.description}</strong> },
-      { key: "type", label: FIELD_LABELS.type, fit: true, hideOnNarrow: true, render: (line) => CHARGE_TYPES.find((c) => c.value === line.type)?.label ?? line.type },
+      { key: "type", label: FIELD_LABELS.type, fit: true, hideOnNarrow: true, render: (line) => chargeTypeLabel(line.type) },
+      {
+        key: "taxCategory",
+        label: "Categoría fiscal",
+        fit: true,
+        hideOnNarrow: true,
+        render: (line) =>
+          line.taxCategory && line.taxCategory in TAX_CATEGORY_LABELS ? (
+            <CocoaBadge tone={line.taxCategory === "not_subject" ? "info" : "neutral"} size="small" uppercase={false}>
+              {TAX_CATEGORY_LABELS[line.taxCategory as TaxCategory]}
+            </CocoaBadge>
+          ) : (
+            "—"
+          )
+      },
       { key: "quantity", label: "Cantidad × precio", align: "right", hideOnNarrow: true, render: (line) => `${line.quantity} × ${money(line.unitPrice, currency)}` },
       { key: "total", label: FIELD_LABELS.total, align: "right", render: (line) => <strong>{money(line.total, currency)}</strong> }
     ],
@@ -329,6 +455,84 @@ export function ReservationDetailWorkspaceScreen() {
   function openJourney(id: string) {
     const url = urlForScreen("GuestJourneyWorkspace", { id });
     if (url) openTabPath(url);
+  }
+
+  /** Body of the cancel / no-show dialogs: penalty preview, required reason and the «apply penalty» switch. */
+  function lifecycleFields(kind: "cancel" | "noshow") {
+    const mode = confirmMode(kind);
+    const amountText = (amount: number) => money(amount, reservation?.currency);
+    const penalty = preview.data;
+    const chargeable = Boolean(penalty && penalty.amount > 0 && !penalty.withinFreeWindow);
+    return (
+      <div className="cocoa-stack" data-gap="3">
+        {preview.loading ? (
+          <CocoaState kind="loading" inline title="Calculando la penalización prevista…" />
+        ) : (
+          <CocoaCallout
+            tone={preview.error ? "warning" : chargeable && applyPolicy ? "warning" : "info"}
+            title={penalty ? (penalty.policyName ? `Política «${penalty.policyName}»` : "Sin política de cancelación") : "Penalización no calculada"}
+            role="status"
+          >
+            {preview.error ?? penaltyPreviewSummary(mode, penalty, amountText)}
+            {penalty?.label ? ` ${penalty.label}` : ""}
+            {penalty?.cutoffAt ? ` Plazo gratuito hasta ${dateTime(penalty.cutoffAt, { style: "medium" })}.` : ""}
+          </CocoaCallout>
+        )}
+        <CocoaField label="Motivo" required help="Queda en la auditoría de la reserva.">
+          <CocoaInput
+            id={`reserva-${kind}-reason`}
+            value={confirmReason}
+            onChange={setConfirmReason}
+            placeholder={kind === "cancel" ? "El huésped anula el viaje" : "No se ha presentado ni ha avisado"}
+            maxLength={1000}
+            disabled={busy}
+            autoComplete="off"
+          />
+        </CocoaField>
+        {chargeable ? (
+          <CocoaField
+            label="Aplicar la penalización prevista"
+            inline
+            help={
+              applyPolicy
+                ? `Se cargarán ${amountText(penalty!.amount)} al folio como línea no sujeta a IVA.`
+                : "Renunciar es un descuento: hasta el tramo operativo basta la clave de descuento y el motivo; por encima hace falta la autorización de un supervisor (PIN) o una solicitud aprobada. Queda auditado."
+            }
+          >
+            <CocoaSwitch
+              checked={applyPolicy}
+              onChange={(next) => {
+                setApplyPolicy(next);
+                setWaiverApproval(null);
+                setWaiverAuthorization(null);
+              }}
+              size="small"
+              disabled={busy}
+            />
+          </CocoaField>
+        ) : null}
+        {!applyPolicy && waiverApproval && !waiverAuthorization ? (
+          <CocoaCallout
+            tone="warning"
+            title="Esta renuncia supera tu tramo"
+            role="alert"
+            actions={
+              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setWaiverPinOpen(true)} disabled={busy}>
+                Autorizar con PIN de supervisor
+              </CocoaButton>
+            }
+          >
+            {waiverApproval.message}
+            {waiverApproval.tier ? ` Tramo: ${waiverApproval.tier}.` : ""} Un supervisor presente puede autorizar solo esta renuncia con su PIN hasta su tramo; por encima del tramo de supervisión solo vale una solicitud de descuento aprobada.
+          </CocoaCallout>
+        ) : null}
+        {!applyPolicy && waiverAuthorization ? (
+          <CocoaCallout tone="success" title="Autorización de supervisor concedida" role="status">
+            Válida hasta {dateTime(waiverAuthorization.expiresAt, { style: "medium" })} y solo para esta reserva. Confirma para renunciar a la penalización.
+          </CocoaCallout>
+        ) : null}
+      </div>
+    );
   }
 
   const pageState = !reservationId ? "empty" : loadError && !reservation ? "error" : !reservation ? "loading" : "ready";
@@ -530,23 +734,33 @@ export function ReservationDetailWorkspaceScreen() {
                 {folio ? (
                   <>
                     <CocoaSection title="Añadir cargo" meta={folioOpen ? "folio abierto" : "folio cerrado"}>
-                      <CocoaFormRow columns={3} min={160}>
+                      <CocoaFormRow columns={4} min={150}>
                         <CocoaField label={FIELD_LABELS.type}>
                           <CocoaSelect
                             value={chargeType}
                             onChange={(v) => {
                               setChargeType(v);
-                              setChargeDesc(CHARGE_TYPES.find((c) => c.value === v)?.label ?? "");
+                              // Keep a description the operator already edited; refresh the default one.
+                              setChargeDesc((current) => (current.trim() === "" || current === chargeTypeLabel(chargeType) ? chargeTypeLabel(v) : current));
+                              setChargeTaxCategory(defaultTaxCategoryForType(v));
                             }}
-                            options={CHARGE_TYPES}
+                            options={CHARGE_TYPE_OPTIONS}
                             disabled={busy}
                           />
                         </CocoaField>
                         <CocoaField label={FIELD_LABELS.description}>
-                          <CocoaInput value={chargeDesc} onChange={setChargeDesc} disabled={busy} />
+                          <CocoaInput value={chargeDesc} onChange={setChargeDesc} maxLength={500} disabled={busy} />
                         </CocoaField>
-                        <CocoaField label="Importe (€)">
+                        <CocoaField label="Importe (€)" help="Precio bruto, con impuestos.">
                           <CocoaInput value={chargeAmount} onChange={setChargeAmount} type="number" inputMode="decimal" disabled={busy} />
+                        </CocoaField>
+                        <CocoaField label="Categoría fiscal" help="Determina el tipo de IVA al facturar; solo las categorías compatibles con el tipo de cargo.">
+                          <CocoaSelect
+                            value={chargeTaxCategory}
+                            onChange={(v) => setChargeTaxCategory(v as TaxCategory)}
+                            options={taxCategoryOptionsForType(chargeType, TAX_CATEGORY_OPTIONS).map((option) => ({ value: option.value, label: option.label }))}
+                            disabled={busy}
+                          />
                         </CocoaField>
                       </CocoaFormRow>
                       <div className="cocoa-row" data-gap="2">
@@ -555,12 +769,13 @@ export function ReservationDetailWorkspaceScreen() {
                           tone="accent"
                           disabled={busy || !folioId || !folioOpen || !Number(chargeAmount)}
                           onClick={() =>
-                            void runAction("Cargo añadido al folio", () =>
+                            void runAction(`Cargo añadido al folio (${TAX_CATEGORY_LABELS[chargeTaxCategory]})`, () =>
                               postFolioLine(folioId!, {
                                 type: chargeType,
-                                description: chargeDesc || chargeType,
+                                description: chargeDesc.trim() || chargeTypeLabel(chargeType),
                                 quantity: 1,
-                                unitPrice: Number(chargeAmount)
+                                unitPrice: Number(chargeAmount),
+                                taxCategory: chargeTaxCategory
                               })
                             )
                           }
@@ -675,7 +890,22 @@ export function ReservationDetailWorkspaceScreen() {
 
           <CocoaSpan cols={4} min={240}>
             <div className="cocoa-stack" data-gap="3">
-              <CocoaSection title="Importes" meta={folio ? (folioOpen ? "folio abierto" : "folio cerrado") : folioError ? "folio no disponible" : "cargando folio"}>
+              <CocoaSection
+                title="Importes"
+                meta={folio ? (folioOpen ? "folio abierto" : "folio cerrado") : folioError ? "folio no disponible" : "cargando folio"}
+                footer={
+                  folio ? (
+                    <div className="cocoa-row" data-gap="2">
+                      <CocoaButton variant="filled" tone="accent" size="small" disabled={busy || !folioId || !folioOpen} title={folioOpen ? "Registrar un cobro en el folio" : "El folio está cerrado"} onClick={() => setPaymentOpen(true)}>
+                        Cobrar
+                      </CocoaButton>
+                      <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy || refundablePayments(payments).length === 0} onClick={() => setRefundOpen(true)}>
+                        Devolver
+                      </CocoaButton>
+                    </div>
+                  ) : undefined
+                }
+              >
                 <div className="cocoa-stack" data-gap="3">
                   <CocoaStat label="Total de la reserva" value={money(reservation.totalAmount, reservation.currency)} size="large" />
                   <CocoaStat
@@ -730,32 +960,54 @@ export function ReservationDetailWorkspaceScreen() {
         <>
           <CocoaDialog
             open={confirm === "cancel"}
-            onClose={() => setConfirm(null)}
+            onClose={closeLifecycleDialog}
             tone="destructive"
             title={`¿Cancelar la reserva ${reservation.code}?`}
-            description="Se aplicará la política de cancelación y la reserva dejará de contar en la ocupación."
-            confirmLabel="Cancelar reserva"
+            description="La reserva dejará de contar en la ocupación. La penalización prevista por su política se carga al folio como línea no sujeta a IVA y, si el saldo queda a cero, el folio se cierra."
+            size="md"
+            confirmLabel={busy ? "Cancelando…" : waiverAuthorization ? "Cancelar con autorización" : "Cancelar reserva"}
             cancelLabel="Mantener reserva"
             busy={busy}
-            onConfirm={async () => {
-              await runAction("Reserva cancelada", () => cancelReservation(reservation.id, "Front-desk cancellation"));
-              setConfirm(null);
-            }}
-          />
+            confirmDisabled={!confirmReason.trim() || preview.loading}
+            initialFocus={() => document.getElementById("reserva-cancel-reason")}
+            onConfirm={() => void handleLifecycle("cancel")}
+          >
+            {lifecycleFields("cancel")}
+          </CocoaDialog>
           <CocoaDialog
             open={confirm === "noshow"}
-            onClose={() => setConfirm(null)}
+            onClose={closeLifecycleDialog}
             tone="destructive"
             title={`¿Marcar ${reservation.code} como no-show?`}
-            description="El huésped no se ha presentado: la reserva se cierra y se aplica la política de no-show."
-            confirmLabel="Marcar no-show"
+            description="El huésped no se ha presentado: la reserva se cierra, la penalización de no-show prevista por su política se carga al folio y, si el saldo queda a cero, el folio se cierra."
+            size="md"
+            confirmLabel={busy ? "Registrando…" : waiverAuthorization ? "Marcar no-show con autorización" : "Marcar no-show"}
             cancelLabel="Mantener reserva"
             busy={busy}
-            onConfirm={async () => {
-              await runAction("No-show registrado", () => noShowReservation(reservation.id, "No-show at front desk"));
-              setConfirm(null);
-            }}
-          />
+            confirmDisabled={!confirmReason.trim() || preview.loading}
+            initialFocus={() => document.getElementById("reserva-noshow-reason")}
+            onConfirm={() => void handleLifecycle("noshow")}
+          >
+            {lifecycleFields("noshow")}
+          </CocoaDialog>
+          {confirm ? (
+            <SupervisorPinDialog
+              open={waiverPinOpen}
+              onClose={() => setWaiverPinOpen(false)}
+              permissionKey="pms.reservation.override"
+              entityType="reservation"
+              entityId={reservation.id}
+              propertyId={reservation.propertyId}
+              amount={preview.data && preview.data.amount > 0 ? preview.data.amount.toFixed(2) : undefined}
+              actionLabel={`Renunciar a la penalización de ${preview.data ? money(preview.data.amount, reservation.currency) : "la reserva"} ${reservation.code}`}
+              onAuthorized={(granted) => {
+                setWaiverAuthorization(granted);
+                setWaiverPinOpen(false);
+                setWaiverApproval(null);
+                showToast("Autorización de supervisor concedida: confirma la renuncia", { variant: "success" });
+              }}
+            />
+          ) : null}
         </>
       ) : null}
     </CocoaPage>

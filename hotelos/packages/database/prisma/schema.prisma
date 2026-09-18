@@ -3390,11 +3390,19 @@ model CancellationPolicy {
   noShowPenaltyType String   @default("first_night") @map("no_show_penalty_type")
   noShowPenaltyValue Decimal? @map("no_show_penalty_value") @db.Decimal(12, 2)
   active            Boolean  @default(true)
+  // Tanda L3 (2026-09-18, lote S): the property's default policy. Applies to
+  // reservations without `cancellationPolicyId` / `cancellationPolicyCode`
+  // (before this flag `resolveReservationPolicy` fell back to the first active
+  // policy by code). At most ONE default per property: the invariant is kept by
+  // the cancellation-policy service inside a transaction (no partial unique
+  // index here because `db:drift:check` compares datasource vs datamodel).
+  isDefault         Boolean  @default(false) @map("is_default")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
   @@unique([propertyId, code])
   @@index([propertyId, active])
+  @@index([propertyId, isDefault])
   @@map("cancellation_policies")
 }
 
@@ -3433,6 +3441,15 @@ model Reservation {
   specialRequests      String?           @map("special_requests")
   notes                String?
   totalAmount          Decimal           @default(0) @map("total_amount") @db.Decimal(12, 2)
+  // Tanda L3 (2026-09-18, lote S): where `totalAmount` came from. Values:
+  //   rate_plan — quoted from the reservation's rate plan (or BAR fallback)
+  //   partial   — quoted, but some nights had no published rate
+  //   none      — no published rate found (total left at 0)
+  //   manual    — total typed by the user / negotiated
+  //   file      — total read from an import file (T7 `totalSource file`)
+  //   quoted    — total quoted at import time (T7 `totalSource quoted`)
+  // NULL = legacy row (created before this column existed).
+  priceSource          String?           @map("price_source")
   currency             String            @default("EUR")
   cancellationPolicyId String?           @map("cancellation_policy_id")
   // 2026 audit: PMS field parity with Mews / Opera / Cloudbeds. All optional /

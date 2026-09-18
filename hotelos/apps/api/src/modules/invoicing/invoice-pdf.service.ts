@@ -14,13 +14,27 @@
 // comes from the snapshot when frozen there (issued after L3) and from the
 // live property otherwise.
 //
+// Tanda L3 · lote E (2026-09-18): legacy invoices without `tax_breakdown_json`
+// (14 of the 25 Faranda documents, issued before the desglose column) used to
+// print an EMPTY «Desglose de IVA». The model now says where the breakdown
+// comes from (`breakdownSource`): the issuance snapshot, the persisted
+// breakdown, or — only when both are missing and the document has lines — the
+// groups reconstructed from the InvoiceLine rows with `taxGroupsFromLines`
+// (accounting/vat-books.service.ts: the SAME grouping and per-group rounding
+// the VAT books use, so document and libro de emitidas agree). A reconstructed
+// breakdown prints a discreet note under the table; snapshot / stored
+// documents and drafts («BORRADOR») render exactly as before. Nothing is
+// written back (decision §6.10: the issued rows and their VeriFactu chain stay
+// immutable; the reconstruction is read-side only).
+//
 // `buildInvoicePdf` is pure (model → Buffer) and unit-tested;
 // `renderInvoicePdf` loads the model.
 
 import { prisma } from "@hotelos/database";
 import { NotFoundError } from "../../lib/http-error.js";
+import { taxGroupsFromLines, type InvoiceLineForBooks } from "../accounting/vat-books.service.js";
 import { parseInvoiceSnapshot } from "./invoice-snapshot.js";
-import { getInvoice, RECTIFYING_REASON_LABELS, structureFromSnapshotJson, type InvoiceRecord, type RectifyingReasonCode } from "./invoice.service.js";
+import { getInvoice, RECTIFYING_REASON_LABELS, structureFromSnapshotJson, type InvoiceLineDraft, type InvoiceRecord, type RectifyingReasonCode } from "./invoice.service.js";
 import { ISSUER_TAX_ID_PLACEHOLDER, resolveIssuerIdentity, type IssuerEstablishment } from "./issuer-identity.service.js";
 import { encodeQr } from "./pdf/qr-encoder.js";
 import { A4, PdfDocument, type PdfPage, textWidth } from "./pdf/pdf-writer.js";
@@ -35,6 +49,70 @@ export type InvoicePdfLine = {
 };
 
 export type InvoicePdfEstablishment = Pick<IssuerEstablishment, "code" | "tradeName" | "addressLine">;
+
+/** One row of the «Desglose de IVA» table (VeriFactu group: figure · calificación · rate · base · quota). */
+export type InvoicePdfBreakdownGroup = { figure: string; calificacion: string; ratePercent: number; base: number; quota: number };
+
+/**
+ * Where the breakdown printed on the document comes from (Tanda L3 · lote E):
+ *   snapshot — the issuance snapshot (Invoice.snapshotJson; invoices issued after 2026-09-15);
+ *   stored   — Invoice.taxBreakdownJson (drafts, and invoices issued after Tanda 3 without snapshot);
+ *   lines    — reconstructed from the InvoiceLine rows (legacy invoices without tax_breakdown_json).
+ */
+export type InvoicePdfBreakdownSource = "snapshot" | "stored" | "lines";
+
+/** Note printed under a reconstructed breakdown (only when `breakdownSource === "lines"`). */
+export const BREAKDOWN_FROM_LINES_NOTE = "Desglose reconstruido a partir de las líneas";
+
+// `TaxGroup` of vat-books.service.ts is not exported: type it from the function.
+type LegacyTaxGroup = ReturnType<typeof taxGroupsFromLines>[number];
+type InvoiceLineForBreakdown = Pick<InvoiceLineDraft, "total" | "taxRate" | "taxCode" | "taxCalificacion" | "taxFigure">;
+
+/**
+ * VAT groups of a legacy invoice rebuilt from its lines: the SAME grouping and
+ * per-group rounding as the VAT books (`taxGroupsFromLines`: base =
+ * round2(gross / (1 + t)), quota = round2(gross − base)), so the document shows
+ * the figures the libro de emitidas derives for it. `calificacion` is N1 only
+ * when the lines say so (`taxCalificacion === "N1"`), S1 otherwise; a 0 %
+ * subject line prints as «IVA 0 %» (no «exento»: it is a missing rate, FC-5). Pure.
+ */
+export function breakdownFromInvoiceLines(lines: ReadonlyArray<InvoiceLineForBreakdown>): InvoicePdfBreakdownGroup[] {
+  const forBooks: InvoiceLineForBooks[] = lines.map((line) => ({
+    total: line.total,
+    taxRate: line.taxRate,
+    taxCode: line.taxCode,
+    taxCalificacion: line.taxCalificacion ?? null,
+    taxFigure: line.taxFigure ?? null
+  }));
+  return taxGroupsFromLines(forBooks).map((group: LegacyTaxGroup) => ({
+    figure: group.figure,
+    calificacion: group.subject ? "S1" : "N1",
+    ratePercent: group.rate.toNumber(),
+    base: group.base.toNumber(),
+    quota: group.quota.toNumber()
+  }));
+}
+
+function copyGroups(groups: ReadonlyArray<InvoicePdfBreakdownGroup>): InvoicePdfBreakdownGroup[] {
+  return groups.map((group) => ({ figure: group.figure, calificacion: group.calificacion, ratePercent: group.ratePercent, base: group.base, quota: group.quota }));
+}
+
+/**
+ * Breakdown of the document and its source: the snapshot wins, then the
+ * persisted breakdown, then — legacy invoice: no snapshot, empty breakdown,
+ * lines present — the groups reconstructed from the lines. A document with
+ * neither breakdown nor lines keeps an empty `stored` breakdown. Pure.
+ */
+export function resolvePdfBreakdown(input: {
+  snapshot: ReadonlyArray<InvoicePdfBreakdownGroup> | null;
+  stored: ReadonlyArray<InvoicePdfBreakdownGroup>;
+  lines: ReadonlyArray<InvoiceLineForBreakdown>;
+}): { breakdown: InvoicePdfBreakdownGroup[]; breakdownSource: InvoicePdfBreakdownSource } {
+  if (input.snapshot) return { breakdown: copyGroups(input.snapshot), breakdownSource: "snapshot" };
+  if (input.stored.length > 0) return { breakdown: copyGroups(input.stored), breakdownSource: "stored" };
+  if (input.lines.length > 0) return { breakdown: breakdownFromInvoiceLines(input.lines), breakdownSource: "lines" };
+  return { breakdown: [], breakdownSource: "stored" };
+}
 
 /** «Establecimiento: Hotel Faranda Rías Altas (RA) · Paseo Marítimo 1, Perillo (Oleiros), A Coruña». Pure. */
 export function establishmentLine(establishment: InvoicePdfEstablishment): string {
@@ -67,7 +145,9 @@ export type InvoicePdfModel = {
   };
   customer: { type: string; name: string | null; taxId: string | null };
   lines: InvoicePdfLine[];
-  breakdown: Array<{ figure: string; calificacion: string; ratePercent: number; base: number; quota: number }>;
+  breakdown: InvoicePdfBreakdownGroup[];
+  /** Origin of `breakdown` (always set by loadInvoicePdfModel; optional for older callers). A `lines` reconstruction is noted on the document. */
+  breakdownSource?: InvoicePdfBreakdownSource;
   totals: { base: number; tax: number; total: number };
   rectification: { originalNumber: string | null; reasonCode: string; reasonLabel: string; type: "I" | "S" | null } | null;
   payment: { paidTotal: number; balanceDue: number; status: string } | null;
@@ -111,7 +191,9 @@ function documentTitle(model: InvoicePdfModel): string {
 
 function rateLabel(group: { calificacion: string; ratePercent: number; figure: string }): string {
   if (group.calificacion === "N1") return "No sujeto";
-  if (group.ratePercent === 0) return `${group.figure} 0 % (exento)`;
+  // Corrector L3 (FC-5): a subject (S1) group at 0 % is a line without a
+  // configured rate (legacy Faranda invoices), not an exemption — never print «exento».
+  if (group.ratePercent === 0) return `${group.figure} 0 %`;
   return `${group.figure} ${String(group.ratePercent).replace(".", ",")} %`;
 }
 
@@ -255,8 +337,9 @@ export function buildInvoicePdf(model: InvoicePdfModel): Buffer {
   cursor.page.line(MARGIN, cursor.y + 2, A4.width - MARGIN, cursor.y + 2, 0.5, 0.5);
   cursor.y += 10;
 
-  // Tax breakdown + totals.
-  ensureSpace(LINE_HEIGHT * (model.breakdown.length + 5));
+  // Tax breakdown + totals (plus the reconstruction note of a legacy invoice).
+  const reconstructed = model.breakdownSource === "lines";
+  ensureSpace(LINE_HEIGHT * (model.breakdown.length + 5 + (reconstructed ? 1 : 0)));
   const bx = MARGIN;
   const tx = A4.width - MARGIN - 200;
   cursor.page.text(bx, cursor.y + 10, "Desglose de IVA", { font: "bold", size: 9 });
@@ -267,6 +350,11 @@ export function buildInvoicePdf(model: InvoicePdfModel): Buffer {
     cursor.page.text(bx, by + 10, rateLabel(group), { size: 9 });
     cursor.page.text(bx + 150, by + 10, formatMoney(group.base, model.currencyCode), { size: 9, align: "right" });
     cursor.page.text(bx + 230, by + 10, formatMoney(group.quota, model.currencyCode), { size: 9, align: "right" });
+    by += LINE_HEIGHT;
+  }
+  if (reconstructed) {
+    // Legacy invoice without tax_breakdown_json (Tanda L3 · lote E): say so, discreetly, under the table.
+    cursor.page.text(bx, by + 10, BREAKDOWN_FROM_LINES_NOTE, { size: 7.5, gray: 0.45 });
     by += LINE_HEIGHT;
   }
   let ty = cursor.y;
@@ -363,13 +451,8 @@ export async function loadInvoicePdfModel(invoiceId: string): Promise<InvoicePdf
     calificacion: line.taxCalificacion ?? "S1",
     total: line.total
   }));
-  const breakdown = (snapshot ? snapshot.taxBreakdown : record.taxBreakdown).map((group) => ({
-    figure: group.figure,
-    calificacion: group.calificacion,
-    ratePercent: group.ratePercent,
-    base: group.base,
-    quota: group.quota
-  }));
+  // Snapshot → persisted breakdown → lines (legacy invoices without tax_breakdown_json; decision §6.10: no backfill).
+  const { breakdown, breakdownSource } = resolvePdfBreakdown({ snapshot: snapshot ? snapshot.taxBreakdown : null, stored: record.taxBreakdown, lines: record.lines });
   const total = snapshot ? snapshot.totals.total : record.total;
   const tax = snapshot ? snapshot.totals.taxTotal : record.taxTotal;
   const reasonCode = record.rectifyingReasonCode as RectifyingReasonCode | undefined;
@@ -395,6 +478,7 @@ export async function loadInvoicePdfModel(invoiceId: string): Promise<InvoicePdf
     customer: { type: record.customerType, name: record.customerName, taxId: record.customerTaxId ?? null },
     lines,
     breakdown,
+    breakdownSource,
     totals: { base: Number((total - tax).toFixed(2)), tax, total },
     rectification: record.rectifyingForId
       ? {

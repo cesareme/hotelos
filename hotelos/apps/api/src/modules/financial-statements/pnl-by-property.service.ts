@@ -25,7 +25,7 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { computeCorporateAllocation, corporateBaseWarnings, corporateCostFromGop, getCorporateAllocation, type AllocationFacts } from "./allocation.service.js";
 import { D, ZERO, fromMoney, money, sameCents, sumDec, type Dec } from "./money.js";
-import { entityBadgeOf, isHotelCentre, nightsBetween, prismaFinancialStatementsSource, toWorkCentre, type AccountBalanceRow, type FinancialStatementsSource, type PropertyLite } from "./source.js";
+import { entityBadgeOf, isHotelCentre, nightsBetween, toWorkCentre, withFinancialStatementsSnapshot, type AccountBalanceRow, type FinancialStatementsSource, type PropertyLite } from "./source.js";
 import { computeUsaliPnl } from "./usali.service.js";
 
 const creditNatural = (row: { debit: Dec; credit: Dec }): Dec => row.credit.minus(row.debit);
@@ -203,7 +203,11 @@ export async function buildPnlByProperty(input: {
   source?: FinancialStatementsSource;
 }): Promise<PnlByProperty> {
   requirePermissions(input.context, ["accounting.read"]);
-  const source = input.source ?? prismaFinancialStatementsSource;
+  // Corrector L3 (Puerta 9 · structure-l5): without an injected source every
+  // read of this statement runs on ONE REPEATABLE READ snapshot, so a journal
+  // entry committed by a concurrent request cannot break `reconciliation.ok`.
+  if (!input.source) return withFinancialStatementsSnapshot((source) => buildPnlByProperty({ ...input, source }));
+  const source = input.source;
   const organizationId = input.context.organizationId;
   const period = { from: input.from, to: input.to };
   const [properties, identity, stored] = await Promise.all([source.properties(organizationId), source.legalIdentity(organizationId), getCorporateAllocation(organizationId, source)]);

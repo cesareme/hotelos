@@ -66,6 +66,7 @@ import {
   type SnapshotLineInput
 } from "./invoice-snapshot.js";
 import { writeIssuedVatBookRows } from "./vat-book.js";
+import { invoiceSourceType } from "../accounting/vat-books.service.js";
 
 export type InvoiceLineDraft = {
   description: string;
@@ -2200,7 +2201,9 @@ export async function issueInvoice(input: {
     await writeIssuedVatBookRows(tx, {
       organizationId: input.context.organizationId,
       propertyId: existing.propertyId,
-      sourceType: existing.invoiceType === "F2" ? "simplified" : "invoice",
+      // Corrector L3 (FC-7): same sourceType the rebuild derives (`invoiceSourceType`):
+      // a rectificativa keeps `rectification` when it is issued or cancelled.
+      sourceType: invoiceSourceType({ invoiceType: existing.invoiceType, rectifyingForId: existing.rectifyingForId ?? null, simplified: existing.simplified ?? existing.invoiceType === "F2" }) as "invoice" | "rectification" | "simplified",
       sourceId: existing.id,
       date: issuedAt,
       series,
@@ -2492,7 +2495,9 @@ export async function cancelInvoice(input: {
     await writeIssuedVatBookRows(tx, {
       organizationId: input.context.organizationId,
       propertyId: existing.propertyId,
-      sourceType: existing.invoiceType === "F2" ? "simplified" : "invoice",
+      // Corrector L3 (FC-7): same sourceType the rebuild derives (`invoiceSourceType`):
+      // a rectificativa keeps `rectification` when it is issued or cancelled.
+      sourceType: invoiceSourceType({ invoiceType: existing.invoiceType, rectifyingForId: existing.rectifyingForId ?? null, simplified: existing.simplified ?? existing.invoiceType === "F2" }) as "invoice" | "rectification" | "simplified",
       sourceId: `${existing.id}#anulacion`,
       date: cancelledAt,
       series: existing.seriesCode ?? seriesForInvoiceType(existing.invoiceType),
@@ -3064,7 +3069,8 @@ export async function createRectifyingInvoice(input: {
       await writeIssuedVatBookRows(tx, {
         organizationId: input.context.organizationId,
         propertyId: original.propertyId,
-        sourceType: original.invoiceType === "F2" ? "simplified" : "invoice",
+        // Corrector L3 (FC-7): same sourceType the rebuild derives for the original (`invoiceSourceType`).
+        sourceType: invoiceSourceType({ invoiceType: original.invoiceType, rectifyingForId: original.rectifyingForId ?? null, simplified: original.simplified ?? original.invoiceType === "F2" }) as "invoice" | "rectification" | "simplified",
         sourceId: `${original.id}#sustituida`,
         date: issuedAt,
         series: original.seriesCode ?? seriesForInvoiceType(original.invoiceType),

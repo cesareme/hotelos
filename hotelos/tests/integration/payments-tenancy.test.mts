@@ -21,6 +21,11 @@
  *            on that very URL renders the intent state.
  *   4. t6#14 POST /folios/:id/lines and POST /folios/:id/invoice with an
  *            unknown key → 400 «Campo no admitido…» (nothing is created).
+ *   5. L3-T  POST /folios/:id/lines persists the fiscal category: inferred
+ *            from the line type without an override (minibar → food_beverage,
+ *            city_tax → tourist_tax), the override when given
+ *            (cancellation_fee + not_subject), a bogus override → 400, and no
+ *            line of the isolated tenant is left with tax_category NULL.
  *
  * Run: cd apps/api && node --import tsx --test ../../tests/integration/payments-tenancy.test.mts
  */
@@ -294,5 +299,42 @@ describe("finanzas · pagos: tenencia de PaymentIntent, página de retorno firma
     assert.equal(nestedDraft.statusCode, 400, nestedDraft.body);
     assert.equal(await prisma.folioLine.count({ where: { folioId: folioA } }), linesBefore, "no folio line was created");
     assert.equal(await prisma.invoice.count({ where: { folioId: folioA } }), invoicesBefore, "no invoice draft was created");
+  });
+
+  it("5 · L3-T · POST /folios/:id/lines persists the fiscal category (inferred from the type, or the override) and never leaves it NULL", async () => {
+    const minibar = await app.inject({ method: "POST", url: `/folios/${folioA}/lines`, headers, payload: { type: "minibar", description: `Agua ${MARK}`, quantity: 1, unitPrice: 2 } });
+    assert.equal(minibar.statusCode, 200, minibar.body);
+    const minibarLine = JSON.parse(minibar.body) as { id: string; type: string; taxCategory: string | null };
+    assert.equal(minibarLine.type, "minibar");
+    assert.equal(minibarLine.taxCategory, "food_beverage", "minibar without an override → food_beverage (line-type map of the catalogue)");
+    const storedMinibar = await prisma.folioLine.findUnique({ where: { id: minibarLine.id }, select: { taxCategory: true } });
+    assert.equal(storedMinibar?.taxCategory, "food_beverage", "the inferred category is persisted, not only echoed");
+
+    const fee = await app.inject({ method: "POST", url: `/folios/${folioA}/lines`, headers, payload: { type: "cancellation_fee", description: `Penalización por cancelación ${MARK}`, quantity: 1, unitPrice: 50, taxCategory: "not_subject" } });
+    assert.equal(fee.statusCode, 200, fee.body);
+    const feeLine = JSON.parse(fee.body) as { id: string; type: string; taxCategory: string | null };
+    assert.equal(feeLine.type, "cancellation_fee", "CreateFolioLineSchema admits any line type (the handler casts it)");
+    assert.equal(feeLine.taxCategory, "not_subject");
+    assert.equal((await prisma.folioLine.findUnique({ where: { id: feeLine.id }, select: { taxCategory: true } }))?.taxCategory, "not_subject");
+
+    const cityTax = await app.inject({ method: "POST", url: `/folios/${folioA}/lines`, headers, payload: { type: "city_tax", description: `Tasa turística ${MARK}`, quantity: 2, unitPrice: 1.5 } });
+    assert.equal(cityTax.statusCode, 200, cityTax.body);
+    assert.equal((JSON.parse(cityTax.body) as { taxCategory: string | null }).taxCategory, "tourist_tax");
+
+    const linesBefore = await prisma.folioLine.count({ where: { folioId: folioA } });
+    const bogus = await app.inject({ method: "POST", url: `/folios/${folioA}/lines`, headers, payload: { type: "room", description: `Habitación ${MARK}`, quantity: 1, unitPrice: 100, taxCategory: "bogus" } });
+    assert.equal(bogus.statusCode, 400, bogus.body);
+    assert.equal(await prisma.folioLine.count({ where: { folioId: folioA } }), linesBefore, "a bogus override creates nothing");
+
+    // Every folio line of the isolated tenant carries a category. The legacy
+    // NULL rows of other tenants are untouched (nullable column, no backfill, §6.8).
+    const tenantLines = await prisma.folioLine.findMany({ where: { folioId: folioA }, select: { id: true, type: true, taxCategory: true } });
+    assert.equal(tenantLines.length, 3, `expected the three lines posted above, got ${tenantLines.length}`);
+    assert.deepEqual(tenantLines.filter((row) => row.taxCategory === null), [], "no folio line created through the API is left without a fiscal category");
+    const balance = await app.inject({ method: "GET", url: `/folios/${folioA}/balance`, headers });
+    assert.equal(balance.statusCode, 200, balance.body);
+    const returned = (JSON.parse(balance.body) as { lines: Array<{ id: string; taxCategory: string | null }> }).lines;
+    assert.equal(returned.length, 3);
+    for (const row of returned) assert.ok(row.taxCategory, `line ${row.id} returned by GET /folios/:id/balance without category`);
   });
 });

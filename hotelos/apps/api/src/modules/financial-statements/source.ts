@@ -437,21 +437,54 @@ function ledgerWhere(query: LedgerQuery): Prisma.Sql {
   return Prisma.join(conditions, " AND ");
 }
 
-export const prismaFinancialStatementsSource: FinancialStatementsSource = {
-  async accountBalances(query) {
-    if (query.byCostCentre) {
-      // Tanda 6c: one row per (account, cost centre type, cost centre code); the rows of an account add up to its plain balance.
-      const rows = await prisma.$queryRaw<RawBalanceRow[]>(Prisma.sql`
+/** Prisma client (or interactive-transaction client) the SQL source reads through. */
+export type FinancialStatementsClient = Prisma.TransactionClient;
+
+/**
+ * SQL implementation over `client` (corrector L3 · Puerta 9 / structure-l5):
+ * built on the shared client for the routes and on an interactive
+ * transaction by `withFinancialStatementsSnapshot`, so the reads of ONE
+ * statement see ONE snapshot (REPEATABLE READ) — a journal entry committed
+ * by another request between the per-property and the entity-wide reads
+ * used to break the reconciliation (`rowsOff`) of the PyG por centro.
+ */
+export function buildPrismaFinancialStatementsSource(client: FinancialStatementsClient): FinancialStatementsSource {
+  return {
+    async accountBalances(query) {
+      if (query.byCostCentre) {
+        // Tanda 6c: one row per (account, cost centre type, cost centre code); the rows of an account add up to its plain balance.
+        const rows = await client.$queryRaw<RawBalanceRow[]>(Prisma.sql`
+          SELECT a.code, a.name, a.kind::text AS kind, a.account_type, a.is_postable, a.usali_department, a.usali_line,
+                 cc.type AS cost_centre_type, cc.code AS cost_centre_code,
+                 COALESCE(SUM(jl.debit), 0) AS debit, COALESCE(SUM(jl.credit), 0) AS credit
+          FROM journal_lines jl
+          JOIN journal_entries je ON je.id = jl.journal_entry_id
+          JOIN accounts a ON a.id = jl.account_id
+          LEFT JOIN cost_centers cc ON cc.id = jl.cost_center_id
+          WHERE ${ledgerWhere(query)}
+          GROUP BY a.code, a.name, a.kind, a.account_type, a.is_postable, a.usali_department, a.usali_line, cc.type, cc.code
+          ORDER BY a.code, cost_centre_code NULLS FIRST`);
+        return rows.map((row) => ({
+          code: row.code,
+          name: row.name,
+          kind: (row.kind as AccountKind) ?? kindFromLegacyType(row.account_type),
+          isPostable: row.is_postable,
+          usaliDepartment: row.usali_department,
+          usaliLine: row.usali_line,
+          debit: toDec(row.debit),
+          credit: toDec(row.credit),
+          costCentre: row.cost_centre_type && row.cost_centre_code ? { type: row.cost_centre_type, code: row.cost_centre_code } : null
+        }));
+      }
+      const rows = await client.$queryRaw<RawBalanceRow[]>(Prisma.sql`
         SELECT a.code, a.name, a.kind::text AS kind, a.account_type, a.is_postable, a.usali_department, a.usali_line,
-               cc.type AS cost_centre_type, cc.code AS cost_centre_code,
                COALESCE(SUM(jl.debit), 0) AS debit, COALESCE(SUM(jl.credit), 0) AS credit
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.journal_entry_id
         JOIN accounts a ON a.id = jl.account_id
-        LEFT JOIN cost_centers cc ON cc.id = jl.cost_center_id
         WHERE ${ledgerWhere(query)}
-        GROUP BY a.code, a.name, a.kind, a.account_type, a.is_postable, a.usali_department, a.usali_line, cc.type, cc.code
-        ORDER BY a.code, cost_centre_code NULLS FIRST`);
+        GROUP BY a.code, a.name, a.kind, a.account_type, a.is_postable, a.usali_department, a.usali_line
+        ORDER BY a.code`);
       return rows.map((row) => ({
         code: row.code,
         name: row.name,
@@ -460,302 +493,296 @@ export const prismaFinancialStatementsSource: FinancialStatementsSource = {
         usaliDepartment: row.usali_department,
         usaliLine: row.usali_line,
         debit: toDec(row.debit),
-        credit: toDec(row.credit),
-        costCentre: row.cost_centre_type && row.cost_centre_code ? { type: row.cost_centre_type, code: row.cost_centre_code } : null
+        credit: toDec(row.credit)
       }));
-    }
-    const rows = await prisma.$queryRaw<RawBalanceRow[]>(Prisma.sql`
-      SELECT a.code, a.name, a.kind::text AS kind, a.account_type, a.is_postable, a.usali_department, a.usali_line,
-             COALESCE(SUM(jl.debit), 0) AS debit, COALESCE(SUM(jl.credit), 0) AS credit
-      FROM journal_lines jl
-      JOIN journal_entries je ON je.id = jl.journal_entry_id
-      JOIN accounts a ON a.id = jl.account_id
-      WHERE ${ledgerWhere(query)}
-      GROUP BY a.code, a.name, a.kind, a.account_type, a.is_postable, a.usali_department, a.usali_line
-      ORDER BY a.code`);
-    return rows.map((row) => ({
-      code: row.code,
-      name: row.name,
-      kind: (row.kind as AccountKind) ?? kindFromLegacyType(row.account_type),
-      isPostable: row.is_postable,
-      usaliDepartment: row.usali_department,
-      usaliLine: row.usali_line,
-      debit: toDec(row.debit),
-      credit: toDec(row.credit)
-    }));
-  },
+    },
 
-  async plAccounts(organizationId) {
-    const rows = await prisma.account.findMany({
-      where: { organizationId, group: { in: [6, 7] }, isPostable: true },
-      select: { id: true, code: true, name: true, kind: true, group: true, isPostable: true, usaliDepartment: true, usaliLine: true },
-      orderBy: { code: "asc" }
-    });
-    return rows.map((row) => ({ ...row, kind: row.kind as AccountKind }));
-  },
+    async plAccounts(organizationId) {
+      const rows = await client.account.findMany({
+        where: { organizationId, group: { in: [6, 7] }, isPostable: true },
+        select: { id: true, code: true, name: true, kind: true, group: true, isPostable: true, usaliDepartment: true, usaliLine: true },
+        orderBy: { code: "asc" }
+      });
+      return rows.map((row) => ({ ...row, kind: row.kind as AccountKind }));
+    },
 
-  async usaliMappings(organizationId) {
-    return prisma.usaliMapping.findMany({ where: { organizationId }, orderBy: [{ priority: "desc" }, { accountPrefix: "asc" }] });
-  },
+    async usaliMappings(organizationId) {
+      return client.usaliMapping.findMany({ where: { organizationId }, orderBy: [{ priority: "desc" }, { accountPrefix: "asc" }] });
+    },
 
-  async properties(organizationId) {
-    // Hotels first (by name), then office / other centres: the column order of every per-centre statement.
-    const rows = await prisma.property.findMany({
-      where: { organizationId },
-      select: { id: true, organizationId: true, legalEntityId: true, name: true, code: true, tradeName: true, kind: true, address: true, municipality: true, province: true, currency: true },
-      orderBy: { name: "asc" }
-    });
-    return sortWorkCentres(rows);
-  },
+    async properties(organizationId) {
+      // Hotels first (by name), then office / other centres: the column order of every per-centre statement.
+      const rows = await client.property.findMany({
+        where: { organizationId },
+        select: { id: true, organizationId: true, legalEntityId: true, name: true, code: true, tradeName: true, kind: true, address: true, municipality: true, province: true, currency: true },
+        orderBy: { name: "asc" }
+      });
+      return sortWorkCentres(rows);
+    },
 
-  async occupancy(propertyIds, from, to) {
-    if (propertyIds.length === 0) return { roomsInventory: 0, roomsOccupied: 0 };
-    const roomsInventory = await prisma.room.count({ where: { propertyId: { in: propertyIds }, active: true } });
-    const windowStart = dayUtc(from);
-    const windowEnd = dayUtc(addDays(to, 1)); // exclusive
-    const reservations = await prisma.reservation.findMany({
-      where: {
-        propertyId: { in: propertyIds },
-        status: { in: ["checked_in", "checked_out"] },
-        arrivalDate: { lt: windowEnd },
-        departureDate: { gt: windowStart }
-      },
-      select: { arrivalDate: true, departureDate: true, roomsCount: true }
-    });
-    let roomsOccupied = 0;
-    for (const reservation of reservations) {
-      const start = Math.max(reservation.arrivalDate.getTime(), windowStart.getTime());
-      const end = Math.min(reservation.departureDate.getTime(), windowEnd.getTime());
-      const nights = Math.max(0, Math.round((end - start) / 86_400_000));
-      roomsOccupied += nights * Math.max(1, reservation.roomsCount ?? 1);
-    }
-    return { roomsInventory, roomsOccupied };
-  },
-
-  async legalIdentity(organizationId) {
-    return resolveLegalIdentity(organizationId);
-  },
-
-  async fixedAssets(organizationId, propertyId) {
-    const rows = await prisma.fixedAsset.findMany({
-      where: { organizationId, ...(propertyId ? { propertyId } : {}) },
-      select: {
-        id: true,
-        name: true,
-        category: true,
-        accountCode: true,
-        acquisitionDate: true,
-        acquisitionCost: true,
-        accumulatedDepreciation: true,
-        residualValue: true,
-        coefficientPct: true,
-        status: true
-      },
-      orderBy: { name: "asc" }
-    });
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      category: row.category,
-      accountCode: row.accountCode,
-      acquisitionDate: row.acquisitionDate ? isoDay(row.acquisitionDate) : null,
-      acquisitionCost: toDec(row.acquisitionCost),
-      accumulatedDepreciation: toDec(row.accumulatedDepreciation),
-      residualValue: toDec(row.residualValue),
-      coefficientPct: row.coefficientPct === null ? null : toDec(row.coefficientPct),
-      status: String(row.status)
-    }));
-  },
-
-  async vatTotals(organizationId, from, to) {
-    const rows = await prisma.vatBookEntry.groupBy({
-      by: ["book", "rate"],
-      where: { organizationId, date: { gte: dayUtc(from), lte: dayUtc(to) } },
-      _sum: { base: true, quota: true, total: true, retention: true },
-      _count: { _all: true }
-    });
-    return rows.map((row) => ({
-      book: String(row.book),
-      rate: toDec(row.rate),
-      base: toDec(row._sum.base),
-      quota: toDec(row._sum.quota),
-      total: toDec(row._sum.total),
-      retention: toDec(row._sum.retention),
-      count: row._count._all
-    }));
-  },
-
-  async headcount(organizationId, from, to) {
-    // PayrollPeriod.periodCode is "YYYY-MM" for the monthly runs; anything else is skipped (null = unknown, never 0).
-    const fromMonth = from.slice(0, 7);
-    const toMonth = to.slice(0, 7);
-    const ids = (await payrollPeriodsIn(organizationId, fromMonth, toMonth)).map((p) => p.id);
-    if (ids.length > 0) {
-      const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: ids } }, select: { staffProfileId: true }, distinct: ["staffProfileId"] });
-      if (slips.length > 0) return slips.length;
-    }
-    // Tanda 6c: no payslip → the posted payroll-cost imports (Σ of the per-centre monthly averages, whole people).
-    const imported = await importedHeadcountByProperty(organizationId, fromMonth, toMonth);
-    if (imported.length === 0) return null;
-    let total = new Prisma.Decimal(0);
-    for (const row of imported) total = total.plus(row.headcount);
-    const rounded = total.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
-    return rounded > 0 ? rounded : null;
-  },
-
-  async headcountByProperty(organizationId, from, to) {
-    const fromMonth = from.slice(0, 7);
-    const toMonth = to.slice(0, 7);
-    const periods = await payrollPeriodsIn(organizationId, fromMonth, toMonth);
-    if (periods.length > 0) {
-      const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: periods.map((p) => p.id) } }, select: { periodId: true, staffProfileId: true } });
-      const propertyOfPeriod = new Map(periods.map((p) => [p.id, p.propertyId]));
-      const staffByProperty = new Map<string | null, Set<string>>();
-      for (const slip of slips) {
-        const propertyId = propertyOfPeriod.get(slip.periodId) ?? null;
-        const set = staffByProperty.get(propertyId) ?? new Set<string>();
-        set.add(slip.staffProfileId);
-        staffByProperty.set(propertyId, set);
-      }
-      if (staffByProperty.size > 0) return Array.from(staffByProperty.entries()).map(([propertyId, staff]) => ({ propertyId, headcount: staff.size, source: "payroll_slips" as const }));
-    }
-    // Tanda 6c: no payslip → the posted payroll-cost imports (average of the months with data per centre).
-    return importedHeadcountByProperty(organizationId, fromMonth, toMonth);
-  },
-
-  async accountingConfiguration(organizationId) {
-    const setting = await prisma.accountingSetting.findFirst({ where: { organizationId, propertyId: null }, orderBy: { updatedAt: "asc" }, select: { configurationJson: true } });
-    return setting?.configurationJson ?? null;
-  },
-
-  async *journalLines(query) {
-    const pageSize = 500;
-    let cursor: string | null = null;
-    for (;;) {
-      const entries: Array<{
-        id: string;
-        entryDate: Date;
-        entryNumber: number | null;
-        fiscalYearCode: string | null;
-        sourceType: string;
-        sourceId: string | null;
-        description: string | null;
-        reference: string | null;
-        propertyId: string | null;
-      }> = await prisma.journalEntry.findMany({
+    async occupancy(propertyIds, from, to) {
+      if (propertyIds.length === 0) return { roomsInventory: 0, roomsOccupied: 0 };
+      const roomsInventory = await client.room.count({ where: { propertyId: { in: propertyIds }, active: true } });
+      const windowStart = dayUtc(from);
+      const windowEnd = dayUtc(addDays(to, 1)); // exclusive
+      const reservations = await client.reservation.findMany({
         where: {
-          organizationId: query.organizationId,
-          // Libro diario: reversed originals AND their reversals are exported (`ledgerEntryIsBooked`).
-          status: { not: "draft" },
-          entryDate: { gte: dayUtc(query.from), lte: dayUtc(query.to) },
-          ...(query.propertyId ? { propertyId: query.propertyId } : {})
+          propertyId: { in: propertyIds },
+          status: { in: ["checked_in", "checked_out"] },
+          arrivalDate: { lt: windowEnd },
+          departureDate: { gt: windowStart }
         },
+        select: { arrivalDate: true, departureDate: true, roomsCount: true }
+      });
+      let roomsOccupied = 0;
+      for (const reservation of reservations) {
+        const start = Math.max(reservation.arrivalDate.getTime(), windowStart.getTime());
+        const end = Math.min(reservation.departureDate.getTime(), windowEnd.getTime());
+        const nights = Math.max(0, Math.round((end - start) / 86_400_000));
+        roomsOccupied += nights * Math.max(1, reservation.roomsCount ?? 1);
+      }
+      return { roomsInventory, roomsOccupied };
+    },
+
+    async legalIdentity(organizationId) {
+      return resolveLegalIdentity(organizationId);
+    },
+
+    async fixedAssets(organizationId, propertyId) {
+      const rows = await client.fixedAsset.findMany({
+        where: { organizationId, ...(propertyId ? { propertyId } : {}) },
         select: {
           id: true,
-          entryDate: true,
-          entryNumber: true,
-          fiscalYearCode: true,
-          sourceType: true,
-          sourceId: true,
-          description: true,
-          reference: true,
-          propertyId: true
+          name: true,
+          category: true,
+          accountCode: true,
+          acquisitionDate: true,
+          acquisitionCost: true,
+          accumulatedDepreciation: true,
+          residualValue: true,
+          coefficientPct: true,
+          status: true
         },
-        orderBy: [{ entryDate: "asc" }, { entryNumber: "asc" }, { id: "asc" }],
-        take: pageSize,
-        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+        orderBy: { name: "asc" }
       });
-      if (entries.length === 0) return;
-      const lines = await prisma.journalLine.findMany({
-        where: { journalEntryId: { in: entries.map((e) => e.id) } },
-        orderBy: [{ journalEntryId: "asc" }, { id: "asc" }]
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        category: row.category,
+        accountCode: row.accountCode,
+        acquisitionDate: row.acquisitionDate ? isoDay(row.acquisitionDate) : null,
+        acquisitionCost: toDec(row.acquisitionCost),
+        accumulatedDepreciation: toDec(row.accumulatedDepreciation),
+        residualValue: toDec(row.residualValue),
+        coefficientPct: row.coefficientPct === null ? null : toDec(row.coefficientPct),
+        status: String(row.status)
+      }));
+    },
+
+    async vatTotals(organizationId, from, to) {
+      const rows = await client.vatBookEntry.groupBy({
+        by: ["book", "rate"],
+        where: { organizationId, date: { gte: dayUtc(from), lte: dayUtc(to) } },
+        _sum: { base: true, quota: true, total: true, retention: true },
+        _count: { _all: true }
       });
-      const accountIds = Array.from(new Set(lines.map((l) => l.accountId)));
-      const accounts = accountIds.length
-        ? await prisma.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, code: true, name: true } })
-        : [];
-      const accountById = new Map(accounts.map((a) => [a.id, a]));
-      const linesByEntry = new Map<string, typeof lines>();
-      for (const line of lines) {
-        const list = linesByEntry.get(line.journalEntryId) ?? [];
-        list.push(line);
-        linesByEntry.set(line.journalEntryId, list);
+      return rows.map((row) => ({
+        book: String(row.book),
+        rate: toDec(row.rate),
+        base: toDec(row._sum.base),
+        quota: toDec(row._sum.quota),
+        total: toDec(row._sum.total),
+        retention: toDec(row._sum.retention),
+        count: row._count._all
+      }));
+    },
+
+    async headcount(organizationId, from, to) {
+      // PayrollPeriod.periodCode is "YYYY-MM" for the monthly runs; anything else is skipped (null = unknown, never 0).
+      const fromMonth = from.slice(0, 7);
+      const toMonth = to.slice(0, 7);
+      const ids = (await payrollPeriodsIn(organizationId, fromMonth, toMonth)).map((p) => p.id);
+      if (ids.length > 0) {
+        const slips = await client.payrollSlip.findMany({ where: { periodId: { in: ids } }, select: { staffProfileId: true }, distinct: ["staffProfileId"] });
+        if (slips.length > 0) return slips.length;
       }
-      const batch: JournalLineExportRow[] = [];
-      for (const entry of entries) {
-        for (const line of linesByEntry.get(entry.id) ?? []) {
-          const account = accountById.get(line.accountId);
-          batch.push({
-            entryId: entry.id,
-            entryDate: isoDay(entry.entryDate),
-            entryNumber: entry.entryNumber,
-            fiscalYearCode: entry.fiscalYearCode,
-            sourceType: entry.sourceType,
-            sourceId: entry.sourceId,
-            description: entry.description,
-            reference: entry.reference,
-            propertyId: entry.propertyId,
-            lineId: line.id,
-            accountCode: line.accountCode ?? account?.code ?? line.accountId,
-            accountName: account?.name ?? "",
-            lineDescription: line.description,
-            debit: toDec(line.debit),
-            credit: toDec(line.credit),
-            taxRateCode: line.taxRateCode,
-            taxBase: line.taxBase === null ? null : toDec(line.taxBase)
-          });
+      // Tanda 6c: no payslip → the posted payroll-cost imports (Σ of the per-centre monthly averages, whole people).
+      const imported = await importedHeadcountByProperty(organizationId, fromMonth, toMonth);
+      if (imported.length === 0) return null;
+      let total = new Prisma.Decimal(0);
+      for (const row of imported) total = total.plus(row.headcount);
+      const rounded = total.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+      return rounded > 0 ? rounded : null;
+    },
+
+    async headcountByProperty(organizationId, from, to) {
+      const fromMonth = from.slice(0, 7);
+      const toMonth = to.slice(0, 7);
+      const periods = await payrollPeriodsIn(organizationId, fromMonth, toMonth);
+      if (periods.length > 0) {
+        const slips = await client.payrollSlip.findMany({ where: { periodId: { in: periods.map((p) => p.id) } }, select: { periodId: true, staffProfileId: true } });
+        const propertyOfPeriod = new Map(periods.map((p) => [p.id, p.propertyId]));
+        const staffByProperty = new Map<string | null, Set<string>>();
+        for (const slip of slips) {
+          const propertyId = propertyOfPeriod.get(slip.periodId) ?? null;
+          const set = staffByProperty.get(propertyId) ?? new Set<string>();
+          set.add(slip.staffProfileId);
+          staffByProperty.set(propertyId, set);
         }
+        if (staffByProperty.size > 0) return Array.from(staffByProperty.entries()).map(([propertyId, staff]) => ({ propertyId, headcount: staff.size, source: "payroll_slips" as const }));
       }
-      yield batch;
-      if (entries.length < pageSize) return;
-      cursor = entries[entries.length - 1]!.id;
-    }
-  },
+      // Tanda 6c: no payslip → the posted payroll-cost imports (average of the months with data per centre).
+      return importedHeadcountByProperty(organizationId, fromMonth, toMonth);
+    },
 
-  async documentRefs(kind, ids) {
-    const out = new Map<string, DocumentRef>();
-    if (ids.length === 0) return out;
-    if (kind === "invoice") {
-      const rows = await prisma.invoice.findMany({ where: { id: { in: ids } }, select: { id: true, invoiceNumber: true, customerTaxId: true, customerName: true } });
-      for (const row of rows) out.set(row.id, { number: row.invoiceNumber, nif: row.customerTaxId, name: row.customerName });
-    } else if (kind === "supplier_bill") {
-      const rows = await prisma.supplierBill.findMany({ where: { id: { in: ids } }, select: { id: true, invoiceNumber: true, supplierTaxId: true, supplierName: true } });
-      for (const row of rows) out.set(row.id, { number: row.invoiceNumber, nif: row.supplierTaxId, name: row.supplierName });
-    } else {
-      const rows = await prisma.expense.findMany({ where: { id: { in: ids } }, select: { id: true, supplierNif: true, supplierName: true, concept: true } });
-      for (const row of rows) out.set(row.id, { number: null, nif: row.supplierNif, name: row.supplierName ?? row.concept });
-    }
-    return out;
-  },
+    async accountingConfiguration(organizationId) {
+      const setting = await client.accountingSetting.findFirst({ where: { organizationId, propertyId: null }, orderBy: { updatedAt: "asc" }, select: { configurationJson: true } });
+      return setting?.configurationJson ?? null;
+    },
 
-  async vatBookEntries(query) {
-    const rows = await prisma.vatBookEntry.findMany({
-      where: {
-        organizationId: query.organizationId,
-        date: { gte: dayUtc(query.from), lte: dayUtc(query.to) },
-        ...(query.propertyId ? { propertyId: query.propertyId } : {})
-      },
-      orderBy: [{ book: "asc" }, { date: "asc" }, { series: "asc" }, { number: "asc" }, { rate: "asc" }]
-    });
-    return rows.map((row) => ({
-      book: String(row.book),
-      date: isoDay(row.date),
-      series: row.series,
-      number: row.number,
-      counterpartyNif: row.counterpartyNif,
-      counterpartyName: row.counterpartyName,
-      base: toDec(row.base),
-      rate: toDec(row.rate),
-      quota: toDec(row.quota),
-      total: toDec(row.total),
-      retention: toDec(row.retention),
-      taxFigure: row.taxFigure,
-      surchargeRate: row.surchargeRate === null ? null : toDec(row.surchargeRate),
-      surchargeQuota: row.surchargeQuota === null ? null : toDec(row.surchargeQuota),
-      sourceType: String(row.sourceType),
-      sourceId: row.sourceId,
-      period: row.period,
-      deductible: row.deductible
-    }));
-  }
-};
+    async *journalLines(query) {
+      const pageSize = 500;
+      let cursor: string | null = null;
+      for (;;) {
+        const entries: Array<{
+          id: string;
+          entryDate: Date;
+          entryNumber: number | null;
+          fiscalYearCode: string | null;
+          sourceType: string;
+          sourceId: string | null;
+          description: string | null;
+          reference: string | null;
+          propertyId: string | null;
+        }> = await client.journalEntry.findMany({
+          where: {
+            organizationId: query.organizationId,
+            // Libro diario: reversed originals AND their reversals are exported (`ledgerEntryIsBooked`).
+            status: { not: "draft" },
+            entryDate: { gte: dayUtc(query.from), lte: dayUtc(query.to) },
+            ...(query.propertyId ? { propertyId: query.propertyId } : {})
+          },
+          select: {
+            id: true,
+            entryDate: true,
+            entryNumber: true,
+            fiscalYearCode: true,
+            sourceType: true,
+            sourceId: true,
+            description: true,
+            reference: true,
+            propertyId: true
+          },
+          orderBy: [{ entryDate: "asc" }, { entryNumber: "asc" }, { id: "asc" }],
+          take: pageSize,
+          ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+        });
+        if (entries.length === 0) return;
+        const lines = await client.journalLine.findMany({
+          where: { journalEntryId: { in: entries.map((e) => e.id) } },
+          orderBy: [{ journalEntryId: "asc" }, { id: "asc" }]
+        });
+        const accountIds = Array.from(new Set(lines.map((l) => l.accountId)));
+        const accounts = accountIds.length
+          ? await client.account.findMany({ where: { id: { in: accountIds } }, select: { id: true, code: true, name: true } })
+          : [];
+        const accountById = new Map(accounts.map((a) => [a.id, a]));
+        const linesByEntry = new Map<string, typeof lines>();
+        for (const line of lines) {
+          const list = linesByEntry.get(line.journalEntryId) ?? [];
+          list.push(line);
+          linesByEntry.set(line.journalEntryId, list);
+        }
+        const batch: JournalLineExportRow[] = [];
+        for (const entry of entries) {
+          for (const line of linesByEntry.get(entry.id) ?? []) {
+            const account = accountById.get(line.accountId);
+            batch.push({
+              entryId: entry.id,
+              entryDate: isoDay(entry.entryDate),
+              entryNumber: entry.entryNumber,
+              fiscalYearCode: entry.fiscalYearCode,
+              sourceType: entry.sourceType,
+              sourceId: entry.sourceId,
+              description: entry.description,
+              reference: entry.reference,
+              propertyId: entry.propertyId,
+              lineId: line.id,
+              accountCode: line.accountCode ?? account?.code ?? line.accountId,
+              accountName: account?.name ?? "",
+              lineDescription: line.description,
+              debit: toDec(line.debit),
+              credit: toDec(line.credit),
+              taxRateCode: line.taxRateCode,
+              taxBase: line.taxBase === null ? null : toDec(line.taxBase)
+            });
+          }
+        }
+        yield batch;
+        if (entries.length < pageSize) return;
+        cursor = entries[entries.length - 1]!.id;
+      }
+    },
+
+    async documentRefs(kind, ids) {
+      const out = new Map<string, DocumentRef>();
+      if (ids.length === 0) return out;
+      if (kind === "invoice") {
+        const rows = await client.invoice.findMany({ where: { id: { in: ids } }, select: { id: true, invoiceNumber: true, customerTaxId: true, customerName: true } });
+        for (const row of rows) out.set(row.id, { number: row.invoiceNumber, nif: row.customerTaxId, name: row.customerName });
+      } else if (kind === "supplier_bill") {
+        const rows = await client.supplierBill.findMany({ where: { id: { in: ids } }, select: { id: true, invoiceNumber: true, supplierTaxId: true, supplierName: true } });
+        for (const row of rows) out.set(row.id, { number: row.invoiceNumber, nif: row.supplierTaxId, name: row.supplierName });
+      } else {
+        const rows = await client.expense.findMany({ where: { id: { in: ids } }, select: { id: true, supplierNif: true, supplierName: true, concept: true } });
+        for (const row of rows) out.set(row.id, { number: null, nif: row.supplierNif, name: row.supplierName ?? row.concept });
+      }
+      return out;
+    },
+
+    async vatBookEntries(query) {
+      const rows = await client.vatBookEntry.findMany({
+        where: {
+          organizationId: query.organizationId,
+          date: { gte: dayUtc(query.from), lte: dayUtc(query.to) },
+          ...(query.propertyId ? { propertyId: query.propertyId } : {})
+        },
+        orderBy: [{ book: "asc" }, { date: "asc" }, { series: "asc" }, { number: "asc" }, { rate: "asc" }]
+      });
+      return rows.map((row) => ({
+        book: String(row.book),
+        date: isoDay(row.date),
+        series: row.series,
+        number: row.number,
+        counterpartyNif: row.counterpartyNif,
+        counterpartyName: row.counterpartyName,
+        base: toDec(row.base),
+        rate: toDec(row.rate),
+        quota: toDec(row.quota),
+        total: toDec(row.total),
+        retention: toDec(row.retention),
+        taxFigure: row.taxFigure,
+        surchargeRate: row.surchargeRate === null ? null : toDec(row.surchargeRate),
+        surchargeQuota: row.surchargeQuota === null ? null : toDec(row.surchargeQuota),
+        sourceType: String(row.sourceType),
+        sourceId: row.sourceId,
+        period: row.period,
+        deductible: row.deductible
+      }));
+    }
+  };
+}
+
+export const prismaFinancialStatementsSource: FinancialStatementsSource = buildPrismaFinancialStatementsSource(prisma);
+
+/**
+ * Runs `fn` with a SQL source bound to a REPEATABLE READ interactive
+ * transaction: every read inside sees the same snapshot of the ledger.
+ */
+export async function withFinancialStatementsSnapshot<T>(fn: (source: FinancialStatementsSource) => Promise<T>): Promise<T> {
+  return prisma.$transaction((tx) => fn(buildPrismaFinancialStatementsSource(tx)), {
+    isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    maxWait: 10_000,
+    timeout: 120_000
+  });
+}

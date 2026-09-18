@@ -14,6 +14,9 @@ import {
   formatEur,
   housekeepingStatusLabel
 } from "../night-audit-preflight.texts.js";
+// Tanda L3 (lote B): the sentence the preflight appends for folios of cancelled /
+// no-show reservations lives in the service (pure function, no query).
+import { settledStayFoliosHint } from "../night-audit-preflight.service.js";
 
 /** Raw enum values, anglicisms and English money that the operator must never read. */
 const FORBIDDEN = /"confirmed"|\bconfirmed\b|\bdraft\b|in-house|\bpending\b|\bHK\b|\bPOS\b|\bETA\b|postea|night audit|housekeeping|€\d|\d\.\d{2}(?!\d)/i;
@@ -29,6 +32,7 @@ function everyText(): string[] {
   }
   out.push(arrivalTimeHint("16:30"), arrivalTimeHint(null), expectedArrivalHint(new Date("2026-09-14T00:00:00Z")), expectedDepartureHint("2026-09-17"));
   out.push(blockingMessage([{ count: 2, title: PREFLIGHT_TEXTS.unresolved_no_shows.title }, { count: 13, title: PREFLIGHT_TEXTS.open_folios_with_balance.title }]));
+  out.push(PREFLIGHT_TEXTS.open_folios_with_balance.ok + settledStayFoliosHint(1, 150), PREFLIGHT_TEXTS.open_folios_with_balance.some(2, 300) + settledStayFoliosHint(12, 1126.45));
   return out;
 }
 
@@ -46,6 +50,18 @@ describe("preflight texts", () => {
     assert.equal(PREFLIGHT_TEXTS.open_folios_with_balance.some(13, 764.75), "13 folios con 764,75 € sin cobrar. Cobra o regulariza antes de cerrar.");
     assert.equal(PREFLIGHT_TEXTS.open_folios_with_balance.some(1, 12.5), "1 folio con 12,50 € sin cobrar. Cobra o regulariza antes de cerrar.");
     assert.equal(PREFLIGHT_TEXTS.open_folios_with_balance.balance(764.75), "Saldo 764,75 €");
+  });
+
+  it("open folios of cancelled / no-show reservations: appended as a warning, never a blocker; empty when none (Tanda L3)", () => {
+    assert.equal(settledStayFoliosHint(0, 0), "");
+    assert.equal(settledStayFoliosHint(1, 150), " Además, 1 folio de reservas canceladas o no presentadas conserva 150,00 € sin cobrar: no bloquea el cierre.");
+    // es-ES no agrupa millares en cifras de 4 dígitos (mismo formatEur que «27.928,11 €»).
+    assert.equal(settledStayFoliosHint(12, 1126.45), " Además, 12 folios de reservas canceladas o no presentadas conservan 1126,45 € sin cobrar: no bloquean el cierre.");
+    assert.equal(settledStayFoliosHint(3, 27928.11), " Además, 3 folios de reservas canceladas o no presentadas conservan 27.928,11 € sin cobrar: no bloquean el cierre.");
+    assert.equal(
+      PREFLIGHT_TEXTS.open_folios_with_balance.ok + settledStayFoliosHint(1, 150),
+      "Sin folios con saldo pendiente. Además, 1 folio de reservas canceladas o no presentadas conserva 150,00 € sin cobrar: no bloquea el cierre."
+    );
   });
 
   it("no-shows: «siguen confirmadas» instead of the raw status, with singular agreement", () => {

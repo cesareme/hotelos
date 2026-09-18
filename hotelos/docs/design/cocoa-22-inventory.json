@@ -12,16 +12,16 @@
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
     "files": 226,
-    "lines": 93251,
+    "lines": 94191,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1089,
+    "cocoaButtons": 1095,
     "rawTables": 2,
     "cocoaTables": 309,
     "rawInputs": 0,
-    "cocoaInputs": 1091,
+    "cocoaInputs": 1101,
     "inlineStyles": 679,
     "cocoaCards": 33,
     "colourLiterals": 0,
@@ -34,9 +34,9 @@
   },
   "bySize": {
     "S": 95,
-    "M": 107,
+    "M": 106,
     "L": 20,
-    "XL": 4
+    "XL": 5
   },
   "byArchetype": {
     "dashboard": 94,
@@ -148,13 +148,13 @@
     "finanzas": {
       "label": "Finanzas",
       "files": 34,
-      "lines": 19473,
+      "lines": 19787,
       "debtPoints": 36,
       "sizes": {
         "S": 9,
         "M": 16,
-        "L": 8,
-        "XL": 1
+        "L": 7,
+        "XL": 2
       },
       "archetypes": {
         "dashboard": 17,
@@ -204,7 +204,7 @@
     "operaciones": {
       "label": "Operaciones",
       "files": 27,
-      "lines": 10969,
+      "lines": 11121,
       "debtPoints": 38,
       "sizes": {
         "S": 9,
@@ -240,12 +240,12 @@
     "recepcion": {
       "label": "Recepción",
       "files": 19,
-      "lines": 9997,
+      "lines": 10444,
       "debtPoints": 26,
       "sizes": {
         "S": 6,
-        "M": 9,
-        "L": 4,
+        "M": 8,
+        "L": 5,
         "XL": 0
       },
       "archetypes": {
@@ -260,7 +260,7 @@
     "revenue": {
       "label": "Revenue",
       "files": 15,
-      "lines": 6735,
+      "lines": 6762,
       "debtPoints": 7,
       "sizes": {
         "S": 5,
@@ -594,9 +594,9 @@
         "revenue"
       ],
       "archetype": "formulario",
-      "lines": 492,
+      "lines": 519,
       "metrics": {
-        "lines": 492,
+        "lines": 519,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -605,7 +605,7 @@
         "rawTables": 0,
         "cocoaTables": 2,
         "rawInputs": 0,
-        "cocoaInputs": 11,
+        "cocoaInputs": 12,
         "inlineStyles": 1,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -1715,18 +1715,18 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 1336,
+      "lines": 1626,
       "metrics": {
-        "lines": 1336,
+        "lines": 1626,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 23,
+        "cocoaButtons": 26,
         "rawTables": 0,
         "cocoaTables": 3,
         "rawInputs": 0,
-        "cocoaInputs": 23,
+        "cocoaInputs": 29,
         "inlineStyles": 3,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -1740,7 +1740,7 @@
       },
       "headerExempt": false,
       "debtPoints": 1,
-      "size": "L"
+      "size": "XL"
     },
     {
       "path": "apps/admin-web/src/screens/billing/FolioDetailScreen.tsx",
@@ -1753,9 +1753,9 @@
         "finanzas"
       ],
       "archetype": "detalle",
-      "lines": 593,
+      "lines": 617,
       "metrics": {
-        "lines": 593,
+        "lines": 617,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4939,9 +4939,9 @@
         "operaciones"
       ],
       "archetype": "asistente",
-      "lines": 629,
+      "lines": 755,
       "metrics": {
-        "lines": 629,
+        "lines": 755,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5121,9 +5121,9 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "dialogo",
-      "lines": 576,
+      "lines": 602,
       "metrics": {
-        "lines": 576,
+        "lines": 602,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6150,9 +6150,9 @@
         "recepcion"
       ],
       "archetype": "asistente",
-      "lines": 1143,
+      "lines": 1291,
       "metrics": {
-        "lines": 1143,
+        "lines": 1291,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6264,18 +6264,18 @@
         "recepcion"
       ],
       "archetype": "workspace",
-      "lines": 764,
+      "lines": 1016,
       "metrics": {
-        "lines": 764,
+        "lines": 1016,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 15,
+        "cocoaButtons": 18,
         "rawTables": 0,
         "cocoaTables": 4,
         "rawInputs": 0,
-        "cocoaInputs": 4,
+        "cocoaInputs": 7,
         "inlineStyles": 2,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -6289,7 +6289,7 @@
       },
       "headerExempt": false,
       "debtPoints": 1,
-      "size": "M"
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/revenue/RateGridEditorScreen.tsx",
@@ -8407,9 +8407,9 @@
         "recepcion"
       ],
       "archetype": "calendario",
-      "lines": 1297,
+      "lines": 1344,
       "metrics": {
-        "lines": 1297,
+        "lines": 1344,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

@@ -17,6 +17,21 @@
 // other message. Handoff: add `attachments` to ProviderSendInput /
 // email.provider.send and INVOICE_EMAIL_SYSTEM_TEMPLATE to SYSTEM_TEMPLATES,
 // then this module can delegate to dispatch().
+//
+// Permission (Tanda L3 · lote E, 2026-09-18): the route keeps `invoice.issue`
+// (manifest entry `POST /invoices/:id/send-email`, medium) — the SAME key the
+// service requires below, so the edge and the service never disagree.
+// Decision §6.11 stays OPEN: a cashier profile that can download the PDF
+// (`invoice.read`) cannot send it; lowering the gate to `invoice.read` /
+// `payment.capture` changes the manifest (lote B owns it) and the department
+// templates, so it is reported to the integrator, not decided here.
+//
+// Attachment (Tanda L3 · lote E): the rendered bytes are verified BEFORE the
+// delivery row is written (`%PDF-` magic, `assertPdfAttachment`) in every
+// mode — a simulated send never records an attachment that is not a PDF —
+// and the delivery / audit payloads carry the attachment metadata
+// (filename, contentType, bytes, breakdownSource: whether the «Desglose de
+// IVA» came from the snapshot, the stored breakdown or the lines).
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
@@ -65,6 +80,24 @@ export type SendInvoiceByEmailInput = {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type EmailAttachment = { filename: string; contentType: string; content: Buffer };
+
+const PDF_MAGIC = "%PDF-";
+
+/** True when the buffer starts with the PDF magic (`%PDF-`) and has a body. Pure. */
+export function isPdfAttachment(content: Buffer): boolean {
+  return content.length > PDF_MAGIC.length && content.subarray(0, PDF_MAGIC.length).toString("latin1") === PDF_MAGIC;
+}
+
+/** 500 `INVOICE_PDF_INVALID` when the rendered bytes are not a PDF: nothing else is ever attached or recorded as sent. */
+export function assertPdfAttachment(attachment: EmailAttachment, invoiceId: string): void {
+  if (attachment.contentType === "application/pdf" && isPdfAttachment(attachment.content)) return;
+  throw new HttpError(500, "No se pudo generar el PDF de la factura para adjuntarlo al correo.", true, {
+    code: "INVOICE_PDF_INVALID",
+    invoiceId,
+    filename: attachment.filename,
+    bytes: attachment.content.length
+  });
+}
 
 /** Real HTTP delivery with attachment (Postmark / SendGrid), mirroring email.provider.send. */
 export async function sendEmailWithAttachment(
@@ -176,6 +209,8 @@ export async function sendInvoiceByEmail(input: SendInvoiceByEmailInput, deps: {
   });
   const status = deps.status ?? emailStatus();
   const attachment: EmailAttachment = { filename, contentType: "application/pdf", content: buffer };
+  assertPdfAttachment(attachment, invoice.id);
+  const attachmentMeta = { filename, contentType: attachment.contentType, bytes: buffer.length, breakdownSource: model.breakdownSource ?? null };
 
   const delivery = await prisma.notificationDelivery.create({
     data: {
@@ -188,7 +223,7 @@ export async function sendInvoiceByEmail(input: SendInvoiceByEmailInput, deps: {
       status: "queued",
       subject,
       bodyRendered: body,
-      payloadJson: { invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, attachment: { filename, bytes: buffer.length } } as Prisma.InputJsonValue,
+      payloadJson: { invoiceId: invoice.id, invoiceNumber: invoice.invoiceNumber, attachment: attachmentMeta } as Prisma.InputJsonValue,
       attempts: 0
     }
   });
@@ -210,7 +245,7 @@ export async function sendInvoiceByEmail(input: SendInvoiceByEmailInput, deps: {
       action: simulated ? "INVOICE_EMAIL_SIMULATED" : "INVOICE_EMAIL_FAILED",
       entityType: "invoice",
       entityId: invoice.id,
-      afterJson: { recipient, subject, deliveryId: delivery.id, simulated, emailMode: status.mode, attachment: { filename, bytes: buffer.length } },
+      afterJson: { recipient, subject, deliveryId: delivery.id, simulated, emailMode: status.mode, attachment: attachmentMeta },
       correlationId: input.correlationId
     });
     if (!simulated) {
@@ -257,7 +292,7 @@ export async function sendInvoiceByEmail(input: SendInvoiceByEmailInput, deps: {
     action: "INVOICE_EMAIL_SENT",
     entityType: "invoice",
     entityId: invoice.id,
-    afterJson: { recipient, subject, deliveryId: delivery.id, providerMessageId: result.providerMessageId, provider: status.provider, attachment: { filename, bytes: buffer.length } },
+    afterJson: { recipient, subject, deliveryId: delivery.id, providerMessageId: result.providerMessageId, provider: status.provider, attachment: attachmentMeta },
     correlationId: input.correlationId
   });
   recordDomainEvent({

@@ -3,7 +3,7 @@
 //   node --import tsx --test src/modules/invoicing/__tests__/invoice-pdf.test.mts
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildInvoicePdf, formatMoney, formatSpanishDate, invoicePdfFilename, type InvoicePdfModel } from "../invoice-pdf.service.js";
+import { BREAKDOWN_FROM_LINES_NOTE, breakdownFromInvoiceLines, buildInvoicePdf, formatMoney, formatSpanishDate, invoicePdfFilename, resolvePdfBreakdown, type InvoicePdfModel } from "../invoice-pdf.service.js";
 import { composeInvoiceEmail } from "../invoice-email.service.js";
 import { A4, PdfDocument, encodePdfString, textWidth, wrapText } from "../pdf/pdf-writer.js";
 
@@ -121,6 +121,70 @@ describe("buildInvoicePdf", () => {
     assert.equal(formatSpanishDate(null), "—");
     assert.equal(invoicePdfFilename({ invoiceNumber: "FAC-2026-000016", invoiceId: "x" }), "FAC-2026-000016.pdf");
     assert.equal(invoicePdfFilename({ invoiceNumber: null, invoiceId: "inv 1/2" }), "borrador-inv_1_2.pdf");
+  });
+});
+
+describe("desglose heredado reconstruido desde las líneas (Tanda L3 · lote E)", () => {
+  // Legacy lines as Faranda stores them (tax_breakdown_json NULL, taxCalificacion / taxFigure NULL, ES_UNKNOWN_0 at 0 %).
+  const legacyLines = [
+    { description: "Minibar hab. 502", quantity: 1, unitPrice: 12.5, taxCode: "ES_IVA_21", taxRate: 21, total: 12.5 },
+    { description: "Habitación", quantity: 1, unitPrice: 110, taxCode: "ES_IVA_10", taxRate: 10, total: 110 },
+    { description: "Cargo facturable sin tipo", quantity: 1, unitPrice: 12.1, taxCode: "ES_UNKNOWN_0", taxRate: 0, total: 12.1 },
+    { description: "Penalización no-show", quantity: 1, unitPrice: 20, taxCode: "ES_IVA_0", taxRate: 0, total: 20, taxCalificacion: "N1" }
+  ];
+  const note = "Desglose reconstruido a partir de las l\xedneas";
+
+  it("sin snapshot ni desglose persistido pero con líneas → grupos reconstruidos (redondeo por grupo de los libros) y nota en el PDF", () => {
+    const resolved = resolvePdfBreakdown({ snapshot: null, stored: [], lines: legacyLines });
+    assert.equal(resolved.breakdownSource, "lines");
+    // 12,50 al 21 % → base 10,33 + cuota 2,17; 110,00 al 10 % → 100,00 + 10,00; 12,10 al 0 % sujeto → base 12,10 (sin tipo, no exenta); 20,00 N1 → base 20,00.
+    assert.deepEqual(resolved.breakdown, [
+      { figure: "IVA", calificacion: "S1", ratePercent: 21, base: 10.33, quota: 2.17 },
+      { figure: "IVA", calificacion: "S1", ratePercent: 10, base: 100, quota: 10 },
+      { figure: "IVA", calificacion: "S1", ratePercent: 0, base: 12.1, quota: 0 },
+      { figure: "IVA", calificacion: "N1", ratePercent: 0, base: 20, quota: 0 }
+    ]);
+    assert.deepEqual(breakdownFromInvoiceLines([]), []);
+    // IGIC lines group under their own figure (taxCode carries it when taxFigure is null).
+    assert.deepEqual(breakdownFromInvoiceLines([{ taxCode: "ES_IGIC_7", taxRate: 7, total: 107 }]), [{ figure: "IGIC", calificacion: "S1", ratePercent: 7, base: 100, quota: 7 }]);
+
+    const out = latin1(buildInvoicePdf(model({ breakdown: resolved.breakdown, breakdownSource: resolved.breakdownSource })));
+    assert.ok(out.includes(note), "the PDF says the breakdown was rebuilt from the lines");
+    assert.ok(out.includes(BREAKDOWN_FROM_LINES_NOTE.replace("í", "\xed")));
+    // Corrector L3 (FC-5): a subject line at 0 % is a missing rate, not an exemption: «IVA 0 %» without «(exento)».
+    for (const expected of ["IVA 21 %", "IVA 10 %", "IVA 0 %", "No sujeto", "10,33 \x80", "2,17 \x80", "100,00 \x80", "12,10 \x80"]) {
+      assert.ok(out.includes(expected), `PDF must contain «${expected}»`);
+    }
+    assert.ok(!out.includes("exento"), "a 0 % subject line never prints «exento»");
+    // The note is a table footnote, never a change of the fiscal texts: the document keeps its QR and title.
+    assert.ok(out.includes("QR tributario"));
+    assert.ok(!out.includes("BORRADOR"));
+  });
+
+  it("con snapshot (o desglose persistido) no reconstruye nada y el PDF no lleva nota; el borrador sigue siendo BORRADOR", () => {
+    const frozen = [{ figure: "IVA", calificacion: "S1", ratePercent: 10, base: 90.91, quota: 9.09 }];
+    const stored = [{ figure: "IVA", calificacion: "S1", ratePercent: 21, base: 10, quota: 2.1 }];
+    const fromSnapshot = resolvePdfBreakdown({ snapshot: frozen, stored, lines: legacyLines });
+    assert.equal(fromSnapshot.breakdownSource, "snapshot");
+    assert.deepEqual(fromSnapshot.breakdown, frozen);
+    assert.notEqual(fromSnapshot.breakdown, frozen, "the model owns a copy of the frozen groups");
+    const fromStored = resolvePdfBreakdown({ snapshot: null, stored, lines: legacyLines });
+    assert.equal(fromStored.breakdownSource, "stored");
+    assert.deepEqual(fromStored.breakdown, stored);
+    // An empty snapshot array is still a snapshot (frozen document without groups): never rebuilt from the lines.
+    assert.deepEqual(resolvePdfBreakdown({ snapshot: [], stored, lines: legacyLines }), { breakdown: [], breakdownSource: "snapshot" });
+    // Nothing at all → empty stored breakdown, no note.
+    assert.deepEqual(resolvePdfBreakdown({ snapshot: null, stored: [], lines: [] }), { breakdown: [], breakdownSource: "stored" });
+
+    for (const source of ["snapshot", "stored", undefined] as const) {
+      const out = latin1(buildInvoicePdf(model(source ? { breakdownSource: source } : {})));
+      assert.ok(!out.includes(note), `no note when breakdownSource = ${String(source)}`);
+      assert.ok(out.includes("IVA 21 %") && out.includes("QR tributario"));
+    }
+    const draft = latin1(buildInvoicePdf(model({ status: "draft", invoiceNumber: null, qrUrl: null, verifactuHash: null, payment: null, breakdownSource: "stored" })));
+    assert.ok(draft.includes("BORRADOR"));
+    assert.ok(!draft.includes(note));
+    assert.ok(!draft.includes("QR tributario"));
   });
 });
 

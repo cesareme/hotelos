@@ -6,10 +6,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Prisma } from "@prisma/client";
 import {
+  LEGACY_VAT_BOOK_CANCELLATION_SUFFIX,
+  VAT_BOOK_CANCELLATION_SUFFIX,
+  VAT_BOOK_SUPERSEDED_SUFFIX,
+  cancellationSourceId,
   fiscalPeriodForDate,
   inferRate,
   invoiceSeries,
   invoiceSourceType,
+  legacyCancellationSourceId,
   madridDay,
   normalizeNif,
   parseFiscalPeriod,
@@ -17,8 +22,10 @@ import {
   periodsOfYear,
   round2,
   summarizeVatRows,
+  supersededSourceId,
   taxGroupsFromLines,
   toVatBookRowDto,
+  vatBookDocumentId,
   vatRowsFromExpense,
   vatRowsFromInvoice,
   vatRowsFromSupplierBill,
@@ -172,7 +179,7 @@ describe("rows from invoices", () => {
     assert.equal(cancellation.rows[0]!.quota.toString(), "-10");
     assert.equal(cancellation.rows[0]!.date, "2026-07-01");
     assert.equal(cancellation.rows[0]!.period, "2026-Q3");
-    assert.equal(cancellation.rows[0]!.sourceId, "inv_1:anulacion");
+    assert.equal(cancellation.rows[0]!.sourceId, "inv_1#anulacion");
     assert.equal(vatRowsFromInvoice({ invoice: invoice(), organizationId: "org_test", periodicity: "quarterly", kind: "cancellation" }).rows.length, 0);
   });
 
@@ -239,7 +246,7 @@ describe("rows from supplier bills and expenses", () => {
     assert.match(issue.avisos[0]!, /ticket sin NIF/);
     const cancellation = vatRowsFromExpense({ expense, organizationId: "org_test", periodicity: "quarterly", kind: "cancellation" });
     assert.equal(cancellation.rows[0]!.quota.toString(), "-2.1");
-    assert.equal(cancellation.rows[0]!.sourceId, "exp_1:anulacion");
+    assert.equal(cancellation.rows[0]!.sourceId, "exp_1#anulacion");
   });
 
   it("summarises rows per rate with wire numbers", () => {
@@ -247,5 +254,42 @@ describe("rows from supplier bills and expenses", () => {
     const summary = summarizeVatRows(rows);
     assert.deepEqual([summary.filas, summary.base, summary.cuota, summary.total, summary.retencion], [2, 1500, 315, 1815, 150]);
     assert.deepEqual(summary.porTipo, [{ rate: 21, filas: 2, base: 1500, cuota: 315, total: 1815, retencion: 150 }]);
+  });
+});
+
+describe("sourceId convention of the counter-rows (Tanda L3-C)", () => {
+  it("exposes ONE convention (#anulacion / #sustituida) and only recognises the legacy :anulacion to purge it", () => {
+    assert.equal(VAT_BOOK_CANCELLATION_SUFFIX, "#anulacion");
+    assert.equal(VAT_BOOK_SUPERSEDED_SUFFIX, "#sustituida");
+    assert.equal(LEGACY_VAT_BOOK_CANCELLATION_SUFFIX, ":anulacion");
+    assert.equal(cancellationSourceId("inv_1"), "inv_1#anulacion");
+    assert.equal(supersededSourceId("inv_1"), "inv_1#sustituida");
+    assert.equal(legacyCancellationSourceId("inv_1"), "inv_1:anulacion");
+    for (const sourceId of ["inv_1", "inv_1#anulacion", "inv_1#sustituida", "inv_1:anulacion"]) assert.equal(vatBookDocumentId(sourceId), "inv_1");
+  });
+
+  it("derives the negating #sustituida rows of an original replaced by a rectificativa «S», dated on the substitute's issue day", () => {
+    const original = invoice({ status: "rectified", rectificationType: null });
+    const superseded = vatRowsFromInvoice({ invoice: original, organizationId: "org_test", periodicity: "quarterly", kind: "superseded", supersededAt: new Date("2026-07-05T10:00:00.000Z") });
+    assert.equal(superseded.rows.length, 1);
+    const row = superseded.rows[0]!;
+    assert.deepEqual([row.sourceType, row.sourceId, row.date, row.period, row.number], ["invoice", "inv_1#sustituida", "2026-07-05", "2026-Q3", "FAC-2026-000001"]);
+    assert.deepEqual([row.base.toString(), row.quota.toString(), row.total.toString(), row.rate.toString()], ["-100", "-10", "-110", "10"]);
+    assert.deepEqual(superseded.avisos, []);
+    // The substitute's own rows keep its id and stay positive: the book nets like the ledger (original reversed + substitute posted).
+    const substitute = vatRowsFromInvoice({
+      invoice: invoice({ id: "rec_s", invoiceNumber: "REC-2026-000002", invoiceType: "R1", rectifyingForId: "inv_1", rectificationType: "S", issuedAt: new Date("2026-07-05T10:00:00.000Z"), lines: [{ total: D("55.00"), taxRate: D("10.00"), taxCode: "ES_IVA_10", taxCalificacion: "S1", taxFigure: "IVA" }] }),
+      organizationId: "org_test",
+      periodicity: "quarterly"
+    });
+    assert.deepEqual([substitute.rows[0]!.sourceType, substitute.rows[0]!.sourceId, substitute.rows[0]!.quota.toString()], ["rectification", "rec_s", "5"]);
+    const net = superseded.rows[0]!.quota.plus(substitute.rows[0]!.quota).plus(vatRowsFromInvoice({ invoice: original, organizationId: "org_test", periodicity: "quarterly" }).rows[0]!.quota);
+    assert.equal(net.toString(), "5");
+  });
+
+  it("writes no superseded rows without the substitute's issue instant, on drafts, or for a cancellation without cancelledAt", () => {
+    assert.equal(vatRowsFromInvoice({ invoice: invoice(), organizationId: "org_test", periodicity: "quarterly", kind: "superseded" }).rows.length, 0);
+    assert.equal(vatRowsFromInvoice({ invoice: invoice({ status: "draft", issuedAt: null }), organizationId: "org_test", periodicity: "quarterly", kind: "superseded", supersededAt: new Date() }).rows.length, 0);
+    assert.equal(vatRowsFromInvoice({ invoice: invoice(), organizationId: "org_test", periodicity: "quarterly", kind: "cancellation" }).rows.length, 0);
   });
 });

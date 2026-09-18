@@ -10,7 +10,10 @@
  *   1. draft → freeze check (409 FOLIO_CHANGED_SINCE_DRAFT) → issue: snapshot,
  *      series FAC, libro de emitidas (one row per rate), asiento
  *      D 4300 / H 705.x / H 477.tipo balanced to the cent;
- *   2. GET /invoices/:id/pdf → 200 application/pdf;
+ *   2. GET /invoices/:id/pdf → 200 application/pdf; the model says where the
+ *      breakdown comes from (`breakdownSource: snapshot`), and a legacy
+ *      document without tax_breakdown_json (14/25 Faranda invoices) rebuilds it
+ *      from its lines and notes it on the PDF (Tanda L3 · lote E);
  *   3. POST /folios/:id/payments ×2 with the same clientRequestId → same
  *      payment (201 then 200 idempotent), different body → 409
  *      IDEMPOTENCY_CONFLICT; asiento D 570 / H 4300; payment_link without
@@ -302,6 +305,34 @@ describe("finanzas · facturación y cobros (app.inject, prop_123)", () => {
     assert.ok(pdf.includes("QR tributario"));
     assert.ok(pdf.includes("NIF: B12345674"));
     assert.ok(res.rawPayload.length > 2000);
+
+    // Tanda L3 (lote E): the model says where the «Desglose de IVA» comes from — the issuance snapshot here, the same groups the issue answered.
+    const { BREAKDOWN_FROM_LINES_NOTE, loadInvoicePdfModel } = await import("../../apps/api/src/modules/invoicing/invoice-pdf.service.js");
+    const model = await loadInvoicePdfModel(invoiceId);
+    assert.equal(model.breakdownSource, "snapshot");
+    const groups = (list: Array<{ ratePercent: number; base: number; quota: number }>) => list.map((g) => [g.ratePercent, g.base, g.quota]).sort((a, b) => b[0]! - a[0]!);
+    assert.deepEqual(groups(model.breakdown), groups(expectedBreakdown));
+    assert.ok(!pdf.includes(BREAKDOWN_FROM_LINES_NOTE), "a snapshot document carries no reconstruction note");
+
+    // Legacy document (no snapshot, no tax_breakdown_json — the 14/25 Faranda invoices issued before the desglose column):
+    // the breakdown is rebuilt from the lines (same rounding as the VAT books) and the PDF says so. Read-side only: no backfill.
+    const legacy = await newFolio(`${MARK}-PDF`);
+    await postLine(legacy.folioId, "parking", "Parking heredado", 12.1);
+    const legacyDraft = await draftInvoice(legacy.folioId, "Prueba PDF heredado");
+    await prisma.$executeRaw`UPDATE invoices SET tax_breakdown_json = NULL WHERE id = ${legacyDraft.id}`;
+    const legacyModel = await loadInvoicePdfModel(legacyDraft.id);
+    assert.equal(legacyModel.breakdownSource, "lines");
+    assert.deepEqual(legacyModel.breakdown.map((g) => [g.figure, g.calificacion, g.ratePercent, g.base, g.quota]), [["IVA", "S1", 21, 10, 2.1]]);
+    const legacyPdf = await app.inject({ method: "GET", url: url(`/invoices/${legacyDraft.id}/pdf?download=1`), headers });
+    assert.equal(legacyPdf.statusCode, 200, legacyPdf.body.slice(0, 200));
+    assert.match(legacyPdf.headers["content-type"] as string, /^application\/pdf/);
+    assert.match(legacyPdf.headers["content-disposition"] as string, /^attachment; filename="borrador-/);
+    const legacyOut = legacyPdf.rawPayload.toString("latin1");
+    assert.ok(legacyOut.startsWith("%PDF-1.4"));
+    assert.ok(legacyOut.includes(BREAKDOWN_FROM_LINES_NOTE), "the legacy PDF notes the reconstruction");
+    assert.ok(legacyOut.includes("BORRADOR"), "a draft stays a draft");
+    assert.ok(legacyOut.includes("IVA 21 %") && legacyOut.includes("10,00 \x80") && legacyOut.includes("2,10 \x80"), "the reconstructed group is printed");
+    assert.equal((await prisma.invoice.findUnique({ where: { id: legacyDraft.id }, select: { taxBreakdownJson: true } }))?.taxBreakdownJson, null, "nothing is written back to the invoice");
   });
 
   it("3 · POST /folios/:id/payments is idempotent by clientRequestId, posts D 570 / H 4300, and PSP methods are honest", async () => {

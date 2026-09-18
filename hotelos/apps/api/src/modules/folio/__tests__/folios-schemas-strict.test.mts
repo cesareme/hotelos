@@ -31,6 +31,11 @@ describe("CreateFolioLineSchema (POST /folios/:id/lines)", () => {
   it("accepts the admin-web body (type, description, quantity, unitPrice, taxCode?, taxCategory?)", () => {
     assert.equal(CreateFolioLineSchema.safeParse({ type: "minibar", description: "Agua", quantity: 1, unitPrice: 2 }).success, true);
     assert.equal(CreateFolioLineSchema.safeParse({ type: "room", description: "Habitación", quantity: 1, unitPrice: 100, taxCode: "IVA10", taxCategory: "accommodation" }).success, true);
+    // L3-T: any line type of the catalogue is accepted (the handler casts it) and the
+    // override is restricted to the enum; the service infers the category when absent.
+    assert.equal(CreateFolioLineSchema.safeParse({ type: "cancellation_fee", description: "Penalización por cancelación", quantity: 1, unitPrice: 50, taxCategory: "not_subject" }).success, true);
+    assert.equal(CreateFolioLineSchema.safeParse({ type: "city_tax", description: "Tasa turística", quantity: 2, unitPrice: 1.5 }).success, true);
+    assert.equal(CreateFolioLineSchema.safeParse({ type: "minibar", description: "Agua", quantity: 1, unitPrice: 2, taxCategory: "bogus" }).success, false);
   });
   it("rejects an unknown key with the Spanish message", () => {
     assert.deepEqual(unrecognized(CreateFolioLineSchema, { type: "minibar", description: "Agua", quantity: 1, unitPrice: 2, foo: 1 }), ["foo"]);

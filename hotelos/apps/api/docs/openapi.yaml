@@ -12034,6 +12034,7 @@ paths:
   /properties/{propertyId}/availability/quote:
     post:
       summary: "POST /properties/:propertyId/availability/quote"
+      description: "Disponibilidad y precio por tipo de habitación (AvailabilityQuoteItem[]: roomTypeId, roomTypeName, availableRooms, currency, totalAmount de UNA habitación, priceSource rate_plan | fallback, quotedRatePlanId, ratePlanSwitched, nights, nightsWithoutRate, fallbackNightly, cancellationPolicy). Corrector L3 (FUX-02): cada noche se cotiza con el MISMO cotizador canónico que fija Reservation.totalAmount al crear (plan pedido → plan BAR activo → precio publicado más bajo), así la estimación coincide con lo que persiste POST /properties/:propertyId/reservations sin totalAmount; `ratePlanSwitched: true` = se pidió un plan sin precio y cotizó otro (BAR). `fallback` solo cuando ningún plan publica precio para alguna noche: esas noches se completan con fallbackNightly (relleno, no tarifa) y la creación las deja a 0 € con aviso. Cuerpo: { arrivalDate, departureDate, adults?, children?, roomTypeId?, ratePlanId? }."
       operationId: "post-properties-by-propertyid-availability-quote"
       tags:
       - properties
@@ -12316,6 +12317,7 @@ paths:
   /reservations/{id}/cancel:
     post:
       summary: "POST /reservations/:id/cancel"
+      description: "Cancela la reserva aplicando su política de cancelación (id → código → política por defecto del centro; sin política = sin cargo). Guarda de estado (corrector L3 · DS-01 / FC-1): solo una reserva draft o confirmed transiciona; una cancelada, no_show o en casa responde 409 RESERVATION_NOT_ACTIVE sin efecto alguno (un reintento nunca apila una segunda penalización; la transición es una escritura condicional sobre el estado vivo). Separación de funciones ANTES de escribir: penalización > 0 exige folio.charge.post (403 sin efectos). Respuesta: el registro de la reserva más `cancellation { mode: cancellation | no_show, applied, charge { amount, basis, withinFreeWindow, policyCode, policyName, label, cutoffAt }, line, folio { id, status: open | closed, balanceDue, pendingInvoice } | null, policyWaived, waivedAmount, waiver { band: T1 | T2 | above, pct, tier, authorization { mode, requestId, supervisorAuthorizationId } | null } | null }`. `folio.pendingInvoice: true` (FC-2): el folio queda saldado pero abierto porque sus cargos (la penalización) no están facturados; emite la factura (POST /folios/:id/invoice + POST /invoices/:id/issue) y ciérralo. Auditoría RESERVATION_CANCELLATION_POLICY con el desenlace completo."
       operationId: "post-reservations-by-id-cancel"
       tags:
       - reservations
@@ -12325,15 +12327,17 @@ paths:
       x-manifest-entry: true
       responses:
         200:
-          description: Successful response
+          description: "Reserva (registro) + `cancellation` (ver description)"
         400:
-          description: Bad request
+          description: "Bad request (renuncia sin motivo; mode / cuerpo no válidos)"
         401:
           description: Unauthorized
         403:
-          description: Forbidden — missing required permission
+          description: "Forbidden — missing required permission (pms.reservation.modify; folio.charge.post con penalización > 0; pms.reservation.discount al renunciar)"
         404:
           description: Resource not found
+        409:
+          description: "RESERVATION_NOT_ACTIVE (la reserva no está draft/confirmed) · APPROVAL_REQUIRED (renuncia por encima del tramo operativo: details { kind: discount, tier })"
         429:
           description: Too many requests
         500:
@@ -12346,14 +12350,33 @@ paths:
           type: string
       requestBody:
         required: false
+        description: "Tanda L3 · lote B (corrector ronda 1). Esquema NO strict: una clave desconocida se ignora, nunca 400."
         content:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              properties:
+                reason:
+                  type: string
+                  maxLength: 1000
+                  description: "Motivo (auditoría de la reserva). Obligatorio para renunciar a la penalización (applyPolicy: false con importe > 0 → 400 sin motivo)."
+                reasonCode:
+                  type: string
+                  maxLength: 40
+                notes:
+                  type: string
+                  maxLength: 2000
+                applyPolicy:
+                  type: boolean
+                  default: true
+                  description: "true (omitido): aplica la política de la reserva (línea cancellation_fee / no_show_fee no sujeta, folio cerrado a saldo 0 si todos sus cargos están facturados). false: renuncia a la penalización — descuento de facto por tramos de §4.7: ≤ T1 (importe ≤ discount.T1 y ≤ discountPctT1 de la estancia) con pms.reservation.discount + motivo; ≤ discountPctT2 con el motor de aprobaciones (solicitud aprobada, override propio o PIN de supervisor); por encima solo solicitud aprobada → 409 APPROVAL_REQUIRED (kind discount) sin efecto alguno."
+                supervisorAuthorizationId:
+                  type: string
+                  description: "Autorización de un solo uso por PIN (POST /rbac/supervisor-authorizations) para pms.reservation.override sobre esta reserva: levanta la renuncia en el tramo de supervisión (no por encima de él)."
   /reservations/{id}/no-show:
     post:
       summary: "POST /reservations/:id/no-show"
+      description: "Marca la reserva como no-show aplicando la penalización de no-show de su política (nunca gratuita). Guarda de estado (corrector L3 · DS-01 / FC-1): solo una reserva draft o confirmed transiciona; una cancelada, no_show o en casa responde 409 RESERVATION_NOT_ACTIVE sin efecto alguno (un reintento nunca apila una segunda penalización; la transición es una escritura condicional sobre el estado vivo). Separación de funciones ANTES de escribir: penalización > 0 exige folio.charge.post (403 sin efectos). Respuesta: el registro de la reserva más `cancellation { mode: cancellation | no_show, applied, charge { amount, basis, withinFreeWindow, policyCode, policyName, label, cutoffAt }, line, folio { id, status: open | closed, balanceDue, pendingInvoice } | null, policyWaived, waivedAmount, waiver { band: T1 | T2 | above, pct, tier, authorization { mode, requestId, supervisorAuthorizationId } | null } | null }`. `folio.pendingInvoice: true` (FC-2): el folio queda saldado pero abierto porque sus cargos (la penalización) no están facturados; emite la factura (POST /folios/:id/invoice + POST /invoices/:id/issue) y ciérralo. Auditoría RESERVATION_CANCELLATION_POLICY con el desenlace completo."
       operationId: "post-reservations-by-id-no-show"
       tags:
       - reservations
@@ -12363,15 +12386,17 @@ paths:
       x-manifest-entry: true
       responses:
         200:
-          description: Successful response
+          description: "Reserva (registro) + `cancellation` (ver description)"
         400:
-          description: Bad request
+          description: "Bad request (renuncia sin motivo; mode / cuerpo no válidos)"
         401:
           description: Unauthorized
         403:
-          description: Forbidden — missing required permission
+          description: "Forbidden — missing required permission (pms.reservation.modify; folio.charge.post con penalización > 0; pms.reservation.discount al renunciar)"
         404:
           description: Resource not found
+        409:
+          description: "RESERVATION_NOT_ACTIVE (la reserva no está draft/confirmed) · APPROVAL_REQUIRED (renuncia por encima del tramo operativo: details { kind: discount, tier })"
         429:
           description: Too many requests
         500:
@@ -12384,11 +12409,23 @@ paths:
           type: string
       requestBody:
         required: false
+        description: "Tanda L3 · lote B (corrector ronda 1). Esquema NO strict: una clave desconocida se ignora, nunca 400."
         content:
           application/json:
             schema:
               type: object
-              additionalProperties: true
+              properties:
+                reason:
+                  type: string
+                  maxLength: 1000
+                  description: "Motivo (auditoría de la reserva). Obligatorio para renunciar a la penalización (applyPolicy: false con importe > 0 → 400 sin motivo)."
+                applyPolicy:
+                  type: boolean
+                  default: true
+                  description: "true (omitido): aplica la política de la reserva (línea cancellation_fee / no_show_fee no sujeta, folio cerrado a saldo 0 si todos sus cargos están facturados). false: renuncia a la penalización — descuento de facto por tramos de §4.7: ≤ T1 (importe ≤ discount.T1 y ≤ discountPctT1 de la estancia) con pms.reservation.discount + motivo; ≤ discountPctT2 con el motor de aprobaciones (solicitud aprobada, override propio o PIN de supervisor); por encima solo solicitud aprobada → 409 APPROVAL_REQUIRED (kind discount) sin efecto alguno."
+                supervisorAuthorizationId:
+                  type: string
+                  description: "Autorización de un solo uso por PIN (POST /rbac/supervisor-authorizations) para pms.reservation.override sobre esta reserva: levanta la renuncia en el tramo de supervisión (no por encima de él)."
   /reservations/{id}/folio:
     get:
       summary: "GET /reservations/:id/folio"
@@ -12868,6 +12905,7 @@ paths:
   /folios/{id}/close:
     post:
       summary: "POST /folios/:id/close"
+      description: "Cierra el folio. Exige saldo 0 (400) y, desde el corrector L3 (FC-2), que todos sus cargos facturables estén documentados por una factura emitida (`Invoice.folioId`, estado issued o rectified): con cargos sin facturar responde 409 FOLIO_UNINVOICED_LINES (details { lines, total }) — la factura es el único mecanismo que devenga el ingreso en el diario (D 4300 / H 705.x); ciérralo tras POST /folios/:id/invoice + POST /invoices/:id/issue. El check-out y la sincronización OPERA conservan el cierre heredado (saldo 0, factura opcional)."
       operationId: "post-folios-by-id-close"
       tags:
       - folios
@@ -12886,6 +12924,8 @@ paths:
           description: Forbidden — missing required permission
         404:
           description: Resource not found
+        409:
+          description: "FOLIO_UNINVOICED_LINES (cargos sin facturar) · folio ya cerrado"
         429:
           description: Too many requests
         500:
@@ -13400,6 +13440,64 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /invoices/{id}/pdf:
+    get:
+      summary: "GET /invoices/:id/pdf"
+      operationId: "get-invoices-by-id-pdf"
+      description: "PDF de la factura (A4, PDF 1.4 generado sin dependencias externas). Emitidas: documento congelado en la emisión (snapshot) con desglose de IVA por tipo, QR VeriFactu y huella. Facturas heredadas sin desglose persistido (tax_breakdown_json nulo): desglose reconstruido a partir de las líneas con la misma agrupación y redondeo que el libro de emitidas, y la nota «Desglose reconstruido a partir de las líneas» bajo la tabla (el modelo expone breakdownSource: snapshot | stored | lines; nada se escribe en la factura). Borradores: «BORRADOR — sin validez fiscal», sin número ni QR. Ámbito: factura de una propiedad del llamante (404 opaco fuera de ámbito). Manifiesto: modules/invoicing/route-permissions.partial.ts."
+      tags:
+      - invoices
+      x-permissions:
+      - invoice.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PDF de la factura"
+          headers:
+            Content-Disposition:
+              description: "inline; filename=\"FAC-2026-000016.pdf\" (attachment con ?download=1; borradores: borrador-<id>.pdf)"
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+            Cache-Control:
+              description: "private, no-store"
+              schema:
+                type: string
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: download
+        in: query
+        required: false
+        description: "\"1\" o \"true\" → Content-Disposition attachment (descarga); cualquier otro valor u omisión → inline."
+        schema:
+          type: string
+          enum:
+          - "1"
+          - "true"
   /reports/properties/{propertyId}/catalog:
     get:
       summary: "GET /reports/properties/:propertyId/catalog"
@@ -15225,6 +15323,7 @@ paths:
     get:
       summary: "GET /reservations/:id/cancellation-charge"
       operationId: "get-reservations-by-id-cancellation-charge"
+      description: "Vista previa sin escribir de la penalización que la política de la reserva aplicaría ahora (`ChargeBreakdown { amount, basis: none | first_night | percent | fixed_amount | all_stay, withinFreeWindow, policyCode, policyName, label, cutoffAt }`); la ventana gratuita se mide a las 14:00 hora del hotel del día de llegada (cutoffAt). `mode` omitido = cancellation."
       tags:
       - reservations
       x-permissions:
@@ -15252,9 +15351,19 @@ paths:
         required: true
         schema:
           type: string
+      - name: mode
+        in: query
+        required: false
+        description: "cancellation (por defecto) | no_show; otro valor → 400."
+        schema:
+          type: string
+          enum:
+          - cancellation
+          - no_show
   /reservations/{id}/apply-cancellation-fee:
     post:
       summary: "POST /reservations/:id/apply-cancellation-fee"
+      description: "Ruta heredada de reparación (corrector L3 · DS-03): aplica la penalización de cancelación a una reserva que YA está cancelled (409 RESERVATION_STATUS_MISMATCH en cualquier otro estado: nunca se cobra una «cancelación» a un huésped confirmado). Idempotente por reserva y modo: si la línea cancellation_fee ya existe la devuelve con `alreadyApplied: true` sin cargar otra ni abrir un folio secundario. Respuesta `{ breakdown, line | null, alreadyApplied }`. El camino normal es POST /reservations/:id/cancel."
       operationId: "post-reservations-by-id-apply-cancellation-fee"
       tags:
       - reservations
@@ -15274,6 +15383,8 @@ paths:
           description: Forbidden — missing required permission
         404:
           description: Resource not found
+        409:
+          description: "RESERVATION_STATUS_MISMATCH (details { status, expected })"
         429:
           description: Too many requests
         500:
@@ -15294,6 +15405,7 @@ paths:
   /reservations/{id}/apply-no-show-fee:
     post:
       summary: "POST /reservations/:id/apply-no-show-fee"
+      description: "Ruta heredada de reparación (corrector L3 · DS-03): aplica la penalización de no-show a una reserva que YA está no_show (409 RESERVATION_STATUS_MISMATCH en cualquier otro estado: nunca se cobra una «cancelación» a un huésped confirmado). Idempotente por reserva y modo: si la línea no_show_fee ya existe la devuelve con `alreadyApplied: true` sin cargar otra ni abrir un folio secundario. Respuesta `{ breakdown, line | null, alreadyApplied }`. El camino normal es POST /reservations/:id/no-show."
       operationId: "post-reservations-by-id-apply-no-show-fee"
       tags:
       - reservations
@@ -15313,6 +15425,8 @@ paths:
           description: Forbidden — missing required permission
         404:
           description: Resource not found
+        409:
+          description: "RESERVATION_STATUS_MISMATCH (details { status, expected })"
         429:
           description: Too many requests
         500:
@@ -22542,3 +22656,1204 @@ paths:
           description: Too many requests
         500:
           description: Internal server error
+  /fiscal/vat-settings:
+    get:
+      summary: "GET /fiscal/vat-settings"
+      operationId: "get-fiscal-vat-settings"
+      description: "Ajustes de IVA de la organización (VatSettingsDto): periodicity (quarterly | monthly; efectiva: mensual si la sociedad es gran empresa o SII), regime (general | redeme | recargo), prorrataPct, taxFigure (IVA | IGIC | IPSI), persisted (false = valores por defecto sin fila) y sociedad (FiscalDeclaranteBadge). Clave escrita en el parcial como accounting.read y remapeada a accounting.reports.read en el manifiesto (requireAccountingReportsKey). Manifiesto: modules/accounting/fiscal-route-permissions.partial.ts."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "VatSettingsDto"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+    put:
+      summary: "PUT /fiscal/vat-settings"
+      operationId: "put-fiscal-vat-settings"
+      description: "Actualización idempotente de los ajustes de IVA (cuerpo zod .strict(): una clave desconocida es 400). Audita la escritura; responde el VatSettingsDto resultante."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.configure
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "VatSettingsDto actualizado"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                periodicity:
+                  type: string
+                  enum:
+                  - quarterly
+                  - monthly
+                regime:
+                  type: string
+                  enum:
+                  - general
+                  - redeme
+                  - recargo
+                prorrataPct:
+                  type:
+                  - number
+                  - "null"
+                  minimum: 0
+                  maximum: 100
+                taxFigure:
+                  type: string
+                  enum:
+                  - IVA
+                  - IGIC
+                  - IPSI
+  /fiscal/regime:
+    get:
+      summary: "GET /fiscal/regime"
+      operationId: "get-fiscal-regime"
+      description: "Régimen fiscal de la sociedad para un ejercicio (Tanda 6b · R8): situación actual y propuesta al cierre (gran empresa / SII / periodicidad). Query zod .strict(): year=AAAA obligatorio."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "FiscalRegimeSummary"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: year
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: "^\\d{4}$"
+  /fiscal/vat-books:
+    get:
+      summary: "GET /fiscal/vat-books"
+      operationId: "get-fiscal-vat-books"
+      description: "Libro registro de IVA (emitidas · recibidas · bienes de inversión) de un periodo, paginado por keyset (date, id) (Tanda L2 · L2-05). period (2026-Q3 · 2026-09 · 2026) o from+to (YYYY-MM-DD) es obligatorio (400 tipado con details.code VALIDATION_ERROR). Respuesta VatBookResponse: { organizationId, propertyId, book, periodo, origen: libros | documentos, rows[], resumen { filas, base, cuota, total, retencion, porTipo[] }, avisos[], total, nextCursor } y cabeceras X-Total-Count / X-Next-Cursor. Ámbito de sociedad completa: sin accounting.entity.read un usuario de centro debe indicar un propertyId asignado (404 opaco en otro caso)."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "VatBookResponse + total + nextCursor"
+          headers:
+            X-Total-Count:
+              schema:
+                type: integer
+            X-Next-Cursor:
+              description: "Cursor opaco de la página siguiente; ausente en la última página."
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: book
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - emitidas
+          - recibidas
+          - bienes_inversion
+      - name: period
+        in: query
+        required: false
+        description: "2026-Q3 · 2026-09 · 2026 (obligatorio si no se indican from y to)"
+        schema:
+          type: string
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: propertyId
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        description: "Tamaño de página (por defecto y máximo 500; un valor mayor se recorta sin error)."
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+      - name: cursor
+        in: query
+        required: false
+        description: "Cursor opaco devuelto en nextCursor / X-Next-Cursor (400 si no es válido)."
+        schema:
+          type: string
+  /fiscal/vat-books/rebuild:
+    post:
+      summary: "POST /fiscal/vat-books/rebuild"
+      operationId: "post-fiscal-vat-books-rebuild"
+      description: "Rematerializa las filas del libro de IVA de un rango a partir de los documentos (facturas, facturas recibidas, gastos), conservando las filas importadas de Sage 200 (sourceType sage200) y purgando la convención heredada <id>:anulacion (Tanda L3 · C). Cuerpo zod .strict(): { period | from, to [, propertyId] } (400 sin rango). Respuesta VatBooksRebuildResponse: { organizationId, propertyId, from, to, deleted, created { emitidas, recibidas, bienes_inversion }, documentos { facturas, anulaciones, facturasRecibidas, gastos }, avisos[] }. Audita la operación."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.configure
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "VatBooksRebuildResponse"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                period:
+                  type: string
+                  description: "2026-Q3 · 2026-09 · 2026"
+                from:
+                  type: string
+                  format: date
+                to:
+                  type: string
+                  format: date
+                propertyId:
+                  type: string
+  /fiscal/models/{modelo}:
+    get:
+      summary: "GET /fiscal/models/:modelo"
+      operationId: "get-fiscal-models-by-modelo"
+      description: "Modelo AEAT calculado desde los libros de IVA y el diario (FiscalModelReport): 303 · 390 · 347 · 111 · 115 · 180 (otro valor → 400 UNKNOWN_MODEL). Periódicos (303 · 111 · 115): period=2026-Q3 | 2026-09 o fromDate+toDate [+ periodType]; anuales (390 · 347 · 180): year=AAAA o period=AAAA (400 INVALID_PERIOD). Respuesta: { modelo, titulo, organizationId, propertyId, periodo, declarante, sociedad, casillas[] { casilla, descripcion, importe, tipo }, totales, avisos[], fuentes { origen, registros, diario { apuntes, cuotaRepercutida, cuotaSoportada, diferencias[], cuadra } }, detalle[], presentacion { modo: manual }, generatedAt }. El 303 suma las filas nativas y las importadas de Sage 200 sin doble cómputo (las emitidas nativas se excluyen al importar). Ámbito de sociedad completa como en /fiscal/vat-books."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "FiscalModelReport"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: modelo
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - "303"
+          - "390"
+          - "347"
+          - "111"
+          - "115"
+          - "180"
+      - name: period
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: year
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: "^\\d{4}$"
+      - name: propertyId
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: fromDate
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: toDate
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: periodType
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - monthly
+          - quarterly
+  /fiscal/models/{modelo}/pdf:
+    get:
+      summary: "GET /fiscal/models/:modelo/pdf"
+      operationId: "get-fiscal-models-by-modelo-pdf"
+      description: "El mismo informe que GET /fiscal/models/:modelo (misma query) como hoja resumen por casilla en PDF 1.4 de texto (Helvetica, A4, sin dependencias), para teclear en la sede de la AEAT o entregar a la gestoría. Cabeceras: Content-Type application/pdf, Content-Disposition inline; filename=\"modelo-303-2026-Q3.pdf\", Content-Length."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PDF del modelo"
+          headers:
+            Content-Disposition:
+              description: "inline; filename=\"modelo-<modelo>-<periodo>.pdf\""
+              schema:
+                type: string
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: modelo
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - "303"
+          - "390"
+          - "347"
+          - "111"
+          - "115"
+          - "180"
+      - name: period
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: year
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: "^\\d{4}$"
+      - name: propertyId
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: fromDate
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: toDate
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: periodType
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - monthly
+          - quarterly
+  /fiscal/vat-settlement:
+    get:
+      summary: "GET /fiscal/vat-settlement"
+      operationId: "get-fiscal-vat-settlement"
+      description: "Vista previa del asiento de liquidación de IVA de un periodo (VatSettlementPreview: apuntes 477x / 472x / 4750 · 4700) sin escribir nada. Query zod .strict(): period=2026-Q3 | 2026-09."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "VatSettlementPreview"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: period
+        in: query
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "POST /fiscal/vat-settlement"
+      operationId: "post-fiscal-vat-settlement"
+      description: "Contabiliza el asiento de liquidación de IVA del periodo (una sola vez por periodo; 409 si ya existe; 409 FISCAL_YEAR_CLOSED en ejercicio cerrado). Cuerpo zod .strict(): { period [, entryDate] }."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.journal.post
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "Asiento de liquidación contabilizado"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                period:
+                  type: string
+                entryDate:
+                  type: string
+                  format: date
+              required:
+              - period
+  /fiscal/vat-settlement/reverse:
+    post:
+      summary: "POST /fiscal/vat-settlement/reverse"
+      operationId: "post-fiscal-vat-settlement-reverse"
+      description: "Asiento inverso marcado de la liquidación del periodo (nada se borra). Cuerpo zod .strict(): { period [, reason, entryDate] }."
+      tags:
+      - fiscal
+      x-permissions:
+      - accounting.journal.post
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "Asiento inverso contabilizado"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                period:
+                  type: string
+                reason:
+                  type: string
+                  maxLength: 500
+                entryDate:
+                  type: string
+                  format: date
+              required:
+              - period
+  /properties/{propertyId}/pos/outlets:
+    get:
+      summary: "GET /properties/:propertyId/pos/outlets"
+      operationId: "get-properties-by-propertyid-pos-outlets"
+      description: "Puntos de venta del centro (PosOutletWire[]: { id: out_<tipo>, name, category }) desde la tabla outlets; array vacío sin puntos de venta (nada se inventa). Manifiesto: modules/pos/route-permissions.partial.ts (rutas en modules/pos/pos.routes.ts, esquemas zod .strict() en pos.schemas.ts)."
+      tags:
+      - pos
+      x-permissions:
+      - pos.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PosOutletWire[]"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+  /properties/{propertyId}/pos/tickets:
+    get:
+      summary: "GET /properties/:propertyId/pos/tickets"
+      operationId: "get-properties-by-propertyid-pos-tickets"
+      description: "Comandas del centro (PosTicketWire[]: id, outletId, outletName, status open | closed, roomNumber?, lines[], total, taxTotal, settlement?, createdAt, closedAt?, businessDate?, invoiceId? / invoiceNumber? de la factura simplificada, journalEntryId?, cashClosureId?): todas las abiertas más las cerradas desde closedFrom (por defecto el día operativo del centro), filtradas por status (open | closed | all; por defecto all). Array acotado (limit ≤ 500), sin cursor; query zod .strict() (clave desconocida → 400)."
+      tags:
+      - pos
+      x-permissions:
+      - pos.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PosTicketWire[]"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - open
+          - closed
+          - all
+      - name: closedFrom
+        in: query
+        required: false
+        description: "YYYY-MM-DD o fecha y hora ISO-8601; comandas cerradas desde ese instante (por defecto el inicio del día operativo)."
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+  /pos/tickets:
+    post:
+      summary: "POST /pos/tickets"
+      operationId: "post-pos-tickets"
+      description: "Abre una comanda en un punto de venta. Cuerpo zod .strict(): { propertyId?, outletId, roomNumber? } (propertyId omitido = propiedad activa del contexto). Responde la comanda (PosTicketWire, status open)."
+      tags:
+      - pos
+      x-permissions:
+      - pos.order.create
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PosTicketWire"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                propertyId:
+                  type: string
+                outletId:
+                  type: string
+                roomNumber:
+                  type: string
+              required:
+              - outletId
+  /pos/tickets/{id}/lines:
+    post:
+      summary: "POST /pos/tickets/:id/lines"
+      operationId: "post-pos-tickets-by-id-lines"
+      description: "Añade una línea a una comanda abierta (tenencia por assertEntityAccess: comanda de otra organización → 404 opaco). Cuerpo zod .strict(): { name, quantity? (1..999, por defecto 1), unitPrice (0..100000, IVA incluido), productId? (PosProduct del centro) }. La categoría fiscal de la línea se infiere (food_beverage | general_services)."
+      tags:
+      - pos
+      x-permissions:
+      - pos.order.create
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PosTicketWire actualizado"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+                  maximum: 999
+                unitPrice:
+                  type: number
+                  minimum: 0
+                  maximum: 100000
+                productId:
+                  type: string
+              required:
+              - name
+              - unitPrice
+  /pos/tickets/{id}/close:
+    post:
+      summary: "POST /pos/tickets/:id/close"
+      operationId: "post-pos-tickets-by-id-close"
+      description: "Cierra la comanda con su liquidación. Cuerpo zod .strict(): { settlement: room | cash | card }. room = cargo al folio de la habitación (el servicio exige además folio.charge.post); cash | card = factura simplificada (serie SIM) con su asiento y su fila del libro de emitidas. Fija businessDate y closedAt (día operativo del centro); 409 FISCAL_YEAR_CLOSED en ejercicio cerrado."
+      tags:
+      - pos
+      x-permissions:
+      - pos.order.pay
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PosTicketWire cerrada (invoiceId / invoiceNumber / journalEntryId en ventas cash | card)"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                settlement:
+                  type: string
+                  enum:
+                  - room
+                  - cash
+                  - card
+              required:
+              - settlement
+  /pos/tickets/{id}/void:
+    post:
+      summary: "POST /pos/tickets/:id/void"
+      operationId: "post-pos-tickets-by-id-void"
+      description: "Anula una comanda cerrada del día operativo en curso (Tanda 8a): nada se borra, la venta se revierte (factura simplificada anulada, asiento inverso, fila negativa del libro). Cuerpo zod .strict(): { reasonCode: order_error | wrong_room | duplicate | guest_complaint | not_served | other, reasonText?, supervisorAuthorizationId? } — clave pos.order.void o autorización de un solo uso por PIN de supervisor para esa clave (sin umbral por importe)."
+      tags:
+      - pos
+      x-permissions:
+      - pos.order.void
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PosTicketWire anulada"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reasonCode:
+                  type: string
+                  enum:
+                  - order_error
+                  - wrong_room
+                  - duplicate
+                  - guest_complaint
+                  - not_served
+                  - other
+                reasonText:
+                  type: string
+                  maxLength: 500
+                supervisorAuthorizationId:
+                  type: string
+              required:
+              - reasonCode
+  /properties/{propertyId}/pos/cash-summary:
+    get:
+      summary: "GET /properties/:propertyId/pos/cash-summary"
+      operationId: "get-properties-by-propertyid-pos-cash-summary"
+      description: "Resumen de caja del TPV (modelo de lectura sobre pos_orders, sin escrituras): ventana date=YYYY-MM-DD (día operativo del centro; incompatible con from/to) o from/to (instante ISO o día; por defecto hoy) y outletId opcional (id de tablero out_<tipo> o fila Outlet). Respuesta PosCashSummary: { propertyId, from, to, date, outletId, timeZone, timeZoneSource: property | utc_fallback, byOutlet[] { outletId, outletRowId, outletName, tickets, total, bySettlement { room, cash, card }, unsettled { tickets, total, reason: settlement_missing } }, totals { tickets, total, bySettlement, unsettled }, openTickets { count, total }, unplaceable { tickets, total, ids[≤500], reason: closed_at_missing }, degraded: string[] (contadores laterales que fallaron y quedaron a cero), source: pos_orders }."
+      tags:
+      - pos
+      x-permissions:
+      - pos.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "PosCashSummary"
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: date
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: outletId
+        in: query
+        required: false
+        schema:
+          type: string
+  /properties/{propertyId}/pos/cash-closures:
+    get:
+      summary: "GET /properties/:propertyId/pos/cash-closures"
+      operationId: "get-properties-by-propertyid-pos-cash-closures"
+      description: "Arqueos de caja persistidos (tabla cash_closures; CashClosureWire[]: id, outletId (\"*\" = caja de recepción), outletRowId, outletName, businessDate, status open | closed | approved, openedAt / closedAt / approvedAt, openedBy / closedBy / approvedBy, openingFloat, expectedCash, countedCash, difference (contado − esperado), byMethod, expectation { openingFloat, payments, refunds, posSales, cashExpenses }, counts[], notes, journalEntryId, linkedTickets). Filtros zod .strict(): status, outletId, from, to (YYYY-MM-DD), limit ≤ 500; array acotado sin cursor."
+      tags:
+      - pos
+      x-permissions:
+      - pos.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "CashClosureWire[]"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - open
+          - closed
+          - approved
+      - name: outletId
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+    post:
+      summary: "POST /properties/:propertyId/pos/cash-closures"
+      operationId: "post-properties-by-propertyid-pos-cash-closures"
+      description: "Abre un arqueo (fila cash_closures, status open) para un punto de venta y día operativo; 409 si ya hay uno abierto para ese punto y día. Cuerpo zod .strict(): { outletId? (\"*\" por defecto = recepción), businessDate? (YYYY-MM-DD, por defecto el día operativo), openingFloat? (fondo de caja), notes? }. Responde 201 con el CashClosureWire."
+      tags:
+      - pos
+      x-permissions:
+      - pos.order.pay
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        201:
+          description: "CashClosureWire abierto"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: "Arqueo ya abierto para ese punto de venta y día"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                outletId:
+                  type: string
+                businessDate:
+                  type: string
+                  format: date
+                openingFloat:
+                  type: number
+                  minimum: 0
+                notes:
+                  type: string
+                  maxLength: 2000
+  /properties/{propertyId}/pos/cash-closures/{closureId}:
+    get:
+      summary: "GET /properties/:propertyId/pos/cash-closures/:closureId"
+      operationId: "get-properties-by-propertyid-pos-cash-closures-by-closureid"
+      description: "Un arqueo del centro (CashClosureWire); 404 opaco si el arqueo no es de esa propiedad."
+      tags:
+      - pos
+      x-permissions:
+      - pos.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "CashClosureWire"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: closureId
+        in: path
+        required: true
+        schema:
+          type: string
+  /properties/{propertyId}/pos/cash-closures/{closureId}/close:
+    post:
+      summary: "POST /properties/:propertyId/pos/cash-closures/:closureId/close"
+      operationId: "post-properties-by-propertyid-pos-cash-closures-by-closureid-close"
+      description: "Cierra el arqueo con el recuento: calcula lo esperado por método (fondo + cobros − devoluciones + ventas TPV cash | card − gastos de caja del día), persiste countedByMethod / counts / difference, enlaza las comandas cerradas del punto y día (cashClosureId) y, si hay diferencia, contabiliza D 659 / H 570 (faltante) o D 570 / H 759 (sobrante) — journalEntryId. Cuerpo zod .strict(): { countedByMethod { cash?, card_terminal?, card_online?, bank_transfer?, payment_link?, other? }, counts? [{ denomination, quantity }] ≤ 200, notes? }. 409 si el arqueo no está open; 409 FISCAL_YEAR_CLOSED."
+      tags:
+      - pos
+      x-permissions:
+      - pos.order.pay
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "CashClosureWire cerrado"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: "Arqueo no abierto o ejercicio cerrado"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: closureId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                countedByMethod:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    cash:
+                      type: number
+                      minimum: 0
+                    card_terminal:
+                      type: number
+                      minimum: 0
+                    card_online:
+                      type: number
+                      minimum: 0
+                    bank_transfer:
+                      type: number
+                      minimum: 0
+                    payment_link:
+                      type: number
+                      minimum: 0
+                    other:
+                      type: number
+                      minimum: 0
+                counts:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+                    additionalProperties: false
+                    properties:
+                      denomination:
+                        oneOf:
+                        - type: number
+                          exclusiveMinimum: 0
+                        - type: string
+                          maxLength: 12
+                      quantity:
+                        type: integer
+                        minimum: 0
+                        maximum: 100000
+                    required:
+                    - denomination
+                    - quantity
+                notes:
+                  type: string
+                  maxLength: 2000
+              required:
+              - countedByMethod
+  /properties/{propertyId}/pos/cash-closures/{closureId}/approve:
+    post:
+      summary: "POST /properties/:propertyId/pos/cash-closures/:closureId/approve"
+      operationId: "post-properties-by-propertyid-pos-cash-closures-by-closureid-approve"
+      description: "Aprueba un arqueo cerrado (status approved, approvedAt / approvedBy; dirección o contabilidad). Cuerpo zod .strict(): { notes? }. 409 si el arqueo no está closed. Pendiente (fuera de L3): regla cerrador ≠ aprobador."
+      tags:
+      - pos
+      x-permissions:
+      - accounting.journal.post
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "CashClosureWire aprobado"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: "Arqueo no cerrado"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: closureId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                notes:
+                  type: string
+                  maxLength: 2000

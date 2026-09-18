@@ -1367,6 +1367,11 @@ export function buildCreateReservationInput(input: {
     roomsCount: row.roomsCount,
     channel: row.channel,
     totalAmount: Number(row.totalAmount),
+    // Corrector L3 (DS-05 / FC-6): `price_source` keeps the lineage of the
+    // figure — `quoted` when annotateTotals priced the empty column from the
+    // grid, `none` when nothing priced it (0 € with a warning); `file` (the
+    // import default of decideReservationPrice) only for a total read from the file.
+    ...(row.totalSource === "quoted" ? { priceSource: "quoted" as const } : row.totalSource === "none" ? { priceSource: "none" as const } : {}),
     currency: row.currency,
     bookingSource: bookingSourceOf(input.importId),
     bookerName: `${row.guest.firstName} ${surnames}`.trim(),

@@ -38,22 +38,56 @@ export function closePosTicket(ticketId: string, settlement: PosSettlement) {
 }
 
 // --- Cash summary (arqueo) ---------------------------------------------------
-// GET /properties/:propertyId/pos/cash-summary?from&to&outletId — aggregates
-// closed PosOrder rows (closedAt within [from, to]) by outlet and settlement.
-export type PosSettlementTotals = { cash: number; card: number; room: number };
+// GET /properties/:propertyId/pos/cash-summary?from&to&outletId (or ?date) —
+// read model of apps/api/src/modules/pos/pos-cash-closure.service.ts
+// (getCashSummary): closed PosOrder rows (closedAt within [from, to)) grouped
+// by outlet and by settlement. Tanda L3 · lote P1: the wire shape below is the
+// API's, side counters included, so the board can say what the count does NOT
+// contain (open tickets, rows without settlement or without closedAt, failed
+// counters, a property without time zone) instead of painting a quiet day.
+export type PosSettlementTotals = Record<PosSettlement, number>;
+/** Closed rows whose payment method is unknown (closed before the settlement column existed): counted in `tickets` / `total`, in no method. */
+export type PosCashUnsettled = { tickets: number; total: number; reason: "settlement_missing" };
+/** Tickets still open that were created inside the window: pending, NOT revenue. */
+export type PosCashOpenTickets = { count: number; total: number };
+/**
+ * Closed rows without `closed_at`: closed revenue no window can own, so they
+ * never enter `totals` (window-independent; only the outlet filter applies).
+ * `ids` lists at most 500 ids, oldest first; `tickets` / `total` cover every row.
+ */
+export type PosCashUnplaceable = { tickets: number; total: number; ids: string[]; reason: "closed_at_missing" };
 export type PosCashSummaryOutlet = {
-  outletId: string;
-  outletName: string;
+  /** Board outlet id (`out_<outletType>`); null only for an orphan Outlet FK. */
+  outletId: string | null;
+  /** Outlet row id (Outlet.id) the tickets are attached to — unique per row. */
+  outletRowId: string;
+  /** Outlet.name; null only for an orphan Outlet FK. */
+  outletName: string | null;
   tickets: number;
   total: number;
   bySettlement: PosSettlementTotals;
+  unsettled: PosCashUnsettled;
 };
+/** `utc_fallback` = the property has no (valid) IANA time zone: the business day is cut at UTC midnight. */
+export type PosCashTimeZoneSource = "property" | "utc_fallback";
 export type PosCashSummary = {
+  propertyId: string;
   from: string;
   to: string;
-  outletId?: string | null;
+  /** Echo of `date` (normalised) when the window was asked as a business day; null for from/to. */
+  date: string | null;
+  /** Echo of the outlet filter as received (board id or row id); null when not filtered. */
+  outletId: string | null;
+  /** IANA zone the window was resolved in (`UTC` under `utc_fallback`). */
+  timeZone: string;
+  timeZoneSource: PosCashTimeZoneSource;
   byOutlet: PosCashSummaryOutlet[];
-  totals: { tickets: number; total: number; bySettlement: PosSettlementTotals };
+  totals: { tickets: number; total: number; bySettlement: PosSettlementTotals; unsettled: PosCashUnsettled };
+  openTickets: PosCashOpenTickets;
+  unplaceable: PosCashUnplaceable;
+  /** Labels of the side counters that fell back to zero because their query failed (QC-06): `openTickets`, `unplaceable`. */
+  degraded: string[];
+  source: "pos_orders";
 };
 
 export function fetchPosCashSummary(

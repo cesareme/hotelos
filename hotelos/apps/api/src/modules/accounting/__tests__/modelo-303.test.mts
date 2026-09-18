@@ -5,7 +5,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Prisma } from "@prisma/client";
-import { LEDGER_CROSS_CHECK_STATUSES, compute303, isNonAccrualVatEntry, resolveSettlementPeriod } from "../modelo-303.service.js";
+import {
+  LEDGER_CROSS_CHECK_MAX_ENTRIES,
+  LEDGER_CROSS_CHECK_MAX_LINES,
+  LEDGER_CROSS_CHECK_STATUSES,
+  PMS_SHADOW_REVENUE_SOURCE_TYPE,
+  SAGE_JOURNAL_SOURCE_TYPE,
+  compute303,
+  crossCheckExclusionAvisos,
+  isNonAccrualVatEntry,
+  isSageSettlementPattern,
+  resolveSettlementPeriod
+} from "../modelo-303.service.js";
 import { settlementLinesFrom } from "../vat-settlement.service.js";
 import { ZERO, vatRowsFromInvoice, vatRowsFromSupplierBill, type InvoiceForBooks, type VatBookRow } from "../vat-books.service.js";
 
@@ -225,5 +236,41 @@ describe("ledger cross-check selection (t6#8)", () => {
     assert.equal(isNonAccrualVatEntry({ sourceType: "reversal", entryKind: "reversal" }), false);
     assert.equal(isNonAccrualVatEntry({ sourceType: "regularization", entryKind: "regularization" }), false);
     assert.equal(isNonAccrualVatEntry({ sourceType: "supplier_bill", entryKind: "normal" }), false);
+  });
+});
+
+describe("ledger cross-check exclusions (Tanda L3-C)", () => {
+  it("leaves out the OPERA shadow revenue entries (pms_shadow_revenue): they accrue 477 with no book row", () => {
+    assert.equal(PMS_SHADOW_REVENUE_SOURCE_TYPE, "pms_shadow_revenue");
+    assert.equal(isNonAccrualVatEntry({ sourceType: "pms_shadow_revenue", entryKind: "normal" }), true);
+    assert.equal(isNonAccrualVatEntry({ sourceType: "sage200_journal", entryKind: "normal" }), false, "an imported Sage devengo counts; only the settlement PATTERN is screened");
+    assert.equal(isNonAccrualVatEntry({ sourceType: "payroll_cost_import", entryKind: "normal" }), false);
+  });
+
+  it("recognises the settlement pattern of a Sage 200 entry by its accounts (4750/4700 together with 477/472), never by the rate", () => {
+    assert.equal(SAGE_JOURNAL_SOURCE_TYPE, "sage200_journal");
+    assert.equal(isSageSettlementPattern("sage200_journal", ["477.10", "477.21", "472.21", "4750"]), true, "Liquidación IVA 2026-Q2");
+    assert.equal(isSageSettlementPattern("sage200_journal", ["472.21", "4700"]), true, "settlement to offset");
+    assert.equal(isSageSettlementPattern("sage200_journal", ["4750", "572"]), false, "Pago liquidación IVA: no accrual account, nothing to exclude");
+    assert.equal(isSageSettlementPattern("sage200_journal", ["477.10", "705.1", "4300"]), false, "an ordinary imported sale is a devengo");
+    assert.equal(isSageSettlementPattern("sage200_journal", ["4759", "477.10"]), false, "4759 is not a settlement account");
+    assert.equal(isSageSettlementPattern("invoice", ["477.10", "4750"]), false, "native entries are governed by sourceType (vat_settlement)");
+    assert.equal(isSageSettlementPattern("sage200_journal", []), false);
+  });
+
+  it("names every exclusion with its count in Spanish, and nothing when nothing was excluded", () => {
+    assert.deepEqual(crossCheckExclusionAvisos({ liquidacion: 0, cierreApertura: 0, pmsSombra: 0, liquidacionSage: 0 }), []);
+    const avisos = crossCheckExclusionAvisos({ liquidacion: 1, cierreApertura: 2, pmsSombra: 3, liquidacionSage: 18 });
+    assert.equal(avisos.length, 4);
+    assert.match(avisos[0]!, /^1 asiento de liquidación del IVA excluido del cotejo/);
+    assert.match(avisos[1]!, /^2 asientos de cierre o apertura de ejercicio excluidos del cotejo/);
+    assert.match(avisos[2]!, /^3 asientos de ingresos de OPERA en modo sombra \(pms_shadow_revenue\) excluidos del cotejo/);
+    assert.match(avisos[3]!, /^18 asientos de liquidación importados de Sage excluidos del cotejo \(patrón 4750\/4700 junto a 477\/472\)\.$/);
+    assert.match(crossCheckExclusionAvisos({ liquidacion: 0, cierreApertura: 0, pmsSombra: 0, liquidacionSage: 1 })[0]!, /^1 asiento de liquidación importado de Sage excluido/);
+  });
+
+  it("bounds the cross-check explicitly (entries and lines) with room for a Faranda year with Sage loaded", () => {
+    assert.ok(Number.isInteger(LEDGER_CROSS_CHECK_MAX_ENTRIES) && LEDGER_CROSS_CHECK_MAX_ENTRIES >= 10_000);
+    assert.ok(Number.isInteger(LEDGER_CROSS_CHECK_MAX_LINES) && LEDGER_CROSS_CHECK_MAX_LINES >= LEDGER_CROSS_CHECK_MAX_ENTRIES);
   });
 });

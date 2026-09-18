@@ -265,17 +265,29 @@ export const ReservationListFilterSchema = z.object({
 export type ReservationListFilterInput = z.infer<typeof ReservationListFilterSchema>;
 
 // POST /reservations/:id/cancel
+// Tanda L3 (lote S): `applyPolicy` lets the caller skip the cancellation
+// policy (penalty + folio close). Omitted = the handler assumes `true`.
+// Deliberately NOT `.strict()`: unknown keys (e.g. a snake_case `apply_policy`)
+// are dropped, never a 400, so the existing front dialogs keep working.
 export const CancelReservationSchema = z.object({
   reason: z.string().max(1000).optional(),
   reasonCode: z.string().max(40).optional(),
-  notes: z.string().max(2000).optional()
+  notes: z.string().max(2000).optional(),
+  applyPolicy: z.boolean().optional(),
+  // Corrector L3 (DS-02): waiving a penalty above the operative band needs
+  // the discount engine (approval, override or a supervisor PIN bound to
+  // `pms.reservation.override` on this reservation) — same key as the price gate.
+  supervisorAuthorizationId: z.string().min(1).max(120).optional()
 });
 
 export type CancelReservationInput = z.infer<typeof CancelReservationSchema>;
 
 // POST /reservations/:id/no-show
+// Tanda L3 (lote S): same `applyPolicy` semantics as the cancel body.
 export const NoShowReservationSchema = z.object({
-  reason: z.string().max(1000).optional()
+  reason: z.string().max(1000).optional(),
+  applyPolicy: z.boolean().optional(),
+  supervisorAuthorizationId: z.string().min(1).max(120).optional()
 });
 
 export type NoShowReservationInput = z.infer<typeof NoShowReservationSchema>;

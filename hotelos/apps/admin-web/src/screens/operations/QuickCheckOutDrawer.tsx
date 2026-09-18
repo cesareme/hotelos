@@ -24,11 +24,32 @@
 // trap, Esc, bottom sheet on phones); steps as `CocoaSection` with a badge
 // meta; folio lines in a `CocoaTable` + totals list; `CocoaSwitch` for the
 // operator choices; 409 prompt as a `CocoaCallout` banner. Same endpoints.
+//
+// Tanda L3 · lote F2 (quick check-out):
+//   - The payment body is built by the pure module `quickCheckoutPayment.ts`
+//     with exactly the keys `ApplyPaymentSchema` (`.strict()`) accepts —
+//     {amount, currency, method, clientRequestId}. The former `status:
+//     "captured"` was an unknown key → 400 and the check-out aborted.
+//   - `method` is sent as the canonical code (`card` → card_terminal) and only
+//     captured methods are allowed; a 202 `kind: "payment_intent"` (PSP) aborts
+//     the check-out: nothing is «cobrado» until the PSP confirms.
+//   - Idempotency: one `clientRequestId` per payment attempt, reused on retries
+//     of the same payment (folio + amount + method) so a retry replays instead
+//     of charging twice; a different amount or method gets a new key.
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useToast } from "../../components/Toast";
 import { apiRequest } from "../../services/api-client";
-import { balanceDueConflict, type BalanceDueConflict } from "../../services/pmsCommerceApi";
+import { balanceDueConflict, postFolioPayment, type BalanceDueConflict } from "../../services/pmsCommerceApi";
+import { newClientRequestId } from "../../services/finance-contracts";
+import {
+  QUICK_CHECKOUT_METHOD_OPTIONS,
+  assertQuickCheckoutPaymentCaptured,
+  buildQuickCheckoutPaymentBody,
+  resolveQuickCheckoutAttempt,
+  type QuickCheckoutMethodOption,
+  type QuickCheckoutPaymentAttempt
+} from "./quickCheckoutPayment";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 import { reservationStatusLabel } from "./frontdesk-labels";
 import { DEFAULT_CURRENCY, money, plural } from "../../lib/format";
@@ -82,14 +103,9 @@ export type QuickCheckOutProps = {
   onCompleted?: (info: { reservationId: string; elapsedSeconds: number }) => void;
 };
 
-// Payment method values match the API PaymentRecord.method union.
-type PaymentMethod = "card" | "cash" | "bank_transfer";
-
-const PAYMENT_METHOD_OPTIONS = [
-  { value: "card", label: "Tarjeta" },
-  { value: "cash", label: "Efectivo" },
-  { value: "bank_transfer", label: "Transferencia" }
-];
+// Payment method options (and the `card` → card_terminal normalisation) live in
+// quickCheckoutPayment.ts: only methods the API captures in the same call.
+const PAYMENT_METHOD_OPTIONS = QUICK_CHECKOUT_METHOD_OPTIONS;
 
 function fmtEur(value: number | undefined | null): string {
   return money(value);
@@ -150,7 +166,10 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
   const [folioLoading, setFolioLoading] = useState(false);
   const [room, setRoom] = useState<Room | null>(null);
 
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
+  const [paymentMethod, setPaymentMethod] = useState<QuickCheckoutMethodOption>("card");
+  // Idempotency key of the current payment attempt (L3-F2): kept across
+  // renders so a retry of the same payment replays instead of charging twice.
+  const paymentAttempt = useRef<QuickCheckoutPaymentAttempt | null>(null);
   // Explicit operator choice to leave without collecting (required when the
   // folio could not be loaded; optional otherwise).
   const [skipPayment, setSkipPayment] = useState(false);
@@ -263,17 +282,24 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
       // tragaba el error, el check-out CERRABA el folio igualmente y mostraba
       // "completado" con saldo sin cobrar. Un fallo de cobro ahora ABORTA el
       // check-out con error visible; el folio sigue abierto.
-      if (folio && collecting) {
+      if (folio && collecting && amountToCollect !== null) {
         try {
-          await apiRequest(`/folios/${folio.folio.id}/payments`, {
-            method: "POST",
-            body: {
-              amount: amountToCollect,
-              currency: reservation.currency || DEFAULT_CURRENCY,
-              method: paymentMethod,
-              status: "captured"
-            }
-          });
+          // L3-F2: body with exactly the keys ApplyPaymentSchema (strict)
+          // accepts — never `status` (the API decides it). Same
+          // clientRequestId while the payment is the same (retries replay).
+          const currency = reservation.currency || DEFAULT_CURRENCY;
+          const attempt = resolveQuickCheckoutAttempt(
+            paymentAttempt.current,
+            { folioId: folio.folio.id, amount: amountToCollect, currency, method: paymentMethod },
+            newClientRequestId
+          );
+          paymentAttempt.current = attempt;
+          const result = await postFolioPayment(
+            folio.folio.id,
+            buildQuickCheckoutPaymentBody({ amount: amountToCollect, currency, method: paymentMethod, clientRequestId: attempt.clientRequestId })
+          );
+          // 202 payment_intent (PSP) or a non-captured row: nothing is cobrado.
+          assertQuickCheckoutPaymentCaptured(result);
         } catch (err) {
           throw new Error(
             `No se pudo registrar el cobro del saldo (${err instanceof Error ? err.message : "error"}). ` +
@@ -426,7 +452,7 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
                 Importe a cobrar: <strong>{fmtEur(balanceDue)}</strong>
               </p>
               <CocoaField label="Método">
-                <CocoaSelect value={paymentMethod} onChange={(value) => setPaymentMethod(value as PaymentMethod)} options={PAYMENT_METHOD_OPTIONS} disabled={skipPayment} />
+                <CocoaSelect value={paymentMethod} onChange={(value) => setPaymentMethod(value as QuickCheckoutMethodOption)} options={PAYMENT_METHOD_OPTIONS} disabled={skipPayment} />
               </CocoaField>
               <CocoaSwitch checked={skipPayment} onChange={setSkipPayment} label="Sin cobro ahora (el huésped saldrá con saldo pendiente)" />
             </div>

@@ -711,6 +711,11 @@ export async function approveEmailReservation(input: { context: UserContext; inb
     throw new BadRequestError("Faltan datos para crear la reserva (fechas y tipo de habitación). Edítalos y reintenta.");
   }
 
+  // Tanda L3 (lote A): no `totalAmount` on purpose — createReservation quotes
+  // the stay from the rate grid (plan of the draft → BAR → lowest published;
+  // 0 € with `priceSource none | partial` when nothing is published). The
+  // draft's rate plan, when the extractor or the reviewer set one, travels so
+  // the quote prices from it.
   const reservation = await createReservation({
     context: input.context,
     propertyId: row.propertyId,
@@ -719,6 +724,7 @@ export async function approveEmailReservation(input: { context: UserContext; inb
     arrivalDate,
     departureDate,
     roomTypeId,
+    ratePlanId: draft.ratePlanId ? String(draft.ratePlanId) : undefined,
     adults: typeof draft.adults === "number" ? draft.adults : Number(draft.adults) || 1,
     children: typeof draft.children === "number" ? draft.children : Number(draft.children) || 0,
     boardType: draft.boardType ? String(draft.boardType) : undefined,

@@ -296,6 +296,61 @@ anterior a la tanda; informe `docs/audits/TANDA-L2-PERSISTENCIA-2026-09-18.md`):
   repetidas en verde; `:3000` estaba parado (lo arranca el orquestador); `:3901`
   cerrado.
 
+Estado verificado (Tanda L3 · Dinero y fiscal + ronda de corrección 1 + integrador,
+2026-09-18 23:1x; working tree sin commit — 68 modificados + 15 sin seguimiento, de
+los que `accounting/import/**`, `import-sage200.ts`, sus docs y `pnpm-lock.yaml`
+son de la carga real de Sage 200 en paralelo, NO de L3; :3000 sin reiniciar — estaba
+parado toda la tanda; informe `docs/audits/TANDA-L3-DINERO-FISCAL-2026-09-18.md`):
+- migración `20260918150000_dinero_fiscal` (aditiva: `cancellation_policies.is_default`
+  + índice, `reservations.price_source`; sin backfill) → 15/15 al día, drift 0;
+  copia previa `backups/hotelos-pre-l3-20260918-224133.dump` (17,9 MB, 285 TABLE DATA)
+- precio desde tarifa al crear (`createReservation` → `quoteReservationTotal`, plan →
+  BAR → mínimo publicado; `priceSource`, `pricing.warning` si salta de plan; quote
+  alineado con `quotedRatePlanId` / `ratePlanSwitched`; importador `quoted|none`);
+  políticas seeded en Faranda: 24 (FLEX* 24 h primera noche · SEMI 72 h · NREF toda
+  la estancia × 8 centros; `isDefault` una por centro); cancelar / no-show por
+  `reservation-lifecycle.service.ts` (guarda de estado 409 RESERVATION_NOT_ACTIVE,
+  transición condicional, penalización idempotente `cancellation_fee|no_show_fee`
+  `not_subject` → 705.3 sin 477, folio no se cierra sin factura: 409
+  FOLIO_UNINVOICED_LINES, renuncia = descuento por tramos con 409 APPROVAL_REQUIRED
+  y PIN, rutas heredadas `/apply-*-fee` = reparación 409 RESERVATION_STATUS_MISMATCH);
+  `taxCategory` inferida y validada por tipo en `postFolioLine` (400 incompatible);
+  303 = libros nativos + `sage200` sin doble cómputo con contrafilas `#sustituida`
+  derivadas en memoria y cotejo que excluye `pms_shadow_revenue` / liquidaciones Sage;
+  PDF heredado con desglose reconstruido; centro de facturación con buscador q+cursor,
+  cargo con categoría, PIN al anular; quick check-out sin `status`; TPV honesto
+- puertas: typecheck 15 PASS · 0 FAIL · 1 SKIP · api 2.302 (2.301 pass · 1 skipped)
+  · worker 20/20 · front 1.276/1.276 (desde apps/admin-web con el tsx de apps/api) ·
+  contratos raíz 532/532 · integración COMPLETA (49 ficheros) 661 tests · 654 pass ·
+  0 fail · 7 skips conocidos · discoverability OK (16/20) · build-nav-tree al día (68
+  · 101 · 205) · check-route-access OK (15 × 192) · Cocoa 226 pantallas · 193 puntos ·
+  inlineStyles 679 = techo · contrato 18/18 · admin-web build OK · rbac:sync dry-run
+  250 · +0 · 0 stale · 0 behind (NO solapar con la integración: 26 suites borran orgs)
+- flujo real por HTTP en `:3903` (A pid 57621 → B 61334) como `recepcion.rias`,
+  `direccion.rias`, `contabilidad` y Carmen: 4 reservas con precio desde tarifa
+  (196 / 390 / 98 con aviso BAR-NR → BAR / 253), preview del CSV de T7 en dry-run
+  (1 fila cotizada 306,00; con referencias nuevas 3 cotizadas 734,00), cancelación
+  gratuita (folio cerrado) y tardía (126,50 primera noche, renuncia 409 T2, 2º cancel
+  409, cobro, close 409, F2 `FS-RA-2026-000003` IVA 0, close 200), cobro desde la
+  reserva en 2 rutas (cargo room → accommodation, 390 cash, F2 `FS-RA-2026-000002`
+  IVA 35,45), 4 PDF `%PDF-` 1 página con QR (35.208 / 36.586 / 34.908 / 34.943 B),
+  303 2026-Q3 con pruebas 239.530,75 / 76.220,42 / 163.310,33 (200 registros,
+  cuadra) = SQL nativas 40 filas 110,66 + sage200 61 filas 239.424,64 − 4,55 derivados
+  · 0 nº nativos entre filas Sage; tras limpieza 239.495,03 / 76.220,42 / 163.274,61
+  (197 registros, cuadra); TPV ?status 200/200/200 y 400, ticket 3,00 → simplificada
+  automática `FS-RA-2026-000001`; arqueo abierto en A, releído en B tras matar A,
+  cerrado (103,00 = 100 + 3, diferencia 0) y aprobado por contabilidad (recepción 403)
+- limpieza por SQL con ids explícitos (5 asientos, 3 facturas + VeriFactu + libro,
+  1 comanda, 1 arqueo, 2 pagos, 4 folios, 4 reservas; serie SIM 4 → 1); invariantes
+  idénticas antes / después / tras la integración: 25 facturas · 33 VeriFactu · 110
+  reservas · 4.951 asientos (63 núcleo) · 34 lotes Sage · 250 / 24 / 31 · 2 orgs;
+  quedan 34 `audit_events` encadenados de la prueba (por diseño) y 8 `journal_lines`
+  huérfanas ANTERIORES (deuda); hallazgos INT-L3-01…09 (VeriFactu envía en sandbox
+  con `verifactu_enabled=false`; el TPV emite simplificadas en la serie real SIM;
+  `out_bar` vs id de fila; cadena fija de política en el quote); decisiones para
+  César en el informe §9 (políticas reales por hotel, categorías fiscales de la
+  penalización, PSP, plantilla de PDF, rebuild Q3, cierre del día de RA)
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).

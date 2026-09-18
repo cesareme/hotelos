@@ -14,7 +14,10 @@
 // methodCode), GET /reservations/:id/folios, GET /reservations/:id/routing-rules
 // and, best effort, GET /reservations/:id for the reservation code (RES-xxxxx),
 // holder and stay dates of the «Reserva» card (the folio only carries the id).
-// Charge types are labelled by components/billing/charge-types (never raw).
+// Charge types are labelled by components/billing/charge-types (never raw);
+// Tanda L3 · F1 adds the «Categoría fiscal» column (FolioLine.taxCategory,
+// labelled by services/taxesApi TAX_CATEGORY_LABELS; the penalties posted by
+// the cancellation engine — cancellation_fee / no_show_fee — read «no sujeto»).
 // Hosted inside FacturacionTabs the `:id` comes from the sub-URL (the
 // container remounts the screen per folio); standalone it reads the same
 // route parameter. Without an id the page offers a lookup by identifier.
@@ -22,6 +25,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchReservationFolios, fetchRoutingRules, createSecondaryFolio, type Folio, type FolioLine, type FolioRoutingRule } from "../../services/folioRoutingApi";
 import { fetchReservation, type AdminReservation, type FolioPaymentRow } from "../../services/pmsCommerceApi";
+import { TAX_CATEGORY_LABELS, type TaxCategory } from "../../services/taxesApi";
 import { apiRequest } from "../../services/api-client";
 import { financeErrorMessage } from "../../services/finance-contracts";
 import { getActivePropertyId } from "../../services/activeProperty";
@@ -60,9 +64,14 @@ import {
 const FOLIO_URL = urlForScreen("FolioDetail") ?? "/finanzas/facturacion/folios/:id";
 const ROUTING_URL = urlForScreen("FolioRouting") ?? "/finanzas/facturacion/enrutamiento";
 
+// GET /folios/:id/balance lines carry `taxCategory` (FolioLine.taxCategory,
+// inferred by the API since L3-T when the writer sent none); the routing
+// client type predates it, so it is widened here (Tanda L3 · F1).
+type FolioLineRow = FolioLine & { taxCategory?: string | null };
+
 type FolioBalanceResponse = {
   folio: Folio;
-  lines: FolioLine[];
+  lines: FolioLineRow[];
   payments: FolioPaymentRow[];
   chargesTotal: number;
   paymentsTotal: number;
@@ -113,7 +122,7 @@ export function FolioDetailScreen({ folioId: folioIdProp }: FolioDetailScreenPro
   const [splitOpen, setSplitOpen] = useState(false);
   const [splitLabel, setSplitLabel] = useState("");
   const [closeOpen, setCloseOpen] = useState(false);
-  const [moveLine, setMoveLine] = useState<FolioLine | null>(null);
+  const [moveLine, setMoveLine] = useState<FolioLineRow | null>(null);
   const [moveTarget, setMoveTarget] = useState("");
 
   async function load(id: string) {
@@ -181,10 +190,25 @@ export function FolioDetailScreen({ folioId: folioIdProp }: FolioDetailScreenPro
     }
   }
 
-  const chargeColumns = useMemo<CocoaTableColumn<FolioLine>[]>(
+  const chargeColumns = useMemo<CocoaTableColumn<FolioLineRow>[]>(
     () => [
       { key: "description", label: FIELD_LABELS.description, render: (line) => <strong>{line.description}</strong> },
       { key: "type", label: FIELD_LABELS.type, render: (line) => chargeTypeLabel(line.type), hideOnNarrow: true },
+      {
+        key: "taxCategory",
+        label: "Categoría fiscal",
+        hideOnNarrow: true,
+        render: (line) =>
+          line.taxCategory && line.taxCategory in TAX_CATEGORY_LABELS ? (
+            <CocoaBadge tone={line.taxCategory === "not_subject" ? "info" : "neutral"} size="small" uppercase={false}>
+              {TAX_CATEGORY_LABELS[line.taxCategory as TaxCategory]}
+            </CocoaBadge>
+          ) : (
+            <CocoaBadge tone="warning" size="small" uppercase={false} title="Línea anterior a la inferencia fiscal: la categoría se resuelve por el tipo al facturar">
+              por tipo al facturar
+            </CocoaBadge>
+          )
+      },
       { key: "quantity", label: "Cantidad × precio", align: "right", render: (line) => `${line.quantity} × ${money(line.unitPrice, currency)}`, hideOnNarrow: true },
       { key: "postedAt", label: FIELD_LABELS.date, render: (line) => dateTime(line.postedAt, { style: "dayMonth" }), hideOnNarrow: true },
       { key: "total", label: FIELD_LABELS.total, align: "right", render: (line) => <strong>{money(line.total, currency)}</strong> }

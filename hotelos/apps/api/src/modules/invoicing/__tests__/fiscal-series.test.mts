@@ -464,9 +464,9 @@ describe("taxCategoryForOutlet — POS room charges", () => {
 });
 
 describe("validateFolioLineTaxCategory — optional override validated against the catalogue", () => {
-  it("accepts catalogue categories and returns null when none is requested", () => {
+  it("accepts catalogue categories compatible with the line type and returns null when none is requested", () => {
     assert.equal(validateFolioLineTaxCategory("minibar", "food_beverage"), "food_beverage");
-    assert.equal(validateFolioLineTaxCategory("adjustment", "not_subject"), "not_subject");
+    assert.equal(validateFolioLineTaxCategory("adjustment", "accommodation"), "accommodation");
     assert.equal(validateFolioLineTaxCategory("room", undefined), null);
     assert.equal(validateFolioLineTaxCategory("room", ""), null);
   });
@@ -474,5 +474,11 @@ describe("validateFolioLineTaxCategory — optional override validated against t
   it("rejects unknown categories with a 400", () => {
     assert.throws(() => validateFolioLineTaxCategory("room", "vat_10"), BadRequestError);
     assert.throws(() => validateFolioLineTaxCategory("room", "Accommodation"), BadRequestError);
+  });
+
+  it("corrector L3 (FC-4): rejects a catalogue category incompatible with the line type (room as not_subject / tourist_tax; adjustment as not_subject)", () => {
+    assert.throws(() => validateFolioLineTaxCategory("room", "not_subject"), /incompatible con el tipo de cargo/);
+    assert.throws(() => validateFolioLineTaxCategory("room", "tourist_tax"), /incompatible con el tipo de cargo/);
+    assert.throws(() => validateFolioLineTaxCategory("adjustment", "not_subject"), /incompatible con el tipo de cargo/);
   });
 });
