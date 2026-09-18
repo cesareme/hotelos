@@ -152,15 +152,20 @@ describe("assertFinanceReadScope (R11: lecturas por sociedad)", () => {
   const permissions = ["accounting.read", "accounting.reports.read"] as never[];
   const director = { permissions, assignedPropertyIds: ["prop_lt"] };
   const directora = { permissions: [...permissions, ENTITY_READ_PERMISSION] as never[], assignedPropertyIds: ["prop_lt"] };
-  const orgWide = { permissions, assignedPropertyIds: [] as string[] };
+  // Tanda 8a (RBAC · §6.2): the organisation-wide scope is EXPLICIT (a live
+  // organization / legal_entity assignment → `orgScope: true`); a real session
+  // with an empty assignment list reaches nothing (fail-secure, H1/H2).
+  const orgWide = { permissions, assignedPropertyIds: [] as string[], orgScope: true };
+  const unassigned = { permissions, assignedPropertyIds: [] as string[] };
   const platform = { permissions, assignedPropertyIds: ["prop_x"], isPlatformAdmin: true };
 
-  it("hasEntityReadScope: permission, platform admin or no assignments open the whole sociedad", () => {
+  it("hasEntityReadScope: permission, platform admin or an EXPLICIT organisation scope open the whole sociedad; an empty assignment list does not", () => {
     assert.equal(ENTITY_READ_PERMISSION, "accounting.entity.read");
     assert.equal(hasEntityReadScope(director), false);
     assert.equal(hasEntityReadScope(directora), true);
     assert.equal(hasEntityReadScope(orgWide), true);
-    assert.equal(hasEntityReadScope({ permissions }), true);
+    assert.equal(hasEntityReadScope(unassigned), false, "no assignments = nothing (Tanda 8a)");
+    assert.equal(hasEntityReadScope({ permissions }), true, "a context assembled without a list keeps the organisation");
     assert.equal(hasEntityReadScope(platform), true);
   });
 

@@ -8,12 +8,13 @@ import { ForgotPasswordScreen } from "./screens/auth/ForgotPasswordScreen";
 // when the pathname matches, and its children (the protected app) otherwise.
 import { PublicAuthRoutes } from "./auth/PublicAuthRoutes";
 import { clearSession, getUser, onAuthChange, type AuthUser } from "./services/auth-storage";
-import { ensureActiveProperty } from "./services/activeProperty";
+import { ensureActiveProperty, getActivePropertyId } from "./services/activeProperty";
 import { getSessionRoleSnapshot } from "./services/usersApi";
 // Eager import: ComplianceInbox is wrapped in a module-scope wired component.
 // Everything else is loaded lazily by route to keep the main bundle small.
 import { ComplianceInbox } from "./screens/fiscal/ComplianceInbox";
 import {
+  canonicalScreenKey,
   findLegacyId,
   isDevOnlyScreen,
   isDevRouteAllowed,
@@ -28,11 +29,14 @@ import {
   stripLegacyId,
   urlForScreenWithParams,
   urlPatternForScreen,
-  type DevGuardInput
+  type DevGuardInput,
+  type ForbiddenReason
 } from "./routes/backoffice.routes";
-import { FALLBACK_LANDING_SCREEN, devQueryFrom, normalizePathname, type LandingTarget } from "./navigation/nav-tree";
-import { readDevModeStorage, syncDevModeFromLocation } from "./navigation/dev-mode";
-import { useSessionLanding } from "./navigation/useEnabledModules";
+import { FALLBACK_LANDING_SCREEN, devQueryFrom, findByScreen, normalizePathname, type LandingTarget } from "./navigation/nav-tree";
+import { accessDecision, tabAccessDecision, type AccessScope } from "./navigation/access-decision";
+import { readDevModeStorage, syncDevModeFromLocation, useDevMode } from "./navigation/dev-mode";
+import { forbiddenModuleLists, useNavGate, useSessionLanding } from "./navigation/useEnabledModules";
+import { UI_STATES } from "./content/actions";
 import { makeModulePlaceholder } from "./screens/ModuleSettingsPlaceholder";
 import { ToastProvider, ToastHost } from "./components/Toast";
 import { CocoaGlobalProvider } from "./providers/CocoaGlobalProvider";
@@ -122,7 +126,9 @@ const GdprRequestsScreen = lazyNamed(() => import("./screens/compliance/GdprRequ
 const AnalyticsCenterDashboard = lazyNamed(() => import("./screens/operations/AnalyticsCenterDashboard"), "AnalyticsCenterDashboard");
 const RoomProfitabilityDashboard = lazyNamed(() => import("./screens/operations/RoomProfitabilityDashboard"), "RoomProfitabilityDashboard");
 const ChannelPerformanceDashboard = lazyNamed(() => import("./screens/operations/ChannelPerformanceDashboard"), "ChannelPerformanceDashboard");
-const UserRoleManager = lazyNamed(() => import("./screens/UserRoleManager"), "UserRoleManager");
+// Tanda 8a (RBAC · L4): Usuarios y roles por hotel y sociedad (the tree key `UserRoleManager` stays; screens/UserRoleManager.tsx re-exports it) and the approvals inbox.
+const UserRoleManager = lazyNamed(() => import("./screens/users/UsersRolesScreen"), "UsersRolesScreen");
+const ApprovalsInbox = lazyNamed(() => import("./screens/approvals/ApprovalsScreen"), "ApprovalsScreen");
 
 // Dev-only migration screens (/desarrollo/migracion/*): one chunk for the module.
 const OnboardingProjectListScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "OnboardingProjectListScreen");
@@ -180,6 +186,7 @@ const SCREEN_COMPONENTS = {
   AssistantChat: AssistantChatScreen,
   ShiftManagerScreen,
   NightAuditScreen,
+  ApprovalsInbox,
   AiOwnerSummaryScreen,
   AiHumanReviewQueueScreen,
   // --- Recepción ---
@@ -435,6 +442,8 @@ type ActiveRoute =
   /** `/`, `/backoffice` or a public URL: the shell lands on the role home once the session tokens are known. */
   | { kind: "landing"; pathname: string }
   | { kind: "dev-locked"; pathname: string }
+  /** Tanda 8a: refused by the role/module gate of the router (only when a caller resolves with tokens; the shell itself gates in RouteAccessGate). */
+  | { kind: "forbidden"; pathname: string; reason: ForbiddenReason }
   | { kind: "not-found"; pathname: string };
 
 function screenRoute(screen: string, pathname: string): ActiveRoute {
@@ -469,6 +478,7 @@ function routeFromLocation(): ActiveRoute {
     return screenRoute(resolution.screen, resolution.redirect ?? pathname);
   }
   if (resolution.kind === "dev-locked") return { kind: "dev-locked", pathname: resolution.pathname };
+  if (resolution.kind === "forbidden") return { kind: "forbidden", pathname: resolution.pathname, reason: resolution.reason };
   return { kind: "not-found", pathname: resolution.pathname };
 }
 
@@ -611,6 +621,56 @@ function DevOnlyLockedScreen({ onHome }: { onHome: () => void }) {
       </div>
     </div>
   );
+}
+
+// A screen the session tokens do not see (role) or whose module is off
+// (module): the same copy as the empty tab containers (UI_STATES.forbidden /
+// moduleDisabled) with a way back to Mi día — never a 403 collected by the screen.
+// Corrector 8a (FX-10): the way back is the ROLE HOME (rrhh lands on Nóminas,
+// activos on Cumplimiento, sistemas on Usuarios y roles…), so the button says
+// so; when the forbidden screen IS the landing (a session without any template
+// token) the button would loop, so the notice explains it and offers no way out
+// but the session menu (Cerrar sesión lives in the shell).
+function ForbiddenScreen({ reason, onHome, isHome = false }: { reason: ForbiddenReason; onHome: () => void; isHome?: boolean }) {
+  const copy = reason === "module" ? UI_STATES.moduleDisabled : UI_STATES.forbidden;
+  if (isHome) {
+    return <CocoaState kind="empty" title={copy.title} message={`${copy.message} Tu sesión no tiene ningún rol con menú en este hotel: pide a dirección o a administración de sistema que te asigne una plantilla.`} role="status" />;
+  }
+  return <CocoaState kind="empty" title={copy.title} message={copy.message} primaryAction={{ label: "Ir a mi página de inicio", onClick: onHome }} role="status" />;
+}
+
+/**
+ * Role/module gate of the screen about to be painted (Tanda 8a · RBAC · L4,
+ * design §5.2 «Router = menú»): the SAME `accessDecision` the Sidebar and
+ * `resolveLocation` apply, with the session gate of `useNavGate` (tokens
+ * already simulated by «Ver como…», modules of the active property). It wraps
+ * <ActiveScreen />, so every way into a screen — the URL on load, popstate,
+ * `hotelos-nav`, ⌘K, the landing — goes through it, and switching the active
+ * property re-resolves (the gate is keyed by the property). While the gate
+ * loads it paints the loading state: it never decides with empty tokens.
+ * Dev-only and public screens are not gated here (the dev guard and the
+ * AuthGate own them); a tab opens only when its item does.
+ */
+function RouteAccessGate({ screen, onHome, homeScreen, children }: { screen: ScreenKey; onHome: () => void; homeScreen?: string | null; children: ReactNode }) {
+  const propertyId = getActivePropertyId();
+  const gate = useNavGate(propertyId);
+  const devMode = useDevMode();
+  const match = useMemo(() => findByScreen(canonicalScreenKey(screen)), [screen]);
+  if (!match || (match.kind !== "item" && match.kind !== "tab")) return <>{children}</>;
+  if (gate.loading) return <CocoaState kind="loading" title={UI_STATES.loading.title} />;
+  const modulesKnown = gate.error === null && !forbiddenModuleLists.has(propertyId);
+  const scope: AccessScope = {
+    tokens: gate.tokens,
+    modules: gate.modules,
+    modulesKnown,
+    isPlatformAdmin: gate.isPlatformAdmin,
+    devMode,
+    canEnableModules: gate.canEnableModules
+  };
+  const decision = match.kind === "tab" ? tabAccessDecision(match.item, match.tab, scope) : accessDecision(match.item, scope);
+  const reason: ForbiddenReason | null = decision === "hidden-role" ? "role" : decision === "hidden-module" && modulesKnown ? "module" : null;
+  if (!reason) return <>{children}</>;
+  return <ForbiddenScreen reason={reason} onHome={onHome} isHome={typeof homeScreen === "string" && canonicalScreenKey(screen) === homeScreen} />;
 }
 
 // Result of validating the stored active property for a given user. Keyed by
@@ -786,13 +846,21 @@ export function App() {
     window.dispatchEvent(new CustomEvent<string>("hotelos-nav", { detail: rawTarget, cancelable: true }));
   }
 
+  const goHome = () => selectScreen(landing?.screenKey ?? FALLBACK_LANDING_SCREEN);
+
   let body: ReactNode;
-  if (ActiveScreen) {
-    body = <ActiveScreen />;
+  if (ActiveScreen && activeScreen) {
+    body = (
+      <RouteAccessGate screen={activeScreen} onHome={goHome} homeScreen={landing?.screenKey ?? null}>
+        <ActiveScreen />
+      </RouteAccessGate>
+    );
   } else if (route.kind === "landing") {
     body = <CocoaState kind="loading" title="Abriendo tu página de inicio…" />;
   } else if (route.kind === "dev-locked") {
-    body = <DevOnlyLockedScreen onHome={() => selectScreen(landing?.screenKey ?? FALLBACK_LANDING_SCREEN)} />;
+    body = <DevOnlyLockedScreen onHome={goHome} />;
+  } else if (route.kind === "forbidden") {
+    body = <ForbiddenScreen reason={route.reason} onHome={goHome} />;
   } else {
     body = <CocoaNotFoundScreen />;
   }

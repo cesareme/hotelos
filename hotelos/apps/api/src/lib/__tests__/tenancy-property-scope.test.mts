@@ -24,9 +24,18 @@ describe("isPropertyAssigned · property scope of a user context", () => {
     assert.equal(isPropertyAssigned(owner, RIAS_ALTAS), true);
   });
 
-  it("no assignments (undefined or empty) keeps the organization-wide scope", () => {
-    assert.equal(isPropertyAssigned({}, TILOS), true);
+  it("a real session with an EMPTY assignment list reaches nothing (Tanda 8a); a context with no list at all keeps the organization unless it says orgScope: false", () => {
+    assert.equal(isPropertyAssigned({ assignedPropertyIds: [] }, RIAS_ALTAS), false);
+    assert.equal(isPropertyAssigned({ assignedPropertyIds: [], orgScope: false }, RIAS_ALTAS), false);
+    assert.equal(isPropertyAssigned({}, TILOS), true, "contexts assembled outside loadUserContext (jobs, scripts) keep the organization");
     assert.equal(isPropertyAssigned({ assignedPropertyIds: undefined }, RIAS_ALTAS), true);
-    assert.equal(isPropertyAssigned({ assignedPropertyIds: [] }, RIAS_ALTAS), true);
+    assert.equal(isPropertyAssigned({ assignedPropertyIds: undefined, orgScope: false }, RIAS_ALTAS), false);
+  });
+
+  it("orgScope true (live organization / legal_entity assignment, or the demo fallback) covers every property", () => {
+    assert.equal(isPropertyAssigned({ orgScope: true }, TILOS), true);
+    assert.equal(isPropertyAssigned({ assignedPropertyIds: [], orgScope: true }, RIAS_ALTAS), true);
+    assert.equal(isPropertyAssigned({ assignedPropertyIds: [TILOS], orgScope: true }, RIAS_ALTAS), true);
+    assert.equal(isPropertyAssigned({ assignedPropertyIds: [TILOS], orgScope: false }, RIAS_ALTAS), false);
   });
 });

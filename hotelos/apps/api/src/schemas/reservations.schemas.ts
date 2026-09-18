@@ -88,6 +88,11 @@ export const CreateReservationSchema = z
     notes: z.string().max(2000).optional(),
     totalAmount: z.number().nonnegative().optional(),
     currency: z.string().length(3).optional(),
+    // Tanda 8a (corrector · FSOD-06): reason code of a discount below the quote
+    // (design §4.7, ≤ T1 with a code) and the single-use supervisor PIN
+    // authorisation for pms.reservation.override (overbooking / discount > T1).
+    discountReasonCode: z.string().trim().min(1).max(64).optional(),
+    supervisorAuthorizationId: z.string().trim().min(1).max(64).nullable().optional(),
     guests: z.array(GuestIdentitySubSchema).optional(),
     primaryGuest: GuestIdentitySubSchema.optional()
   })
@@ -177,6 +182,21 @@ export const UpdateReservationSchema = z
   .strict();
 
 export type UpdateReservationInput = z.infer<typeof UpdateReservationSchema>;
+
+/**
+ * HTTP body of PATCH /reservations/:id (Tanda 8a · corrector, FSOD-06): the
+ * column patch above plus the two non-column fields the service reads when
+ * `totalAmount` goes below the published quote — the discount reason code
+ * (≤ T1, design §4.7) and the single-use supervisor PIN authorisation (> T1,
+ * pms.reservation.override). The route strips them before handing the patch
+ * to `patchReservation`, so the column mappers never see them.
+ */
+export const UpdateReservationBodySchema = UpdateReservationSchema.extend({
+  discountReasonCode: z.string().trim().min(1).max(64).optional(),
+  supervisorAuthorizationId: z.string().trim().min(1).max(64).nullable().optional()
+}).strict();
+
+export type UpdateReservationBody = z.infer<typeof UpdateReservationBodySchema>;
 
 // POST /reservations/:id/check-in
 export const CheckInSchema = z

@@ -29,15 +29,23 @@ const FARANDA_MODULES = ["pms_core", "distribution_hub", "compliance_hub", "gues
 const EXPECTED: Record<Exclude<RoleToken, "publico">, { items: number; categories: number }> = {
   // Tanda 6 (Finanzas): Contabilidad and Proveedores y gastos add 2 items for direccion, finanzas and admin.
   // Tanda 6b: Estructura societaria adds 1 item for direccion, finanzas and admin.
-  direccion: { items: 67, categories: 9 },
-  recepcion: { items: 22, categories: 9 },
-  pisos: { items: 5, categories: 3 },
-  mantenimiento: { items: 8, categories: 3 },
-  revenue: { items: 20, categories: 5 },
-  finanzas: { items: 31, categories: 6 },
+  // Tanda 8a (RBAC): Hoy › Pendientes de aprobación and the six department tokens (design §5.1);
+  // counts computed over nav-tree.generated.json (node scripts/check-route-access.mjs prints them).
+  direccion: { items: 68, categories: 9 },
+  recepcion: { items: 23, categories: 9 },
+  pisos: { items: 6, categories: 3 },
+  mantenimiento: { items: 9, categories: 3 },
+  revenue: { items: 21, categories: 5 },
+  finanzas: { items: 32, categories: 6 },
   comercial: { items: 14, categories: 5 },
-  fnb: { items: 5, categories: 2 },
-  admin: { items: 67, categories: 9 }
+  fnb: { items: 6, categories: 2 },
+  administracion: { items: 12, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
+  rrhh: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
+  propiedad: { items: 5, categories: 3 },
+  activos: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
+  auditoria: { items: 65, categories: 9 },
+  sistemas: { items: 4, categories: 1 },
+  admin: { items: 68, categories: 9 }
 };
 
 function screenKeys(categories: readonly MenuCategory[]): string[] {
@@ -98,8 +106,8 @@ describe("Sidebar menu · module gates (§6)", () => {
   it("Faranda's six modules hide the six module-gated items for dirección (61 visible)", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES);
     const counts = countMenu(categories);
-    // Tanda 6b: Estructura societaria (core) adds one visible item.
-    assert.equal(counts.items, 61);
+    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another.
+    assert.equal(counts.items, 62);
     assert.equal(counts.locked, 0);
     const keys = new Set(screenKeys(categories));
     for (const hidden of ["WorkforceDashboard", "SafetyDashboard", "ProcurementDashboard", "CrmDashboard", "ReputationDashboard", "AnalyticsCenterDashboard"]) {
@@ -112,7 +120,7 @@ describe("Sidebar menu · module gates (§6)", () => {
   it("with modules.enable the same six items are painted locked with «Activar módulo»", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES, { canEnableModules: true });
     const counts = countMenu(categories);
-    assert.equal(counts.items, 67);
+    assert.equal(counts.items, 68);
     assert.equal(counts.locked, 6);
     const crm = categories.flatMap((category) => category.items).find((item) => item.screenKey === "CrmDashboard");
     assert.ok(crm);
@@ -147,12 +155,46 @@ describe("Sidebar menu · module gates (§6)", () => {
 });
 
 describe("Sidebar menu · no role, dev group, active item and landing", () => {
-  it("no token → only the entries every role can open (Mi día and the assistant)", () => {
+  it("no token → only the entries every authenticated token can open: none since Tanda 8a (rrhh, activos and sistemas do not see Mi día), so the shell shows UI_STATES.noRole", () => {
     const categories = menuCategories([], ALL_MODULES);
-    assert.equal(categories.length, 1);
-    assert.equal(categories[0].key, "hoy");
-    assert.deepEqual(screenKeys(categories).sort(), ["AssistantChat", "FrontDeskDashboard"]);
-    for (const item of categories[0].items) assert.ok(roleAllowsEveryone(item));
+    assert.deepEqual(categories, []);
+    for (const category of NAV_TREE.categories) for (const item of category.items) assert.ok(!roleAllowsEveryone(item), `${item.screenKey} is not open to every token`);
+    // «Activar módulo» is never offered without a token either.
+    assert.deepEqual(menuCategories([], [], { canEnableModules: true }), []);
+  });
+
+  it("the six Tanda 8a tokens see exactly the rows of design §5.1", () => {
+    const keysOf = (token: RoleToken) => screenKeys(menuCategories([token], ALL_MODULES)).sort();
+    // Corrector 8a (FX-06): the makers of RRHH (payroll), gestión del activo (CAPEX) and administración de hotel see the state of their own requests in the inbox.
+    assert.deepEqual(keysOf("rrhh"), ["ApprovalsInbox", "PayrollScreen", "WorkforceDashboard"]);
+    assert.deepEqual(keysOf("activos"), ["ApprovalsInbox", "ComplianceCenter", "StructureScreen"]);
+    assert.deepEqual(keysOf("sistemas"), ["AuditLogViewer", "ModuleManager", "NotificationsScreen", "UserRoleManager"]);
+    assert.deepEqual(keysOf("propiedad"), ["FrontDeskDashboard", "PortfolioDashboard", "ReportingCenter", "TrialBalanceScreen"].concat(["ApprovalsInbox"]).sort());
+    assert.deepEqual(keysOf("administracion"), [
+      "ApprovalsInbox",
+      "AssistantChat",
+      "BankReconciliationScreen",
+      "BillingCenter",
+      "ComplianceInbox",
+      "FinancePositionDashboard",
+      "FrontDeskDashboard",
+      "GuestRegisterSettings",
+      "NightAuditScreen",
+      "ProcurementDashboard",
+      "ReportingCenter",
+      "SupplierBillsScreen"
+    ]);
+    const auditor = new Set(keysOf("auditoria"));
+    assert.ok(!auditor.has("UserRoleManager"), "auditoria never sees Usuarios y roles");
+    assert.ok(!auditor.has("ApprovalsInbox"), "the inbox is for approvers, not for the read-only auditor");
+    const sistema = menuCategories(["auditoria"], ALL_MODULES).flatMap((category) => category.items).find((item) => item.screenKey === "AuditLogViewer");
+    assert.deepEqual(sistema?.tabs.map((tab) => tab.screenKey), ["ApiReferenceScreen"], "auditoria: no Webhooks, Aplicaciones, Organizaciones nor Organización");
+    const modulos = menuCategories(["sistemas"], ALL_MODULES).flatMap((category) => category.items).find((item) => item.screenKey === "ModuleManager");
+    assert.deepEqual(modulos?.tabs.map((tab) => tab.screenKey), ["ModuleHealthCenter", "MarketplaceCatalog"], "sistemas: no Modo sombra OPERA");
+    const inbox = NAV_TREE.categories.flatMap((category) => category.items).find((item) => item.screenKey === "ApprovalsInbox");
+    // Corrector 8a (FX-06): the makers of administración de hotel, RRHH and gestión del activo see the state of their own requests too.
+    assert.deepEqual(inbox?.roles, ["direccion", "recepcion", "pisos", "mantenimiento", "fnb", "revenue", "finanzas", "propiedad", "administracion", "rrhh", "activos", "admin"]);
+    assert.equal(inbox?.url, "/hoy/pendientes");
   });
 
   it("«Desarrollo» appears only with dev mode AND the admin token", () => {
@@ -162,6 +204,7 @@ describe("Sidebar menu · no role, dev group, active item and landing", () => {
     assert.equal(dev.items.length, NAV_TREE.devOnly.length);
     for (const item of dev.items) assert.match(item.url, /^\/desarrollo\//);
     assert.equal(withDev.length, 10);
+    assert.ok(!menuCategories(["sistemas"], ALL_MODULES, { devMode: true }).some((category) => category.key === DEV_CATEGORY_KEY), "the organisation admin template (sistemas) is not the platform");
     assert.ok(!menuCategories(["admin"], ALL_MODULES).some((category) => category.key === DEV_CATEGORY_KEY), "no dev mode");
     assert.ok(!menuCategories(["direccion"], ALL_MODULES, { devMode: true }).some((category) => category.key === DEV_CATEGORY_KEY), "no admin");
   });
@@ -190,7 +233,7 @@ describe("Sidebar menu · no role, dev group, active item and landing", () => {
   it("flatMenuEntries lists items and paintable tabs (never detail sub-URLs) for ⌘K", () => {
     const categories = menuCategories(["recepcion"], ALL_MODULES);
     const items = flatMenuEntries(categories);
-    assert.equal(items.length, 22);
+    assert.equal(items.length, 23);
     assert.ok(items.every((entry) => entry.tab === null));
     const withTabs = flatMenuEntries(categories, { includeTabs: true });
     assert.ok(withTabs.length > items.length);
@@ -218,15 +261,20 @@ describe("resolveRoleTokens · session → tokens (L1b)", () => {
   };
 
   it("maps template keys to tokens and adds admin for the platform administrator", () => {
-    assert.deepEqual(resolveRoleTokens({ templateKeys: ["owner"] }), { tokens: ["direccion"], templateKey: "owner", fromPermissions: false });
+    assert.deepEqual(resolveRoleTokens({ templateKeys: ["owner"] }), { tokens: ["propiedad"], templateKey: "owner", fromPermissions: false });
     assert.deepEqual(resolveRoleTokens({ templateKeys: ["accountant", "compliance"] }).tokens, ["finanzas"]);
     assert.deepEqual(resolveRoleTokens({ templateKeys: [], isPlatformAdmin: true }), { tokens: ["admin"], templateKey: null, fromPermissions: false });
     assert.deepEqual(resolveRoleTokens({ templateKeys: ["Receptionist "], isPlatformAdmin: true }).tokens, ["admin", "recepcion"]);
+    // Tanda 8a: the organisation admin template is `sistemas`, never the platform token.
+    assert.deepEqual(resolveRoleTokens({ templateKeys: ["admin"] }).tokens, ["sistemas"]);
+    assert.deepEqual(resolveRoleTokens({ templateKeys: ["owner", "general_manager"] }).tokens, ["direccion", "propiedad"]);
   });
 
-  it("picks owner over manager for the landing template", () => {
+  it("picks owner over the rest for the landing template, then the most specific template", () => {
     assert.equal(resolveRoleTokens({ templateKeys: ["manager", "owner"] }).templateKey, "owner");
     assert.equal(resolveRoleTokens({ templateKeys: ["manager"] }).templateKey, "manager");
+    assert.equal(resolveRoleTokens({ templateKeys: ["manager", "general_manager"] }).templateKey, "general_manager");
+    assert.equal(resolveRoleTokens({ templateKeys: ["receptionist", "front_office_manager"] }).templateKey, "front_office_manager");
   });
 
   it("falls back to the templates fully covered by the granted permissions only when no template applies", () => {

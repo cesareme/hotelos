@@ -72,7 +72,8 @@ const context = {
   deviceId: "pc-test",
   permissions: ["payroll.manage", "accounting.read", "accounting.entity.read"]
 } as unknown as UserContext;
-const accountant = { ...context, permissions: ["accounting.journal.post", "accounting.read", "accounting.entity.read"] } as unknown as UserContext;
+// Tanda 8a (design §4.6): the period close is accounting.period.close (dirección financiera); this context stands for contabilidad + dirección financiera of the test.
+const accountant = { ...context, permissions: ["accounting.journal.post", "accounting.period.close", "accounting.read", "accounting.entity.read"] } as unknown as UserContext;
 const assignedToHa = { ...context, assignedPropertyIds: [HA] } as unknown as UserContext;
 
 type Details = Record<string, unknown>;

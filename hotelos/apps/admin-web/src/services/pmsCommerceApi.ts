@@ -571,6 +571,8 @@ export type RefundFolioPaymentInput = {
   clientRequestId?: string;
   /** How the money goes back (default: the original method). */
   refundMethod?: FolioPaymentMethod;
+  /** Tanda 8a (§5.6): single-use supervisor PIN authorisation for payments.refund_approve (the alternative to an approved request). */
+  supervisorAuthorizationId?: string;
 };
 
 /** Refund of a captured payment: a reversal Payment row (`reversal`, `kind: "refund"` in the folio); `idempotent` on replay. */

@@ -14,13 +14,26 @@
 //
 // invitations.service.ts is imported dynamically (it imports assertPasswordPolicy
 // from here): keeps the module graph acyclic, same pattern auth.service uses.
+//
+// Tanda 8a · L3 (RBAC por departamento, docs/design/RBAC-DEPARTAMENTOS.md §6.5,
+// §9): this module also hosts `writeRoleAssignment`, the ONE dual-write
+// primitive the seven legacy writers of `user_property_roles` share
+// (createUser here, acceptInvitation, inviteBackOfficeUser, createTenant,
+// property provisioning, the pilot bootstrap; the demo seed writes the same
+// shape by hand). Until the cut of L6 both tables are written in the same
+// transaction: the legacy row (scope property only) keeps the dual-read of
+// lib/rbac-scope.ts honest and the `user_role_assignments` row carries the real
+// scope. It lives here because every writer already reaches this module
+// without creating an import cycle (invitations → auth-pilot; backoffice,
+// tenant-admin and bootstrap → auth-pilot / invitations).
 
 import { createHash, randomBytes } from "node:crypto";
 import { prisma, hashPassword } from "@hotelos/database";
-import { isPlatformPermission } from "@hotelos/shared";
+import { ROLE_TEMPLATE_KEYS, isPlatformPermission, type RoleKey, type ScopeType } from "@hotelos/shared";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from "../../lib/http-error.js";
-import { ensureRoleHasPermissions } from "../../lib/rbac-catalog.js";
+import { ensureRoleHasPermissions, type RbacDb } from "../../lib/rbac-catalog.js";
+import { bumpRbacVersion } from "../../lib/rbac-scope.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { dispatch, type NotificationDeliveryRecord } from "../notifications/dispatcher.service.js";
 import { emailStatus } from "../notifications/providers/email.provider.js";
@@ -194,7 +207,208 @@ export type CreateUserResult = {
   status: "active" | "invited";
   /** Present when no password was supplied: link + honest delivery status. */
   invitation?: InvitationIssueResult;
+  /** Tanda 8a: id of the user_role_assignments row created (or reused) for the initial role. */
+  assignmentId?: string;
 };
+
+// ============================================================ dual-write de asignaciones (Tanda 8a · L3)
+
+export type RoleAssignmentWriteInput = {
+  userId: string;
+  organizationId: string;
+  roleId: string;
+  scopeType: ScopeType;
+  /** Id of the property / property group / legal entity the assignment points at; ignored for scope `organization`. */
+  scopeRef?: string | null;
+  /** Who granted it (null = system: bootstrap, seeds, backfill). */
+  grantedByUserId?: string | null;
+  reason?: string | null;
+  validTo?: Date | null;
+  now?: Date;
+};
+
+export type RoleAssignmentWritten = {
+  /** user_role_assignments.id — the live tuple found, or the row created. */
+  assignmentId: string;
+  /** true when the user_role_assignments row was created in this call (false = the live tuple already existed: idempotent). */
+  created: boolean;
+  /** true when the legacy user_property_roles row was created in this call (scope property only). */
+  legacyCreated: boolean;
+  userId: string;
+  organizationId: string;
+  roleId: string;
+  roleName: string;
+  templateKey: RoleKey | null;
+  scopeType: ScopeType;
+  /** Property / group / legal entity / organisation id the assignment points at. */
+  ref: string;
+  propertyId: string | null;
+  reason: string | null;
+};
+
+function knownTemplateKey(value: string | null | undefined): RoleKey | null {
+  if (!value) return null;
+  return (ROLE_TEMPLATE_KEYS as readonly string[]).includes(value) ? (value as RoleKey) : null;
+}
+
+/**
+ * Write ONE role assignment in both tables (Tanda 8a · L3, design §6.5 / §9:
+ * dual-write until the cut of L6), inside the caller's transaction:
+ *   · the role must belong to the organisation and never be the emergency
+ *     template (`break_glass` is only ever held by the break-glass accounts of
+ *     modules/rbac; every writer here answers an opaque 404);
+ *   · the scope ref must belong to the organisation (property / property
+ *     group / legal entity; `organization` points at the organisation itself);
+ *   · the user must belong to the organisation and not be an emergency account;
+ *   · scope `property` also upserts the legacy `user_property_roles` row the
+ *     dual-read of lib/rbac-scope.ts still unions (idempotent on its unique);
+ *   · `user_role_assignments` is idempotent on the LIVE tuple (revokedAt null
+ *     and not expired): the existing row is returned, never duplicated — the
+ *     unique index treats NULL scope columns as distinct, so the service, not
+ *     the index, enforces it (same rule as modules/rbac/assignments.service.ts);
+ *   · every new row bumps organizations.rbac_version so live sessions re-read
+ *     their scope on the next request.
+ * Authorisation (caller scope ⊆, level ≤, self-assignment, SoD) is the job of
+ * the caller / modules/rbac: this primitive only guarantees tenancy and shape.
+ * The audit trail is written by `recordRoleAssigned` AFTER the transaction
+ * commits (an audit row of a rolled-back grant would be a lie).
+ */
+export async function writeRoleAssignment(db: RbacDb, input: RoleAssignmentWriteInput): Promise<RoleAssignmentWritten> {
+  const now = input.now ?? new Date();
+  const role = await db.role.findFirst({
+    where: { id: input.roleId, organizationId: input.organizationId },
+    select: { id: true, name: true, templateKey: true }
+  });
+  if (!role || role.templateKey === "break_glass") {
+    throw new NotFoundError("Rol no encontrado.");
+  }
+
+  let ref: string;
+  let propertyId: string | null = null;
+  switch (input.scopeType) {
+    case "property": {
+      if (!input.scopeRef) throw new BadRequestError("El ámbito property exige la propiedad.");
+      const property = await db.property.findFirst({ where: { id: input.scopeRef, organizationId: input.organizationId }, select: { id: true } });
+      if (!property) throw new NotFoundError("Propiedad no encontrada.");
+      ref = property.id;
+      propertyId = property.id;
+      break;
+    }
+    case "property_group": {
+      if (!input.scopeRef) throw new BadRequestError("El ámbito property_group exige el grupo de propiedades.");
+      const group = await db.propertyGroup.findFirst({ where: { id: input.scopeRef, organizationId: input.organizationId }, select: { id: true } });
+      if (!group) throw new NotFoundError("Grupo de propiedades no encontrado.");
+      ref = group.id;
+      break;
+    }
+    case "legal_entity": {
+      if (!input.scopeRef) throw new BadRequestError("El ámbito legal_entity exige la sociedad.");
+      const entity = await db.legalEntity.findFirst({ where: { id: input.scopeRef, organizationId: input.organizationId }, select: { id: true } });
+      if (!entity) throw new NotFoundError("Sociedad no encontrada.");
+      ref = entity.id;
+      break;
+    }
+    case "organization":
+      ref = input.organizationId;
+      break;
+    default:
+      throw new BadRequestError("Ámbito no válido.");
+  }
+
+  const user = await db.user.findFirst({ where: { id: input.userId, organizationId: input.organizationId }, select: { id: true, status: true } });
+  if (!user || user.status === "emergency") {
+    throw new NotFoundError("Usuario no encontrado.");
+  }
+
+  let legacyCreated = false;
+  if (propertyId) {
+    const legacy = await db.userPropertyRole.findFirst({ where: { userId: user.id, propertyId, roleId: role.id }, select: { id: true } });
+    if (!legacy) {
+      await db.userPropertyRole.create({ data: { userId: user.id, propertyId, roleId: role.id } });
+      legacyCreated = true;
+    }
+  }
+
+  const tuple = {
+    userId: user.id,
+    roleId: role.id,
+    scopeType: input.scopeType,
+    propertyId,
+    propertyGroupId: input.scopeType === "property_group" ? ref : null,
+    legalEntityId: input.scopeType === "legal_entity" ? ref : null
+  };
+  const existing = await db.userRoleAssignment.findFirst({
+    where: { ...tuple, organizationId: input.organizationId, revokedAt: null },
+    orderBy: { createdAt: "desc" }
+  });
+  const live = existing && (!existing.validTo || existing.validTo > now) ? existing : null;
+  const row =
+    live ??
+    (await db.userRoleAssignment.create({
+      data: {
+        ...tuple,
+        organizationId: input.organizationId,
+        validFrom: now,
+        validTo: input.validTo ?? null,
+        grantedByUserId: input.grantedByUserId ?? null,
+        reason: input.reason ?? null
+      }
+    }));
+  if (live === null || legacyCreated) {
+    await bumpRbacVersion(input.organizationId, db);
+  }
+  return {
+    assignmentId: row.id,
+    created: live === null,
+    legacyCreated,
+    userId: user.id,
+    organizationId: input.organizationId,
+    roleId: role.id,
+    roleName: role.name,
+    templateKey: knownTemplateKey(role.templateKey),
+    scopeType: input.scopeType,
+    ref,
+    propertyId,
+    reason: row.reason ?? null
+  };
+}
+
+/**
+ * ROLE_ASSIGNED audit row for a grant written by `writeRoleAssignment` — call
+ * it after the transaction committed. Nothing is written for an idempotent
+ * re-run (`created === false`). `actorUserId` null / undefined = system
+ * (bootstrap, seeds, backfill: `actorType: "system"`).
+ */
+export function recordRoleAssigned(
+  written: RoleAssignmentWritten,
+  actor: { actorUserId?: string | null; correlationId?: string; deviceId?: string; ipAddress?: string; extra?: Record<string, unknown> } = {}
+): void {
+  if (!written.created) return;
+  recordAuditEvent({
+    organizationId: written.organizationId,
+    propertyId: written.propertyId ?? undefined,
+    actorUserId: actor.actorUserId ?? undefined,
+    actorType: actor.actorUserId ? "user" : "system",
+    action: "ROLE_ASSIGNED",
+    entityType: "user_role_assignment",
+    entityId: written.assignmentId,
+    afterJson: {
+      userId: written.userId,
+      roleId: written.roleId,
+      roleName: written.roleName,
+      templateKey: written.templateKey,
+      scopeType: written.scopeType,
+      ref: written.ref,
+      propertyId: written.propertyId,
+      reason: written.reason,
+      legacyRow: written.propertyId ? (written.legacyCreated ? "created" : "existing") : null,
+      ...(actor.extra ?? {})
+    },
+    deviceId: actor.deviceId,
+    ipAddress: actor.ipAddress,
+    correlationId: actor.correlationId
+  });
+}
 
 export async function createUser(input: CreateUserInput): Promise<CreateUserResult> {
   const password = typeof input.password === "string" && input.password.length > 0 ? input.password : null;
@@ -202,6 +416,14 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
   // Política de contraseñas (solo cuando el alta trae contraseña).
   if (password !== null) {
     assertPasswordPolicy(password);
+  }
+
+  const status: CreateUserResult["status"] = password !== null ? "active" : "invited";
+  // Tanda 8a (§5.5): an invitation always carries a role — without one the
+  // invitee would hold zero permissions everywhere in production. Refused
+  // BEFORE any write so no orphan `invited` row is left behind.
+  if (status === "invited" && (!input.roleId || !input.propertyId)) {
+    throw new BadRequestError("El rol y la propiedad son obligatorios para invitar: sin rol la persona invitada no tendría permisos.");
   }
 
   // Tenencia: org del actor, rol y propiedad de la misma org, sin escalada.
@@ -213,34 +435,39 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
     throw new ConflictError("Ya existe un usuario con este email.");
   }
 
-  const status: CreateUserResult["status"] = password !== null ? "active" : "invited";
-  const user = await prisma.user.create({
-    data: {
-      organizationId: input.organizationId,
-      email: input.email.toLowerCase().trim(),
-      fullName: input.fullName.trim(),
-      phone: input.phone?.trim(),
-      // With a password chosen at creation there is nothing to rotate; an
-      // invited account has no hash until acceptInvitation sets one.
-      passwordHash: password !== null ? hashPassword(password) : null,
-      passwordChangedAt: password !== null ? new Date() : null,
-      mustChangePassword: false,
-      status
-    }
-  });
-
-  // Asignar a property + role si se proveyó.
-  if (input.propertyId && input.roleId) {
-    await prisma.userPropertyRole.create({
+  const actorUserId = input.createdByUserId ?? input.actorContext?.userId ?? null;
+  // User + initial assignment (both tables, Tanda 8a dual-write) in ONE
+  // transaction: a failed grant never leaves a user without its role.
+  const { user, assignment } = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
       data: {
-        userId: user.id,
-        propertyId: input.propertyId,
-        roleId: input.roleId
+        organizationId: input.organizationId,
+        email: input.email.toLowerCase().trim(),
+        fullName: input.fullName.trim(),
+        phone: input.phone?.trim(),
+        // With a password chosen at creation there is nothing to rotate; an
+        // invited account has no hash until acceptInvitation sets one.
+        passwordHash: password !== null ? hashPassword(password) : null,
+        passwordChangedAt: password !== null ? new Date() : null,
+        mustChangePassword: false,
+        status
       }
     });
-  }
+    const written =
+      input.propertyId && input.roleId
+        ? await writeRoleAssignment(tx, {
+            userId: created.id,
+            organizationId: input.organizationId,
+            roleId: input.roleId,
+            scopeType: "property",
+            scopeRef: input.propertyId,
+            grantedByUserId: actorUserId,
+            reason: "alta de usuario"
+          })
+        : null;
+    return { user: created, assignment: written };
+  });
 
-  const actorUserId = input.createdByUserId ?? input.actorContext?.userId ?? null;
   recordAuditEvent({
     organizationId: input.organizationId,
     propertyId: input.propertyId,
@@ -249,12 +476,15 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
     action: "USER_CREATED",
     entityType: "user",
     entityId: user.id,
-    afterJson: { email: user.email, fullName: user.fullName, status, propertyId: input.propertyId, roleId: input.roleId },
+    afterJson: { email: user.email, fullName: user.fullName, status, propertyId: input.propertyId, roleId: input.roleId, assignmentId: assignment?.assignmentId ?? null },
     correlationId: "create_user"
   });
+  if (assignment) {
+    recordRoleAssigned(assignment, { actorUserId, correlationId: "create_user", deviceId: input.actorContext?.deviceId });
+  }
 
   if (status === "active") {
-    return { id: user.id, email: user.email, fullName: user.fullName, status };
+    return { id: user.id, email: user.email, fullName: user.fullName, status, ...(assignment ? { assignmentId: assignment.assignmentId } : {}) };
   }
 
   // Persisted first, invitation second: createInvitation never throws because
@@ -266,10 +496,13 @@ export async function createUser(input: CreateUserInput): Promise<CreateUserResu
     organizationId: input.organizationId,
     propertyId: input.propertyId ?? null,
     roleId: input.roleId ?? null,
+    scopeType: "property",
+    scopeRef: input.propertyId ?? null,
+    invitedByUserId: actorUserId,
     actorUserId,
     correlationId: "create_user"
   });
-  return { id: user.id, email: user.email, fullName: user.fullName, status, invitation };
+  return { id: user.id, email: user.email, fullName: user.fullName, status, invitation, ...(assignment ? { assignmentId: assignment.assignmentId } : {}) };
 }
 
 // ============================================================ lockout

@@ -33,6 +33,10 @@ import { normalizeTaxRegion } from "@hotelos/compliance";
 import { HOTEL_MODULES } from "@hotelos/product";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+// Tanda 8a (RBAC · L3): owners of a provisioned centre are written in BOTH
+// assignment tables (user_property_roles + user_role_assignments, scope
+// property) by the shared primitive, and audited as ROLE_ASSIGNED after commit.
+import { recordRoleAssigned, writeRoleAssignment, type RoleAssignmentWritten } from "../auth/auth-pilot.service.js";
 import { defaultSeriesPrefix, findPrefixClash, seriesPrefixClashError, type SeriesPrefixRow } from "../invoicing/series-prefix.service.js";
 import { createId } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
@@ -825,7 +829,14 @@ export function summarizePlan(plan: ProvisionPlan): PlanSummary {
 
 type Tx = Prisma.TransactionClient;
 
-export async function applyPlan(tx: Tx, spec: CentreSpec, plan: ProvisionPlan, organizationId: string): Promise<{ propertyId: string; legalEntityId: string | null }> {
+export type AppliedPlan = {
+  propertyId: string;
+  legalEntityId: string | null;
+  /** Tanda 8a: owner grants written by this apply (both tables; `created` false = the live assignment already existed). */
+  roleAssignments: RoleAssignmentWritten[];
+};
+
+export async function applyPlan(tx: Tx, spec: CentreSpec, plan: ProvisionPlan, organizationId: string): Promise<AppliedPlan> {
   // Legal entity (implicit when the tenant predates the backfill) -----------
   let legalEntityId = plan.legalEntity?.id ?? null;
   if (plan.legalEntity?.action === "create") {
@@ -846,12 +857,23 @@ export async function applyPlan(tx: Tx, spec: CentreSpec, plan: ProvisionPlan, o
   }
 
   // Owners --------------------------------------------------------------------
+  // Tanda 8a dual-write: the legacy user_property_roles row (idempotent on its
+  // unique) AND the user_role_assignments row of scope property, same
+  // transaction; a role of another organisation or the emergency template is
+  // an opaque 404 that rolls the whole apply back.
+  const roleAssignments: RoleAssignmentWritten[] = [];
   for (const o of plan.owners.create) {
-    await tx.userPropertyRole.upsert({
-      where: { userId_propertyId_roleId: { userId: o.userId, propertyId, roleId: o.roleId } },
-      update: {},
-      create: { userId: o.userId, propertyId, roleId: o.roleId }
-    });
+    roleAssignments.push(
+      await writeRoleAssignment(tx, {
+        userId: o.userId,
+        organizationId,
+        roleId: o.roleId,
+        scopeType: "property",
+        scopeRef: propertyId,
+        grantedByUserId: null,
+        reason: "alta de centro"
+      })
+    );
   }
 
   // Departments + memberships (same shape as createTenant) ------------------
@@ -1014,7 +1036,7 @@ export async function applyPlan(tx: Tx, spec: CentreSpec, plan: ProvisionPlan, o
     await tx.compliancePropertyProfile.update({ where: { propertyId }, data: plan.profile.fill as Prisma.CompliancePropertyProfileUncheckedUpdateInput });
   }
 
-  return { propertyId, legalEntityId };
+  return { propertyId, legalEntityId, roleAssignments };
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1069,8 @@ export type ApplyResult = {
   countsAfter: Record<string, number>;
   postConditions: PostCondition[];
   auditEventId: string;
+  /** Tanda 8a: owner assignments written (user_role_assignments ids; `created` false = already live). */
+  roleAssignments: Array<{ assignmentId: string; userId: string; roleId: string; created: boolean }>;
 };
 
 /**
@@ -1066,7 +1090,12 @@ export async function applyProvisionPlan(input: {
 }): Promise<ApplyResult> {
   const { spec, plan, organizationId } = input;
   const planSummary = input.planSummary ?? summarizePlan(plan);
-  const { propertyId, legalEntityId } = await prisma.$transaction((tx) => applyPlan(tx, spec, plan, organizationId), TX_OPTIONS);
+  const { propertyId, legalEntityId, roleAssignments } = await prisma.$transaction((tx) => applyPlan(tx, spec, plan, organizationId), TX_OPTIONS);
+
+  // Tanda 8a: one ROLE_ASSIGNED per owner grant, after the commit.
+  for (const assignment of roleAssignments) {
+    recordRoleAssigned(assignment, { actorUserId: input.actor.actorType === "user" ? input.actor.userId : null, correlationId: input.correlationId, deviceId: input.actor.deviceId });
+  }
 
   // Settings rows through the shared provisioning helper (global client, own
   // tax provisioning with its own error reporting) — after the commit so the
@@ -1116,7 +1145,8 @@ export async function applyProvisionPlan(input: {
       postConditions,
       legalEntityId,
       code: plan.code?.value ?? null,
-      kind: spec.property.kind
+      kind: spec.property.kind,
+      roleAssignments: roleAssignments.map((assignment) => ({ assignmentId: assignment.assignmentId, userId: assignment.userId, roleId: assignment.roleId, created: assignment.created }))
     },
     deviceId: input.actor.deviceId,
     correlationId: input.correlationId
@@ -1124,7 +1154,14 @@ export async function applyProvisionPlan(input: {
 
   const row = await prisma.property.findUnique({ where: { id: propertyId } });
   if (row) mirrorProperty(row);
-  return { propertyId, legalEntityId, countsAfter, postConditions, auditEventId: event.id };
+  return {
+    propertyId,
+    legalEntityId,
+    countsAfter,
+    postConditions,
+    auditEventId: event.id,
+    roleAssignments: roleAssignments.map((assignment) => ({ assignmentId: assignment.assignmentId, userId: assignment.userId, roleId: assignment.roleId, created: assignment.created }))
+  };
 }
 
 // ---------------------------------------------------------------------------

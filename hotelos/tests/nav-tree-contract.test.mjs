@@ -27,7 +27,8 @@ const routesSource = read("../apps/admin-web/src/routes/backoffice.routes.tsx");
 const runbook = read("../docs/runbooks/navegacion-tanda-5.md");
 
 const PLAN_CATEGORIES = ["Hoy", "Recepción", "Operaciones", "Comercial", "Revenue", "Finanzas", "Cumplimiento", "Informes", "Configuración"];
-const ROLE_TOKENS = ["direccion", "recepcion", "pisos", "mantenimiento", "revenue", "finanzas", "comercial", "fnb", "admin", "publico"];
+// Tanda 8a (RBAC por departamento): the six department tokens join the nine of Tanda 5 (design §5.1); `admin` stays the platform administrator's.
+const ROLE_TOKENS = ["direccion", "recepcion", "pisos", "mantenimiento", "revenue", "finanzas", "comercial", "fnb", "administracion", "rrhh", "propiedad", "activos", "auditoria", "sistemas", "admin", "publico"];
 const KEBAB_URL = /^(\/[a-z0-9]+(?:-[a-z0-9]+)*|\/:[a-z]+)+$/;
 const MAX_ITEMS_PER_CATEGORY = 12;
 const MAX_LABEL_LENGTH = 28;
@@ -150,11 +151,14 @@ describe("Nav tree · legacy redirects (§5)", () => {
 });
 
 describe("Nav tree · source modules (L1a)", () => {
-  it("role-tokens maps every RBAC template of packages/shared plus sales and fnb", () => {
-    assert.ok(templateKeys.length >= 9, "ROLE_TEMPLATE_KEYS not parsed");
+  it("role-tokens maps every RBAC template of packages/shared (the 24 of Tanda 8a) to one of the sixteen tokens", () => {
+    assert.ok(templateKeys.length >= 24, "ROLE_TEMPLATE_KEYS not parsed");
     for (const key of [...templateKeys, "sales", "fnb"]) {
       assert.match(roleTokensSource, new RegExp(`\\b${key}:\\s*"(${ROLE_TOKENS.join("|")})"`), `template ${key} unmapped`);
     }
+    // The `admin` token is the platform administrator's only (H11): no template maps to it.
+    assert.doesNotMatch(roleTokensSource, /^\s*[a-z_]+:\s*"admin",?$/m, "no template yields the platform token");
+    assert.match(roleTokensSource, /^\s*admin:\s*"sistemas",?$/m);
     for (const token of ROLE_TOKENS) assert.ok(roleTokensSource.includes(`"${token}"`), `token ${token} missing`);
     assert.match(roleTokensSource, /export function canSee\(/);
     assert.match(roleTokensSource, /export function roleHome\(/);

@@ -1,15 +1,43 @@
 import type { HotelModuleCode } from "@hotelos/product";
 import { getHotelModuleManifest, getManualSetupOption, HOTEL_MODULES, MANUAL_SETUP_COVERAGE_SUMMARY, MANUAL_SETUP_OPTIONS } from "@hotelos/product";
-import { PERMISSIONS, ROLE_PERMISSION_MAP, isPlatformPermission, type AuditEvent, type PermissionKey } from "@hotelos/shared";
+import {
+  ORGANIZATION_TEMPLATE_ROLE_KEYS,
+  PERMISSIONS,
+  ROLE_PERMISSION_MAP,
+  ROLE_TEMPLATE_DEFAULT_SCOPE,
+  ROLE_TEMPLATE_DESCRIPTIONS_ES,
+  ROLE_TEMPLATE_KEYS,
+  ROLE_TEMPLATE_LABELS_ES,
+  ROLE_TEMPLATE_LEVEL,
+  ROLE_TEMPLATE_VERSION,
+  isPlatformPermission,
+  type AuditEvent,
+  type PermissionKey,
+  type RoleKey,
+  type RoleLevel,
+  type ScopeType
+} from "@hotelos/shared";
 import { existsSync } from "node:fs";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+// Tanda 8a (RBAC · L3, design §5.4, §5.5, §6.6, C11): users and roles per
+// hotel are REAL — the list only shows users whose live assignment covers the
+// property (lib/rbac-scope.ts, the single reader of user_property_roles ∪
+// user_role_assignments), an invitation carries a scope and a template whose
+// level the inviter must hold (403 RBAC_SCOPE_EXCEEDED / RBAC_LEVEL_EXCEEDED),
+// the grant is written in both tables (writeRoleAssignment) and audited as
+// ROLE_ASSIGNED, and disabling a user revokes its assignments, sessions and
+// pending invitations (USER_DISABLED). Retiring a user from ONE hotel is the
+// job of DELETE /rbac/assignments/:id (modules/rbac), never of this file.
+import { recordRoleAssigned, writeRoleAssignment } from "../auth/auth-pilot.service.js";
 import { createInvitation, getPendingInvitations, type PendingInvitationInfo } from "../auth/invitations.service.js";
+import { assertNotBreakGlass } from "../rbac/assignments.service.js";
+import { bumpRbacVersion, coversProperty, loadUserScope, maxRankOf, rankOfAssignment, type ScopeAssignment } from "../../lib/rbac-scope.js";
 import { ensurePropertyModulePersisted, listPropertyModules } from "../product-modules/product-modules.service.js";
 import { getPropertyTaxProfile, invalidateTaxCache } from "../accounting/tax-rate.service.js";
 import { resolveSesEstablishment } from "../compliance/ses-submission.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, RbacForbiddenError } from "../../lib/http-error.js";
 import { ensureRoleHasPermissions } from "../../lib/rbac-catalog.js";
 import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
 // Tanda 6b (L2 · estructura societaria): the issuer identity (NIF, razón social)
@@ -4918,6 +4946,15 @@ export async function upsertMaintenanceRule(input: BackOfficeMutationInput & {
   return rule;
 }
 
+/**
+ * Membership of a user in a department of the property (org chart). Tanda 8a:
+ * `roleLabel` is ONLY the free-text label of the person inside the department
+ * («jefe de turno», «camarera de pisos»…) shown on the org chart; it grants
+ * nothing. The RBAC role (template × scope) lives in user_role_assignments and
+ * is changed through POST / DELETE /rbac/assignments (modules/rbac), never
+ * here. Audit: USER_DEPARTMENT_ASSIGNED (was the camelCase
+ * `UserDepartmentAssigned` before Tanda 8a, design §6.6).
+ */
 export async function assignUserToDepartment(input: BackOfficeMutationInput & {
   departmentId: string;
   userId: string;
@@ -4961,21 +4998,108 @@ export async function assignUserToDepartment(input: BackOfficeMutationInput & {
     mapUserDepartmentRow(row),
     (candidate) => candidate.userId === user.id && candidate.departmentId === department.id
   );
-  audit({ ...input, action: "UserDepartmentAssigned", entityType: "user_department", entityId: assignment.id, beforeJson: before, afterJson: assignment });
+  audit({ ...input, action: "USER_DEPARTMENT_ASSIGNED", entityType: "user_department", entityId: assignment.id, beforeJson: before, afterJson: assignment });
   return assignment;
 }
 
+/** One live RBAC assignment of a user that covers the listed property (Tanda 8a). */
+export type BackOfficeUserRoleView = {
+  /** user_role_assignments.id, or `legacy:<user_property_roles.id>` for a row of the old table (dual-read until the cut of L6). */
+  assignmentId: string;
+  roleId: string;
+  roleName: string;
+  templateKey: RoleKey | null;
+  level: RoleLevel | null;
+  scopeType: ScopeType;
+  /** Id of the property / group / legal entity / organisation the assignment points at. */
+  scopeRef: string;
+  source: "assignment" | "legacy";
+};
+
+function toTemplateKey(value: string | null | undefined): RoleKey | null {
+  if (!value) return null;
+  return (ROLE_TEMPLATE_KEYS as readonly string[]).includes(value) ? (value as RoleKey) : null;
+}
+
+function levelOfAssignment(assignment: Pick<ScopeAssignment, "templateKey" | "level">): RoleLevel | null {
+  return assignment.templateKey ? ROLE_TEMPLATE_LEVEL[assignment.templateKey] : assignment.level;
+}
+
+function userRoleView(assignment: ScopeAssignment): BackOfficeUserRoleView {
+  return {
+    assignmentId: assignment.id,
+    roleId: assignment.roleId,
+    roleName: assignment.roleName,
+    templateKey: assignment.templateKey,
+    level: levelOfAssignment(assignment),
+    scopeType: assignment.scopeType,
+    scopeRef: assignment.ref,
+    source: assignment.source
+  };
+}
+
+/**
+ * Users with a PENDING invitation whose scope covers the property (property =
+ * this one; group containing it; the property's legal entity; the organisation).
+ * They may hold no live assignment yet (invitations issued before Tanda 8a
+ * wrote the grant only on acceptance), so the list must still show them.
+ */
+async function usersInvitedForProperty(organizationId: string, propertyId: string): Promise<Set<string>> {
+  const [propertyRow, groupRows] = await Promise.all([
+    prisma.property.findUnique({ where: { id: propertyId }, select: { legalEntityId: true } }),
+    prisma.propertyGroupMember.findMany({ where: { propertyId }, select: { propertyGroupId: true } })
+  ]);
+  const groupIds = groupRows.map((row) => row.propertyGroupId);
+  const rows = await prisma.userInvitation.findMany({
+    where: {
+      organizationId,
+      usedAt: null,
+      revokedAt: null,
+      OR: [
+        { propertyId },
+        { scopeType: "property", scopeRef: propertyId },
+        { scopeType: "organization" },
+        ...(propertyRow?.legalEntityId ? [{ scopeType: "legal_entity" as const, scopeRef: propertyRow.legalEntityId }] : []),
+        ...(groupIds.length > 0 ? [{ scopeType: "property_group" as const, scopeRef: { in: groupIds } }] : [])
+      ]
+    },
+    select: { userId: true }
+  });
+  return new Set(rows.map((row) => row.userId));
+}
+
+/**
+ * Users of THIS property (Tanda 8a · C11; before it the list returned every
+ * user of the organisation): a user appears when a live assignment covers the
+ * property — legacy user_property_roles row or user_role_assignments row of
+ * any scope, groups / sociedad / organisation expanded by the single reader
+ * of lib/rbac-scope.ts — or when a pending invitation targets it. Each row
+ * carries `roles[]` (the REAL RBAC assignments covering the property:
+ * template, level, scope) — the department `roleLabel` is a label, never a
+ * role. Emergency accounts (break glass, §4.8) are never listed.
+ */
 export async function listBackOfficeUsers(propertyId: string) {
   const property = await requireProperty(propertyId);
+  const organizationId = property.organizationId;
   // Persistencia tanda 2: Prisma primero (usuarios, departamentos y
   // asignaciones), merge con los registros solo-seed y refresco del espejo.
   const [userRows, departmentRows] = await Promise.all([
-    prisma.user.findMany({ where: { organizationId: property.organizationId }, orderBy: { createdAt: "asc" } }),
+    prisma.user.findMany({ where: { organizationId, status: { not: "emergency" } }, orderBy: { createdAt: "asc" } }),
     prisma.department.findMany({ where: { propertyId } })
   ]);
   for (const row of userRows) mirrorRecord(demoStore.users, mapUserRow(row));
   for (const row of departmentRows) mirrorRecord(demoStore.departments, mapDepartmentRow(row));
-  const users = demoStore.users.filter((user) => user.organizationId === property.organizationId);
+  const candidates = demoStore.users.filter((user) => user.organizationId === organizationId && (user.status as string) !== "emergency");
+
+  const rolesByUser = new Map<string, BackOfficeUserRoleView[]>();
+  for (const candidate of candidates) {
+    const scope = await loadUserScope(candidate.id, organizationId);
+    const covering = scope.assignments.filter((assignment) => assignment.propertyIds.includes(propertyId) && assignment.templateKey !== "break_glass");
+    if (covering.length > 0) rolesByUser.set(candidate.id, covering.map(userRoleView));
+  }
+  const invited = await usersInvitedForProperty(organizationId, propertyId);
+  const users = candidates.filter((user) => rolesByUser.has(user.id) || invited.has(user.id));
+
   const assignmentRows = users.length > 0
     ? await prisma.userDepartment.findMany({ where: { userId: { in: users.map((user) => user.id) } } })
     : [];
@@ -4996,8 +5120,9 @@ export async function listBackOfficeUsers(propertyId: string) {
     return {
       ...user,
       pendingInvitation,
+      roles: rolesByUser.get(user.id) ?? [],
       departments: demoStore.userDepartments
-        .filter((assignment) => assignment.userId === user.id && assignment.active)
+        .filter((assignment) => assignment.userId === user.id && assignment.active && assignment.departmentId && demoStore.departments.some((department) => department.id === assignment.departmentId && department.propertyId === propertyId))
         .map((assignment) => ({
           ...assignment,
           department: demoStore.departments.find((department) => department.id === assignment.departmentId)
@@ -5039,23 +5164,33 @@ export type PropertyRoleView = {
   /** Shared template the role follows ('owner' | 'manager' | ...); null = custom role. */
   templateKey: string | null;
   permissionsCount: number;
+  /** Tanda 8a: level N1-N7 of the role (template level, else the custom role's own; null for an untyped custom role). */
+  level: RoleLevel | null;
+  department: string | null;
+  /** Version of ROLE_PERMISSION_MAP the role was last converged to (0 = before versioning). */
+  templateVersion: number;
+  managed: boolean;
 };
 
 /**
  * Roles of the property's organization that a back-office invite may assign
  * (Prisma; platform-scoped roles — admin.* / platform.* keys — are excluded:
- * a hotel user is never a platform admin). Feeds the role select of the invite
- * drawer: `templateKey` says which template the role follows and
- * `permissionsCount === 0` flags a role that would leave the invitee with no
- * access (requireAssignableRole applies its template or answers 409).
+ * a hotel user is never a platform admin; the emergency role `break_glass`
+ * is never offered either, §4.8). Feeds the role select of the invite
+ * drawer: `templateKey` says which template the role follows, `level` /
+ * `templateVersion` what the invitee gets, and `permissionsCount === 0` flags
+ * a role that would leave the invitee with no access (requireAssignableRole
+ * applies its template or answers 409).
  */
 export async function listPropertyRoles(propertyId: string): Promise<PropertyRoleView[]> {
   const property = await requireProperty(propertyId);
-  const roles = await prisma.role.findMany({
-    where: { organizationId: property.organizationId },
-    select: { id: true, name: true, templateKey: true },
-    orderBy: { name: "asc" }
-  });
+  const roles = (
+    await prisma.role.findMany({
+      where: { organizationId: property.organizationId },
+      select: { id: true, name: true, templateKey: true, level: true, department: true, templateVersion: true, managed: true },
+      orderBy: { name: "asc" }
+    })
+  ).filter((role) => role.templateKey !== "break_glass");
   if (roles.length === 0) return [];
   const grants = await prisma.rolePermission.findMany({
     where: { roleId: { in: roles.map((role) => role.id) } },
@@ -5080,27 +5215,34 @@ export async function listPropertyRoles(propertyId: string): Promise<PropertyRol
       id: role.id,
       name: role.name,
       templateKey: role.templateKey,
-      permissionsCount: summary.get(role.id)?.count ?? 0
+      permissionsCount: summary.get(role.id)?.count ?? 0,
+      level: toTemplateKey(role.templateKey) ? ROLE_TEMPLATE_LEVEL[toTemplateKey(role.templateKey)!] : role.level,
+      department: role.department,
+      templateVersion: role.templateVersion,
+      managed: role.managed
     }));
 }
 
 /**
  * Role of the property's organization, safe to hand to a hotel user (opaque
- * 404 cross-org, 403 platform scope). Tanda 4 (contract B): a role with ZERO
- * grants gets its template applied on the spot (Role.templateKey or the
- * name-resolved template); when none can be determined the invite answers
- * 409 ROLE_WITHOUT_PERMISSIONS — the invitee would be 403 everywhere in
- * production otherwise.
+ * 404 cross-org and for the emergency template, 403 platform scope). Tanda 4
+ * (contract B): a role with ZERO grants gets its template applied on the spot
+ * (Role.templateKey or the name-resolved template); when none can be
+ * determined the invite answers 409 ROLE_WITHOUT_PERMISSIONS — the invitee
+ * would be 403 everywhere in production otherwise.
  */
 async function requireAssignableRole(
   organizationId: string,
   roleId: string,
-  context: UserContext
-): Promise<{ id: string; name: string; templateKey: string | null; permissionsCount: number }> {
-  const role = await prisma.role.findUnique({ where: { id: roleId }, select: { id: true, name: true, organizationId: true } });
-  if (!role || role.organizationId !== organizationId) {
+  context: UserContext,
+  /** Tanda 8a: runs between the lookup and ensureRoleHasPermissions (a write on an empty role) — the scope / level 403s must fire before any write. */
+  authorize?: (role: { id: string; name: string; templateKey: string | null; level: RoleLevel | null }) => Promise<void>
+): Promise<{ id: string; name: string; templateKey: string | null; level: RoleLevel | null; permissionsCount: number }> {
+  const role = await prisma.role.findUnique({ where: { id: roleId }, select: { id: true, name: true, organizationId: true, templateKey: true, level: true } });
+  if (!role || role.organizationId !== organizationId || role.templateKey === "break_glass") {
     throw new NotFoundError("Rol no encontrado.");
   }
+  if (authorize) await authorize(role);
   if (!context.isPlatformAdmin) {
     const grants = await prisma.rolePermission.findMany({ where: { roleId: role.id }, select: { permissionId: true } });
     if (grants.length > 0) {
@@ -5114,7 +5256,77 @@ async function requireAssignableRole(
     }
   }
   const ensured = await ensureRoleHasPermissions(role.id);
-  return { id: role.id, name: role.name, templateKey: ensured.templateKey, permissionsCount: ensured.permissionsCount };
+  return { id: role.id, name: role.name, templateKey: ensured.templateKey, level: role.level, permissionsCount: ensured.permissionsCount };
+}
+
+/** Target scope of an invitation, resolved inside the property's organisation (Tanda 8a). */
+type InviteScopeTarget = {
+  scopeType: ScopeType;
+  scopeRef: string;
+  /** Properties the scope expands to ([] for an unknown group / legal entity: the scope check fails before any 404). */
+  propertyIds: string[];
+  exists: boolean;
+};
+
+async function resolveInviteScope(organizationId: string, property: PropertyRecord, scopeType: ScopeType | undefined, scopeRef: string | undefined): Promise<InviteScopeTarget> {
+  const type: ScopeType = scopeType ?? "property";
+  switch (type) {
+    case "property": {
+      const ref = scopeRef ?? property.id;
+      if (ref === property.id) return { scopeType: type, scopeRef: ref, propertyIds: [ref], exists: true };
+      const sister = await prisma.property.findFirst({ where: { id: ref, organizationId }, select: { id: true } });
+      return { scopeType: type, scopeRef: ref, propertyIds: [ref], exists: sister !== null };
+    }
+    case "property_group": {
+      if (!scopeRef) throw new BadRequestError("El ámbito property_group exige scopeRef (id del grupo de propiedades).");
+      const group = await prisma.propertyGroup.findFirst({ where: { id: scopeRef, organizationId }, select: { id: true } });
+      const members = group ? await prisma.propertyGroupMember.findMany({ where: { propertyGroupId: group.id }, select: { propertyId: true } }) : [];
+      return { scopeType: type, scopeRef, propertyIds: members.map((member) => member.propertyId), exists: group !== null };
+    }
+    case "legal_entity": {
+      if (!scopeRef) throw new BadRequestError("El ámbito legal_entity exige scopeRef (id de la sociedad).");
+      const entity = await prisma.legalEntity.findFirst({ where: { id: scopeRef, organizationId }, select: { id: true } });
+      const members = entity ? await prisma.property.findMany({ where: { organizationId, legalEntityId: entity.id }, select: { id: true } }) : [];
+      return { scopeType: type, scopeRef, propertyIds: members.map((row) => row.id), exists: entity !== null };
+    }
+    case "organization": {
+      const members = await prisma.property.findMany({ where: { organizationId }, select: { id: true } });
+      return { scopeType: type, scopeRef: organizationId, propertyIds: members.map((row) => row.id), exists: true };
+    }
+    default:
+      throw new BadRequestError("Ámbito no válido.");
+  }
+}
+
+/**
+ * The inviter may only grant inside its own scope and up to its own level
+ * (design §5.5, §6.3; same rules as modules/rbac createAssignment): target
+ * scope ⊆ inviter scope → else 403 RBAC_SCOPE_EXCEEDED (evaluated BEFORE any
+ * existence check, so a foreign or unknown ref never becomes an oracle);
+ * ROLE_LEVEL_RANK[template] ≤ maxRankOf(inviter in the target scope) → else
+ * 403 RBAC_LEVEL_EXCEEDED. Platform admins are exempt; a caller whose scope
+ * the database does not know holds nothing (fail-secure).
+ */
+async function assertInviterMayGrant(
+  context: UserContext,
+  organizationId: string,
+  target: InviteScopeTarget,
+  role: { templateKey: string | null; level: RoleLevel | null }
+): Promise<void> {
+  if (context.isPlatformAdmin === true) return;
+  const callerScope = await loadUserScope(context.userId, organizationId);
+  const wide = target.scopeType === "legal_entity" || target.scopeType === "organization";
+  const covers = wide
+    ? callerScope.orgScope
+    : callerScope.orgScope || (target.propertyIds.length > 0 && target.propertyIds.every((propertyId) => coversProperty(callerScope, propertyId)));
+  if (!covers) {
+    throw new RbacForbiddenError("No puedes invitar fuera de tu ámbito.", "RBAC_SCOPE_EXCEEDED");
+  }
+  const targetRank = rankOfAssignment({ templateKey: toTemplateKey(role.templateKey), level: role.level });
+  const callerRank = wide || target.propertyIds.length === 0 ? maxRankOf(callerScope, null) : Math.min(...target.propertyIds.map((propertyId) => maxRankOf(callerScope, propertyId)));
+  if (targetRank > callerRank) {
+    throw new RbacForbiddenError("No puedes invitar con un rol de nivel superior al tuyo.", "RBAC_LEVEL_EXCEEDED", { targetRank, callerRank });
+  }
 }
 
 export type InvitationDeliveryView = {
@@ -5152,6 +5364,17 @@ export function inviteMfaEnabled(mfaRequired: unknown): boolean {
  * `mfaRequired` is opt-in: `mfaEnabled` is true only when the body says
  * `mfaRequired: true`; absent or false → false. An invitee has no second factor
  * enrolled yet, so defaulting to "required" would lock them out on first login.
+ * (Tanda 8a · D8: createInvitation additionally marks templates of level N2+
+ * for 2FA enrolment.)
+ *
+ * Tanda 8a (§5.5): the invitation carries a scope — `scopeType` / `scopeRef`
+ * (property of the URL by default; a sister property, a property group, the
+ * legal entity or the organisation) — that must be ⊆ the inviter's own scope,
+ * and a template whose level the inviter holds there (403 RBAC_SCOPE_EXCEEDED
+ * / RBAC_LEVEL_EXCEEDED); the emergency role is never assignable (404). The
+ * grant is written in BOTH tables (writeRoleAssignment: user_property_roles
+ * for scope property + user_role_assignments) and audited as ROLE_ASSIGNED;
+ * a break-glass session cannot invite (403 RBAC_BREAK_GLASS_FORBIDDEN).
  */
 export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
   email: string;
@@ -5160,8 +5383,12 @@ export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
   /** Require MFA for this user (default false). */
   mfaRequired?: boolean;
   roleId?: string;
-}): Promise<{ user: UserRecord & { roleId: string; roleName: string }; invitation: BackOfficeInvitationView }> {
+  /** Tanda 8a: scope of the assignment (default property / the property of the URL). */
+  scopeType?: ScopeType;
+  scopeRef?: string;
+}): Promise<{ user: UserRecord & { roleId: string; roleName: string; scopeType: ScopeType; scopeRef: string; assignmentId: string }; invitation: BackOfficeInvitationView }> {
   requirePermissions(input.context, ["users.invite"]);
+  assertNotBreakGlass(input.context);
   const property = await requireProperty(input.propertyId);
   const email = (input.email ?? "").trim().toLowerCase();
   if (!email || !email.includes("@")) {
@@ -5175,7 +5402,18 @@ export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
     // Without a role the invitee would get 403 on every route in production (no demo permission union).
     throw new BadRequestError("El rol es obligatorio: elige uno de los roles de la organización (GET /backoffice/properties/:propertyId/roles).");
   }
-  const role = await requireAssignableRole(property.organizationId, input.roleId.trim(), input.context);
+  // Scope ⊆ inviter scope and level ≤ inviter level, BEFORE the existence of
+  // the ref is revealed (an unknown group answers 403 like a foreign one) and
+  // BEFORE ensureRoleHasPermissions may write a template onto an empty role.
+  const target = await resolveInviteScope(property.organizationId, property, input.scopeType, input.scopeRef);
+  const role = await requireAssignableRole(property.organizationId, input.roleId.trim(), input.context, (candidate) =>
+    assertInviterMayGrant(input.context, property.organizationId, target, candidate)
+  );
+  if (!target.exists) {
+    throw new NotFoundError(
+      target.scopeType === "property" ? "Propiedad no encontrada." : target.scopeType === "property_group" ? "Grupo de propiedades no encontrado." : "Sociedad no encontrada."
+    );
+  }
   // User.email es unique en la BD: 409 explícito en vez de un P2002 opaco.
   const duplicateInPrisma = await prisma.user.findUnique({ where: { email }, select: { id: true } });
   if (duplicateInPrisma || demoStore.users.some((user) => user.email.toLowerCase() === email)) {
@@ -5192,20 +5430,32 @@ export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
     mfaEnabled: inviteMfaEnabled(input.mfaRequired)
   };
   // Prisma first (same id, no passwordHash — set by acceptInvitation), user + role
-  // assignment atomically, then the in-memory mirror.
-  await prisma.$transaction(async (tx) => {
+  // assignment (both tables) atomically, then the in-memory mirror.
+  const assignment = await prisma.$transaction(async (tx) => {
     await tx.user.create({ data: { ...userToDbRow(user), passwordHash: null, mustChangePassword: false } });
-    await tx.userPropertyRole.create({ data: { userId: user.id, propertyId: property.id, roleId: role.id } });
+    return writeRoleAssignment(tx, {
+      userId: user.id,
+      organizationId: property.organizationId,
+      roleId: role.id,
+      scopeType: target.scopeType,
+      scopeRef: target.scopeRef,
+      grantedByUserId: input.context.userId,
+      reason: "invitación"
+    });
   });
   demoStore.users.push(user);
+  recordRoleAssigned(assignment, { actorUserId: input.context.userId, correlationId: input.correlationId, deviceId: input.context.deviceId });
 
   let invitation: BackOfficeInvitationView;
   try {
     const created = await createInvitation({
       userId: user.id,
       organizationId: property.organizationId,
-      propertyId: property.id,
+      propertyId: target.scopeType === "property" ? target.scopeRef : property.id,
       roleId: role.id,
+      scopeType: target.scopeType,
+      scopeRef: target.scopeRef,
+      invitedByUserId: input.context.userId,
       actorUserId: input.context.userId,
       correlationId: input.correlationId
     });
@@ -5229,35 +5479,98 @@ export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
     entityType: "user",
     entityId: user.id,
     // Never the invite URL (it carries the token): status + expiry only.
-    afterJson: { ...user, roleId: role.id, roleName: role.name, invitation: { expiresAt: invitation.expiresAt, delivery: invitation.delivery, error: invitation.error } }
+    afterJson: {
+      ...user,
+      roleId: role.id,
+      roleName: role.name,
+      templateKey: role.templateKey,
+      scopeType: target.scopeType,
+      scopeRef: target.scopeRef,
+      assignmentId: assignment.assignmentId,
+      invitation: { expiresAt: invitation.expiresAt, delivery: invitation.delivery, error: invitation.error }
+    }
   });
-  return { user: { ...user, roleId: role.id, roleName: role.name }, invitation };
+  return { user: { ...user, roleId: role.id, roleName: role.name, scopeType: target.scopeType, scopeRef: target.scopeRef, assignmentId: assignment.assignmentId }, invitation };
 }
 
+/**
+ * Disable a user ENTIRELY (Tanda 8a · §5.4: «Desactivar usuario (todo)» —
+ * retiring someone from ONE hotel is DELETE /rbac/assignments/:id instead).
+ * In one transaction: status disabled, every live user_role_assignments row
+ * revoked (validTo / revokedAt / revokedByUserId), every active session
+ * revoked (same as acceptInvitation) and every pending invitation revoked;
+ * then organizations.rbac_version is bumped so nothing stale survives. The
+ * caller may not disable someone of a higher level than its own in the
+ * property (403 RBAC_LEVEL_EXCEEDED; platform admins exempt) nor act from a
+ * break-glass session. Audit: USER_DISABLED (was the camelCase `UserDisabled`
+ * before Tanda 8a, design §6.6); the legacy user_property_roles rows are left
+ * in place (a disabled user cannot authenticate; the cut of L6 removes them).
+ */
 export async function disableBackOfficeUser(input: BackOfficeMutationInput & { userId: string }) {
   requirePermissions(input.context, ["users.disable"]);
+  assertNotBreakGlass(input.context);
   const property = await resolveProperty(input.propertyId);
   if (!property) {
     throw new NotFoundError("Property was not found.");
   }
   const { user, persisted } = await requireBackOfficeUser(property.organizationId, input.userId);
   const before = { ...user };
+  const now = new Date();
+  let revoked = { assignments: 0, sessions: 0, invitations: 0, assignmentIds: [] as string[] };
   if (persisted) {
+    // Level rule: nobody disables a user who holds a higher level than the caller in this property.
+    if (input.context.isPlatformAdmin !== true) {
+      const [callerScope, targetScope] = await Promise.all([loadUserScope(input.context.userId, property.organizationId), loadUserScope(user.id, property.organizationId)]);
+      const targetRank = targetScope.assignments.length === 0 ? 0 : Math.max(...targetScope.assignments.map(rankOfAssignment));
+      const callerRank = maxRankOf(callerScope, property.id);
+      if (targetRank > callerRank) {
+        throw new RbacForbiddenError("No puedes desactivar a un usuario de nivel superior al tuyo.", "RBAC_LEVEL_EXCEEDED", { targetRank, callerRank });
+      }
+    }
     // Persistencia tanda 2: Prisma primero, después espejo.
-    const row = await prisma.user.update({ where: { id: user.id }, data: { status: "disabled" } });
+    const row = await prisma.$transaction(async (tx) => {
+      const updated = await tx.user.update({ where: { id: user.id }, data: { status: "disabled" } });
+      const live = await tx.userRoleAssignment.findMany({ where: { userId: user.id, organizationId: property.organizationId, revokedAt: null }, select: { id: true } });
+      const assignments = await tx.userRoleAssignment.updateMany({
+        where: { userId: user.id, organizationId: property.organizationId, revokedAt: null },
+        data: { revokedAt: now, revokedByUserId: input.context.userId, validTo: now, reason: "usuario desactivado" }
+      });
+      const sessions = await tx.session.updateMany({ where: { userId: user.id, status: "active" }, data: { status: "revoked", revokedAt: now } });
+      const invitations = await tx.userInvitation.updateMany({ where: { userId: user.id, usedAt: null, revokedAt: null }, data: { revokedAt: now } });
+      await bumpRbacVersion(property.organizationId, tx);
+      revoked = { assignments: assignments.count, sessions: sessions.count, invitations: invitations.count, assignmentIds: live.map((candidate) => candidate.id) };
+      return updated;
+    });
     Object.assign(user, mapUserRow(row));
   } else {
     // Usuario seed cuyo email ya pertenece a otra fila en la BD: solo espejo.
     user.status = "disabled";
   }
-  audit({ ...input, action: "UserDisabled", entityType: "user", entityId: user.id, beforeJson: before, afterJson: user });
+  audit({
+    ...input,
+    action: "USER_DISABLED",
+    entityType: "user",
+    entityId: user.id,
+    beforeJson: { ...before, liveAssignmentIds: revoked.assignmentIds },
+    afterJson: { ...user, revokedAssignments: revoked.assignments, revokedSessions: revoked.sessions, revokedInvitations: revoked.invitations, revokedAt: now.toISOString() }
+  });
   return user;
 }
 
+/**
+ * Static catalogue of the 22 organisation templates (ORGANIZATION_TEMPLATE_ROLE_KEYS,
+ * Tanda 8a: never `admin` — platform token — nor `break_glass`) with their
+ * Spanish label, level, default scope and keys. `GET /backoffice/roles`.
+ */
 export function listRoleCatalog() {
-  return Object.entries(ROLE_PERMISSION_MAP).map(([role, rolePermissions]) => ({
+  return ORGANIZATION_TEMPLATE_ROLE_KEYS.map((role) => ({
     role,
-    permissions: rolePermissions
+    label: ROLE_TEMPLATE_LABELS_ES[role],
+    description: ROLE_TEMPLATE_DESCRIPTIONS_ES[role],
+    level: ROLE_TEMPLATE_LEVEL[role],
+    defaultScope: ROLE_TEMPLATE_DEFAULT_SCOPE[role],
+    templateVersion: ROLE_TEMPLATE_VERSION,
+    permissions: ROLE_PERMISSION_MAP[role]
   }));
 }
 

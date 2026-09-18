@@ -6,15 +6,26 @@
 // and the `reason`. The answer carries the `reversal` row (`kind: "refund"`
 // in the folio) and `idempotent` when the key replayed an earlier refund.
 // Refund rows and non-captured payments are never offered.
+//
+// Tanda 8a (RBAC · §4.7 / §5.6, corrector FX-03): a refund above the
+// operative's tier answers 409 APPROVAL_REQUIRED (details.kind = refund,
+// tier). The dialog then offers «Autorizar con PIN de supervisor»: a present
+// supervisor authorises THIS refund with their PIN
+// (components/SupervisorPinDialog.tsx, key payments.refund_approve, entity =
+// the payment, the amount) and the refund is resent with
+// `supervisorAuthorizationId`; otherwise the operative opens a request from
+// the inbox (POST /payments/:id/refund-requests).
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PaymentMethodCode, RefundResponse } from "@hotelos/shared";
+import type { PaymentMethodCode, RefundResponse, SupervisorAuthorizationDto } from "@hotelos/shared";
 import { refundFolioPayment } from "../../services/pmsCommerceApi";
-import { financeErrorMessage, newClientRequestId } from "../../services/finance-contracts";
+import { financeErrorCode, financeErrorMessage, newClientRequestId } from "../../services/finance-contracts";
+import { getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../Toast";
 import { dateTime, money } from "../../lib/format";
 import { ACTIONS } from "../../content/actions";
-import { CocoaCallout, CocoaDialog, CocoaField, CocoaFormRow, CocoaInput, CocoaSelect } from "../cocoa";
+import { CocoaButton, CocoaCallout, CocoaDialog, CocoaField, CocoaFormRow, CocoaInput, CocoaSelect } from "../cocoa";
+import { SupervisorPinDialog } from "../SupervisorPinDialog";
 import { amountToInput, parseAmount, paymentMethodLabel, paymentMethodOptions, refundableAmount, refundablePayments, resolveMethodCode, type PaymentRowLike } from "./payment-flow";
 
 export type RefundDialogProps = {
@@ -37,6 +48,10 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 409 APPROVAL_REQUIRED of the last attempt: the refund needs a supervisor (PIN) or an approved request. */
+  const [approvalRequired, setApprovalRequired] = useState<{ tier: string | null } | null>(null);
+  const [pinOpen, setPinOpen] = useState(false);
+  const [authorization, setAuthorization] = useState<SupervisorAuthorizationDto | null>(null);
   const clientRequestId = useRef<string>(newClientRequestId());
   const amountId = "refund-amount";
 
@@ -52,6 +67,9 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
     setRefundMethod("");
     setReason("");
     setError(null);
+    setApprovalRequired(null);
+    setAuthorization(null);
+    setPinOpen(false);
     // Only the opening matters: the operator edits the fields afterwards.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialPaymentId]);
@@ -78,7 +96,7 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
     ...paymentMethodOptions({ includePsp: false }).map((option) => ({ value: option.value, label: option.label }))
   ];
 
-  async function submit() {
+  async function submit(supervisorAuthorizationId?: string) {
     if (!selected) {
       setError("No hay ningún cobro que devolver.");
       return;
@@ -94,7 +112,8 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
         amount,
         reason: reason.trim() || undefined,
         clientRequestId: clientRequestId.current,
-        refundMethod: refundMethod ? (refundMethod as PaymentMethodCode) : undefined
+        refundMethod: refundMethod ? (refundMethod as PaymentMethodCode) : undefined,
+        ...(supervisorAuthorizationId ? { supervisorAuthorizationId } : {})
       });
       showToast(
         result.idempotent ? `La devolución ya estaba registrada (${money(result.reversal.amount, result.reversal.currency)}).` : `Devolución registrada: ${money(result.reversal.amount, result.reversal.currency)}.`,
@@ -103,7 +122,14 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
       onRefunded?.(result);
       onClose();
     } catch (err) {
-      setError(financeErrorMessage(err, "No se pudo registrar la devolución."));
+      if (financeErrorCode(err) === "APPROVAL_REQUIRED") {
+        const details = (err as { details?: { tier?: unknown } }).details;
+        setApprovalRequired({ tier: typeof details?.tier === "string" ? details.tier : null });
+        setAuthorization(null);
+        setError("Esta devolución supera tu tramo: necesita la aprobación de un supervisor (PIN) o una solicitud aprobada en Hoy › Pendientes de aprobación.");
+      } else {
+        setError(financeErrorMessage(err, "No se pudo registrar la devolución."));
+      }
     } finally {
       setBusy(false);
     }
@@ -117,9 +143,9 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
       description="La devolución queda como un movimiento propio del folio (nunca se borra el cobro original) y se contabiliza al momento."
       tone="destructive"
       size="md"
-      confirmLabel={busy ? "Devolviendo…" : "Devolver"}
+      confirmLabel={busy ? "Devolviendo…" : authorization ? "Devolver con autorización" : "Devolver"}
       cancelLabel={ACTIONS.cancel}
-      onConfirm={submit}
+      onConfirm={() => void submit(authorization?.id)}
       busy={busy}
       initialFocus={() => document.getElementById(amountId)}
     >
@@ -144,12 +170,47 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
             <CocoaInput value={reason} onChange={setReason} placeholder="Cancelación dentro de plazo" maxLength={500} disabled={busy} autoComplete="off" />
           </CocoaField>
           {error ? (
-            <CocoaCallout tone="danger" title={error} role="alert">
-              {null}
+            <CocoaCallout
+              tone={approvalRequired ? "warning" : "danger"}
+              title={error}
+              role="alert"
+              actions={
+                approvalRequired && selected && !authorization ? (
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setPinOpen(true)} disabled={busy}>
+                    Autorizar con PIN de supervisor
+                  </CocoaButton>
+                ) : undefined
+              }
+            >
+              {approvalRequired?.tier ? `Tramo de la devolución: ${approvalRequired.tier}.` : null}
+            </CocoaCallout>
+          ) : null}
+          {authorization ? (
+            <CocoaCallout tone="success" title="Autorización de supervisor concedida" role="status">
+              Válida hasta {dateTime(authorization.expiresAt, { style: "medium" })} y solo para este cobro. Pulsa «Devolver con autorización».
             </CocoaCallout>
           ) : null}
         </div>
       )}
+      {selected ? (
+        <SupervisorPinDialog
+          open={pinOpen}
+          onClose={() => setPinOpen(false)}
+          permissionKey="payments.refund_approve"
+          entityType="payment"
+          entityId={selected.id}
+          propertyId={getActivePropertyId()}
+          amount={amount !== null && amount > 0 ? amount.toFixed(2) : undefined}
+          actionLabel={`Devolver ${amount !== null ? money(amount, currency) : "el cobro"}`}
+          onAuthorized={(granted) => {
+            setAuthorization(granted);
+            setPinOpen(false);
+            setError(null);
+            setApprovalRequired(null);
+            showToast("Autorización de supervisor concedida: confirma la devolución", { variant: "success" });
+          }}
+        />
+      ) : null}
     </CocoaDialog>
   );
 }

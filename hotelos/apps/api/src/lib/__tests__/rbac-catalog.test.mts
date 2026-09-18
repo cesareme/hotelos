@@ -11,10 +11,16 @@ import {
   PERMISSIONS,
   PLATFORM_PERMISSION_KEYS,
   ROLE_PERMISSION_MAP,
+  ROLE_TEMPLATE_DESCRIPTIONS_ES,
   ROLE_TEMPLATE_KEYS,
   ROLE_TEMPLATE_LABELS_ES,
+  ROLE_TEMPLATE_LEVEL,
+  ROLE_TEMPLATE_REVOCATIONS,
+  ROLE_TEMPLATE_VERSION,
+  SOD_STATIC_PAIRS,
   isPlatformPermission,
-  type PermissionKey
+  type PermissionKey,
+  type RoleKey
 } from "@hotelos/shared";
 import { routePermissionManifest } from "../../security/route-permissions.js";
 import {
@@ -25,6 +31,7 @@ import {
   assertTemplatesExcludePlatformKeys,
   backfillTemplateRoles,
   createRoleFromTemplate,
+  ensureBreakGlassRole,
   ensureRoleHasPermissions,
   isPlatformRoleName,
   isRoleTemplateKey,
@@ -32,6 +39,8 @@ import {
   resolveTemplateKeyForRoleName,
   syncPermissionCatalog,
   templatePermissionKeys,
+  templateRevocationKeys,
+  upgradeRoleTemplate,
   type RbacDb
 } from "../rbac-catalog.js";
 import { formatHuman, parseFlags } from "../../scripts/rbac-sync.js";
@@ -41,7 +50,17 @@ import { BadRequestError, ConflictError, NotFoundError } from "../http-error.js"
 // In-memory fake of the Prisma subset rbac-catalog.ts uses
 // ---------------------------------------------------------------------------
 
-type RoleRow = { id: string; organizationId: string; name: string; templateKey: string | null };
+type RoleRow = {
+  id: string;
+  organizationId: string;
+  name: string;
+  templateKey: string | null;
+  // Tanda 8a columns (optional in fixtures: a missing value behaves like the DB default).
+  level?: string | null;
+  department?: string | null;
+  templateVersion?: number;
+  managed?: boolean;
+};
 type PermissionRow = { id: string; key: string; description: string };
 type GrantRow = { id: string; roleId: string; permissionId: string };
 
@@ -101,7 +120,10 @@ function createFakeDb(seed: FakeSeed = {}) {
       matchScalar(row.id, where.id) &&
       matchScalar(row.organizationId, where.organizationId) &&
       matchScalar(row.name, where.name) &&
-      (where.templateKey === undefined || row.templateKey === where.templateKey)
+      (where.templateKey === undefined || row.templateKey === where.templateKey) &&
+      (where.level === undefined || (row.level ?? null) === where.level) &&
+      (where.department === undefined || (row.department ?? null) === where.department) &&
+      (where.managed === undefined || (row.managed ?? true) === where.managed)
     );
   };
   const grantWhere = (row: GrantRow, where: Record<string, unknown> = {}): boolean =>
@@ -130,7 +152,10 @@ function createFakeDb(seed: FakeSeed = {}) {
         const row = roles.find((candidate) => roleWhere(candidate, args.where));
         return row ? pick(row, args.select) : null;
       },
-      create: async (args: { data: { organizationId: string; name: string; templateKey?: string | null }; select?: Record<string, boolean> }) => {
+      create: async (args: {
+        data: { organizationId: string; name: string; templateKey?: string | null; level?: string | null; department?: string | null; templateVersion?: number; managed?: boolean };
+        select?: Record<string, boolean>;
+      }) => {
         if (roles.some((row) => row.organizationId === args.data.organizationId && row.name === args.data.name)) {
           throw Object.assign(new Error("Unique constraint failed on the fields: (`organization_id`,`name`)"), { code: "P2002" });
         }
@@ -138,7 +163,11 @@ function createFakeDb(seed: FakeSeed = {}) {
           id: nextId("role"),
           organizationId: args.data.organizationId,
           name: args.data.name,
-          templateKey: args.data.templateKey ?? null
+          templateKey: args.data.templateKey ?? null,
+          level: args.data.level ?? null,
+          department: args.data.department ?? null,
+          templateVersion: args.data.templateVersion ?? 0,
+          managed: args.data.managed ?? true
         };
         roles.push(row);
         return pick(row, args.select);
@@ -267,10 +296,28 @@ describe("role templates", () => {
     }
   });
 
-  it("owner and admin cover the whole org scope, nothing more", () => {
-    assert.deepEqual([...templatePermissionKeys("owner")].sort(), [...ORG_PERMISSION_KEYS].sort());
-    assert.deepEqual([...templatePermissionKeys("admin")].sort(), [...ORG_PERMISSION_KEYS].sort());
+  it("owner is a strict subset of the org scope, break_glass is the whole org scope, admin holds no money key of the SoD pairs (Tanda 8a)", () => {
+    const owner = new Set(templatePermissionKeys("owner"));
+    for (const key of owner) assert.ok(orgKeys.has(key), `owner: ${key} outside the org scope`);
+    assert.ok(owner.size < ORG_PERMISSION_KEYS.length, "owner is read + approvals, no longer the whole org scope");
+    assert.ok(owner.has("payables.approve") && owner.has("asset.capex.approve") && owner.has("owner.dashboard.read"));
+    assert.deepEqual([...templatePermissionKeys("break_glass")].sort(), [...ORG_PERMISSION_KEYS].sort());
     assert.equal(ORG_PERMISSION_KEYS.length, Object.keys(PERMISSIONS).length - PLATFORM_PERMISSION_KEYS.length);
+    const admin = new Set(templatePermissionKeys("admin"));
+    const moneyKeys = new Set(SOD_STATIC_PAIRS.filter((pair) => pair.a === "roles.manage" || pair.a === "permissions.manage").map((pair) => pair.b));
+    assert.ok(moneyKeys.size >= 12, "the sistema ≠ finanzas pairs are expanded to explicit keys");
+    for (const key of moneyKeys) assert.equal(admin.has(key), false, `admin (Administración de sistema) must not hold ${key}`);
+    assert.ok(admin.has("roles.manage") && admin.has("users.assign") && admin.has("security.break_glass"));
+    // The revocation list of every template is disjoint from the template and never a platform key.
+    for (const key of ROLE_TEMPLATE_KEYS) {
+      const held = new Set(ROLE_PERMISSION_MAP[key]);
+      for (const revoked of ROLE_TEMPLATE_REVOCATIONS[key]) {
+        assert.equal(held.has(revoked), false, `${key}: ${revoked} is both held and revoked`);
+        assert.ok(revoked in PERMISSIONS && !isPlatformPermission(revoked), `${key}: ${revoked}`);
+      }
+      assert.deepEqual([...templateRevocationKeys(key)].sort(), [...new Set(ROLE_TEMPLATE_REVOCATIONS[key])].sort());
+    }
+    assert.equal(ROLE_TEMPLATE_VERSION, 2);
   });
 
   it("rejects unknown template keys", () => {
@@ -280,7 +327,15 @@ describe("role templates", () => {
     assert.throws(() => templatePermissionKeys("nope"), /Unknown role template "nope"/);
   });
 
-  it("DEFAULT_TENANT_ROLE_TEMPLATES are the 10 organisation templates (Tanda 5 · L1b) with their Spanish names, and resolve back by name", () => {
+  it("DEFAULT_TENANT_ROLE_TEMPLATES are the 22 organisation templates (Tanda 8a: every template but admin and break_glass) with their Spanish names, and every label resolves back to its template", () => {
+    assert.equal(ROLE_TEMPLATE_KEYS.length, 24);
+    assert.equal(ORGANIZATION_TEMPLATE_ROLE_KEYS.length, 22);
+    assert.equal(DEFAULT_TENANT_ROLE_TEMPLATES.length, 22);
+    for (const key of ROLE_TEMPLATE_KEYS) {
+      assert.equal(resolveTemplateKeyForRoleName(ROLE_TEMPLATE_LABELS_ES[key]), key, `label «${ROLE_TEMPLATE_LABELS_ES[key]}» must resolve to ${key}`);
+      assert.ok(ROLE_TEMPLATE_DESCRIPTIONS_ES[key].length > 20, `${key} has a Spanish description`);
+      assert.ok(ROLE_TEMPLATE_LEVEL[key], `${key} has a level`);
+    }
     assert.deepEqual(
       DEFAULT_TENANT_ROLE_TEMPLATES.map((template) => template.templateKey),
       [...ORGANIZATION_TEMPLATE_ROLE_KEYS],
@@ -295,7 +350,8 @@ describe("role templates", () => {
     assert.equal(new Set(names).size, names.length, "names are unique (case-insensitive)");
     assert.ok(DEFAULT_TENANT_ROLE_TEMPLATES.some((template) => template.templateKey === "owner"), "owner is provisioned (matched by templateKey against createTenant's Owner)");
     assert.equal(DEFAULT_TENANT_ROLE_TEMPLATES.some((template) => template.templateKey === "admin"), false, "the org admin template is not materialised by default (§3 reserves admin for the platform)");
-    for (const key of ["manager", "receptionist", "housekeeper", "maintenance", "accountant", "compliance", "revenue", "sales", "fnb"]) {
+    assert.equal(DEFAULT_TENANT_ROLE_TEMPLATES.some((template) => template.templateKey === "break_glass"), false, "the emergency template is only created by ensureBreakGlassRole (§4.8)");
+    for (const key of ROLE_TEMPLATE_KEYS.filter((candidate) => candidate !== "admin" && candidate !== "break_glass")) {
       assert.ok(DEFAULT_TENANT_ROLE_TEMPLATES.some((template) => template.templateKey === key), `${key} missing`);
     }
   });
@@ -312,9 +368,11 @@ describe("route-permissions manifest vs permission catalog", () => {
     assert.deepEqual(unknown, [], `manifest keys missing from PERMISSIONS: ${unknown.join(", ")}`);
   });
 
-  it("every non-platform manifest key is held by the owner template", () => {
-    const missing = [...manifestKeys].filter((key) => !isPlatformPermission(key) && !ownerKeys.has(key));
-    assert.deepEqual(missing, [], `owner cannot call routes gated by: ${missing.join(", ")}`);
+  it("the union of the 23 templates (break_glass aside) holds every non-platform manifest key (Tanda 8a: no route is unreachable by every hotel template)", () => {
+    const union = new Set<string>(ROLE_TEMPLATE_KEYS.filter((key) => key !== "break_glass").flatMap((key) => ROLE_PERMISSION_MAP[key]));
+    const missing = [...manifestKeys].filter((key) => !isPlatformPermission(key) && !union.has(key));
+    assert.deepEqual(missing, [], `no template can call routes gated by: ${missing.join(", ")}`);
+    assert.ok(ownerKeys.size < union.size, "owner alone no longer covers the manifest");
   });
 
   it("platform keys in the manifest are exactly the platform scope and no template holds them", () => {
@@ -339,20 +397,63 @@ describe("resolveTemplateKeyForRoleName", () => {
     ["Propietaria", "owner"],
     ["Dueño", "owner"],
     ["Manager", "manager"],
-    ["Director General", "manager"],
+    ["Director General", "general_manager"],
     ["Dirección", "manager"],
+    ["Dirección de hotel", "manager"],
+    ["Director de hotel", "manager"],
     ["Gerente", "manager"],
     ["Recepción", "receptionist"],
-    ["Jefe de Recepción", "receptionist"],
+    ["Jefe de Recepción", "front_office_manager"],
+    ["Jefatura de recepción", "front_office_manager"],
     ["Front Desk", "receptionist"],
     ["Housekeeping", "housekeeper"],
-    ["Gobernanta", "housekeeper"],
+    ["Gobernanta", "housekeeping_manager"],
     ["Camarera de pisos", "housekeeper"],
     ["Mantenimiento", "maintenance"],
+    ["Encargado de mantenimiento", "maintenance_manager"],
+    ["Jefe de mantenimiento", "maintenance_manager"],
     ["Contabilidad", "accountant"],
     ["Compliance", "compliance"],
     ["Revenue Manager", "revenue"],
+    ["Revenue corporativo", "revenue"],
     ["Administrador", "admin"],
+    ["Administración de sistema", "admin"],
+    ["Sistemas", "admin"],
+    ["Propiedad", "owner"],
+    // Tanda 8a labels and aliases (docs/design/RBAC-DEPARTAMENTOS.md §4.2)
+    ["Auditoría nocturna", "night_auditor"],
+    ["Auditor nocturno", "night_auditor"],
+    ["Night auditor", "night_auditor"],
+    ["Jefatura de A&B", "fnb_manager"],
+    ["Jefe de sala", "fnb_manager"],
+    ["Maître", "fnb_manager"],
+    ["Comercial", "sales"],
+    ["Administración de hotel", "admin_clerk"],
+    ["Administrativa", "admin_clerk"],
+    ["Administración", "accountant"],
+    ["Dirección de operaciones", "operations_director"],
+    ["Director de operaciones Galicia", "operations_director"],
+    ["COO", "operations_director"],
+    ["Dirección financiera", "controller"],
+    ["Controller", "controller"],
+    ["CFO", "controller"],
+    ["RRHH y nóminas", "payroll_hr"],
+    ["RRHH", "payroll_hr"],
+    ["Recursos humanos", "payroll_hr"],
+    ["Cumplimiento", "compliance"],
+    ["Gestión del activo", "asset_manager"],
+    ["Asset manager", "asset_manager"],
+    ["Patrimonio", "asset_manager"],
+    ["Dirección general", "general_manager"],
+    ["Directora general", "general_manager"],
+    ["CEO", "general_manager"],
+    ["GM", "general_manager"],
+    ["Auditoría interna", "auditor"],
+    ["Auditora", "auditor"],
+    ["Emergencia", "break_glass"],
+    ["Break glass", "break_glass"],
+    ["Punto de venta", "fnb"],
+    ["Pisos", "housekeeper"],
     ["Equipo noche", undefined],
     ["Foo", undefined],
     ["", undefined],
@@ -399,7 +500,7 @@ describe("applyRoleTemplate (fake store)", () => {
   it("dry-run reports what would happen without writing", async () => {
     const fake = createFakeDb({ roles: [{ id: "r1", organizationId: "org_a", name: "Owner", templateKey: null }] });
     const result = await applyRoleTemplate("r1", "owner", { db: fake.db, dryRun: true });
-    assert.equal(result.granted, ORG_PERMISSION_KEYS.length);
+    assert.equal(result.granted, templateSize("owner"));
     assert.equal(result.templateKeySet, true);
     assert.equal(fake.state.grants.length, 0);
     assert.equal(fake.state.roles[0].templateKey, null);
@@ -437,6 +538,21 @@ describe("createRoleFromTemplate (fake store)", () => {
     assert.equal(row.id, result.id);
     assert.equal(row.templateKey, "receptionist");
     assert.deepEqual(fake.keysOf(result.id), [...templatePermissionKeys("receptionist")].sort());
+    // Tanda 8a: level, department, version and managed flag stamped at creation.
+    assert.equal(row.level, "operative");
+    assert.equal(row.department, "Recepción");
+    assert.equal(row.templateVersion, ROLE_TEMPLATE_VERSION);
+    assert.equal(row.managed, true);
+  });
+
+  it("404 (opaque) for the break_glass template: only ensureBreakGlassRole creates the emergency role (§4.8)", async () => {
+    const fake = createFakeDb();
+    await assert.rejects(
+      createRoleFromTemplate({ organizationId: "org_a", name: "Emergencia", templateKey: "break_glass", actorUserId: "usr_1" }, { db: fake.db, audit: false }),
+      (error: unknown) => error instanceof NotFoundError && !/break_glass/.test(error.message)
+    );
+    assert.equal(fake.state.roles.length, 0);
+    assert.equal(fake.state.grants.length, 0);
   });
 
   it("400 for an unknown template or an empty name", async () => {
@@ -487,7 +603,7 @@ describe("createRoleFromTemplate (fake store)", () => {
 // ---------------------------------------------------------------------------
 
 describe("provisionDefaultTemplateRoles (fake store)", () => {
-  it("creates the 9 non-owner templates with their Spanish names, tops up createTenant's Owner instead of adding «Propietario», idempotently", async () => {
+  it("creates the 21 non-owner templates with their Spanish names (level and department stamped), tops up createTenant's Owner instead of adding «Propiedad», idempotently", async () => {
     const fake = createFakeDb({ roles: [{ id: "owner", organizationId: "org_a", name: "Owner", templateKey: "owner" }] });
     const first = await provisionDefaultTemplateRoles("org_a", { db: fake.db });
     assert.deepEqual(
@@ -498,12 +614,18 @@ describe("provisionDefaultTemplateRoles (fake store)", () => {
           : [template.name, template.templateKey, templateSize(template.templateKey), true]
       )
     );
-    assert.equal(fake.roleByName("org_a", "Propietario"), undefined, "no second full-scope role next to Owner");
+    assert.equal(fake.roleByName("org_a", "Propiedad"), undefined, "no second owner role next to Owner");
+    assert.equal(fake.roleByName("org_a", "Emergencia"), undefined, "break_glass is never provisioned by default");
+    assert.equal(fake.roleByName("org_a", "Administración de sistema"), undefined, "the org admin template is never provisioned by default");
     for (const role of first) {
-      assert.equal(fake.roleByName("org_a", role.name)?.templateKey, role.templateKey);
+      const row = fake.roleByName("org_a", role.name);
+      assert.equal(row?.templateKey, role.templateKey);
+      assert.equal(row?.level, ROLE_TEMPLATE_LEVEL[role.templateKey as RoleKey], `${role.name} level`);
+      assert.ok(row?.department, `${role.name} department`);
       assert.equal(fake.keysOf(role.id).some((key) => isPlatformPermission(key)), false);
       assert.equal(role.conflict, undefined);
     }
+    assert.equal(fake.roleByName("org_a", "Owner")?.templateVersion ?? 0, 0, "an existing row keeps its version: only upgradeRoleTemplate bumps it");
     const second = await provisionDefaultTemplateRoles("org_a", { db: fake.db });
     assert.deepEqual(second.map((role) => role.created), DEFAULT_TENANT_ROLE_TEMPLATES.map(() => false));
     assert.deepEqual(second.map((role) => role.permissionsCount), first.map((role) => role.permissionsCount), "+0 once converged");
@@ -587,10 +709,22 @@ describe("ensureRoleHasPermissions (fake store)", () => {
 // backfillTemplateRoles (boot)
 // ---------------------------------------------------------------------------
 
+/** The org scope of template version 1 (the HEAD before Tanda 8a): today's catalog minus the 27 keys L0 added. */
+const V1_NEW_KEYS = new Set<string>([
+  "pms.reservation.discount", "pms.reservation.override", "folio.adjust", "folio.adjust_approve", "invoice.cancel_request", "invoice.cancel_approve",
+  "night_audit.run", "night_audit.review", "night_audit.reopen", "housekeeping.read", "maintenance.read", "maintenance.workorder.create", "pos.order.void",
+  "payables.read", "payables.create", "payables.approve", "payables.pay", "accounting.period.close", "payroll.approve", "revenue.rates.approve",
+  "real_estate.read", "real_estate.manage", "real_estate.documents.manage", "property_tax.manage", "users.assign", "compliance.read", "security.break_glass"
+]);
+const ORG_V1_KEYS: PermissionKey[] = ORG_PERMISSION_KEYS.filter((key) => !V1_NEW_KEYS.has(key));
+/** What a converged v1 template role holds today: the v2 template plus the keys v2 revokes (top-up already delivered). */
+const v1Envelope = (key: string): PermissionKey[] => [...templatePermissionKeys(key), ...templateRevocationKeys(key)];
+
 function demoLikeSeed(): FakeSeed {
   const managerKeys = templatePermissionKeys("manager");
-  const outsideManager = ORG_PERMISSION_KEYS.find((key) => !managerKeys.includes(key));
-  assert.ok(outsideManager, "need an org key outside the manager template for the fixture");
+  const managerEnvelope = new Set<string>(v1Envelope("manager"));
+  const outsideManager = ORG_PERMISSION_KEYS.find((key) => !managerEnvelope.has(key));
+  assert.ok(outsideManager, "need an org key outside the manager template (and its revocations) for the fixture");
   return {
     roles: [
       // The 4 pre-Tanda-4 Owners: full org scope, no templateKey yet.
@@ -614,8 +748,9 @@ function demoLikeSeed(): FakeSeed {
       { id: "role_local_super_admin", organizationId: "org_123", name: "Local Super Admin", templateKey: null }
     ],
     grants: [
+      // The 4 pre-Tanda-4 Owners hold the v1 owner scope (template ∪ revocations): adopted with +0, revoked only by an upgrade.
       ...(["owner_a", "owner_b", "owner_c", "owner_d"] as const).flatMap((roleId) =>
-        ORG_PERMISSION_KEYS.map((key): [string, string] => [roleId, key])
+        v1Envelope("owner").map((key): [string, string] => [roleId, key])
       ),
       ...managerKeys.slice(5).map((key): [string, string] => ["mgr_a", key]),
       ["night_a", "pms.reservation.read"],
@@ -649,12 +784,15 @@ describe("backfillTemplateRoles (fake store)", () => {
     const fake = createFakeDb(demoLikeSeed());
     const result = await backfillTemplateRoles({ db: fake.db });
 
-    // Owners: adopted, no new grant.
+    // Owners: adopted (they hold nothing outside template ∪ revocations), no new grant, nothing revoked (no upgrade).
     for (const id of ["owner_a", "owner_b", "owner_c", "owner_d"]) {
       const row = fake.state.roles.find((role) => role.id === id);
       assert.equal(row?.templateKey, "owner", id);
-      assert.equal(fake.keysOf(id).length, ORG_PERMISSION_KEYS.length, id);
+      assert.equal(fake.keysOf(id).length, v1Envelope("owner").length, id);
+      assert.deepEqual(result.revocationsByRole?.[id], [...templateRevocationKeys("owner")].sort(), `${id}: the boot reports what an upgrade would revoke`);
     }
+    assert.deepEqual(result.upgraded, [], "no upgrade without the flag");
+    assert.equal(result.templateRolesBehindVersion, 7);
     assert.ok(result.templateKeysAssignedRoles?.includes("Owner (org_a) → owner"));
     assert.equal(result.roles.some((line) => line.startsWith("Owner (")), false);
 
@@ -675,9 +813,10 @@ describe("backfillTemplateRoles (fake store)", () => {
     assert.equal(fake.keysOf("late_b").length, 0);
     assert.deepEqual(result.unmatched, ["Turno tarde (org_b)"]);
 
-    // Tenant "Super Admin": org admin template, never a platform key.
-    assert.equal(fake.keysOf("sa_a").length, ORG_PERMISSION_KEYS.length);
+    // Tenant "Super Admin": org admin template (Administración de sistema: no money, no operations), never a platform key.
+    assert.equal(fake.keysOf("sa_a").length, templateSize("admin"));
     assert.equal(fake.keysOf("sa_a").some((key) => isPlatformPermission(key)), false);
+    assert.equal(fake.keysOf("sa_a").includes("folio.charge.post"), false);
     assert.equal(fake.state.roles.find((role) => role.id === "sa_a")?.templateKey, "admin");
 
     // Unknown stored key: skipped, untouched.
@@ -714,6 +853,161 @@ describe("backfillTemplateRoles (fake store)", () => {
     assert.equal(result.rolesFilled, 0);
     assert.equal(result.templateRoles, 0);
     assert.deepEqual(result.unmatched, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Template version 2: upgradeRoleTemplate + backfill --upgrade (Tanda 8a · L0)
+// ---------------------------------------------------------------------------
+
+describe("upgradeRoleTemplate (fake store)", () => {
+  /** A v1 Dirección role: the 111 keys of the previous manager template, version 0. */
+  function v1ManagerSeed(extra: Partial<RoleRow> = {}): FakeSeed {
+    return {
+      roles: [{ id: "mgr", organizationId: "org_a", name: "Dirección", templateKey: "manager", templateVersion: 0, ...extra }],
+      grants: v1Envelope("manager").filter((key) => !V1_NEW_KEYS.has(key)).map((key): [string, string] => ["mgr", key])
+    };
+  }
+  const managerRevoked = [...templateRevocationKeys("manager")].sort();
+  const managerNew = templatePermissionKeys("manager").filter((key) => V1_NEW_KEYS.has(key)).sort();
+
+  it("applies the additions AND the revocations of the version, stamps level / department / version", async () => {
+    const fake = createFakeDb(v1ManagerSeed());
+    assert.equal(managerRevoked.length, 16, "manager loses 16 keys in v2 (design §6.5)");
+    assert.ok(managerNew.length > 0);
+    const result = await upgradeRoleTemplate("mgr", { db: fake.db, audit: false });
+    assert.equal(result.upgraded, true);
+    assert.deepEqual(result.revoked, managerRevoked);
+    assert.deepEqual([...result.added].sort(), managerNew);
+    assert.deepEqual([result.fromVersion, result.toVersion, result.dryRun], [0, ROLE_TEMPLATE_VERSION, false]);
+    assert.deepEqual(fake.keysOf("mgr"), [...templatePermissionKeys("manager")].sort(), "the role converges exactly to the v2 template");
+    const row = fake.state.roles[0];
+    assert.deepEqual([row.templateVersion, row.level, row.department, row.managed ?? true], [ROLE_TEMPLATE_VERSION, "hotel_director", "Dirección", true]);
+
+    const again = await upgradeRoleTemplate("mgr", { db: fake.db, audit: false });
+    assert.deepEqual([again.upgraded, again.skippedReason, again.added, again.revoked], [false, "up_to_date", [], []]);
+  });
+
+  it("dry-run reports the plan without writing", async () => {
+    const fake = createFakeDb(v1ManagerSeed());
+    const before = fake.keysOf("mgr");
+    const result = await upgradeRoleTemplate("mgr", { db: fake.db, dryRun: true, audit: false });
+    assert.equal(result.upgraded, true);
+    assert.equal(result.dryRun, true);
+    assert.deepEqual(result.revoked, managerRevoked);
+    assert.deepEqual([...result.added].sort(), managerNew);
+    assert.deepEqual(fake.keysOf("mgr"), before);
+    assert.equal(fake.state.roles[0].templateVersion, 0);
+    assert.equal(fake.state.roles[0].level ?? null, null);
+  });
+
+  it("never touches a custom role (managed = false), a role without / with an unknown template, or a platform role", async () => {
+    const fake = createFakeDb({
+      roles: [
+        { id: "custom", organizationId: "org_a", name: "Dirección", templateKey: "manager", managed: false, templateVersion: 0 },
+        { id: "notpl", organizationId: "org_a", name: "Equipo noche", templateKey: null },
+        { id: "typo", organizationId: "org_a", name: "Reservas", templateKey: "reservationist" },
+        { id: "platform", organizationId: "org_123", name: "Local Super Admin", templateKey: "owner", templateVersion: 0 }
+      ],
+      grants: [
+        ...v1Envelope("manager").map((key): [string, string] => ["custom", key]),
+        ["notpl", "pms.reservation.read"],
+        ["typo", "pms.reservation.read"],
+        ["platform", "admin.tenants.manage"],
+        ...v1Envelope("owner").map((key): [string, string] => ["platform", key])
+      ]
+    });
+    const snapshot = ["custom", "notpl", "typo", "platform"].map((id) => fake.keysOf(id));
+    const custom = await upgradeRoleTemplate("custom", { db: fake.db, audit: false });
+    assert.deepEqual([custom.upgraded, custom.skippedReason], [false, "custom"]);
+    assert.deepEqual([(await upgradeRoleTemplate("notpl", { db: fake.db, audit: false })).skippedReason, (await upgradeRoleTemplate("typo", { db: fake.db, audit: false })).skippedReason], ["no_template", "unknown_template"]);
+    const platform = await upgradeRoleTemplate("platform", { db: fake.db, audit: false });
+    assert.deepEqual([platform.upgraded, platform.skippedReason], [false, "platform"]);
+    assert.deepEqual(["custom", "notpl", "typo", "platform"].map((id) => fake.keysOf(id)), snapshot, "no grant changed");
+    assert.ok(fake.state.roles.every((row) => (row.templateVersion ?? 0) === 0));
+    await assert.rejects(upgradeRoleTemplate("missing", { db: fake.db, audit: false }), NotFoundError);
+  });
+
+  it("backfillTemplateRoles() without upgrade stays additive: a converged v1 role gets +0 and keeps the revoked keys (the boot behaviour)", async () => {
+    const fake = createFakeDb({
+      roles: [{ id: "mgr", organizationId: "org_a", name: "Dirección", templateKey: "manager", templateVersion: 0 }],
+      grants: v1Envelope("manager").map((key): [string, string] => ["mgr", key])
+    });
+    const before = fake.keysOf("mgr");
+    const result = await backfillTemplateRoles({ db: fake.db });
+    assert.equal(result.rolesFilled, 0);
+    assert.equal(result.templateRolesToppedUp, 0);
+    assert.deepEqual(fake.keysOf("mgr"), before, "+0: nothing granted, nothing revoked");
+    assert.deepEqual(result.revocationsByRole, { mgr: managerRevoked }, "the report lists what --upgrade-templates would revoke");
+    assert.deepEqual(result.upgraded, []);
+    assert.equal(result.templateRolesBehindVersion, 1);
+    assert.equal(fake.state.roles[0].templateVersion, 0);
+  });
+
+  it("backfillTemplateRoles({ upgrade: true }) upgrades managed template roles (dry-run reports, real run writes) and skips managed = false", async () => {
+    const seed: FakeSeed = {
+      roles: [
+        { id: "mgr", organizationId: "org_a", name: "Dirección", templateKey: "manager", templateVersion: 0 },
+        { id: "own", organizationId: "org_a", name: "Owner", templateKey: null },
+        { id: "custom", organizationId: "org_a", name: "Contabilidad", templateKey: "accountant", managed: false, templateVersion: 0 },
+        { id: "rec", organizationId: "org_a", name: "Recepción", templateKey: "receptionist", templateVersion: ROLE_TEMPLATE_VERSION }
+      ],
+      grants: [
+        ...v1Envelope("manager").map((key): [string, string] => ["mgr", key]),
+        ...ORG_V1_KEYS.map((key): [string, string] => ["own", key]),
+        ...v1Envelope("accountant").map((key): [string, string] => ["custom", key]),
+        ...templatePermissionKeys("receptionist").map((key): [string, string] => ["rec", key])
+      ]
+    };
+    const dry = createFakeDb(seed);
+    const plan = await backfillTemplateRoles({ db: dry.db, dryRun: true, upgrade: true, audit: false });
+    assert.equal(plan.upgraded?.length, 2, "Dirección and the adopted Owner would be upgraded");
+    assert.ok(plan.upgraded?.some((line) => line.startsWith("Dirección (org_a) ← manager v0→v2: +") && line.endsWith("−16 [dry-run]")));
+    assert.ok(plan.upgraded?.some((line) => line.startsWith("Owner (org_a) ← owner v0→v2:")));
+    assert.deepEqual(plan.revocationsByRole?.mgr, managerRevoked);
+    assert.deepEqual(plan.revocationsByRole?.own, [...templateRevocationKeys("owner")].sort());
+    assert.equal(plan.revocationsByRole?.custom, undefined, "managed=false: never listed");
+    assert.ok(plan.customRoles?.includes("Contabilidad (org_a) [managed=false]"));
+    assert.deepEqual(dry.keysOf("mgr"), [...v1Envelope("manager")].sort(), "dry-run writes nothing");
+    assert.equal(dry.state.roles.find((row) => row.id === "own")?.templateKey, null);
+
+    const fake = createFakeDb(seed);
+    const result = await backfillTemplateRoles({ db: fake.db, upgrade: true, audit: false });
+    assert.equal(result.upgraded?.length, 2);
+    assert.deepEqual(fake.keysOf("mgr"), [...templatePermissionKeys("manager")].sort());
+    assert.deepEqual(fake.keysOf("own"), [...templatePermissionKeys("owner")].sort(), "the v1 Owner (222 keys) becomes Propiedad: read + approvals");
+    assert.equal(fake.state.roles.find((row) => row.id === "own")?.templateKey, "owner");
+    assert.equal(fake.state.roles.find((row) => row.id === "own")?.templateVersion, ROLE_TEMPLATE_VERSION);
+    assert.equal(fake.state.roles.find((row) => row.id === "own")?.level, "ownership");
+    assert.deepEqual(fake.keysOf("custom"), [...v1Envelope("accountant")].sort(), "managed=false untouched");
+    assert.equal(fake.state.roles.find((row) => row.id === "custom")?.templateVersion, 0);
+    assert.deepEqual(fake.keysOf("rec"), [...templatePermissionKeys("receptionist")].sort());
+    assert.equal(result.templateRolesBehindVersion, 0);
+    assert.deepEqual(result.revocationsByRole, { mgr: managerRevoked, own: [...templateRevocationKeys("owner")].sort() });
+
+    const again = await backfillTemplateRoles({ db: fake.db, upgrade: true, audit: false });
+    assert.deepEqual([again.upgraded, again.rolesFilled, again.revocationsByRole], [[], 0, {}], "converged: +0, −0");
+  });
+});
+
+describe("ensureBreakGlassRole (fake store)", () => {
+  it("creates «Emergencia» with the whole org scope, managed, level general_management; idempotent; 409 when the name follows another template", async () => {
+    const fake = createFakeDb();
+    const first = await ensureBreakGlassRole("org_a", { db: fake.db });
+    assert.equal(first.created, true);
+    assert.equal(first.name, "Emergencia");
+    assert.equal(first.permissionsCount, ORG_PERMISSION_KEYS.length);
+    const row = fake.roleByName("org_a", "Emergencia");
+    assert.deepEqual([row?.templateKey, row?.level, row?.managed, row?.templateVersion], ["break_glass", "general_management", true, ROLE_TEMPLATE_VERSION]);
+    assert.equal(fake.keysOf(first.id).some((key) => isPlatformPermission(key)), false, "never a platform key");
+    const second = await ensureBreakGlassRole("org_a", { db: fake.db });
+    assert.deepEqual([second.id, second.created, second.permissionsCount], [first.id, false, ORG_PERMISSION_KEYS.length]);
+    assert.equal(fake.state.roles.length, 1);
+    // Another organisation gets its own row; a name clash with another template is refused.
+    const other = await ensureBreakGlassRole("org_b", { db: fake.db });
+    assert.notEqual(other.id, first.id);
+    fake.state.roles.push({ id: "clash", organizationId: "org_c", name: "Emergencia", templateKey: "manager" });
+    await assert.rejects(ensureBreakGlassRole("org_c", { db: fake.db }), ConflictError);
   });
 });
 

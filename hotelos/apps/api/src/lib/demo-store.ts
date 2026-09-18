@@ -4,7 +4,11 @@ import type {
   EventEnvelope,
   OfflineAction,
   OfflineSyncResult,
-  PermissionKey
+  PermissionKey,
+  RoleKey,
+  RoleLevel,
+  ScopeType,
+  UserScopeDto
 } from "@hotelos/shared";
 import { HOTEL_MODULES, type HotelModuleCode } from "@hotelos/product";
 
@@ -1600,14 +1604,40 @@ export type UserContext = {
   /** Granted through REAL roles in the database (never the demo union): may act across organizations. */
   isPlatformAdmin?: boolean;
   /**
-   * Tanda 5 (L1c · api): the properties the user holds a role in
-   * (user_property_roles, every property — `propertyId` is only the active
-   * one). `grantPropertyAccess` (lib/tenancy.ts) restricts a non-platform
-   * user to these properties inside the organization; undefined or empty
-   * (demo fallback, contexts assembled elsewhere, users with no property
-   * assignment) keeps the organization-wide scope.
+   * Tanda 5 (L1c · api) → Tanda 8a (RBAC · L1): the properties covered by
+   * SOME live assignment of the user (user_property_roles ∪
+   * user_role_assignments, groups / sociedad / organisation EXPANDED to their
+   * properties — `propertyId` is only the active one). `grantPropertyAccess`
+   * (lib/tenancy.ts) restricts a non-platform user to these properties inside
+   * the organization. Since Tanda 8a an EMPTY list is NOT organization-wide
+   * any more: only `orgScope === true` is (demo fallback, or a live
+   * organization / legal_entity assignment), so a real session without
+   * assignments reaches nothing (opaque 404). `undefined` (no list at all:
+   * contexts assembled outside loadUserContext — jobs, scripts) keeps the
+   * organization unless the context says `orgScope: false`.
    */
   assignedPropertyIds?: string[];
+  /**
+   * Tanda 8a: true when the user holds a live assignment of scope
+   * `organization` or `legal_entity` (lib/rbac-scope.ts), or for the
+   * token-less demo fallback. Organization-wide routes and `isPropertyAssigned`
+   * key on it — never on «no assignments».
+   */
+  orgScope?: boolean;
+  /** Tanda 8a: the scopes of the live assignments (expanded to property ids). */
+  scopes?: UserScopeDto[];
+  /** Tanda 8a: compact view of the live assignments (template, level, scope, properties) — no keys: `permissions` carries the resolved ones. */
+  assignments?: Array<{
+    roleId: string;
+    templateKey: RoleKey | null;
+    level: RoleLevel | null;
+    scopeType: ScopeType;
+    propertyIds: string[];
+  }>;
+  /** Tanda 8a (§4.8): set when the session belongs to an emergency account opened through POST /rbac/break-glass. */
+  breakGlassSessionId?: string;
+  /** Tanda 8a: id of the Session row the context was loaded from (real sessions only). */
+  sessionId?: string;
   /**
    * Tanda 3: true when the account must rotate its password before using the
    * API (User.mustChangePassword, or a set password never changed — temp

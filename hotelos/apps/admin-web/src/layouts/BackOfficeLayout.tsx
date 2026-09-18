@@ -37,6 +37,8 @@ import {
 } from "../theme";
 import { useCocoaNotifications } from "../providers/CocoaGlobalProvider";
 import { openHelpCenter } from "../components/guide/guideStore";
+import { SupervisorPinSettingsDialog } from "../components/SupervisorPinSettingsDialog";
+import { useToast } from "../components/Toast";
 import { fetchPropertyReadiness, type PropertyReadiness } from "../services/billingApi";
 import { PROPERTY_KIND_LABELS, type StructuredPropertyRow } from "../services/financeScope";
 import { BRAND } from "../config/brand";
@@ -751,6 +753,10 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
   const [user, setUser] = useState<AuthUser | null>(() => getUser());
   const [open, setOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getThemePreference());
+  // Tanda 8a (corrector · FX-02): the supervisor PIN is set from the user menu by
+  // EVERY session (the N2 supervisors who authorise by PIN never open Usuarios y roles).
+  const [pinOpen, setPinOpen] = useState(false);
+  const { showToast } = useToast();
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => onAuthChange(() => setUser(getUser())), []);
@@ -835,6 +841,20 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
               </button>
             </>
           ) : null}
+          {user ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="cocoa-menu-item cocoa-focus-ring"
+              onClick={() => {
+                setOpen(false);
+                setPinOpen(true);
+              }}
+              style={menuItemStyle}
+            >
+              Mi PIN de supervisor
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"
@@ -849,6 +869,7 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
           </button>
         </div>
       ) : null}
+      <SupervisorPinSettingsDialog open={pinOpen} onClose={() => setPinOpen(false)} onSaved={() => showToast("PIN de supervisor guardado", { variant: "success" })} />
     </div>
   );
 }

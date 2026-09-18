@@ -8,12 +8,10 @@
 // helper is pure so L1b (Sidebar/App/routes rewrite) and the tests share it.
 
 import generated from "./nav-tree.generated.json";
+import { accessDecision, devUnlocked, type AccessScope } from "./access-decision";
 import {
   canSee,
-  moduleAllows,
-  navVisibility,
   primaryRoleToken,
-  roleAllowsEveryone,
   roleHome,
   roleHomeForTokens,
   type NavGate,
@@ -418,13 +416,17 @@ function menuItem(item: NavItem, visibility: MenuItemVisibility, tabs: readonly 
 
 /**
  * The menu of a session (L1b): `visibleCategories` plus the locked state of
- * §6.3, the no-role state of §8 and the dev-only group of §4.3.
+ * §6.3, the no-role state of §8 and the dev-only group of §4.3. Since Tanda
+ * 8a every entry goes through ONE decision, `accessDecision` of
+ * ./access-decision.ts — the same the router (`resolveLocation`) and the
+ * shell (`RouteAccessGate`) apply, so a URL never opens what the menu hides:
  *
  * - tokens present → each item is visible, locked (module off + canEnableModules) or dropped;
  * - no token (custom role without template, or no role in the property) → only the
- *   entries every role can open (Mi día, Asistente), so the shell still works
- *   and the Sidebar shows UI_STATES.noRole;
- * - `devMode` and the `admin` token → «Desarrollo» with the 20 dev-only screens.
+ *   entries every authenticated token can open (none since Tanda 8a: `rrhh`,
+ *   `activos` and `sistemas` do not see Mi día), so the Sidebar shows
+ *   UI_STATES.noRole and «Activar módulo» is never offered;
+ * - `devMode` and the `admin` token → «Desarrollo» with the dev-only screens.
  * Categories without items are dropped (never an empty group).
  */
 export function menuCategories(
@@ -433,28 +435,29 @@ export function menuCategories(
   options: MenuModelOptions = {},
   tree: NavTree = NAV_TREE
 ): MenuCategory[] {
-  const noRole = roleTokens.length === 0;
+  const scope: AccessScope = {
+    tokens: roleTokens,
+    modules: enabledModules,
+    modulesKnown: true,
+    isPlatformAdmin: roleTokens.includes("admin"),
+    devMode: options.devMode === true,
+    canEnableModules: roleTokens.length > 0 && options.canEnableModules === true
+  };
   const result: MenuCategory[] = [];
   for (const category of tree.categories) {
     const items: MenuItem[] = [];
     for (const item of category.items) {
-      if (noRole) {
-        if (roleAllowsEveryone(item) && moduleAllows(item, enabledModules)) {
-          items.push(menuItem(item, "visible", item.tabs.filter((tab) => roleAllowsEveryone(tab) && moduleAllows(tab, enabledModules)), enabledModules));
-        }
-        continue;
-      }
-      const visibility = navVisibility(item, roleTokens, enabledModules, { canEnableModules: options.canEnableModules });
-      if (visibility === "hidden") continue;
-      const tabs = visibility === "visible" ? item.tabs.filter((tab) => canSee(tab, roleTokens, enabledModules)) : [];
-      items.push(menuItem(item, visibility, tabs, enabledModules));
+      const decision = accessDecision(item, scope);
+      if (decision !== "visible" && decision !== "locked") continue;
+      const tabs = decision === "visible" ? item.tabs.filter((tab) => accessDecision(tab, scope) === "visible") : [];
+      items.push(menuItem(item, decision, tabs, enabledModules));
     }
     if (items.length > 0) result.push({ key: category.key, label: category.label, items });
   }
-  if (options.devMode && roleTokens.includes("admin")) {
+  if (devUnlocked(scope)) {
     const items: MenuItem[] = [];
     for (const screen of tree.devOnly) {
-      if (!canSee(screen, roleTokens, enabledModules)) continue;
+      if (accessDecision({ ...screen, devOnly: true }, scope) !== "visible") continue;
       items.push({ ...screen, baseTab: null, tabs: [], visibility: "visible", lockedBy: [] });
     }
     if (items.length > 0) result.push({ key: DEV_CATEGORY_KEY, label: DEV_CATEGORY_LABEL, items, devOnly: true });

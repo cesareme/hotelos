@@ -64,7 +64,7 @@ describe("nav-item-tabs · buildItemTabs", () => {
     assert.deepEqual(tabs.map((tab) => tab.path), ["/hoy", "/hoy/operaciones", "/hoy/direccion", "/hoy/propietario"]);
     assert.equal(tabs[0].label, "Recepción");
     assert.deepEqual(tabs[0].roles, ["recepcion", "direccion", "admin"]);
-    assert.deepEqual(tabs[1].roles, ["pisos", "mantenimiento", "fnb", "direccion", "admin"]);
+    assert.deepEqual(tabs[1].roles, ["pisos", "mantenimiento", "fnb", "direccion", "admin", "auditoria"]); // Tanda 8a: auditoría interna ve Mi día
     assert.ok(tabs.every((tab) => !tab.hidden));
   });
 

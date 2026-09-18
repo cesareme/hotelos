@@ -1,32 +1,44 @@
 // Re-seed the template roles of ONE organisation from the shared templates
-// (Tanda 5 · L1a · rbac). Deuda L5: the demo tenants (Faranda, org_123) only
-// had "Owner" / "Local Super Admin", so the invite selector offered nothing
-// else and the navigation tree of Tanda 5 (one token per template) had no
-// role to bind Recepción, Pisos, Contabilidad… to. This CLI materialises, per
+// (Tanda 5 · L1a · rbac; Tanda 8a · L3: the 22 templates of design §4.2).
+// Deuda L5: the demo tenants (Faranda, org_123) only had "Owner" / "Local
+// Super Admin", so the invite selector offered nothing else and the
+// navigation tree of Tanda 5 (one token per template) had no role to bind
+// Recepción, Pisos, Contabilidad… to. This CLI materialises, per
 // organisation, one Role row for every template of
-// ORGANIZATION_TEMPLATE_ROLE_KEYS (packages/shared/src/permissions.ts) and
-// tops it up to the template — idempotent, additive, never destructive:
+// ORGANIZATION_TEMPLATE_ROLE_KEYS (packages/shared/src/permissions.ts: 22
+// since Tanda 8a — never `admin`, the platform token, nor `break_glass`, the
+// emergency role only ensureBreakGlassRole creates) and tops it up to the
+// template — idempotent, additive, never destructive:
 //
 //   top-up   a role already stamped with the template (Role.templateKey)
-//            receives the keys it is missing (+0 once converged);
+//            receives the keys it is missing (+0 once converged); rows that
+//            predate Tanda 8a get their `level` / `department` filled (never
+//            the version: that is `rbac:sync --upgrade-templates`);
 //   adopt    a role WITHOUT templateKey whose name resolves to the template
 //            (resolveTemplateKeyForRoleName, e.g. the Faranda "Owner" created
-//            before the column existed) and that holds nothing outside it is
+//            before the column existed) and that holds nothing outside the
+//            template ∪ its revocations (a v1 role is still recognised) is
 //            stamped and topped up;
 //   create   when no role follows the template, a new one is created with the
 //            Spanish name of ROLE_TEMPLATE_LABELS_ES (createRoleFromTemplate:
-//            same audit event as POST /backoffice/properties/:id/roles);
+//            same audit event as POST /backoffice/properties/:id/roles, with
+//            `level`, `department`, `templateVersion` = current and
+//            `managed` = true);
 //   conflict a role carries the template's name but is custom (keys beyond
-//            the template) or follows another template: reported, never
-//            touched, and it blocks --apply (exit 1) so a hand-made role is
-//            not silently shadowed by a second one with a different name.
+//            the template, or `managed = false`) or follows another template:
+//            reported, never touched, and it blocks --apply (exit 1) so a
+//            hand-made role is not silently shadowed by a second one with a
+//            different name.
 //
 // Platform roles (admin.* grants, or a platform role name inside the HotelOS
-// organisation) are skipped: the full catalog is theirs (backfillTemplateRoles).
+// organisation) and roles with `managed = false` (edited by hand through
+// PATCH /rbac/roles/:id/permissions) are skipped: the full catalog is the
+// platform's (backfillTemplateRoles) and a custom role is the hotel's.
 // Roles are organisation scoped (Role.organizationId) and assignable in every
 // property of the organisation; the "per property" report lists, for each
 // property, how many user_property_roles hang from each template role so the
-// operator sees who would be affected. Users are never created nor assigned.
+// operator sees who would be affected. Users are never created nor assigned
+// (that is `rbac:migrate-assignments` and the users & roles screen).
 //
 // Usage (from apps/api, DATABASE_URL in env or ../../.env):
 //   node --env-file-if-exists=../../.env --import tsx src/scripts/reseed-property-roles.ts \
@@ -47,6 +59,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve as resolvePath } from "node:path";
 import { prisma } from "@hotelos/database";
+import { defaultAuditChainCli, withAuditChain, type AuditChainCli } from "../lib/audit-chain-cli.js";
 import {
   ORGANIZATION_TEMPLATE_ROLE_KEYS,
   ROLE_TEMPLATE_KEYS,
@@ -61,6 +74,8 @@ import {
   isRoleTemplateKey,
   resolveTemplateKeyForRoleName,
   templatePermissionKeys,
+  templateRevocationKeys,
+  templateRoleMetadata,
   type RbacDb
 } from "../lib/rbac-catalog.js";
 
@@ -155,7 +170,16 @@ export function assertConfirmMatches(flags: ReseedFlags): void {
 // Plan (pure)
 // ---------------------------------------------------------------------------
 
-export type RoleRow = { id: string; organizationId: string; name: string; templateKey: string | null };
+export type RoleRow = {
+  id: string;
+  organizationId: string;
+  name: string;
+  templateKey: string | null;
+  /** Tanda 8a: false = custom role edited by hand (PATCH /rbac/roles/:id/permissions); never touched. Absent = managed. */
+  managed?: boolean;
+  level?: string | null;
+  department?: string | null;
+};
 
 export type PlanAction = "top-up" | "adopt" | "create" | "conflict";
 
@@ -221,6 +245,11 @@ export function planTemplateRoles(input: PlanInput): ReseedPlan {
       skipped.push({ roleId: role.id, roleName: role.name, reason: "rol de plataforma (catálogo completo por backfillTemplateRoles)" });
       return false;
     }
+    if (role.managed === false) {
+      // Tanda 8a: edited by hand → custom whatever its name or template_key; it may still block a `create` (name taken).
+      skipped.push({ roleId: role.id, roleName: role.name, reason: "rol personalizado (managed = false): nunca se toca" });
+      return false;
+    }
     if (role.templateKey !== null && !isRoleTemplateKey(role.templateKey)) {
       skipped.push({ roleId: role.id, roleName: role.name, reason: `template_key desconocido "${role.templateKey}"` });
       return false;
@@ -231,7 +260,11 @@ export function planTemplateRoles(input: PlanInput): ReseedPlan {
   const templates: TemplatePlan[] = [];
   for (const templateKey of input.templates) {
     const templateKeys = templatePermissionKeys(templateKey);
-    const templateSet = new Set<string>(templateKeys);
+    // Tanda 8a: a role converged to the PREVIOUS template version still holds
+    // the keys the current version revokes; adoption tolerates them (the boot
+    // backfill applies the same envelope) and `rbac:sync --upgrade-templates`
+    // removes them later. Never `admin` nor `break_glass` here.
+    const templateSet = new Set<string>([...templateKeys, ...templateRevocationKeys(templateKey)]);
     const missingFor = (role: RoleRow): number => templateKeys.filter((key) => !keysOf(role).has(key)).length;
 
     // 1) stamped with the template (first by id for determinism).
@@ -264,11 +297,13 @@ export function planTemplateRoles(input: PlanInput): ReseedPlan {
       const held = keysOf(blocker);
       const extra = Array.from(held).filter((key) => !templateSet.has(key)).length;
       const reason =
-        blocker.templateKey !== null
-          ? `«${blocker.name}» sigue la plantilla "${blocker.templateKey}"`
-          : extra > 0
-            ? `«${blocker.name}» es un rol personalizado (${extra} clave(s) fuera de "${templateKey}")`
-            : `«${blocker.name}» ya está reclamado por otra plantilla`;
+        blocker.managed === false
+          ? `«${blocker.name}» es un rol personalizado (managed = false)`
+          : blocker.templateKey !== null
+            ? `«${blocker.name}» sigue la plantilla "${blocker.templateKey}"`
+            : extra > 0
+              ? `«${blocker.name}» es un rol personalizado (${extra} clave(s) fuera de "${templateKey}")`
+              : `«${blocker.name}» ya está reclamado por otra plantilla`;
       templates.push({ templateKey, action: "conflict", roleId: blocker.id, roleName: blocker.name, missing: 0, templateSize: templateKeys.length, reason });
       continue;
     }
@@ -355,8 +390,8 @@ export type ReseedResult = {
 };
 
 async function loadOrganisationRoles(db: RbacDb, organizationId: string) {
-  const roles = await db.role.findMany({
-    select: { id: true, organizationId: true, name: true, templateKey: true },
+  const roles: RoleRow[] = await db.role.findMany({
+    select: { id: true, organizationId: true, name: true, templateKey: true, managed: true, level: true, department: true },
     orderBy: { id: "asc" }
   });
   const permissions = await db.permission.findMany({ select: { id: true, key: true } });
@@ -406,7 +441,13 @@ async function loadPropertyReports(db: RbacDb, organizationId: string, plan: Res
   });
 }
 
-export async function runReseed(flags: ReseedFlags, db: RbacDb = prisma): Promise<ReseedResult> {
+export async function runReseed(flags: ReseedFlags, db: RbacDb = prisma, auditChain: AuditChainCli = defaultAuditChainCli): Promise<ReseedResult> {
+  // Integrador 8a: createRoleFromTemplate audita ROLE_CREATED_FROM_TEMPLATE por
+  // cola; hidratar la cadena antes de --apply y vaciar la cola antes de devolver.
+  return withAuditChain(auditChain, flags.apply, () => executeReseed(flags, db));
+}
+
+async function executeReseed(flags: ReseedFlags, db: RbacDb): Promise<ReseedResult> {
   const startedAt = Date.now();
   assertConfirmMatches(flags);
   const organizationId = flags.org!;
@@ -434,12 +475,19 @@ export async function runReseed(flags: ReseedFlags, db: RbacDb = prisma): Promis
   const work = async (tx: RbacDb): Promise<void> => {
     for (const template of plan.templates) {
       if (template.action === "create") {
+        // createRoleFromTemplate stamps level / department / templateVersion / managed (Tanda 8a).
         await createRoleFromTemplate(
           { organizationId, name: template.roleName, templateKey: template.templateKey, actorUserId: null },
           { db: tx }
         );
       } else if (template.action === "top-up" || template.action === "adopt") {
         await applyRoleTemplate(template.roleId!, template.templateKey, { db: tx });
+        // Rows that predate Tanda 8a carry no level / department: fill them —
+        // never the version (that is `rbac:sync --upgrade-templates`, with the
+        // revocations) nor `managed` (a hand-edited role stays custom).
+        const metadata = templateRoleMetadata(template.templateKey);
+        await tx.role.updateMany({ where: { id: template.roleId!, level: null }, data: { level: metadata.level } });
+        await tx.role.updateMany({ where: { id: template.roleId!, department: null }, data: { department: metadata.department } });
       }
     }
   };

@@ -33,6 +33,10 @@ export * from "./pms-shadow-profiles/opera-cloud.js";
 // cuentas y analítico, previsualización, lotes, reconciliación, límites y códigos de error
 // compartidos por el API, el CLI sage200:import y el admin-web.
 export * from "./ledger-import-types.js";
+// RBAC por departamento, nivel y ámbito (Tanda 8a · L0): levels, scopes, thresholds,
+// approval kinds, static SoD pairs, error/audit codes and the wire DTOs of the rbac,
+// approvals, supervisor-PIN and break-glass routes shared by the API and the admin-web.
+export * from "./rbac-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

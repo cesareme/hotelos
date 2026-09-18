@@ -145,7 +145,10 @@ export async function closeFiscalPeriod(input: {
   closingNotes?: string;
   correlationId: string;
 }): Promise<FiscalPeriodRecord> {
-  requirePermissions(input.context, ["accounting.journal.post"]);
+  // Tanda 8a (RBAC · L2, design §4.6): closing a period is its own key
+  // (accounting.period.close, dirección financiera), separated from the
+  // manual asiento (accounting.journal.post); reopening is unchanged.
+  requirePermissions(input.context, ["accounting.period.close"]);
 
   const period = await prisma.fiscalPeriod.findUnique({ where: { id: input.periodId } });
   if (!period || period.organizationId !== input.context.organizationId) throw new NotFoundError("Periodo fiscal no encontrado.");

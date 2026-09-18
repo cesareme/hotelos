@@ -1,5 +1,5 @@
 import { ROLE_TEMPLATE_KEYS, assertPermissions, isPlatformPermission } from "@hotelos/shared";
-import type { PermissionKey, RoleKey } from "@hotelos/shared";
+import type { PermissionKey, RoleKey, UserScopeDto } from "@hotelos/shared";
 import { prisma, signJwt, verifyPassword, type JwtClaims } from "@hotelos/database";
 import {
   demoStore,
@@ -12,6 +12,7 @@ import {
 } from "../../lib/demo-store.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError } from "../../lib/http-error.js";
+import { loadUserScope, permissionsFor, toContextAssignments, type UserScope } from "../../lib/rbac-scope.js";
 import { createHash, randomInt } from "node:crypto";
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
@@ -77,10 +78,17 @@ export async function loadPermissionsForUserProperty(userId: string, propertyId:
   return Array.from(keys) as PermissionKey[];
 }
 
-/** True when the demo permission union is enabled (explicit opt-in, see unionPermissions). */
+/**
+ * True when the demo permission union is enabled. Tanda 8a (RBAC · L1, design
+ * §6.4 / H10): ONE explicit switch, `HOTELOS_DEMO_PERMISSION_UNION=true`
+ * (lib/env.ts, productionForbidden) — no longer derived from NODE_ENV nor from
+ * HOTELOS_ALLOW_DEMO_AUTH, which kept masking the real RBAC of every session in
+ * the local demo (Recepción Los Tilos held ~222 effective keys). The
+ * token-less demo fallback (auth-context.ts) is unaffected: it builds its
+ * context from the demoStore directly.
+ */
 export function isDemoPermissionUnionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const nodeEnv = env.NODE_ENV;
-  return nodeEnv === "development" || nodeEnv === "dev" || env.HOTELOS_ALLOW_DEMO_AUTH === "true";
+  return env.HOTELOS_DEMO_PERMISSION_UNION === "true";
 }
 
 export function unionPermissions(
@@ -89,11 +97,11 @@ export function unionPermissions(
 ): PermissionKey[] {
   // SECURITY (auditoría 2026-07): FAIL-SECURE. Antes el gate era
   // `NODE_ENV !== "production"` → un deploy que OLVIDARA fijar NODE_ENV le daba
-  // a cualquier usuario TODOS los permisos del super-usuario demo. Ahora la
-  // escalada solo se activa con un opt-in EXPLÍCITO: NODE_ENV=development|dev
-  // (entorno local/demo declarado) o HOTELOS_ALLOW_DEMO_AUTH=true (mismo flag
-  // que habilita el fallback de auth demo). Con NODE_ENV ausente o cualquier
-  // otro valor → solo permisos reales derivados de roles.
+  // a cualquier usuario TODOS los permisos del super-usuario demo. La escalada
+  // solo se activa con un opt-in EXPLÍCITO; desde la Tanda 8a ese opt-in es la
+  // variable dedicada HOTELOS_DEMO_PERMISSION_UNION=true (ver
+  // isDemoPermissionUnionEnabled). Sin ella → solo permisos reales derivados
+  // de las asignaciones.
   const demoMode = options.demoMode ?? isDemoPermissionUnionEnabled();
   if (!demoMode) {
     return prismaPerms;
@@ -113,37 +121,71 @@ export function unionPermissions(
   return Array.from(set) as PermissionKey[];
 }
 
-export async function loadUserContext(sessionId: string): Promise<UserContext | null> {
-  const session = await prisma.session.findUnique({ where: { id: sessionId } });
-  if (!session || session.status !== "active") return null;
-  const user = await prisma.user.findUnique({ where: { id: session.userId } });
-  if (!user || user.status !== "active") return null;
-  // Every assignment: the first one (by id) is the active property, as before;
-  // the whole set is the property scope of the request (L1c, lib/tenancy.ts).
-  const assignments = await prisma.userPropertyRole.findMany({
-    where: { userId: user.id },
-    select: { propertyId: true },
-    orderBy: { id: "asc" }
-  });
-  const propertyId = assignments[0]?.propertyId ?? demoStore.userContext.propertyId;
-  const assignedPropertyIds = Array.from(new Set(assignments.map((assignment) => assignment.propertyId)));
-  const permissions = await loadPermissionsForUserProperty(user.id, propertyId);
+/**
+ * Tanda 8a (RBAC · L1): the session context from the user's scope
+ * (lib/rbac-scope.ts: user_property_roles ∪ user_role_assignments, expanded).
+ * `propertyId` is the first covered property in stable order (legacy rows by
+ * id first, as before) or the demo property when the user covers none;
+ * `permissions` are resolved for THAT property (the scope preHandler of
+ * server.ts re-resolves them for the property of each request). `orgScope`,
+ * `scopes`, `assignments`, `assignedPropertyIds` and `sessionId` travel with
+ * the context; `isPlatformAdmin` derives from the REAL union of every
+ * assignment (never the demo union).
+ */
+function contextFromScope(input: {
+  user: { id: string; organizationId: string; fullName: string } & PasswordRotationRow;
+  scope: UserScope;
+  deviceId: string;
+  sessionId: string;
+  breakGlassSessionId?: string;
+}): UserContext {
+  const { user, scope } = input;
+  const propertyId = scope.assignedPropertyIds[0] ?? demoStore.userContext.propertyId;
+  const permissions = permissionsFor(scope, propertyId);
   return {
     organizationId: user.organizationId,
     propertyId,
     userId: user.id,
     fullName: user.fullName,
-    deviceId: session.deviceId,
+    deviceId: input.deviceId,
     permissions: unionPermissions(permissions),
-    assignedPropertyIds,
+    assignedPropertyIds: scope.assignedPropertyIds,
+    orgScope: scope.orgScope,
+    scopes: scope.scopes,
+    assignments: toContextAssignments(scope),
+    sessionId: input.sessionId,
+    ...(input.breakGlassSessionId ? { breakGlassSessionId: input.breakGlassSessionId } : {}),
     // Derived from the REAL role grants (before the demo union) so the flag is
     // trustworthy even when unionPermissions adds admin.tenants.manage for all.
-    isPlatformAdmin: hasPlatformAdminGrant(permissions),
+    isPlatformAdmin: hasPlatformAdminGrant(scope.allPermissions),
     // Read on EVERY authenticated request (not cached in the JWT) so the guard
     // lifts as soon as the password is rotated and applies as soon as an admin
     // reissues a temp password.
     mustChangePassword: deriveMustChangePassword(user)
   };
+}
+
+export async function loadUserContext(sessionId: string): Promise<UserContext | null> {
+  const session = await prisma.session.findUnique({ where: { id: sessionId } });
+  if (!session || session.status !== "active") return null;
+  const user = await prisma.user.findUnique({ where: { id: session.userId } });
+  if (!user) return null;
+  let breakGlassSessionId: string | undefined;
+  if (user.status === "emergency") {
+    // §4.8: an emergency account is only valid INSIDE an open break-glass
+    // session bound to this very Session row and still within its window;
+    // closed / expired → null → 401 (the session dies on its own).
+    const breakGlass = await prisma.breakGlassSession.findFirst({
+      where: { sessionId, accountUserId: user.id, closedAt: null, closesAt: { gt: new Date() } },
+      select: { id: true }
+    });
+    if (!breakGlass) return null;
+    breakGlassSessionId = breakGlass.id;
+  } else if (user.status !== "active") {
+    return null;
+  }
+  const scope = await loadUserScope(user.id, user.organizationId);
+  return contextFromScope({ user, scope, deviceId: session.deviceId, sessionId: session.id, breakGlassSessionId });
 }
 
 function toIso(date: Date | null | undefined): string | undefined {
@@ -212,7 +254,34 @@ function mapMfa(row: {
   };
 }
 
-export async function loginWithEmailPassword(input: { email: string; password: string; deviceId: string }): Promise<LoginResult> {
+/**
+ * Tanda 8a (RBAC · L1, design §6.6): every refused credential login leaves a
+ * LOGIN_FAILED audit row — actor / entity = the user when the email matches
+ * an account (never the email itself), reason code, IP and device. Unknown
+ * emails are recorded against the organisation-less demo tenant id only when
+ * no user exists (`entityId` absent) so the trail still counts the attempt.
+ */
+function auditLoginFailed(input: {
+  user: { id: string; organizationId: string } | null;
+  reason: "invalid_credentials" | "account_locked" | "account_locked_now" | "account_not_active" | "unknown_user";
+  ipAddress?: string;
+  deviceId: string;
+}): void {
+  if (!input.user) return;
+  recordAuditEvent({
+    organizationId: input.user.organizationId,
+    actorUserId: input.user.id,
+    actorType: "user",
+    action: "LOGIN_FAILED",
+    entityType: "user",
+    entityId: input.user.id,
+    afterJson: { reason: input.reason },
+    ipAddress: input.ipAddress,
+    deviceId: input.deviceId
+  });
+}
+
+export async function loginWithEmailPassword(input: { email: string; password: string; deviceId: string; ipAddress?: string }): Promise<LoginResult> {
   if (!input.email || !input.password) {
     throw new BadRequestError("Email and password are required.");
   }
@@ -222,6 +291,9 @@ export async function loginWithEmailPassword(input: { email: string; password: s
     throw new UnauthorizedError("Invalid credentials.");
   }
   if (user.status !== "active") {
+    // The break-glass accounts (status "emergency", §4.8) never log in with a
+    // password: their only entrance is POST /rbac/break-glass from a real session.
+    auditLoginFailed({ user, reason: "account_not_active", ipAddress: input.ipAddress, deviceId: input.deviceId });
     throw new ForbiddenError(`User account is ${user.status}.`);
   }
 
@@ -230,6 +302,7 @@ export async function loginWithEmailPassword(input: { email: string; password: s
   const { checkAccountLockout, recordFailedLogin, recordSuccessfulLogin } = await import("./auth-pilot.service.js");
   const lockout = await checkAccountLockout(user.id);
   if (lockout.isLocked) {
+    auditLoginFailed({ user, reason: "account_locked", ipAddress: input.ipAddress, deviceId: input.deviceId });
     throw new ForbiddenError(`Cuenta bloqueada temporalmente. Reintenta en ${lockout.remainingMinutes} min.`);
   }
 
@@ -238,15 +311,17 @@ export async function loginWithEmailPassword(input: { email: string; password: s
   if (!user.passwordHash || !verifyPassword(input.password, user.passwordHash)) {
     const failure = await recordFailedLogin(user.id);
     if (failure.locked) {
+      auditLoginFailed({ user, reason: "account_locked_now", ipAddress: input.ipAddress, deviceId: input.deviceId });
       throw new ForbiddenError("Cuenta bloqueada por múltiples intentos fallidos. Reintenta en 15 min.");
     }
+    auditLoginFailed({ user, reason: "invalid_credentials", ipAddress: input.ipAddress, deviceId: input.deviceId });
     throw new UnauthorizedError(`Invalid credentials. (${failure.attemptsLeft} intento${failure.attemptsLeft === 1 ? "" : "s"} restantes antes del bloqueo)`);
   }
 
   // Login exitoso: resetea contador, actualiza lastLoginAt.
   await recordSuccessfulLogin(user.id);
 
-  return createSessionForUser({ user, deviceId: input.deviceId, auditAction: "AUTH_LOGIN" });
+  return createSessionForUser({ user, deviceId: input.deviceId, auditAction: "AUTH_LOGIN", ipAddress: input.ipAddress });
 }
 
 /** The User columns `createSessionForUser` needs (subset of the Prisma row). */
@@ -270,17 +345,19 @@ export async function createSessionForUser(input: {
   user: SessionUserRow;
   deviceId: string;
   auditAction?: string;
+  ipAddress?: string;
+  /** Tanda 8a (§4.8): set by the break-glass service when the session belongs to an emergency account. */
+  breakGlassSessionId?: string;
 }): Promise<LoginResult> {
   const { user, deviceId } = input;
-  const propertyAssignment = await prisma.userPropertyRole.findFirst({
-    where: { userId: user.id },
-    orderBy: { id: "asc" }
-  });
-
-  const propertyId = propertyAssignment?.propertyId ?? demoStore.userContext.propertyId;
+  // Tanda 8a (RBAC · L1): the scope reader replaces the first-row lookup of
+  // user_property_roles + loadPermissionsForUserProperty — otherwise the emergency account and any
+  // user holding only user_role_assignments would log in with 0 keys and the
+  // demo property.
   const session = await ensureSession({ userId: user.id, deviceId });
-  const permissions = await loadPermissionsForUserProperty(user.id, propertyId);
-  const effectivePermissions = unionPermissions(permissions);
+  const scope = await loadUserScope(user.id, user.organizationId);
+  const context = contextFromScope({ user, scope, deviceId, sessionId: session.id, breakGlassSessionId: input.breakGlassSessionId });
+  const propertyId = context.propertyId;
 
   recordAuditEvent({
     organizationId: user.organizationId,
@@ -291,6 +368,7 @@ export async function createSessionForUser(input: {
     entityType: "user",
     entityId: user.id,
     deviceId,
+    ipAddress: input.ipAddress,
     afterJson: { email: user.email, sessionId: session.id }
   });
 
@@ -306,19 +384,10 @@ export async function createSessionForUser(input: {
   return {
     token,
     sessionId: session.id,
-    user: {
-      organizationId: user.organizationId,
-      propertyId,
-      userId: user.id,
-      fullName: user.fullName,
-      deviceId,
-      permissions: effectivePermissions,
-      // Real DB grants only (never the demo union) — see loadUserContext.
-      isPlatformAdmin: hasPlatformAdminGrant(permissions),
-      // The front routes to ChangePasswordScreen when true; the API guard
-      // (PASSWORD_CHANGE_ALLOWLIST) enforces it regardless of the client.
-      mustChangePassword: deriveMustChangePassword(user)
-    }
+    // Same shape loadUserContext serves on every request (real DB grants for
+    // isPlatformAdmin; the front routes to ChangePasswordScreen when
+    // mustChangePassword is true, the API guard enforces it regardless).
+    user: context
   };
 }
 
@@ -375,10 +444,12 @@ export type CurrentUserProperty = {
   id: string;
   name: string;
   organizationId: string;
-  /** Roles the user holds IN THIS property (user_property_roles), name order. */
+  /** Roles the user holds IN THIS property (every assignment covering it, legacy rows included), name order. */
   roles: CurrentUserPropertyRole[];
   /** Distinct template keys of those roles, in ROLE_TEMPLATE_KEYS order. */
   templateKeys: RoleKey[];
+  /** Tanda 8a: keys REALLY granted in this property (union of the assignments covering it; never the demo union), sorted. */
+  grantedPermissions: PermissionKey[];
 };
 
 export type CurrentUserProfile = {
@@ -403,6 +474,12 @@ export type CurrentUserProfile = {
   /** Template keys held in the active property (shortcut of properties[].templateKeys). */
   templateKeys: RoleKey[];
   properties: CurrentUserProperty[];
+  /** Tanda 8a: the scopes of the live assignments (property / group / sociedad / organisation, expanded). */
+  scopes: UserScopeDto[];
+  /** Tanda 8a: true with a live organization / legal_entity assignment. */
+  orgScope: boolean;
+  /** Tanda 8a (§4.8): set inside a break-glass session. */
+  breakGlassSessionId: string | null;
 };
 
 /** Known template keys, or null: a hand-edited template_key never reaches the client as a token. */
@@ -428,40 +505,37 @@ function orderTemplateKeys(keys: Iterable<RoleKey | null>): RoleKey[] {
  * fields and an empty property list — never a 500.
  */
 export async function getCurrentUserProfile(context: UserContext): Promise<CurrentUserProfile> {
-  const [user, assignments, grantedPermissions] = await Promise.all([
-    prisma.user.findUnique({
-      where: { id: context.userId },
-      select: { id: true, email: true, fullName: true, organizationId: true, mustChangePassword: true, passwordHash: true, passwordChangedAt: true, status: true }
-    }),
-    prisma.userPropertyRole.findMany({ where: { userId: context.userId }, select: { propertyId: true, roleId: true } }),
-    loadPermissionsForUserProperty(context.userId, context.propertyId)
-  ]);
+  const user = await prisma.user.findUnique({
+    where: { id: context.userId },
+    select: { id: true, email: true, fullName: true, organizationId: true, mustChangePassword: true, passwordHash: true, passwordChangedAt: true, status: true }
+  });
   const organizationId = user?.organizationId ?? context.organizationId;
-  const roleIds = Array.from(new Set(assignments.map((assignment) => assignment.roleId)));
-  const propertyIds = Array.from(new Set(assignments.map((assignment) => assignment.propertyId)));
-  const [organization, roles, properties] = await Promise.all([
+  // Tanda 8a (RBAC · L1): properties = the ones covered by the user's scope
+  // (user_property_roles ∪ user_role_assignments, groups / sociedad /
+  // organisation expanded), each with its roles, template keys and the keys
+  // REALLY granted there (never the demo union).
+  const scope = await loadUserScope(context.userId, organizationId);
+  const propertyIds = scope.assignedPropertyIds;
+  const [organization, properties] = await Promise.all([
     prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } }),
-    roleIds.length > 0
-      ? prisma.role.findMany({ where: { id: { in: roleIds } }, select: { id: true, name: true, templateKey: true } })
-      : Promise.resolve([]),
     propertyIds.length > 0
       ? prisma.property.findMany({ where: { id: { in: propertyIds } }, select: { id: true, name: true, organizationId: true }, orderBy: { name: "asc" } })
       : Promise.resolve([])
   ]);
-  const roleById = new Map(roles.map((role) => [role.id, role]));
   const propertyRows: CurrentUserProperty[] = properties.map((property) => {
-    const held = assignments
-      .filter((assignment) => assignment.propertyId === property.id)
-      .map((assignment) => roleById.get(assignment.roleId))
-      .filter((role): role is { id: string; name: string; templateKey: string | null } => role !== undefined)
-      .map((role) => ({ id: role.id, name: role.name, templateKey: toTemplateKey(role.templateKey) }))
-      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    const heldById = new Map<string, CurrentUserPropertyRole>();
+    for (const assignment of scope.assignments) {
+      if (!assignment.propertyIds.includes(property.id)) continue;
+      heldById.set(assignment.roleId, { id: assignment.roleId, name: assignment.roleName, templateKey: assignment.templateKey });
+    }
+    const held = Array.from(heldById.values()).sort((a, b) => a.name.localeCompare(b.name, "es"));
     return {
       id: property.id,
       name: property.name,
       organizationId: property.organizationId,
       roles: held,
-      templateKeys: orderTemplateKeys(held.map((role) => role.templateKey))
+      templateKeys: orderTemplateKeys(held.map((role) => role.templateKey)),
+      grantedPermissions: permissionsFor(scope, property.id)
     };
   });
   const active = propertyRows.find((property) => property.id === context.propertyId);
@@ -473,11 +547,14 @@ export async function getCurrentUserProfile(context: UserContext): Promise<Curre
     organizationName: organization?.name ?? null,
     activePropertyId: context.propertyId,
     permissions: context.permissions,
-    grantedPermissions: grantedPermissions.slice().sort(),
+    grantedPermissions: permissionsFor(scope, context.propertyId),
     isPlatformAdmin: await isPlatformAdmin(context),
     mustChangePassword: user ? deriveMustChangePassword(user) : context.mustChangePassword === true,
     templateKeys: active?.templateKeys ?? [],
-    properties: propertyRows
+    properties: propertyRows,
+    scopes: scope.scopes,
+    orgScope: scope.orgScope,
+    breakGlassSessionId: context.breakGlassSessionId ?? null
   };
 }
 

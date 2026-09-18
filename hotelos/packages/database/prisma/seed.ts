@@ -250,6 +250,31 @@ async function main() {
     create: { userId: "usr_123", propertyId: "prop_123", roleId: "role_local_super_admin" }
   });
 
+  // Tanda 8a (RBAC · L3, docs/design/RBAC-DEPARTAMENTOS.md §6.5, C8): the same
+  // grant in the NEW table, with its real scope — the local super admin is a
+  // platform role (custom, template_key NULL), so it covers the whole demo
+  // organisation (org_123: prop_123 + prop_canary). Idempotent on the live
+  // tuple (the unique index treats the NULL scope columns as distinct, so a
+  // findFirst decides, never an upsert): a row created earlier by
+  // `rbac:migrate-assignments` is reused, never duplicated. The legacy upsert
+  // above stays until the cut of L6 (dual-read).
+  const superAdminAssignment = await prisma.userRoleAssignment.findFirst({
+    where: { userId: "usr_123", roleId: "role_local_super_admin", scopeType: "organization", organizationId: "org_123", revokedAt: null },
+    select: { id: true }
+  });
+  if (!superAdminAssignment) {
+    await prisma.userRoleAssignment.create({
+      data: {
+        id: "ura_usr_123_local_super_admin",
+        userId: "usr_123",
+        roleId: "role_local_super_admin",
+        scopeType: "organization",
+        organizationId: "org_123",
+        reason: "seed demo (Local Super Admin, ámbito organización)"
+      }
+    });
+  }
+
   await prisma.device.upsert({
     where: { id: "dev_demo_web" },
     update: { lastSeenAt: new Date() },

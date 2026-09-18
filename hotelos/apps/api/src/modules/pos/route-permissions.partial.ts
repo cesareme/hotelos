@@ -7,26 +7,31 @@
 // array of this file, so `posRoutePermissions` holds EVERY route registered by
 // registerPosRoutes: the six routes that used to be inline in server.ts
 // (integration 2026-09-16: their manifest entries moved here with the routes)
-// plus the cash closures of the lote TPV/arqueo.
+// plus the cash closures of the lote TPV/arqueo and, since Tanda 8a (RBAC ·
+// L2, design §4.6), the void of a closed ticket.
 //
-// Keys: pos.read (listings), folio.charge.post (open / add lines / close a
-// ticket: reception and F&B), pos.order.pay (open / close a cash count: the
-// cashier), accounting.journal.post (approve: management / accounting).
+// Keys (Tanda 8a): pos.read (listings), pos.order.create (open a ticket, add
+// lines: waiter / reception), pos.order.pay (close a ticket, open / close a
+// cash count: the cashier), pos.order.void (void a closed ticket of the day
+// with a reason code: jefatura de A&B / recepción, or a supervisor PIN),
+// accounting.journal.post (approve a cash count: management / accounting).
+// The room-charge settlement still checks folio.charge.post in the service.
 
 import type { ApiRoutePermission } from "../../security/route-permissions.js";
 
 export const posRoutePermissions: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/pos/outlets", permissions: ["pos.read"], riskLevel: "low" },
   { method: "GET", path: "/properties/:propertyId/pos/tickets", permissions: ["pos.read"], riskLevel: "low" },
-  { method: "POST", path: "/pos/tickets", permissions: ["folio.charge.post"], riskLevel: "low" },
-  { method: "POST", path: "/pos/tickets/:id/lines", permissions: ["folio.charge.post"], riskLevel: "low" },
-  { method: "POST", path: "/pos/tickets/:id/close", permissions: ["folio.charge.post"], riskLevel: "medium" },
+  { method: "POST", path: "/pos/tickets", permissions: ["pos.order.create"], riskLevel: "low" },
+  { method: "POST", path: "/pos/tickets/:id/lines", permissions: ["pos.order.create"], riskLevel: "low" },
+  { method: "POST", path: "/pos/tickets/:id/close", permissions: ["pos.order.pay"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/pos/cash-summary", permissions: ["pos.read"], riskLevel: "low" },
   { method: "GET", path: "/properties/:propertyId/pos/cash-closures", permissions: ["pos.read"], riskLevel: "low" },
   { method: "POST", path: "/properties/:propertyId/pos/cash-closures", permissions: ["pos.order.pay"], riskLevel: "high" },
   { method: "GET", path: "/properties/:propertyId/pos/cash-closures/:closureId", permissions: ["pos.read"], riskLevel: "low" },
   { method: "POST", path: "/properties/:propertyId/pos/cash-closures/:closureId/close", permissions: ["pos.order.pay"], riskLevel: "critical" },
-  { method: "POST", path: "/properties/:propertyId/pos/cash-closures/:closureId/approve", permissions: ["accounting.journal.post"], riskLevel: "high" }
+  { method: "POST", path: "/properties/:propertyId/pos/cash-closures/:closureId/approve", permissions: ["accounting.journal.post"], riskLevel: "high" },
+  { method: "POST", path: "/pos/tickets/:id/void", permissions: ["pos.order.void"], riskLevel: "high" }
 ];
 
 /** The six routes that were inline in server.ts before 2026-09-16 (kept for callers that distinguished them). */

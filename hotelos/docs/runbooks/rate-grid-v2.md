@@ -499,12 +499,13 @@ entrada). Todas las rutas con `:propertyId` (o `propertyId` en body/query)
 pasan por el guard global de tenant; las direccionadas por id de entidad
 resuelven el canal padre con `assertEntityAccess({ entity: "channel" })`.
 
-**Rate manager** (`rate-manager/route-permissions.partial.ts`, 8 entradas)
+**Rate manager** (`rate-manager/route-permissions.partial.ts`, 9 entradas)
 
 | Ruta | Permiso | Riesgo |
 | --- | --- | --- |
 | `GET /properties/:propertyId/rate-grid` | `revenue.read` | medium |
 | `POST /properties/:propertyId/rate-grid/bulk-update` | `revenue.manage_rates` | critical |
+| `POST /properties/:propertyId/rate-changes` | `revenue.manage_rates` | high |
 | `POST /properties/:propertyId/rate-grid/push` | `distribution.sync` | critical |
 | `GET /properties/:propertyId/rate-grid/sync-status` | `revenue.read` | medium |
 | `GET /properties/:propertyId/rate-journal` | `revenue.read` | medium |

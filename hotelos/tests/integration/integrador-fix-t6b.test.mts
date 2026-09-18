@@ -320,10 +320,14 @@ describe("t6b#9 · GET /organizations/me/structure y GET /legal-entities/:id por
     }
   });
 
-  it("a context without assignments (demo fallback) with accounting.read lists every centre but stays redacted", async () => {
-    const structure = await legal.getStructure(context({ permissions: ["accounting.read"] as UserContext["permissions"], assignedPropertyIds: [] }));
+  it("the demo fallback (explicit organisation scope, Tanda 8a) with accounting.read lists every centre but stays redacted; an empty assignment list alone lists none", async () => {
+    // Tanda 8a (RBAC · §6.2): «sin asignaciones = toda la sociedad» was the hole H1/H2. The token-less demo
+    // fallback carries `orgScope: true` (lib/auth-context.ts); a real session with an empty list reaches nothing.
+    const structure = await legal.getStructure(context({ permissions: ["accounting.read"] as UserContext["permissions"], assignedPropertyIds: [], orgScope: true }));
     assert.equal(structure.scope, "assigned_properties");
     assert.equal(structure.legalEntity?.properties.length, 2);
+    const nothing = await legal.getStructure(context({ permissions: ["accounting.read"] as UserContext["permissions"], assignedPropertyIds: [] }));
+    assert.equal(nothing.legalEntity?.properties.length ?? 0, 0, "no assignments = no centre (fail-secure)");
     assert.equal(structure.legalEntity?.taxId, null);
     assert.ok(structure.legalEntity?.properties.every((row) => row.series.length === 0 && row.installation === null));
   });

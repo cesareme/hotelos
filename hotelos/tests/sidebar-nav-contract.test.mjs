@@ -61,11 +61,12 @@ describe("Sidebar (L1b) · rendered from the navigation tree", () => {
     assert.doesNotMatch(sidebar, /Próximamente|Proximamente/i);
   });
 
-  it("paints «Activar módulo», «Ver como…» for the platform administrator only, the dev group and the no-role notice", () => {
+  it("paints «Activar módulo», «Ver como…» for whoever manages users in the scope (Tanda 8a: gate.canViewAs), the dev group and the no-role notice", () => {
     assert.match(sidebar, /ACTIONS\.enableModule/);
     assert.match(sidebar, /enableModuleTarget\(/);
     assert.match(sidebar, /visibility === "locked"/);
-    assert.match(sidebar, /gate\.isPlatformAdmin \?/);
+    // Corrector 8a (FX-12): the select is painted only with at least one token to simulate.
+    assert.match(sidebar, /gate\.canViewAs && viewAsOptions\.length > 0 \?/);
     assert.match(sidebar, /Ver como…/);
     assert.match(sidebar, /Viendo como/);
     // Dev mode is reactive and owned by navigation/dev-mode.ts (L1c): the Sidebar only consumes the hook.
@@ -82,10 +83,23 @@ describe("Sidebar (L1b) · rendered from the navigation tree", () => {
     // Pure gate transform: only the platform administrator simulates; a simulation
     // replaces the tokens, drops the landing template and switches «Activar módulo» off.
     assert.match(viewAs, /export function applyViewAs\(gate: ViewAsGateInput, viewAs: RoleToken \| null\): ViewAsGateResult/);
-    assert.match(viewAs, /if \(!gate\.isPlatformAdmin \|\| !viewAs\) return \{ \.\.\.gate, viewAs: null, realTokens: gate\.tokens \};/);
+    // Tanda 8a (design §5.3): whoever manages users in the active scope simulates (`canViewAs`), not only the platform administrator.
+    assert.match(viewAs, /if \(!gate\.canViewAs \|\| !viewAs\) return \{ \.\.\.gate, viewAs: null, realTokens: gate\.tokens \};/);
     assert.match(viewAs, /tokens: \[viewAs\],\s*templateKey: null,\s*isPlatformAdmin: gate\.isPlatformAdmin,\s*canEnableModules: false,/);
     assert.match(viewAs, /export function useViewAs\(\): RoleToken \| null/);
     assert.doesNotMatch(viewAs, /(localStorage|sessionStorage)\s*\./, "the simulated token lives in memory only (no storage calls)");
+    // «rango ≤ propio»: the tokens offered are capped by the rank of the templates held (ROLE_LEVEL_RANK of @hotelos/shared,
+    // evaluated in useEnabledModules.ts — never in role-tokens.ts); the platform administrator gets every hotel token.
+    assert.match(viewAs, /export function viewAsTokensFor\(/);
+    assert.match(viewAs, /maxViewAsRank: number \| null;/);
+    assert.match(viewAs, /tokenMinRank\(token, ranks\) <= max/);
+    assert.match(gateHook, /canViewAs: canViewAsFor\(isPlatformAdmin, grantedPermissions\)/);
+    assert.match(gateHook, /maxViewAsRank: maxTemplateRank\(templateKeys\)/);
+    assert.match(gateHook, /VIEW_AS_PERMISSIONS: readonly string\[\] = \["users\.assign", "roles\.manage"\]/);
+    assert.match(gateHook, /ROLE_LEVEL_RANK\[ROLE_TEMPLATE_LEVEL\[key\]\]/);
+    assert.match(sidebar, /viewAsTokensFor\(\{ canViewAs: gate\.canViewAs, isPlatformAdmin: gate\.isPlatformAdmin, maxViewAsRank: gate\.maxViewAsRank \}, TEMPLATE_RANKS\)/);
+    assert.match(sidebar, /Viendo como \{ROLE_TOKEN_LABELS\[gate\.viewAs\]\} · solo menú/);
+    assert.doesNotMatch(roleTokens, /canViewAs|maxViewAsRank|users\.assign/, "the «Ver como…» condition never lives in role-tokens.ts");
     // The gate hook applies it once for every consumer (Sidebar, ⌘K, tab containers, guide).
     assert.match(gateHook, /import \{ applyViewAs, useViewAs \} from "\.\/view-as"/);
     assert.match(gateHook, /applyViewAs\(/);

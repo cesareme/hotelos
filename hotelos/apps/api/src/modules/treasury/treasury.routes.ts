@@ -24,10 +24,11 @@ import { importStatementFromCsv } from "../banking/bank-statement.service.js";
 import { autoMatchStatement, reconcileLine, suggestForLine, unmatch, type ReconcileTargetType } from "../banking/reconciliation.service.js";
 import { accrueCommission, getAccrual, isOtaChannel, reverseCommissionAccrual, settleCommissionAccrual } from "../commissions/commission-accrual.service.js";
 import { exportPeriod, normalisePayrollExportFormat } from "../payroll/export.service.js";
-import { getPeriod, payPeriod } from "../payroll/periods.service.js";
+import { approvePeriod, getPeriod, payPeriod } from "../payroll/periods.service.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { prisma } from "@hotelos/database";
-import { COMMISSION_WRITE_KEYS, PAYROLL_WRITE_KEYS, TREASURY_WRITE_KEYS, requireAnyPermission } from "./permissions.js";
+import { requirePermissions } from "../auth/auth.service.js";
+import { COMMISSION_WRITE_KEYS, TREASURY_WRITE_KEYS, requireAnyPermission } from "./permissions.js";
 import { buildSupplierPaymentRemittance, createRemittance, getRemittance, listRemittances, updateRemittanceStatus } from "./sepa-remittance.service.js";
 import { treasuryForecast, treasuryPayables, treasuryPosition, treasuryReceivables, type TreasuryScopeInput } from "./treasury.service.js";
 
@@ -53,6 +54,8 @@ const reverseBodySchema = z.object({ reason: z.string().max(240).optional() }).s
 const accrueBodySchema = z.object({ propertyId: z.string().min(1).optional(), reservationId: z.string().min(1), channelCode: z.string().min(1).max(60).optional(), baseAmount: z.union([z.number().positive(), z.string().regex(/^\d+([.,]\d{1,2})?$/)]).optional(), accruedAt: dateInput.optional() }).strict();
 const exportBodySchema = z.object({ format: z.enum(["a3", "sage", "csv"]).optional() }).strict();
 const payBodySchema = z.object({ paidAt: dateInput.optional(), bankLedgerCode: z.string().min(3).max(12).optional(), reference: z.string().max(120).optional() }).strict();
+/** Tanda 8a: body of POST /payroll/periods/:id/approve (payroll.approve). */
+const approvePayrollBodySchema = z.object({ note: z.string().trim().min(1).max(1000).optional() }).strict();
 
 async function propertyScope(request: FastifyRequest, requested?: string): Promise<string> {
   const propertyId = requested ?? request.userContext.propertyId;
@@ -219,11 +222,22 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
     return exportPeriod({ context: request.userContext, periodId: id, format: normalisePayrollExportFormat(body.format), correlationId: createId("corr"), markExported: true });
   });
 
+  // Tanda 8a · general management approves the monthly register (payroll.approve;
+  // approver ≠ calculator) before dirección financiera pays it (payables.pay;
+  // payer ≠ approver; an unapproved period is 409 PAYROLL_NOT_APPROVED).
+  app.post("/payroll/periods/:id/approve", async (request) => {
+    const { id } = request.params as { id: string };
+    await assertEntityAccess(request, { entity: "payrollPeriod", id });
+    const body = parseOr400(approvePayrollBodySchema, request.body ?? {}, "body");
+    await resolveOrganizationScope(request);
+    return approvePeriod({ context: request.userContext, periodId: id, note: body.note, correlationId: createId("corr") });
+  });
+
   app.post("/payroll/periods/:id/pay", async (request) => {
     const { id } = request.params as { id: string };
     await assertEntityAccess(request, { entity: "payrollPeriod", id });
     const body = parseOr400(payBodySchema, request.body ?? {}, "body");
-    requireAnyPermission(request.userContext, PAYROLL_WRITE_KEYS);
+    requirePermissions(request.userContext, ["payables.pay"]);
     await resolveOrganizationScope(request);
     return payPeriod({ context: request.userContext, periodId: id, paidAt: body.paidAt, bankLedgerCode: body.bankLedgerCode ?? null, reference: body.reference ?? null, correlationId: createId("corr") });
   });

@@ -13,10 +13,14 @@
 //   - «Activar módulo» (§6.3): an entry hidden only by its module is dimmed for
 //     users with `modules.enable` and opens Módulos e integraciones with the
 //     code preselected (`ModuleManager#modulo=<code>`);
-//   - «Ver como…» (§8): only the platform administrator, in memory (no
-//     localStorage), simulates the menu filter of a role — never permissions;
-//     the token lives in navigation/view-as.ts and `useNavGate` applies it, so
-//     ⌘K, the containers and the guide share the simulation (L1c);
+//   - «Ver como…» (§8; Tanda 8a design §5.3 «por ámbito»): whoever manages
+//     users in the active scope (`gate.canViewAs`: the platform administrator,
+//     or `users.assign` / `roles.manage` in the property) simulates, in memory
+//     (no localStorage), the menu filter of a role of rank ≤ their own
+//     (`viewAsTokensFor`) — never permissions; the token lives in
+//     navigation/view-as.ts and `useNavGate` applies it, so ⌘K, the
+//     containers, the guide and the router gate of App.tsx share the
+//     simulation (L1c / L4);
 //   - «Desarrollo» (§4.3): only with dev mode (`?dev=1` for the tab or
 //     localStorage anfitorio.dev=1, navigation/dev-mode.ts, reactive) AND the
 //     admin token;
@@ -42,8 +46,8 @@ import { useDevMode } from "./dev-mode";
 import { isGroupOpen, readGroupToggles, toggleGroup, togglesOnArrival, writeGroupToggles, type GroupToggles } from "./nav-preferences";
 import { activeMenuItemFor, countMenu, enableModuleTarget, landingFor, menuCategories, menuItemMatches, type MenuCategory } from "./nav-tree";
 import { ROLE_TOKEN_LABELS, ROLE_TOKEN_PRIORITY, type RoleToken } from "./role-tokens";
-import { useNavGate } from "./useEnabledModules";
-import { setViewAs } from "./view-as";
+import { TEMPLATE_RANKS, useNavGate } from "./useEnabledModules";
+import { setViewAs, viewAsTokensFor } from "./view-as";
 import { useIsMobileViewport } from "./viewport";
 import { BRAND } from "../config/brand";
 
@@ -56,7 +60,7 @@ export type SidebarProps = {
 
 // ----------------------------------------------------------------- helpers
 
-/** Tokens offered by «Ver como…»: every hotel role, broadest first (never admin or público). */
+/** Every token «Ver como…» may offer (the platform administrator gets them all): hotel roles, broadest first (never admin or público). */
 export const VIEW_AS_TOKENS: readonly RoleToken[] = ROLE_TOKEN_PRIORITY.filter((token) => token !== "admin" && token !== "publico");
 
 /** DOM id of the <aside>: `aria-controls` of the drawer button of the layout. */
@@ -76,6 +80,11 @@ export function Sidebar(props: SidebarProps) {
   // already holds the simulated token and «Activar módulo» is off meanwhile.
   const simulating = gate.viewAs !== null;
   const tokens = gate.tokens;
+  // Tokens this user may simulate: rank ≤ their own (design §5.3); every hotel token for the platform administrator.
+  const viewAsOptions = useMemo(
+    () => viewAsTokensFor({ canViewAs: gate.canViewAs, isPlatformAdmin: gate.isPlatformAdmin, maxViewAsRank: gate.maxViewAsRank }, TEMPLATE_RANKS),
+    [gate.canViewAs, gate.isPlatformAdmin, gate.maxViewAsRank]
+  );
 
   const categories = useMemo<MenuCategory[]>(
     () => menuCategories(tokens, gate.modules, { canEnableModules: gate.canEnableModules, devMode }),
@@ -144,7 +153,7 @@ export function Sidebar(props: SidebarProps) {
         </div>
       </button>
 
-      {gate.isPlatformAdmin ? (
+      {gate.canViewAs && viewAsOptions.length > 0 ? (
         <div className="c22-role-switcher">
           <label htmlFor="c22-view-as">Ver como…</label>
           <div className="c22-role-select-wrap">
@@ -154,8 +163,8 @@ export function Sidebar(props: SidebarProps) {
               onChange={(event) => setViewAs(event.target.value as RoleToken | "")}
               aria-label="Ver el menú como otro rol (solo cambia el menú, no los permisos)"
             >
-              <option value="">Mi menú (administrador)</option>
-              {VIEW_AS_TOKENS.map((token) => (
+              <option value="">{gate.isPlatformAdmin ? "Mi menú (administrador)" : "Mi menú"}</option>
+              {viewAsOptions.map((token) => (
                 <option key={token} value={token}>
                   {ROLE_TOKEN_LABELS[token]}
                 </option>
@@ -169,7 +178,7 @@ export function Sidebar(props: SidebarProps) {
       ) : null}
       {simulating && gate.viewAs ? (
         <div className="c22-nav-viewas-badge" role="status">
-          Viendo como {ROLE_TOKEN_LABELS[gate.viewAs]}
+          Viendo como {ROLE_TOKEN_LABELS[gate.viewAs]} · solo menú
           <button type="button" onClick={() => setViewAs("")}>
             Salir
           </button>

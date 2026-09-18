@@ -4,7 +4,7 @@
  *
  * Generates apps/admin-web/src/navigation/nav-tree.generated.json from the
  * single source of truth of the navigation tree, the (git-ignored) CSV
- * `<git root>/pilots/tanda5-nav-tree.csv` (262 rows, `;` separated, columns
+ * `<git root>/pilots/tanda5-nav-tree.csv` (288 rows, `;` separated, columns
  * screenKey;estadoActual;decision;destino;etiquetaES;url;tab;roles;modulo;justificacion;orden).
  *
  * The JSON IS committed (the CSV is not), so the front never depends on the
@@ -54,7 +54,27 @@ const CSV_COLUMNS = ["screenKey", "estadoActual", "decision", "destino", "etique
 const ORDERED_DECISIONS = new Set(["keep", "merge-into"]);
 const LIVE_DECISIONS = new Set(["keep", "merge-into", "dev-only"]);
 const DECISIONS = new Set(["keep", "merge-into", "retire", "dev-only", "duplicate-of"]);
-const ROLE_TOKENS = new Set(["direccion", "recepcion", "pisos", "mantenimiento", "revenue", "finanzas", "comercial", "fnb", "admin", "publico"]);
+// Tanda 8a (RBAC por departamento): the six department tokens join the nine of
+// Tanda 5 (administracion, rrhh, propiedad, activos, auditoria, sistemas); `admin`
+// stays the platform administrator's (apps/admin-web/src/navigation/role-tokens.ts).
+const ROLE_TOKENS = new Set([
+  "direccion",
+  "recepcion",
+  "pisos",
+  "mantenimiento",
+  "revenue",
+  "finanzas",
+  "comercial",
+  "fnb",
+  "administracion",
+  "rrhh",
+  "propiedad",
+  "activos",
+  "auditoria",
+  "sistemas",
+  "admin",
+  "publico"
+]);
 const PUBLIC_CATEGORY = "Acceso (fuera del menú)";
 const DEV_ONLY_PREFIX = "/desarrollo";
 const MAX_LABEL = 28;

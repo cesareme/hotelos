@@ -13,8 +13,99 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
-import { ForbiddenError, NotFoundError } from "../../lib/http-error.js";
+import { ForbiddenError, NotFoundError, RbacForbiddenError } from "../../lib/http-error.js";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
+import { assertApprovedOrAuthorized } from "../rbac/approvals.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
+import { getThresholds, maxTierFor, tierFor, tierWithin } from "../rbac/thresholds.service.js";
+import { assertSeparationOfDuties, type SodRule } from "../treasury/permissions.js";
+
+// ---------------------------------------------------------------------------
+// Tanda 8a (RBAC · L2, design §4.7 «Pedido de compra»): purchase orders live
+// in the generic advanced-record path (demoStore.advancedRecords, entityType
+// "purchase_order", routes in server.ts). createAdvancedRecord stamps
+// payload.createdByUserId (always the actor for a purchase order — a client
+// value would let the requester approve its own order; «si falta» for the
+// other record types); transitionAdvancedRecord applies the dynamic SoD:
+// approved → actor ≠ requester and tier(amount) within the actor's tier, or
+// the purchase_order authorisation of the L1 engine (403 RBAC_LEVEL_EXCEEDED
+// when nothing authorises it); received → receiver ≠ requester. A record
+// without author (legacy) is «autor desconocido»: never blocks, annotated.
+// ---------------------------------------------------------------------------
+
+const PURCHASE_ORDER_ENTITY = "purchase_order";
+const PURCHASE_ORDER_AMOUNT_FIELDS = ["total", "totalAmount", "amount", "estimatedTotal", "estimatedAmount"] as const;
+
+/** Money amount of a purchase-order payload (first known field that parses as a finite number ≥ 0), or null. Pure. */
+export function purchaseOrderAmountOf(payload: Record<string, unknown> | undefined): number | null {
+  if (!payload) return null;
+  for (const field of PURCHASE_ORDER_AMOUNT_FIELDS) {
+    const raw = payload[field];
+    const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.replace(",", ".")) : Number.NaN;
+    if (Number.isFinite(value) && value >= 0) return Math.round(value * 100) / 100;
+  }
+  return null;
+}
+
+export type PurchaseOrderGate = {
+  rule: SodRule;
+  authorUserId: string | null;
+  authorUnknown: boolean;
+  privileged: "platform_admin" | "break_glass" | null;
+  amount: number | null;
+  tier: string | null;
+  maxTier: string | null;
+  authorization: { mode: string; requestId: string | null; supervisorAuthorizationId: string | null } | null;
+};
+
+/**
+ * The transition gate of a purchase order, separated for the unit tests
+ * (`existing` = the stored record, undefined for a legacy row).
+ */
+export async function assertPurchaseOrderTransitionAuthorized(
+  input: { context: UserContext; propertyId: string; entityId: string; status: string; existingPayload: Record<string, unknown> | undefined; payload: Record<string, unknown> | undefined },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<PurchaseOrderGate | null> {
+  const createdBy = typeof input.existingPayload?.createdByUserId === "string" ? (input.existingPayload.createdByUserId as string) : null;
+  if (input.status === "approved") {
+    const sod = assertSeparationOfDuties(input.context, createdBy, "creator_ne_approver", { purchaseOrderId: input.entityId });
+    const amount = purchaseOrderAmountOf(input.existingPayload) ?? purchaseOrderAmountOf(input.payload);
+    const gate: PurchaseOrderGate = { rule: sod.rule, authorUserId: sod.authorUserId, authorUnknown: sod.authorUnknown, privileged: sod.privileged, amount, tier: null, maxTier: null, authorization: null };
+    if (amount === null) return gate;
+    const thresholds = await getThresholds(input.context.organizationId, deps);
+    const tier = tierFor(amount, thresholds, "purchase_order");
+    const maxTier = await maxTierFor(input.context, input.propertyId, deps);
+    gate.tier = tier;
+    gate.maxTier = maxTier;
+    if (tierWithin(tier, maxTier) && tier !== "ABOVE_T4") return gate;
+    try {
+      const authorization = await assertApprovedOrAuthorized(
+        {
+          context: input.context,
+          kind: "purchase_order",
+          entityType: PURCHASE_ORDER_ENTITY,
+          entityId: input.entityId,
+          propertyId: input.propertyId,
+          amount: amount.toFixed(2),
+          baseAuthorUserId: createdBy,
+          supervisorAuthorizationId: typeof input.payload?.supervisorAuthorizationId === "string" ? (input.payload.supervisorAuthorizationId as string) : null
+        },
+        deps
+      );
+      gate.authorization = { mode: authorization.mode, requestId: authorization.requestId ?? null, supervisorAuthorizationId: authorization.supervisorAuthorizationId ?? null };
+      return gate;
+    } catch (error) {
+      const code = (error as { details?: { code?: string; requestId?: string } }).details?.code;
+      if (code !== "APPROVAL_REQUIRED") throw error;
+      throw new RbacForbiddenError("El importe del pedido supera el tramo que puedes aprobar.", "RBAC_LEVEL_EXCEEDED", { tier, maxTier, kind: "purchase_order" });
+    }
+  }
+  if (input.status === "received") {
+    const sod = assertSeparationOfDuties(input.context, createdBy, "requester_ne_receiver", { purchaseOrderId: input.entityId });
+    return { rule: sod.rule, authorUserId: sod.authorUserId, authorUnknown: sod.authorUnknown, privileged: sod.privileged, amount: null, tier: null, maxTier: null, authorization: null };
+  }
+  return null;
+}
 
 // Parent ids arrive in the BODY (incidentId, safetyCheckId, surveyId, eventId)
 // and are never the :id of the route, so the tenancy guard on the path cannot
@@ -1227,6 +1318,14 @@ export function getAdvancedRecord(propertyId: string, moduleCode: HotelModuleCod
 export async function createAdvancedRecord(input: AdvancedMutationInput) {
   requirePermissions(input.context, input.requiredPermissions);
   requireAdvancedModuleEnabled(input.propertyId, input.moduleCode);
+  // Tanda 8a (SoD): the author of the record. A purchase order is ALWAYS
+  // stamped with the actor (never a client-supplied id); other record types
+  // keep a provided value and get the actor only when it is missing.
+  const providedAuthor = typeof input.payload?.createdByUserId === "string" ? (input.payload.createdByUserId as string) : null;
+  input = {
+    ...input,
+    payload: { ...(input.payload ?? {}), createdByUserId: input.entityType === PURCHASE_ORDER_ENTITY || providedAuthor === null ? input.context.userId : providedAuthor }
+  };
   const record = {
     id: createId(input.entityType),
     propertyId: input.propertyId,
@@ -2598,9 +2697,31 @@ async function listMigratedRecordsFromPrisma(
   }
 }
 
-export async function transitionAdvancedRecord(input: AdvancedMutationInput & { entityId: string; status: string }) {
+export async function transitionAdvancedRecord(input: AdvancedMutationInput & { entityId: string; status: string; rbac?: RbacDeps }) {
   requirePermissions(input.context, input.requiredPermissions);
   requireAdvancedModuleEnabled(input.propertyId, input.moduleCode);
+
+  // Tanda 8a (SoD): purchase orders — approver ≠ requester within tier (or
+  // the engine), receiver ≠ requester. The gate outcome travels in the
+  // payload so the stored record and the audit event keep who approved /
+  // received and how it was authorised.
+  if (input.entityType === PURCHASE_ORDER_ENTITY && (input.status === "approved" || input.status === "received")) {
+    const stored = demoStore.advancedRecords.find((r) => r.id === input.entityId && r.propertyId === input.propertyId);
+    const gate = await assertPurchaseOrderTransitionAuthorized(
+      { context: input.context, propertyId: input.propertyId, entityId: input.entityId, status: input.status, existingPayload: stored?.payload as Record<string, unknown> | undefined, payload: input.payload },
+      input.rbac ?? defaultRbacDeps
+    );
+    const { supervisorAuthorizationId: _consumed, ...payloadWithoutPin } = input.payload ?? {};
+    void _consumed;
+    input = {
+      ...input,
+      payload: {
+        ...payloadWithoutPin,
+        ...(input.status === "approved" ? { approvedByUserId: input.context.userId } : { receivedByUserId: input.context.userId }),
+        sod: gate
+      }
+    };
+  }
 
   // Dual-write: apply the transition to Prisma first (shift updates, absence
   // approvals, incident/quality resolutions, CRM updates, profile merges…),

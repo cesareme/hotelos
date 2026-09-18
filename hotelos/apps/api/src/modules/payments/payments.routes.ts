@@ -13,12 +13,28 @@
 //   GET  /payments/return/:intentId?t=<token>        — landing page after the hosted page;
 //                                                      neutral (no amount, no DB read) without
 //                                                      a valid return token (t6#15)
+//   POST /payments/:id/refund-requests               — Tanda 8a: approval request of a refund
+//                                                      (payments.refund_request; tenant-guarded)
+//   POST /folios/:id/adjustments                     — Tanda 8a: folio adjustment line
+//                                                      (folio.adjust; ≤ T1 with reason, above it
+//                                                      the folio_adjust approval)
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createId } from "../../lib/ids.js";
 import { parse } from "../../lib/validate.js";
-import { assertPaymentIntentAccess, createPaymentLink, getPaymentIntent, handlePspWebhook, pspStatus } from "./payments.service.js";
+import {
+  ADJUSTMENT_REASON_CODES,
+  REFUND_REASON_CODES,
+  adjustFolio,
+  assertPaymentAccess,
+  assertPaymentIntentAccess,
+  createPaymentLink,
+  getPaymentIntent,
+  handlePspWebhook,
+  pspStatus,
+  requestRefund
+} from "./payments.service.js";
 import { RETURN_TOKEN_QUERY_PARAM, verifyReturnToken } from "./return-token.js";
 
 type GuardedRequest = { userContext: unknown };
@@ -33,6 +49,8 @@ export type PaymentsRouteDeps = {
    * integrator adds a `paymentIntent` resolver to lib/tenancy.ts.
    */
   assertPaymentIntentAccess?: (request: GuardedRequest, intentId: string) => Promise<void>;
+  /** Tenant guard for `/payments/:id/refund-requests`. Defaults to the module's own `assertPaymentAccess` (opaque 404). */
+  assertPaymentAccess?: (request: GuardedRequest, paymentId: string) => Promise<void>;
 };
 
 export const CreatePaymentLinkSchema = z
@@ -42,6 +60,29 @@ export const CreatePaymentLinkSchema = z
     method: z.enum(["card_online", "payment_link"]).optional(),
     clientRequestId: z.string().min(1).max(120).optional(),
     returnUrl: z.string().url().max(2000).optional()
+  })
+  .strict();
+
+const refundReasonCodes = Object.keys(REFUND_REASON_CODES) as [keyof typeof REFUND_REASON_CODES, ...Array<keyof typeof REFUND_REASON_CODES>];
+const adjustmentReasonCodes = Object.keys(ADJUSTMENT_REASON_CODES) as [keyof typeof ADJUSTMENT_REASON_CODES, ...Array<keyof typeof ADJUSTMENT_REASON_CODES>];
+
+/** Body of POST /payments/:id/refund-requests (Tanda 8a). Strict: an unknown key is a 400 on the money path. */
+export const RefundRequestSchema = z
+  .object({
+    amount: z.number().positive().max(1_000_000).optional(),
+    reasonCode: z.enum(refundReasonCodes),
+    reasonText: z.string().trim().min(1).max(500).optional(),
+    refundMethod: z.enum(["cash", "card_terminal", "card_online", "bank_transfer", "payment_link", "other"]).optional()
+  })
+  .strict();
+
+/** Body of POST /folios/:id/adjustments (Tanda 8a). `amount` is signed (negative = rebate), never 0. */
+export const FolioAdjustmentSchema = z
+  .object({
+    amount: z.number().finite().refine((value) => value !== 0, { message: "El importe del ajuste debe ser distinto de cero." }),
+    reasonCode: z.enum(adjustmentReasonCodes),
+    reasonText: z.string().trim().min(1).max(500).optional(),
+    supervisorAuthorizationId: z.string().trim().min(1).max(64).optional()
   })
   .strict();
 
@@ -68,6 +109,9 @@ function renderReturnPage(page: ReturnPage): string {
 export function registerPaymentsRoutes(app: FastifyInstance, deps: PaymentsRouteDeps = {}): void {
   const guardIntent = deps.assertPaymentIntentAccess ?? (async (request: GuardedRequest, intentId: string) => {
     await assertPaymentIntentAccess(request as Parameters<typeof assertPaymentIntentAccess>[0], intentId);
+  });
+  const guardPayment = deps.assertPaymentAccess ?? (async (request: GuardedRequest, paymentId: string) => {
+    await assertPaymentAccess(request as Parameters<typeof assertPaymentAccess>[0], paymentId);
   });
 
   app.get("/properties/:propertyId/payments/psp-status", async (request) => {
@@ -99,6 +143,45 @@ export function registerPaymentsRoutes(app: FastifyInstance, deps: PaymentsRoute
     // same opaque 404 before anything about the row is read.
     await guardIntent(request as unknown as GuardedRequest, id);
     return getPaymentIntent(id);
+  });
+
+  // Tanda 8a · maker side of the refund: the request is opened by whoever
+  // holds payments.refund_request in the property of the payment; the
+  // approval and the execution are other people (rbac approvals + refund).
+  app.post("/payments/:id/refund-requests", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = parse(RefundRequestSchema, request.body ?? {});
+    await guardPayment(request as unknown as GuardedRequest, id);
+    const result = await requestRefund({
+      context: request.userContext,
+      paymentId: id,
+      amount: body.amount,
+      reasonCode: body.reasonCode,
+      reasonText: body.reasonText,
+      refundMethod: body.refundMethod ?? null,
+      correlationId: createId("corr")
+    });
+    reply.code(201);
+    return result;
+  });
+
+  // Tanda 8a · folio adjustment (rebate / correction) with a reason code:
+  // ≤ T1 executes, above it the folio_adjust approval of the engine.
+  app.post("/folios/:id/adjustments", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = parse(FolioAdjustmentSchema, request.body ?? {});
+    if (deps.assertFolioAccess) await deps.assertFolioAccess(request as unknown as GuardedRequest, id);
+    const result = await adjustFolio({
+      context: request.userContext,
+      folioId: id,
+      amount: body.amount,
+      reasonCode: body.reasonCode,
+      reasonText: body.reasonText,
+      supervisorAuthorizationId: body.supervisorAuthorizationId ?? null,
+      correlationId: createId("corr")
+    });
+    reply.code(201);
+    return result;
   });
 
   // Webhooks live in their own encapsulated context so every content type

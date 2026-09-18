@@ -259,6 +259,42 @@ Si algún día se quiere el filtro estricto por permiso, va como columna `permis
 - **Por rol**: `canSee(item, roleTokens, enabledModules)` de `role-tokens.ts`; `roles` vacío o `publico` → todos.
   El administrador de plataforma ve todo lo que no esté gateado por módulo y dispone de «Ver como…» (simula el filtro
   del menú, no cambia permisos del API).
+- **Tokens de la Tanda 8a (RBAC por departamento y nivel, `docs/design/RBAC-DEPARTAMENTOS.md` §4.2 / §5.1)**: a los
+  nueve tokens de la Tanda 5 se suman `administracion`, `rrhh`, `propiedad`, `activos`, `auditoria` y `sistemas`
+  (16 con `publico`; `ROLE_TOKENS` de `role-tokens.ts`, `ROLE_TOKENS` de `scripts/build-nav-tree.mjs` y
+  `tests/nav-tree-contract.test.mjs` van a la par). El token `admin` es SOLO el administrador de plataforma
+  (`isPlatformAdmin`): ninguna plantilla lo produce. Mapa plantilla → token (`ROLE_TEMPLATE_TO_TOKEN`, 24 plantillas):
+  receptionist · night_auditor · front_office_manager → `recepcion`; housekeeper · housekeeping_manager → `pisos`;
+  maintenance · maintenance_manager → `mantenimiento`; fnb · fnb_manager → `fnb`; sales → `comercial`; admin_clerk →
+  `administracion`; manager · operations_director · general_manager (· break_glass, la sesión de emergencia) →
+  `direccion`; revenue → `revenue`; accountant · controller · compliance → `finanzas`; payroll_hr → `rrhh`;
+  asset_manager → `activos`; owner → `propiedad` (ya no `direccion`); auditor → `auditoria`; admin (plantilla de
+  organización) → `sistemas`. Prioridad multi-rol (`ROLE_TOKEN_PRIORITY`): admin, sistemas, direccion, propiedad,
+  auditoria, finanzas, rrhh, activos, revenue, comercial, administracion, recepcion, fnb, mantenimiento, pisos.
+  Aterrizajes nuevos (`roleHome`): `administracion` → `/finanzas/facturacion`, `rrhh` → `/finanzas/nominas`,
+  `propiedad` → `/hoy/propietario`, `activos` → `/cumplimiento/centro` (hasta que exista Finanzas › Activo
+  inmobiliario), `auditoria` → `/configuracion/sistema`, `sistemas` → `/configuracion/usuarios`; `rrhh`, `activos` y
+  `sistemas` no ven Mi día. Sin token (rol personalizado sin plantilla) el menú queda vacío y el shell muestra
+  `UI_STATES.noRole`: ninguna fila del árbol lista ya los quince tokens autenticados. El mapa token → plantillas
+  con los recuentos por token está en `pilots/tanda5-nav-tree.md` §3.1.
+- **Una decisión para menú, router y contenedores (Tanda 8a · L4)**: `accessDecision(entry, scope)` de
+  `navigation/access-decision.ts` → `visible | locked | hidden-role | hidden-module | dev-locked` (tokens del árbol
+  × módulos × modo dev; nunca permisos). La consumen `menuCategories` (menú y ⌘K), `resolveLocation` de
+  `routes/backoffice.routes.tsx` cuando el guard lleva `tokens` (`RouteGuardInput`; `DevGuardInput` es su alias) y
+  devuelve `{ kind: "forbidden", reason: "role" | "module" }`, y `RouteAccessGate` de `App.tsx`, que envuelve
+  `<ActiveScreen />` con el gate de `useNavGate()` (tokens ya simulados por «Ver como…»): mientras `gate.loading`
+  pinta el estado de carga (nunca decide con tokens vacíos), con `hidden-role` / `hidden-module` (lista de módulos
+  conocida) pinta `UI_STATES.forbidden` / `moduleDisabled` con «Ir a Mi día», y cubre la URL, `popstate`,
+  `hotelos-nav` y ⌘K; al cambiar de propiedad se re-resuelve. Una pestaña solo abre si abre su ítem
+  (`tabAccessDecision`). Pruebas: `navigation/__tests__/access-decision.test.mts` (tabla de casos y equivalencia con
+  `canSee` / `navVisibility` para todas las entradas × tokens), `routes/__tests__/route-access.test.mts` (∀ URL ×
+  ∀ token: `resolveLocation(...).kind === "screen"` ⇔ `canSee`) y `node scripts/check-route-access.mjs` (misma tabla
+  sobre el JSON committed, sin CSV; imprime los ítems y pestañas por token).
+- **«Ver como…» por ámbito (Tanda 8a)**: lo ofrece `gate.canViewAs` (administrador de plataforma, o `users.assign` /
+  `roles.manage` en las concesiones reales de la propiedad activa, evaluado en `useEnabledModules.ts`, nunca en
+  `role-tokens.ts`), limitado a los tokens con alguna plantilla de rango ≤ el propio (`maxViewAsRank` =
+  `ROLE_LEVEL_RANK` de `ROLE_TEMPLATE_LEVEL`; `viewAsTokensFor` en `view-as.ts`); simula tokens y módulos, nunca
+  permisos, y lo aplica también el router. Banner «Viendo como Recepción · solo menú».
 - **Por módulo**: la columna `modulo` está calcada del API (§9): solo `guest_data_crm_loyalty`, `reputation_quality`,
   `procurement_inventory`, `workforce_labor`, `safety_incident_management`, `hotel_intelligence_platform`,
   `guest_self_service` (devuelven 403 desactivados) y los tres gates de producto `outlet_pos`, `distribution_hub`,

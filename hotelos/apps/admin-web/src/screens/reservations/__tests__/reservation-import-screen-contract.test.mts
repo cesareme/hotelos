@@ -207,7 +207,7 @@ describe("Reservas › Importar · navegación", () => {
     assert.ok(tab, "Importar tab");
     assert.equal(tab.label, "Importar");
     assert.equal(tab.url, "/recepcion/reservas/importar");
-    assert.deepEqual(tab.roles, ["recepcion", "direccion", "comercial", "admin"]);
+    assert.deepEqual(tab.roles, ["recepcion", "direccion", "comercial", "admin", "auditoria"]); // Tanda 8a: auditoría interna ve las importaciones (solo lectura)
     assert.ok(!tab.roles.includes("pisos"), "pisos never sees Importar");
     assert.equal(reservas.tabs.indexOf(tab), reservas.tabs.length - 1, "Importar is the last tab (orden 6)");
   });

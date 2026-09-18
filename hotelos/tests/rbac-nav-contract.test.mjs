@@ -41,23 +41,34 @@ const serverSource = read("../apps/api/src/server.ts");
 const reseedSource = read("../apps/api/src/scripts/reseed-property-roles.ts");
 const inventoryPath = fileURLToPath(new URL("../../pilots/screens-inventory.csv", import.meta.url));
 
-// Token del CSV → plantillas reales (pilots/tanda5-nav-tree.md §3).
+// Token del CSV → plantillas reales (pilots/tanda5-nav-tree.md §3; Tanda 8a
+// design §4.2 / §5.1: 24 plantillas, 15 tokens autenticados). Con varias
+// plantillas bajo un token, un hueco de una plantilla N1 que cubre su hermana
+// N2 es de tipo `sister` (§4.10). `break_glass` no sirve ningún token: es la
+// sesión de emergencia (§4.8), fuera de ORGANIZATION_TEMPLATE_ROLE_KEYS.
 const TOKEN_TEMPLATES = {
-  direccion: ["owner", "manager"],
-  recepcion: ["receptionist"],
-  pisos: ["housekeeper"],
-  mantenimiento: ["maintenance"],
-  revenue: ["revenue"],
-  finanzas: ["accountant", "compliance"],
+  recepcion: ["receptionist", "night_auditor", "front_office_manager"],
+  pisos: ["housekeeper", "housekeeping_manager"],
+  mantenimiento: ["maintenance", "maintenance_manager"],
+  fnb: ["fnb", "fnb_manager"],
   comercial: ["sales"],
-  fnb: ["fnb"],
+  administracion: ["admin_clerk"],
+  direccion: ["manager", "operations_director", "general_manager"],
+  revenue: ["revenue"],
+  finanzas: ["accountant", "controller", "compliance"],
+  rrhh: ["payroll_hr"],
+  activos: ["asset_manager"],
+  propiedad: ["owner"],
+  auditoria: ["auditor"],
+  sistemas: ["admin"],
   // §3: `admin` es el administrador de PLATAFORMA (Local Super Admin: catálogo
   // completo, clave admin.tenants.manage incluida, backfillTemplateRoles), no
-  // la plantilla de organización `admin`. Se modela como pseudo-plantilla
-  // "platform" = todo el catálogo; la plantilla org `admin` se comprueba aparte.
+  // la plantilla de organización `admin` (token `sistemas` desde la Tanda 8a,
+  // H11). Se modela como pseudo-plantilla "platform" = todo el catálogo.
   admin: ["platform"],
   publico: []
 };
+const AUTHENTICATED_TOKENS = Object.keys(TOKEN_TEMPLATES).filter((token) => token !== "publico");
 
 // Pares (plantilla, permiso) que faltan y se toleran, CLASIFICADOS. El front
 // no filtra por permiso (ver la premisa arriba), así que ninguna entrada
@@ -88,185 +99,143 @@ const TOKEN_TEMPLATES = {
 // folios, TPV, tasa turística, VeriFactu y registro de viajeros llevan ya
 // claves de lectura (ver READ_GATED_GETS más abajo).
 const JUSTIFIED_GAPS = [
-  // --- Tanda 6 · Finanzas (lote nav-services): pantallas nuevas -------------
-  // Contabilidad › Exportar a gestoría y Proveedores y gastos › Proveedores /
-  // Inmovilizado read routes gated by keys the accountant template got in
-  // t6#10 (procurement.read, assets.read, analytics.export) that manager and
-  // compliance do not hold. Classified, not hidden.
+  // Tanda 8a · L4 (cruce del 2026-09-18 sobre el árbol regenerado × pilots/screens-inventory.csv × manifiesto final de L1+L2):
+  // 0 pares `pending` (los 7 de la Tanda 5/6 quedaron cubiertos por las plantillas v2 de L0 y las claves de lectura de L2),
+  // 6 pares `write` (Extractos y remesas solo tiene el POST de importación) y 82 pares `sister` (N1 sin la clave que su
+  // hermana N2 tiene, o plantilla de un token multi-plantilla sin la clave que otra del mismo token sí tiene). Cada
+  // entrada cubre pares reales: el test «ninguna justificación muerta» la retira cuando dejen de existir.
+  // --- write: Conciliación bancaria › Extractos y remesas (solo POST) ------------------------------------------
   {
-    templates: ["compliance"],
-    permission: "procurement.read",
-    screens: /^SuppliersScreen$/,
+    templates: ["compliance", "controller", "manager", "operations_director", "general_manager", "auditor"],
+    permission: "banking.reconcile",
+    screens: /^BankingSpain$/,
+    kind: "write",
+    evidence: "bankingApi.importCsb43 → POST /properties/:p/banking/csb43/import [banking.reconcile]; la pestaña no tiene GET mapeado en el inventario; solo admin_clerk y accountant (M11 E, §4.4/§4.5) importan extractos",
+    reason: "importar extractos CSB43 y conciliar es de administración de hotel y contabilidad (banking.reconcile); dirección, dirección financiera, cumplimiento y auditoría consultan la conciliación"
+  },
+  // --- sister (token finanzas: accountant · controller · compliance) ------------------------------------------
+  {
+    templates: ["accountant", "compliance"],
+    permission: "commissions.read",
+    screens: /^CommissionsScreen$/,
     kind: "sister",
-    evidence: "payablesApi.listSuppliers → GET /organizations/:p/payables/suppliers [procurement.read]; accountant la tiene (plantilla Contabilidad completa, t6#10)",
-    reason: "el directorio de proveedores es de Contabilidad (procurement.read/manage); Cumplimiento consulta facturas recibidas y libros, no da de alta proveedores"
+    evidence: "CommissionsScreen.tsx commissionsApi → GET /commissions/rules · /commissions/accruals · /commissions/summary [commissions.read]; la versión 2 retira commissions.read de accountant y compliance (ROLE_TEMPLATE_REVOCATIONS, §6.5); controller (M17 V) la conserva",
+    reason: "las comisiones de canales son comercial y dirección financiera (M17); contabilidad y cumplimiento no las revisan"
   },
   {
-    templates: ["manager"],
-    permission: "procurement.read",
-    screens: /^SuppliersScreen$/,
-    kind: "pending",
-    evidence: "payablesApi.listSuppliers → GET /organizations/:p/payables/suppliers [procurement.read]; manager no la tiene (owner sí, pero no cuenta como hermana)",
-    reason: "un director sin rol Propietario abre Proveedores y gastos pero la pestaña Proveedores le devuelve 403",
-    handoff: "añadir procurement.read a manager en ROLE_PERMISSION_MAP (packages/shared/src/permissions.ts, después rbac:sync) o quitar direccion de la fila SuppliersScreen de pilots/tanda5-nav-tree.csv"
+    templates: ["accountant", "controller"],
+    permission: "compliance.configure",
+    screens: /^PropertyTaxesScreen$/,
+    kind: "sister",
+    evidence: "taxesApi.fetchPropertyTaxes → GET /backoffice/properties/:p/taxes [compliance.configure] (L2 no lo pasó a compliance.read: §4.6 lo preveía); compliance la tiene (M15b E)",
+    reason: "los impuestos por categoría se configuran desde cumplimiento; contabilidad y dirección financiera consultan (pendiente de L2: GET …/taxes → compliance.read)"
+  },
+  {
+    templates: ["compliance"],
+    permission: "analytics.export",
+    screens: /^GestoriaExportScreen$/,
+    kind: "sister",
+    evidence: "financialStatementsApi.listGestoriaFormats / listGestoriaExports → GET /accounting/gestoria-exports/formats · GET /accounting/gestoria-exports · GET /accounting/gestoria-exports/:exportId [analytics.export]; accountant y controller la tienen (M10 P)",
+    reason: "exportar asientos y libros a la gestoría es de Contabilidad (analytics.export); Cumplimiento no exporta"
   },
   {
     templates: ["compliance"],
     permission: "assets.read",
     screens: /^FixedAssetsScreen$/,
     kind: "sister",
-    evidence: "assetsApi.listFixedAssets → GET /properties/:p/asset-register [assets.read]; accountant y manager la tienen",
+    evidence: "assetsApi.listFixedAssets → GET /properties/:p/asset-register · /asset-register/:assetId [assets.read]; accountant y controller la tienen (M13 V)",
     reason: "el registro de inmovilizado y su amortización son de Contabilidad; Cumplimiento consulta los estados contables, no los elementos"
-  },
-  {
-    templates: ["compliance"],
-    permission: "analytics.export",
-    screens: /^GestoriaExportScreen$/,
-    kind: "sister",
-    evidence: "financialStatementsApi.listGestoriaFormats / listGestoriaExports → GET /accounting/gestoria-exports/formats · GET /accounting/gestoria-exports [analytics.export]; accountant la tiene",
-    reason: "exportar asientos y libros a la gestoría es de Contabilidad (analytics.export); Cumplimiento no exporta"
-  },
-  {
-    templates: ["manager"],
-    permission: "analytics.export",
-    screens: /^GestoriaExportScreen$/,
-    kind: "pending",
-    evidence: "financialStatementsApi.listGestoriaFormats / listGestoriaExports → GET /accounting/gestoria-exports/formats · GET /accounting/gestoria-exports [analytics.export]; manager no la tiene",
-    reason: "un director sin rol Propietario abre Contabilidad pero la pestaña Exportar a gestoría le devuelve 403",
-    handoff: "añadir analytics.export a manager en ROLE_PERMISSION_MAP (packages/shared/src/permissions.ts, después rbac:sync) o quitar direccion de la fila GestoriaExportScreen de pilots/tanda5-nav-tree.csv"
-  },
-  // --- write -------------------------------------------------------------
-  {
-    // Finanzas (2026-09-16, FIN-17): the import is gated by banking.reconcile
-    // (manager and accountant hold it); compliance only consults.
-    templates: ["compliance"],
-    permission: "banking.reconcile",
-    screens: /^BankingSpain$/,
-    kind: "write",
-    evidence: "bankingApi.importCsb43 → POST /properties/:p/banking/csb43/import [banking.reconcile]; la pestaña no tiene GET mapeado en el inventario",
-    reason: "importar extractos CSB43 y conciliar es de Contabilidad y Dirección (banking.reconcile); Cumplimiento consulta"
-  },
-  // --- sister (token finanzas) --------------------------------------------
-  {
-    templates: ["accountant"],
-    permission: "compliance.configure",
-    screens: /^(ComplianceCenter|EsrsReport|PropertyTaxesScreen|TaxComplianceSettings|TbaiForal)$/,
-    kind: "sister",
-    evidence:
-      "ComplianceCenterScreen.tsx useApiData(/compliance/properties/:p/center) · esrsApi.fetchIndicators (GET /organizations/:orgId/esrs/:year/indicators) · taxesApi.fetchPropertyTaxes (GET /backoffice/properties/:p/taxes, desde PropertyTaxesScreen y TaxComplianceSettings; el inventario lista center/tasks/documents para esta última, que no llama) · tbaiApi.verifyChain (GET …/tbai/chain/:territory/verify al pulsar «Verificar cadena»)",
-    reason: "configurar cumplimiento (SES, impuestos, ESRS, TicketBAI) es de la plantilla compliance del mismo token finanzas; un contable que trabaje solo necesita también el rol Cumplimiento (L2: claves de lectura para estos GET, informe L1b)"
-  },
-  {
-    templates: ["accountant"],
-    permission: "compliance.gdpr.manage",
-    screens: /^GdprRequestsScreen$/,
-    kind: "sister",
-    evidence: "GdprRequestsScreen.tsx useApiData(\"/gdpr/requests\") → GET /gdpr/requests [compliance.gdpr.manage]",
-    reason: "las solicitudes RGPD (borrado, DSAR) las gestiona compliance; un contable no borra huéspedes"
   },
   {
     templates: ["compliance"],
     permission: "banking.read",
     screens: /^BankReconciliationScreen$/,
     kind: "sister",
-    evidence: "BankReconciliationScreen.tsx useApiData(\"/banking/accounts\") → GET /banking/accounts [banking.read]; accountant y manager la tienen",
-    reason: "cuentas y extractos bancarios son de Contabilidad; Cumplimiento consulta la conciliación con el segundo rol"
+    evidence: "BankReconciliationScreen.tsx useApiData(\"/banking/accounts\") → GET /banking/accounts [banking.read]; accountant y controller la tienen (M11 V)",
+    reason: "cuentas y extractos bancarios son de Contabilidad y Tesorería; Cumplimiento consulta la conciliación con el segundo rol"
+  },
+  {
+    templates: ["compliance"],
+    permission: "inventory.read",
+    screens: /^FnbInventory$/,
+    kind: "sister",
+    evidence: "fnbInventoryApi → GET /properties/:p/stock-balances · /menu-items · /stock-balances/low-stock · /inventory-items · /stock-locations · GET /menu-items/:id [inventory.read]; la versión 2 retira inventory.read de compliance (§6.5); accountant y controller la tienen (M8 V)",
+    reason: "las existencias de F&B son de compras y contabilidad (M8); Cumplimiento no las consulta"
+  },
+  {
+    templates: ["compliance"],
+    permission: "payables.read",
+    screens: /^SupplierBillsScreen$/,
+    kind: "sister",
+    evidence: "payablesApi → GET /properties/:p/payables/supplier-bills · /supplier-bills/:billId · /payables/aging [payables.read] (clave nueva de L0, §4.6); accountant y controller la tienen (M9 V)",
+    reason: "las facturas de proveedor son de contabilidad, administración de hotel y dirección financiera (M9); Cumplimiento no las registra ni aprueba"
   },
   {
     templates: ["compliance"],
     permission: "payroll.read",
     screens: /^PayrollScreen$/,
     kind: "sister",
-    evidence: "PayrollScreen.tsx useApiData(\"/payroll/contracts\") y (\"/payroll/periods\") → GET [payroll.read]; accountant y manager la tienen",
-    reason: "nóminas son de Contabilidad (y de Dirección); un responsable de cumplimiento no las consulta"
+    evidence: "PayrollScreen.tsx useApiData(\"/payroll/contracts\"), (\"/payroll/periods\") y GET /payroll/periods/:id/export [payroll.read]; accountant y controller la tienen (M12 V)",
+    reason: "nóminas son de RRHH, contabilidad y dirección; un responsable de cumplimiento no las consulta"
   },
   {
     templates: ["compliance"],
-    permission: "accounting.configure",
-    screens: /^AccountingSettings$/,
+    permission: "pos.read",
+    screens: /^(PosDashboard|CashClosureScreen)$/,
     kind: "sister",
-    evidence: "AccountingSettings.tsx fetchAccountingSettings → GET /backoffice/properties/:p/accounting-settings [accounting.configure]",
-    reason: "plan contable, centros de coste y periodos son de Contabilidad (accountant la tiene)"
+    evidence: "posApi → GET /properties/:p/pos/tickets · /pos/outlets · /pos/cash-summary · /pos/cash-closures · /pos/cash-closures/:closureId [pos.read]; la versión 2 retira pos.read de compliance (§6.5); accountant y controller la tienen (M7 V)",
+    reason: "el TPV y el cierre de caja son operación y contabilidad (M7); Cumplimiento no consulta comandas"
   },
   {
     templates: ["compliance"],
-    permission: "billing.configure",
-    screens: /^BillingSettings$/,
+    permission: "procurement.read",
+    screens: /^SuppliersScreen$/,
     kind: "sister",
-    evidence: "BillingSettings.tsx fetchBillingSettings → GET /backoffice/properties/:p/billing-settings [billing.configure]",
-    reason: "series de factura y numeración son de Contabilidad (accountant la tiene)"
+    evidence: "payablesApi.listSuppliers → GET /organizations/:p/payables/suppliers · /suppliers/:supplierId [procurement.read]; accountant y controller la tienen (M8 V)",
+    reason: "el directorio de proveedores es de Contabilidad (procurement.read/manage); Cumplimiento consulta facturas recibidas y libros, no da de alta proveedores"
   },
-  // --- pending (403 real sin plantilla hermana) ---------------------------
+  // --- sister (token direccion: manager · operations_director · general_manager) ------------------------------
   {
     templates: ["manager"],
-    permission: "configuration.read",
+    permission: "backoffice.access",
     screens:
-      /^(SetupCenterScreen|AiPropertySetupForm|BuildingSetupForm|CustomFieldSetupForm|DepartmentSetupForm|FinanceComplianceSetupForm|FloorSetupForm|HousekeepingSetupForm|MaintenanceSetupForm|PropertyProfileSetupForm|RevenueCategorySetupForm|RoomSetupForm|RoomTypeSetupForm|SpaceResourceSetupForm|ZoneSetupForm)$/,
-    kind: "pending",
-    evidence:
-      "SetupCenterScreen.tsx fetchManualSetupOptions → GET /backoffice/properties/:p/manual-setup/options; PropertySetupForms.tsx fetchPropertySetupForm → GET …/property-setup/forms/:formCode; ambos [configuration.read], que solo tienen owner y admin (403 verificado en :3400 con un token sin la clave)",
-    handoff: "añadir configuration.read (y categories.read: fetchConfigurationCategories en Categorías y Nueva reserva) a manager en ROLE_PERMISSION_MAP; hoy un director sin rol Propietario no abre Configuración → Puesta en marcha ni ningún formulario de alta"
+      /^(SetupCenterScreen|GoLiveChecklist|PropertyProfileSetupForm|BuildingSetupForm|FloorSetupForm|ZoneSetupForm|DepartmentSetupForm|CategoryManagerScreen|CategoryDetailScreen|CategoryOptionForm|CustomFieldSetupForm|RoomSetupForm|RoomTypeSetupForm|SpaceResourceSetupForm|HousekeepingSetupForm|MaintenanceSetupForm|BillingSettings|PaymentSettings|AccountingSettings|FinanceComplianceSetupForm|RevenueCategorySetupForm|AiPropertySetupForm)$/,
+    kind: "sister",
+    evidence: "el inventario atribuye a los formularios de alta GET /backoffice/properties/:p/dashboard · /setup · /readiness [backoffice.access]; la versión 2 retira backoffice.access de manager (M20, §6.5: el ámbito sociedad pasa a la asignación); operations_director y general_manager (M20 V) la conservan",
+    reason: "la estructura societaria y fiscal (M20) es de dirección de operaciones, dirección general y central; la dirección de hotel abre los formularios de su propiedad con configuration.read"
   },
   {
-    templates: ["accountant", "compliance"],
-    permission: "configuration.read",
-    screens: /^(FinanceComplianceSetupForm|RevenueCategorySetupForm)$/,
-    kind: "pending",
-    evidence: "PropertySetupForms.tsx fetchPropertySetupForm → GET /backoffice/properties/:p/property-setup/forms/:formCode [configuration.read]; ni accountant ni compliance la tienen",
-    handoff: "configuration.read en accountant y compliance (las dos pestañas Perfil inicial y Categorías de ingresos de Contabilidad y fiscal) o quitar finanzas de esas filas del CSV"
+    templates: ["operations_director", "general_manager"],
+    permission: "compliance.configure",
+    screens: /^PropertyTaxesScreen$/,
+    kind: "sister",
+    evidence: "taxesApi.fetchPropertyTaxes → GET /backoffice/properties/:p/taxes [compliance.configure] (pendiente de L2: → compliance.read); manager la tiene (M15b E)",
+    reason: "configurar impuestos es de la dirección de hotel y de cumplimiento; las direcciones de operaciones y general consultan"
   },
   {
-    templates: ["accountant", "compliance"],
-    permission: "integrations.read",
-    screens: /^PaymentSettings$/,
-    kind: "pending",
-    evidence: "PaymentSettings.tsx fetchPropertyIntegrations → GET /backoffice/properties/:p/integrations [integrations.read]; ni accountant ni compliance la tienen",
-    handoff: "integrations.read en accountant y compliance: la pestaña Pagos solo lista pasarelas de cobro (o quitar finanzas de la fila del CSV)"
+    templates: ["operations_director", "general_manager"],
+    permission: "integrations.connect",
+    screens: /^EmailConnectors$/,
+    kind: "sister",
+    evidence: "emailApi → GET /email/connections/:id/authorize-url [integrations.connect] (inicia un OAuth); manager (M22b E) y admin la tienen",
+    reason: "conectar el correo entrante es una acción de configuración de la dirección de hotel o de sistemas; las direcciones de operaciones y general leen las conexiones"
+  },
+  // --- sister (token recepcion: receptionist · night_auditor · front_office_manager) -----------------------------
+  {
+    templates: ["night_auditor"],
+    permission: "groups.read",
+    screens: /^(GroupsEventsDashboard|GroupsCalendarScreen)$/,
+    kind: "sister",
+    evidence: "groupsApi → GET /groups/properties/:p · /groups/:id · /properties/:p/groups/pickup-summary [groups.read]; receptionist y front_office_manager la tienen (M17 V)",
+    reason: "la auditoría nocturna cierra el día y no gestiona grupos (§4.4: AudN sin M17); comparte el token recepcion con la recepción de día"
   },
   {
-    templates: ["manager", "receptionist", "sales"],
-    permission: "categories.read",
-    screens: /^ReservationCreate$/,
-    kind: "pending",
-    evidence: "ReservationCreateScreen.tsx fetchConfigurationCategories → GET /backoffice/properties/:p/configuration/categories [categories.read], que solo tienen owner y admin (403 verificado con recepcion.tilos en :3400); el catch es opcional y los selectores caen a sus valores locales sin avisar",
-    handoff: "categories.read en manager, receptionist y sales (Nueva reserva solo lee los códigos de origen/segmento) o que el formulario no dependa de la configuración de categorías"
-  },
-  {
-    templates: ["fnb"],
-    permission: "pms.reservation.read",
-    screens: /^FrontDeskDashboard$/,
-    kind: "pending",
-    evidence: "FrontDeskDashboard.tsx probeHasRows(fetchRooms / fetchRoomTypes) → GET /properties/:p/rooms y /room-types [pms.reservation.read]; el catch traga el 403 y la comprobación de datos queda en «desconocido» (maintenance ya la recibió en L1c api)",
-    handoff: "pms.reservation.read en fnb, o que Mi día no sondee inventario de habitaciones para tokens sin recepción"
-  },
-  // --- inventory (la pantalla no llama a la ruta atribuida) ---------------
-  {
-    templates: ["accountant", "compliance"],
-    permission: "integrations.read",
-    screens: /^(AccountingSettings|BillingSettings)$/,
-    kind: "inventory",
-    evidence: "solo PaymentSettings.tsx llama a fetchPropertyIntegrations (GET …/integrations); AccountingSettings y BillingSettings no"
-  },
-  {
-    templates: ["compliance"],
-    permission: "accounting.configure",
-    screens: /^(BillingSettings|PaymentSettings)$/,
-    kind: "inventory",
-    evidence: "fetchAccountingSettings solo se llama desde AccountingSettings.tsx"
-  },
-  {
-    templates: ["compliance"],
-    permission: "billing.configure",
-    screens: /^(AccountingSettings|PaymentSettings)$/,
-    kind: "inventory",
-    evidence: "fetchBillingSettings solo se llama desde BillingSettings.tsx"
-  },
-  {
-    templates: ["manager"],
-    permission: "configuration.read",
-    screens: /^(CategoryManagerScreen|CategoryDetailScreen|CategoryOptionForm)$/,
-    kind: "inventory",
-    evidence: "llaman a fetchConfigurationCategories / fetchConfigurationCategory (GET …/configuration/categories [categories.read], que manager tampoco tiene: ver handoff de configuration.read) o a un POST; ninguna llama a manual-setup ni property-setup (el inventario copia la fila de Puesta en marcha)"
+    templates: ["night_auditor"],
+    permission: "events.read",
+    screens: /^GroupsEventsDashboard$/,
+    kind: "sister",
+    evidence: "GroupsEventsDashboard → GET /properties/:p/event-spaces [events.read]; receptionist y front_office_manager la tienen (M17 V)",
+    reason: "los espacios de eventos son de recepción de día y comercial; la auditoría nocturna no los consulta"
   }
 ];
 
@@ -277,9 +246,9 @@ function gapCovers(gap, pair) {
   return gap.templates.includes(pair.template) && gap.permission === pair.permission && gap.screens.test(pair.screenKey);
 }
 
-/** Sister templates of a token: the other templates that serve it; owner/platform hold the whole catalogue and do not count. */
+/** Sister templates of a token: the other templates that serve it; owner (propiedad) and platform are single-template tokens and break_glass (todo el catálogo) never counts. */
 function sisterTemplates(token, template) {
-  return (TOKEN_TEMPLATES[token] ?? []).filter((candidate) => candidate !== template && candidate !== "owner" && candidate !== "platform");
+  return (TOKEN_TEMPLATES[token] ?? []).filter((candidate) => candidate !== template && candidate !== "owner" && candidate !== "platform" && candidate !== "break_glass");
 }
 
 // ---------------------------------------------------------------------------
@@ -412,8 +381,19 @@ function requiredPermissionsFor(inventoryPath) {
  * evaluaban solo la primera GET, y así pasaban entradas cuyo segundo GET
  * devuelve 403 (hallazgo api-rbac#5).
  */
-function readRoutesFor(row) {
-  const paths = row.api_paths_principales.split(/\s+/).filter((p) => p.startsWith("/"));
+/**
+ * Pantallas nacidas después del inventario (pilots/screens-inventory.csv, fuera
+ * del repo): sus rutas de lectura hasta que el integrador añada la fila.
+ * Tanda 8a · L4: la bandeja de aprobaciones lee GET /approvals (authenticated).
+ */
+// Integrador 8a: ApprovalsInbox ya tiene fila en pilots/screens-inventory.csv
+// (GET /approvals, POST /approvals/:id/approve|reject); ninguna pantalla del
+// árbol queda fuera del inventario, así que no hay fallback.
+const TREE_ROUTES_FALLBACK = {};
+
+function readRoutesFor(row, screenKey) {
+  const raw = row ? row.api_paths_principales : (TREE_ROUTES_FALLBACK[screenKey] ?? "");
+  const paths = raw.split(/\s+/).filter((p) => p.startsWith("/"));
   const gets = new Map();
   for (const path of paths) {
     const required = requiredPermissionsFor(path);
@@ -432,23 +412,28 @@ function readRoutesFor(row) {
 // ---------------------------------------------------------------------------
 
 describe("RBAC × nav · plantillas de rol (Tanda 5 §3/§10)", () => {
-  it("ROLE_TEMPLATE_KEYS incluye sales y fnb, el tipo RoleKey también, y cada plantilla tiene claves del catálogo", () => {
-    assert.ok(templateKeys.includes("sales"), "sales missing from ROLE_TEMPLATE_KEYS");
-    assert.ok(templateKeys.includes("fnb"), "fnb missing from ROLE_TEMPLATE_KEYS");
-    assert.match(typesSource, /\|\s*"sales"/);
-    assert.match(typesSource, /\|\s*"fnb"/);
+  it("ROLE_TEMPLATE_KEYS son las 24 plantillas de la Tanda 8a (§4.2 + break_glass), el tipo RoleKey también, y cada plantilla tiene claves del catálogo", () => {
+    const expected = ["receptionist", "night_auditor", "front_office_manager", "housekeeper", "housekeeping_manager", "maintenance", "maintenance_manager", "fnb", "fnb_manager", "sales", "admin_clerk", "manager", "operations_director", "general_manager", "break_glass", "revenue", "accountant", "controller", "compliance", "payroll_hr", "asset_manager", "owner", "auditor", "admin"];
+    assert.deepEqual([...templateKeys].sort(), [...expected].sort());
+    for (const key of expected) assert.match(typesSource, new RegExp(`\\|\\s*"${key}"`), `RoleKey lacks ${key}`);
     for (const key of templateKeys) {
       assert.ok(templates[key] instanceof Set && templates[key].size > 0, `template ${key} empty or unparsed`);
       for (const permission of templates[key]) assert.ok(catalog.has(permission), `${key}: ${permission} not in PERMISSIONS`);
     }
   });
 
-  it("las plantillas del catálogo y las del front (role-tokens.ts) son el mismo conjunto", () => {
-    const front = [...roleTokensSource.matchAll(/^\s*([a-z_]+):\s*"(?:direccion|recepcion|pisos|mantenimiento|revenue|finanzas|comercial|fnb|admin)"/gm)].map((m) => m[1]);
+  it("las plantillas del catálogo y las del front (role-tokens.ts) son el mismo conjunto, y cada token lleva sus plantillas", () => {
+    const front = [...roleTokensSource.matchAll(/^\s*([a-z_]+):\s*"(?:direccion|recepcion|pisos|mantenimiento|revenue|finanzas|comercial|fnb|administracion|rrhh|propiedad|activos|auditoria|sistemas)"/gm)].map((m) => m[1]);
     assert.deepEqual([...front].sort(), [...templateKeys].sort());
     for (const token of Object.keys(TOKEN_TEMPLATES)) {
       for (const template of TOKEN_TEMPLATES[token]) assert.ok(template === "platform" || templateKeys.includes(template), `${token} → ${template} unknown`);
     }
+    // Every template but break_glass serves exactly one token, and role-tokens.ts agrees (ROLE_TEMPLATE_TO_TOKEN).
+    const served = Object.entries(TOKEN_TEMPLATES).flatMap(([token, list]) => list.filter((template) => template !== "platform").map((template) => [template, token]));
+    assert.deepEqual(served.map(([template]) => template).sort(), templateKeys.filter((key) => key !== "break_glass").sort());
+    for (const [template, token] of served) assert.match(roleTokensSource, new RegExp(`^\\s*${template}:\\s*"${token}",?$`, "m"), `${template} → ${token} in role-tokens.ts`);
+    assert.match(roleTokensSource, /^\s*break_glass:\s*"direccion",?$/m);
+    assert.doesNotMatch(roleTokensSource, /^\s*[a-z_]+:\s*"admin",?$/m, "no template yields the platform token (H11)");
   });
 
   it("analytics.read (Mi día) está en todas las plantillas: primer delta de §10", () => {
@@ -478,7 +463,7 @@ describe("RBAC × nav · plantillas de rol (Tanda 5 §3/§10)", () => {
     assert.ok(templates.manager.has("crm.read") && templates.manager.has("channel_manager.read"), "direccion still sees Clientes and Canales (64 items)");
   });
 
-  it("etiquetas ES y lista de plantillas por organización (reseed) cubren el catálogo; admin queda fuera", () => {
+  it("etiquetas ES y lista de plantillas por organización (reseed) cubren el catálogo; admin y break_glass quedan fuera; cada plantilla tiene alias", () => {
     const labels = parseRecordKeys(permissionsSource, "ROLE_TEMPLATE_LABELS_ES");
     const descriptions = parseRecordKeys(permissionsSource, "ROLE_TEMPLATE_DESCRIPTIONS_ES");
     assert.deepEqual([...labels].sort(), [...templateKeys].sort());
@@ -487,8 +472,9 @@ describe("RBAC × nav · plantillas de rol (Tanda 5 §3/§10)", () => {
     assert.ok(orgBlock);
     const orgTemplates = [...orgBlock[1].matchAll(/"([a-z_]+)"/g)].map((k) => k[1]);
     assert.equal(orgTemplates.includes("admin"), false);
-    assert.deepEqual([...orgTemplates].sort(), templateKeys.filter((k) => k !== "admin").sort());
-    for (const key of ["sales", "fnb"]) assert.match(rbacCatalogSource, new RegExp(`^\\s*${key}: \\[`, "m"), `ROLE_TEMPLATE_ALIASES lacks ${key}`);
+    assert.equal(orgTemplates.includes("break_glass"), false, "the emergency template is created only by ensureBreakGlassRole (§4.8)");
+    assert.deepEqual([...orgTemplates].sort(), templateKeys.filter((k) => k !== "admin" && k !== "break_glass").sort());
+    for (const key of templateKeys) assert.match(rbacCatalogSource, new RegExp(`^\\s*${key}: \\[`, "m"), `ROLE_TEMPLATE_ALIASES lacks ${key}`);
   });
 });
 
@@ -496,31 +482,54 @@ describe("RBAC × nav · plantillas de rol (Tanda 5 §3/§10)", () => {
 // Claves de lectura de los GET (Tanda 5 · L1b · api-side)
 // ---------------------------------------------------------------------------
 
-// GET que en L1a estaban gateados por claves de escritura → clave de lectura y
-// plantillas que la tienen (las de los tokens que ven la pantalla en el árbol).
+// GET que estaban gateados por claves de escritura → clave de lectura (L1b api-side
+// de la Tanda 5; L1/L2 de la Tanda 8a, §4.6). `templates` = plantillas que la
+// tienen por diseño (§4.4/§4.5: las de los tokens que ven las pantallas que
+// llaman al GET); además, con el inventario en local, cada plantilla de cada
+// token que ve una pantalla a la que el inventario atribuye el GET debe tenerla
+// o el hueco ha de ser un `sister` justificado (403 real documentado con
+// hermana que sí la tiene).
 const READ_GATED_GETS = [
-  { path: "/folios/:id/balance", permission: "folio.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/reservations/:id/folios", permission: "folio.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/reservations/:id/routing-rules", permission: "folio.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/tourist-tax/rates", permission: "tourist_tax.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/tourist-tax/applications", permission: "tourist_tax.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/pos/outlets", permission: "pos.read", templates: ["fnb", "manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/pos/tickets", permission: "pos.read", templates: ["fnb", "manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/pos/cash-summary", permission: "pos.read", templates: ["fnb", "manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/verifactu/submissions", permission: "billing.compliance.view", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/verifactu/submissions/:id", permission: "billing.compliance.view", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/invoices/:id/verifactu", permission: "billing.compliance.view", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/tbai/submissions", permission: "billing.compliance.view", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/tbai/submissions/:id", permission: "billing.compliance.view", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/igic/submissions", permission: "billing.compliance.view", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/igic/submissions/:id", permission: "billing.compliance.view", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/guest-register-records", permission: "guest_register.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/compliance/inbox", permission: "guest_register.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/ses/submissions/:id", permission: "guest_register.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
-  { path: "/properties/:propertyId/ses-hospedajes/submissions", permission: "guest_register.read", templates: ["manager", "receptionist", "accountant", "compliance"] }
+  { path: "/folios/:id/balance", permission: "folio.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/reservations/:id/folios", permission: "folio.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/reservations/:id/routing-rules", permission: "folio.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/tourist-tax/rates", permission: "tourist_tax.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/properties/:propertyId/tourist-tax/applications", permission: "tourist_tax.read", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/properties/:propertyId/pos/outlets", permission: "pos.read", templates: ["fnb", "fnb_manager", "receptionist", "night_auditor", "front_office_manager", "manager", "operations_director", "general_manager", "accountant", "controller", "auditor"] },
+  { path: "/properties/:propertyId/pos/tickets", permission: "pos.read", templates: ["fnb", "fnb_manager", "receptionist", "night_auditor", "front_office_manager", "manager", "operations_director", "general_manager", "accountant", "controller", "auditor"] },
+  { path: "/properties/:propertyId/pos/cash-summary", permission: "pos.read", templates: ["fnb", "fnb_manager", "receptionist", "night_auditor", "front_office_manager", "manager", "operations_director", "general_manager", "accountant", "controller", "auditor"] },
+  { path: "/properties/:propertyId/verifactu/submissions", permission: "billing.compliance.view", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/verifactu/submissions/:id", permission: "billing.compliance.view", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/invoices/:id/verifactu", permission: "billing.compliance.view", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/properties/:propertyId/tbai/submissions", permission: "billing.compliance.view", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/tbai/submissions/:id", permission: "billing.compliance.view", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/properties/:propertyId/igic/submissions", permission: "billing.compliance.view", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/igic/submissions/:id", permission: "billing.compliance.view", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/properties/:propertyId/guest-register-records", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/properties/:propertyId/compliance/inbox", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/ses/submissions/:id", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/properties/:propertyId/ses-hospedajes/submissions", permission: "guest_register.read", templates: ["receptionist", "night_auditor", "front_office_manager", "accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  // Tanda 8a · L1/L2 (§4.6): claves de lectura nuevas y GET de auditoría / cumplimiento / proveedores recableados.
+  { path: "/properties/:propertyId/housekeeping/board", permission: "housekeeping.read", templates: ["housekeeper", "housekeeping_manager", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/properties/:propertyId/work-orders", permission: "maintenance.read", templates: ["maintenance", "maintenance_manager", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/properties/:propertyId/assets", permission: "assets.read", templates: ["maintenance_manager", "manager", "operations_director", "general_manager", "accountant", "controller", "asset_manager", "auditor"] },
+  { path: "/properties/:propertyId/capex", permission: "capex.read", templates: ["maintenance_manager", "manager", "operations_director", "general_manager", "accountant", "controller", "asset_manager", "owner", "auditor"] },
+  { path: "/gdpr/requests", permission: "compliance.read", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/gdpr/requests/:id", permission: "compliance.read", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "auditor"] },
+  { path: "/compliance/properties/:propertyId/center", permission: "compliance.read", templates: ["accountant", "controller", "compliance", "manager", "operations_director", "general_manager", "asset_manager", "auditor"] },
+  { path: "/audit-events", permission: "audit.read", templates: ["manager", "operations_director", "general_manager", "auditor", "admin"] },
+  { path: "/audit-events/facets", permission: "audit.read", templates: ["manager", "operations_director", "general_manager", "auditor", "admin"] },
+  { path: "/audit-events/integrity", permission: "audit.read", templates: ["manager", "operations_director", "general_manager", "auditor", "admin"] },
+  { path: "/events", permission: "audit.read", templates: ["manager", "operations_director", "general_manager", "auditor", "admin"] },
+  { path: "/events/integrity", permission: "audit.read", templates: ["manager", "operations_director", "general_manager", "auditor", "admin"] },
+  { path: "/ai/tool-calls", permission: "audit.read", templates: ["manager", "operations_director", "general_manager", "auditor", "admin"] },
+  { path: "/properties/:propertyId/payables/supplier-bills", permission: "payables.read", templates: ["accountant", "controller", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/properties/:propertyId/payables/supplier-bills/:billId", permission: "payables.read", templates: ["accountant", "controller", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/properties/:propertyId/payables/supplier-bills/:billId/attachment", permission: "payables.read", templates: ["accountant", "controller", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] },
+  { path: "/properties/:propertyId/payables/aging", permission: "payables.read", templates: ["accountant", "controller", "manager", "operations_director", "general_manager", "admin_clerk", "auditor"] }
 ];
 
-describe("RBAC × nav · los GET de folios, TPV, tasa turística, VeriFactu y registro de viajeros llevan claves de lectura (L1b)", () => {
+describe("RBAC × nav · los GET de folios, TPV, tasa turística, VeriFactu, registro de viajeros, pisos, mantenimiento, activos, RGPD, cumplimiento, auditoría y proveedores llevan claves de lectura (L1b · Tanda 8a L1/L2)", () => {
   it("cada GET exige exactamente su clave de lectura y ninguna de escritura", () => {
     for (const expected of READ_GATED_GETS) {
       const entry = manifest.find((candidate) => candidate.method === "GET" && candidate.path === expected.path);
@@ -528,18 +537,19 @@ describe("RBAC × nav · los GET de folios, TPV, tasa turística, VeriFactu y re
       assert.deepEqual(entry.permissions, [expected.permission], `GET ${expected.path}`);
     }
     const writeGated = manifest.filter(
-      (entry) => entry.method === "GET" && entry.permissions.some((key) => key === "folio.charge.post" || key === "compliance.ses.submit")
+      (entry) => entry.method === "GET" && entry.permissions.some((key) => key === "folio.charge.post" || key === "compliance.ses.submit" || key === "housekeeping.task.manage" || key === "maintenance.workorder.manage" || key === "compliance.gdpr.manage" || key === "ai.high_risk.confirm")
     );
-    assert.deepEqual(writeGated.map((entry) => entry.path), [], "no GET is gated by folio.charge.post or compliance.ses.submit any more");
+    assert.deepEqual(writeGated.map((entry) => entry.path), [], "no GET is gated by a write key of §4.6 any more");
   });
 
-  it("las claves nuevas existen en el catálogo y cada plantilla del token que ve la pantalla las tiene", () => {
-    for (const key of ["folio.read", "pos.read", "tourist_tax.read"]) assert.ok(catalog.has(key), `${key} not in PERMISSIONS`);
+  it("las claves de lectura existen en el catálogo, las plantillas de diseño las tienen y la plataforma también", () => {
+    for (const key of ["folio.read", "pos.read", "tourist_tax.read", "housekeeping.read", "maintenance.read", "compliance.read", "payables.read", "capex.read", "audit.read"]) assert.ok(catalog.has(key), `${key} not in PERMISSIONS`);
     for (const expected of READ_GATED_GETS) {
       for (const template of expected.templates) {
+        assert.ok(templates[template], `template ${template} unparsed`);
         assert.ok(templates[template].has(expected.permission), `${template} lacks ${expected.permission} (GET ${expected.path})`);
       }
-      assert.ok(templates.owner.has(expected.permission));
+      assert.ok(templates.platform.has(expected.permission), `platform lacks ${expected.permission}`);
     }
     // Least privilege: read keys do not leak to templates whose token never sees the screen.
     for (const key of ["folio.read", "pos.read", "tourist_tax.read"]) {
@@ -549,9 +559,34 @@ describe("RBAC × nav · los GET de folios, TPV, tasa turística, VeriFactu y re
     }
     assert.equal(templates.fnb.has("folio.read"), false);
     assert.equal(templates.fnb.has("tourist_tax.read"), false);
+    assert.equal(templates.payroll_hr.has("audit.read"), false);
+    assert.equal(templates.housekeeper.has("payables.read"), false);
     // The tourist-tax service checks the same key as the manifest (listRates / listApplicationsForPeriod).
     const touristTaxSource = read("../apps/api/src/modules/tourist-tax/tourist-tax.service.ts");
     assert.equal((touristTaxSource.match(/requirePermissions\(input\.context, \["tourist_tax\.read"\]\)/g) ?? []).length, 2);
+  });
+
+  it("cada plantilla de cada token que ve una pantalla que llama al GET (inventario) la tiene, o el hueco es un `sister` justificado", { skip: !existsSync(inventoryPath) && "pilots/screens-inventory.csv not present (CI)" }, () => {
+    const inventory = parseCsv(readFileSync(inventoryPath, "utf8"));
+    const byKey = new Map(inventory.map((row) => [row.clave, row]));
+    let checked = 0;
+    for (const expected of READ_GATED_GETS) {
+      for (const entry of treeEntries) {
+        const routes = readRoutesFor(byKey.get(entry.screenKey), entry.screenKey);
+        if (!routes.some((route) => route.method === "GET" && route.path === expected.path)) continue;
+        for (const token of entry.roles) {
+          for (const template of TOKEN_TEMPLATES[token] ?? []) {
+            if (template === "platform") continue;
+            checked += 1;
+            if (templates[template].has(expected.permission)) continue;
+            const pair = { template, permission: expected.permission, screenKey: entry.screenKey };
+            assert.ok(JUSTIFIED_GAPS.some((gap) => gap.kind === "sister" && gapCovers(gap, pair)), `${template} (${token}) lacks ${expected.permission} for ${entry.screenKey} (GET ${expected.path}) and no sister justification covers it`);
+            assert.ok(sisterTemplates(token, template).some((sister) => templates[sister].has(expected.permission)), `${template}: no sister of ${token} holds ${expected.permission}`);
+          }
+        }
+      }
+    }
+    assert.ok(checked >= 100, `only ${checked} (screen, token, template) triples checked`);
   });
 
   it("GET /developer/keyboard-shortcuts está retirado (sin consumidor desde el chrome de L1a)", () => {
@@ -646,7 +681,7 @@ describe("RBAC × nav · cada plantilla abre TODAS las rutas GET de lo que ve (�
   function collectMissingPairs() {
     const missingPairs = [];
     for (const entry of treeEntries) {
-      for (const route of readRoutesFor(byKey.get(entry.screenKey))) {
+      for (const route of readRoutesFor(byKey.get(entry.screenKey), entry.screenKey)) {
         for (const token of entry.roles) {
           for (const template of TOKEN_TEMPLATES[token] ?? []) {
             const held = templates[template];
@@ -663,9 +698,9 @@ describe("RBAC × nav · cada plantilla abre TODAS las rutas GET de lo que ve (�
 
   it("el inventario cubre las claves del árbol y la mayoría tiene alguna ruta de lectura mapeada", () => {
     assert.ok(inventory.length >= 200, `only ${inventory.length} inventory rows parsed`);
-    const unknown = treeEntries.filter((entry) => !byKey.has(entry.screenKey)).map((entry) => entry.screenKey);
+    const unknown = treeEntries.filter((entry) => !byKey.has(entry.screenKey) && !(entry.screenKey in TREE_ROUTES_FALLBACK)).map((entry) => entry.screenKey);
     assert.deepEqual(unknown, [], `tree screens missing from the inventory: ${unknown.join(", ")}`);
-    const withRoute = treeEntries.filter((entry) => readRoutesFor(byKey.get(entry.screenKey)).length > 0);
+    const withRoute = treeEntries.filter((entry) => readRoutesFor(byKey.get(entry.screenKey), entry.screenKey).length > 0);
     assert.ok(withRoute.length >= treeEntries.length * 0.7, `only ${withRoute.length}/${treeEntries.length} entries with a mapped read route`);
   });
 
@@ -709,18 +744,29 @@ describe("RBAC × nav · cada plantilla abre TODAS las rutas GET de lo que ve (�
     }
   });
 
-  it("owner (y la plantilla org admin) abren todo lo que ve direccion; solo las pantallas admin-only exigen la clave de plataforma", () => {
+  it("ninguna clave de plataforma en entradas de hotel: solo las pantallas admin-only exigen admin.* / platform.*", () => {
     for (const entry of treeEntries) {
       const adminOnly = entry.roles.length === 1 && entry.roles[0] === "admin";
-      for (const route of readRoutesFor(byKey.get(entry.screenKey))) {
+      for (const route of readRoutesFor(byKey.get(entry.screenKey), entry.screenKey)) {
         for (const permission of route.permissions) {
           if (adminOnly) continue;
-          assert.ok(templates.owner.has(permission), `${entry.screenKey}: owner lacks ${permission} (${route.path})`);
-          assert.ok(templates.admin.has(permission), `${entry.screenKey}: org admin lacks ${permission} (${route.path})`);
-          assert.ok(!permission.startsWith("admin.") && !permission.startsWith("platform."), `${entry.screenKey}: platform key ${permission} on a hotel entry`);
+          assert.ok(!permission.startsWith("admin.") && !permission.startsWith("platform."), `${entry.screenKey}: platform key ${permission} on a hotel entry (${route.path})`);
         }
       }
     }
+  });
+
+  it("cada plantilla de cada token abre cada GET de sus entradas: 0 pares `pending` (todo hueco es `sister` o `write` con hermana / sin GET)", () => {
+    assert.ok(JUSTIFIED_GAPS.every((gap) => gap.kind !== "pending"), "Tanda 8a closes every pending pair: a new one is a product gap of L0/L2, not a test allowance");
+    const uncovered = [];
+    for (const pair of collectMissingPairs()) {
+      const gap = JUSTIFIED_GAPS.find((candidate) => gapCovers(candidate, pair));
+      if (!gap) uncovered.push(`${pair.template} (${pair.token}) · ${pair.screenKey} · ${pair.method} ${pair.path} → ${pair.permission}`);
+      else if (gap.kind === "sister") assert.ok(sisterTemplates(pair.token, pair.template).some((sister) => templates[sister].has(pair.permission)), `${pair.template}: sister of ${pair.token} must hold ${pair.permission}`);
+      else if (gap.kind === "write") assert.notEqual(pair.method, "GET", `${pair.screenKey} ${pair.method} ${pair.path} is a read route`);
+    }
+    assert.deepEqual([...new Set(uncovered)], []);
+    for (const token of AUTHENTICATED_TOKENS) assert.ok((TOKEN_TEMPLATES[token] ?? []).length > 0, `${token} without template`);
   });
 
   it("diagnóstico: cuántas entradas, rutas y pares se evalúan (no baja del umbral) y cuántos huecos quedan por tipo", () => {
@@ -728,7 +774,7 @@ describe("RBAC × nav · cada plantilla abre TODAS las rutas GET de lo que ve (�
     let routes = 0;
     let pairs = 0;
     for (const entry of treeEntries) {
-      const entryRoutes = readRoutesFor(byKey.get(entry.screenKey));
+      const entryRoutes = readRoutesFor(byKey.get(entry.screenKey), entry.screenKey);
       if (entryRoutes.length === 0) continue;
       entries += 1;
       routes += entryRoutes.length;

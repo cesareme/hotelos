@@ -46,7 +46,35 @@ import { createId } from "../../lib/ids.js";
 import { pageHeaders, parsePageQuery } from "../../lib/pagination.js";
 import { assertEntityAccess, resolveOrganizationScope } from "../../lib/tenancy.js";
 import { parse } from "../../lib/validate.js";
+import { recordAuditEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+
+/**
+ * Tanda 8a (brief §3 «Exportación contable»): fiscal periods of the
+ * organisation (society-level and, when given, the centre) that overlap the
+ * exported range, with the ones still open. `provisional` is true when some
+ * period of the range is not closed, or when no closed period covers the
+ * range at all (nothing has been closed: the export is a working copy). The
+ * export is never blocked: the hard rule «solo periodos cerrados» is the
+ * integrator's decision (ThresholdAction accounting_export is reserved for
+ * it in role_thresholds).
+ */
+export async function fiscalPeriodsOfRange(input: { organizationId: string; propertyId?: string | null; from?: string; to?: string }): Promise<{ periodsOpen: string[]; periodsClosed: string[]; provisional: boolean }> {
+  const rows = await prisma.fiscalPeriod.findMany({
+    where: {
+      organizationId: input.organizationId,
+      ...(input.propertyId ? { OR: [{ propertyId: input.propertyId }, { propertyId: null }] } : {}),
+      ...(input.from ? { endDate: { gte: new Date(`${input.from}T00:00:00.000Z`) } } : {}),
+      ...(input.to ? { startDate: { lte: new Date(`${input.to}T00:00:00.000Z`) } } : {})
+    },
+    select: { periodCode: true, status: true, propertyId: true },
+    orderBy: { startDate: "asc" }
+  });
+  const label = (row: { periodCode: string; propertyId: string | null }) => (row.propertyId ? `${row.periodCode}@${row.propertyId}` : row.periodCode);
+  const periodsOpen = rows.filter((row) => row.status !== "closed").map(label);
+  const periodsClosed = rows.filter((row) => row.status === "closed").map(label);
+  return { periodsOpen, periodsClosed, provisional: periodsOpen.length > 0 || periodsClosed.length === 0 };
+}
 import {
   createChartAccount,
   createManualJournalEntry,
@@ -202,7 +230,23 @@ export function registerLedgerRoutes(app: FastifyInstance): void {
     const q = parse(JournalQuerySchema, request.query ?? {}, "query");
     assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const result = await exportJournal({ context: request.userContext, query: { from: q.from, to: q.to, propertyId: q.propertyId, sourceType: q.sourceType, status: q.status, accountCode: q.accountCode, q: q.q } });
+    // Tanda 8a: every accounting export leaves a trace (actor, range, format,
+    // open periods, provisional) — audited, never blocked (see fiscalPeriodsOfRange).
+    const periods = await fiscalPeriodsOfRange({ organizationId: request.userContext.organizationId, propertyId: q.propertyId ?? null, from: q.from, to: q.to });
+    recordAuditEvent({
+      organizationId: request.userContext.organizationId,
+      propertyId: q.propertyId ?? undefined,
+      actorUserId: request.userContext.userId,
+      actorType: "user",
+      action: "ACCOUNTING_EXPORTED",
+      entityType: "journal_export",
+      entityId: `${request.userContext.organizationId}:${q.from ?? "*"}:${q.to ?? "*"}`,
+      afterJson: { format: "csv", from: q.from ?? null, to: q.to ?? null, propertyId: q.propertyId ?? null, entries: result.entries, periodsOpen: periods.periodsOpen, periodsClosed: periods.periodsClosed, provisional: periods.provisional },
+      deviceId: request.userContext.deviceId,
+      correlationId: createId("corr")
+    });
     reply.header("X-Total-Count", String(result.entries));
+    reply.header("X-Export-Provisional", periods.provisional ? "true" : "false");
     return sendCsv(reply, `diario${q.from ? `-${q.from}` : ""}${q.to ? `-${q.to}` : ""}.csv`, result.csv);
   });
 

@@ -24,6 +24,7 @@
     "db:migrations:check": "node scripts/check-migrations-vs-schema.mjs",
     "db:install:check": "bash scripts/check-fresh-install.sh",
     "db:seed:commercial": "pnpm --filter @hotelos/database db:seed:commercial",
+    "db:seed:rbac-demo": "pnpm --filter @hotelos/database db:seed:rbac-demo",
     "test": "node --test tests/*.test.mjs",
     "test:unit": "pnpm --filter @hotelos/api test",
     "test:integration": "cd apps/api && node --import tsx --test \"../../tests/integration/*.test.mts\"",

@@ -4,7 +4,7 @@
 //   node --import tsx --test src/lib/__tests__/http-error-fastify.test.mts
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { describeFastifyContentTypeError, statusCodeForError } from "../http-error.js";
+import { ApprovalRequiredError, ConflictError, HttpError, RbacForbiddenError, describeFastifyContentTypeError, statusCodeForError } from "../http-error.js";
 
 function fastifyError(code: string, statusCode: number, message: string): Error & { code: string; statusCode: number } {
   return Object.assign(new Error(message), { code, statusCode });
@@ -31,5 +31,35 @@ describe("describeFastifyContentTypeError · Spanish 4xx for Fastify body errors
     assert.equal(describeFastifyContentTypeError({ code: "P2002" }), null);
     assert.equal(describeFastifyContentTypeError(null), null);
     assert.equal(describeFastifyContentTypeError("FST_ERR_CTP_EMPTY_JSON_BODY"), null);
+  });
+});
+
+// ── Tanda 8a (RBAC · L1): typed errors of the access engine ─────────────────
+describe("RbacForbiddenError / ApprovalRequiredError · status and machine-readable details", () => {
+  it("RbacForbiddenError is a 403 HttpError whose details carry the code (extra fields never overwrite it)", () => {
+    const error = new RbacForbiddenError("No puedes asignar un rol de nivel superior al tuyo.", "RBAC_LEVEL_EXCEEDED", { targetRank: 3, callerRank: 2, code: "IGNORED" });
+    assert.ok(error instanceof HttpError);
+    assert.equal(error.statusCode, 403);
+    assert.equal(statusCodeForError(error), 403);
+    assert.equal(error.expose, true);
+    assert.deepEqual(error.details, { targetRank: 3, callerRank: 2, code: "RBAC_LEVEL_EXCEEDED" });
+    assert.equal(error.name, "RbacForbiddenError");
+    assert.equal(new RbacForbiddenError("x", "RBAC_BREAK_GLASS_FORBIDDEN").statusCode, 403);
+    assert.deepEqual(new RbacForbiddenError("x", "RBAC_BREAK_GLASS_FORBIDDEN").details, { code: "RBAC_BREAK_GLASS_FORBIDDEN" });
+  });
+
+  it("ApprovalRequiredError is a 409 with code APPROVAL_REQUIRED, the kind, the tier and the optional requestId", () => {
+    const withRequest = new ApprovalRequiredError("Esta operación necesita una aprobación previa.", { kind: "refund", tier: "T2", requestId: "apr_1" });
+    assert.equal(withRequest.statusCode, 409);
+    assert.equal(statusCodeForError(withRequest), 409);
+    assert.deepEqual(withRequest.details, { code: "APPROVAL_REQUIRED", kind: "refund", tier: "T2", requestId: "apr_1" });
+    const without = new ApprovalRequiredError("x", { kind: "supplier_bill", tier: "ABOVE_T4" });
+    assert.deepEqual(without.details, { code: "APPROVAL_REQUIRED", kind: "supplier_bill", tier: "ABOVE_T4" });
+  });
+
+  it("ConflictError forwards the RBAC_SOD_CONFLICT details", () => {
+    const error = new ConflictError("La combinación de roles viola la separación de funciones.", { code: "RBAC_SOD_CONFLICT", pair: { a: "payables.create", b: "payables.approve" }, templates: ["admin_clerk", "manager"] });
+    assert.equal(error.statusCode, 409);
+    assert.deepEqual(error.details, { code: "RBAC_SOD_CONFLICT", pair: { a: "payables.create", b: "payables.approve" }, templates: ["admin_clerk", "manager"] });
   });
 });

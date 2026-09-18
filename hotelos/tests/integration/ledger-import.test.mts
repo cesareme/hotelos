@@ -91,7 +91,8 @@ const context = {
   userId: USER,
   fullName: "Contable LI",
   deviceId: "li-test",
-  permissions: ["accounting.journal.post", "accounting.read", "accounting.entity.read", "accounting.configure", "analytics.read", "ai.high_risk.confirm"]
+  // Tanda 8a (design §4.6): closing a period is accounting.period.close, apart from the manual asiento.
+  permissions: ["accounting.journal.post", "accounting.period.close", "accounting.read", "accounting.entity.read", "accounting.configure", "analytics.read", "ai.high_risk.confirm"]
 } as unknown as UserContext;
 const reader = { ...context, permissions: ["accounting.read", "accounting.entity.read"] } as unknown as UserContext;
 

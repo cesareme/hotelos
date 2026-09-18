@@ -145,7 +145,7 @@ describe("resolveLedgerScope · one legal entity per organisation in this tanda"
 
   it("filters by a centre of the organisation (office included) and reports its kind", async () => {
     const { db } = fakeDb({ entities: [entity()], properties });
-    const scope = await resolveLedgerScope({ organizationId: ORG }, { propertyId: "prop_office" }, db);
+    const scope = await resolveLedgerScope({ organizationId: ORG, orgScope: true }, { propertyId: "prop_office" }, db);
     assert.equal(scope.kind, "property");
     assert.equal(scope.propertyId, "prop_office");
     assert.equal(scope.propertyKind, "office");
@@ -155,10 +155,12 @@ describe("resolveLedgerScope · one legal entity per organisation in this tanda"
   it("a property of another organisation, a property outside the user's assignments or one bound to another entity → opaque 404", async () => {
     const { db } = fakeDb({ entities: [entity()], properties: [...properties, property({ id: "prop_foreign_entity", legalEntityId: "le_other" })] });
     const opaque = (error: unknown) => error instanceof NotFoundError && error.message === "Propiedad no encontrada.";
-    await assert.rejects(resolveLedgerScope({ organizationId: ORG }, { propertyId: "prop_other_org" }, db), opaque);
-    await assert.rejects(resolveLedgerScope({ organizationId: ORG }, { propertyId: "prop_missing" }, db), opaque);
+    await assert.rejects(resolveLedgerScope({ organizationId: ORG, orgScope: true }, { propertyId: "prop_other_org" }, db), opaque);
+    await assert.rejects(resolveLedgerScope({ organizationId: ORG, orgScope: true }, { propertyId: "prop_missing" }, db), opaque);
     await assert.rejects(resolveLedgerScope({ organizationId: ORG, assignedPropertyIds: [LOS_TILOS] }, { propertyId: RIAS_ALTAS }, db), opaque);
-    await assert.rejects(resolveLedgerScope({ organizationId: ORG }, { propertyId: "prop_foreign_entity" }, db), opaque);
+    await assert.rejects(resolveLedgerScope({ organizationId: ORG, orgScope: true }, { propertyId: "prop_foreign_entity" }, db), opaque);
+    // Tanda 8a: a real session with an EMPTY assignment list and no explicit organisation scope reaches no centre at all.
+    await assert.rejects(resolveLedgerScope({ organizationId: ORG, assignedPropertyIds: [] }, { propertyId: LOS_TILOS }, db), opaque);
     const own = await resolveLedgerScope({ organizationId: ORG, assignedPropertyIds: [LOS_TILOS] }, { propertyId: LOS_TILOS }, db);
     assert.equal(own.propertyId, LOS_TILOS);
     const admin = await resolveLedgerScope({ organizationId: ORG, assignedPropertyIds: [LOS_TILOS], isPlatformAdmin: true }, { propertyId: RIAS_ALTAS }, db);
@@ -167,21 +169,27 @@ describe("resolveLedgerScope · one legal entity per organisation in this tanda"
 
   it("works for a tenant without a backfilled entity (legalEntityId null, identity from the fallback)", async () => {
     const { db } = fakeDb({ organization: { id: ORG, name: "Faranda", legalName: "Faranda Hotels & Resorts", taxId: "B99999997" }, properties: [property({ id: RIAS_ALTAS, legalEntityId: null })] });
-    const scope = await resolveLedgerScope({ organizationId: ORG }, { propertyId: RIAS_ALTAS }, db);
+    const scope = await resolveLedgerScope({ organizationId: ORG, orgScope: true }, { propertyId: RIAS_ALTAS }, db);
     assert.equal(scope.legalEntityId, null);
     assert.equal(scope.identity.source, "organization_fallback");
     assert.equal(scope.propertyId, RIAS_ALTAS);
   });
 
-  it("propertyWithinScope mirrors tenancy.isPropertyAssigned", () => {
-    const cases: Array<[{ assignedPropertyIds?: string[] }, string]> = [
+  it("propertyWithinScope mirrors tenancy.isPropertyAssigned (Tanda 8a: orgScope explicit, «sin asignaciones» reaches nothing)", () => {
+    const cases: Array<[{ assignedPropertyIds?: string[]; orgScope?: boolean }, string]> = [
       [{ assignedPropertyIds: [LOS_TILOS] }, LOS_TILOS],
       [{ assignedPropertyIds: [LOS_TILOS] }, RIAS_ALTAS],
       [{}, RIAS_ALTAS],
       [{ assignedPropertyIds: [] }, RIAS_ALTAS],
+      [{ assignedPropertyIds: [], orgScope: true }, RIAS_ALTAS],
+      [{ orgScope: true }, LOS_TILOS],
+      [{ assignedPropertyIds: [LOS_TILOS], orgScope: true }, RIAS_ALTAS],
       [{ assignedPropertyIds: [RIAS_ALTAS, LOS_TILOS] }, LOS_TILOS]
     ];
     for (const [context, id] of cases) assert.equal(propertyWithinScope(context, id), isPropertyAssigned(context, id), `${JSON.stringify(context)} / ${id}`);
+    assert.equal(propertyWithinScope({}, RIAS_ALTAS), true, "no list at all (context assembled outside loadUserContext) → organization");
+    assert.equal(propertyWithinScope({ assignedPropertyIds: [] }, RIAS_ALTAS), false, "empty assignments (real session) → nothing");
+    assert.equal(propertyWithinScope({ orgScope: true }, RIAS_ALTAS), true, "explicit organization scope → every property");
     assert.equal(propertyWithinScope({ assignedPropertyIds: [LOS_TILOS], isPlatformAdmin: true }, RIAS_ALTAS), true);
   });
 });

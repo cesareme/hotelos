@@ -341,13 +341,17 @@ describe("DTO mappers (superficie decimal como cadena, fechas ISO)", () => {
 });
 
 describe("ámbito único (lib/finance-scope.ts) · lo que el selector «Ámbito» debe reflejar", () => {
-  it("propertyWithinScope / hasEntityReadScope: platform admin and unassigned contexts are organization-wide; the key opens the sociedad", () => {
+  it("propertyWithinScope / hasEntityReadScope: platform admin and EXPLICIT organisation-wide contexts see every centre; an empty assignment list sees none; the key opens the sociedad", () => {
     assert.equal(propertyWithinScope({ isPlatformAdmin: true, assignedPropertyIds: ["h1"] }, "h2"), true);
-    assert.equal(propertyWithinScope({ assignedPropertyIds: [] }, "h2"), true);
+    // Tanda 8a (RBAC · §6.2): «sin asignaciones = toda la sociedad» was the hole H1/H2; the wide scope is explicit.
+    assert.equal(propertyWithinScope({ assignedPropertyIds: [], orgScope: true }, "h2"), true);
+    assert.equal(propertyWithinScope({ assignedPropertyIds: [] }, "h2"), false, "no assignments = nothing");
     assert.equal(propertyWithinScope({ assignedPropertyIds: ["h1"] }, "h2"), false);
     assert.equal(hasEntityReadScope({ permissions: ["accounting.read"] as never, assignedPropertyIds: ["h1"] }), false);
     assert.equal(hasEntityReadScope({ permissions: ["accounting.read", ENTITY_READ_PERMISSION] as never, assignedPropertyIds: ["h1"] }), true);
-    assert.equal(hasEntityReadScope({ permissions: [] as never }), true, "no assignments = organization-wide by construction");
+    assert.equal(hasEntityReadScope({ permissions: [] as never, assignedPropertyIds: [], orgScope: true }), true, "a live organisation / sociedad assignment");
+    assert.equal(hasEntityReadScope({ permissions: [] as never, assignedPropertyIds: [] }), false, "an empty assignment list is not organization-wide any more");
+    assert.equal(hasEntityReadScope({ permissions: [] as never }), true, "a context assembled without a list keeps the organisation");
   });
 
   it("assertFinanceReadScope: 404 ENTITY_SCOPE_REQUIRED (with requiredPermission, never a property id) without a centre; opaque 404 on a sister centre; writes follow the same rule", () => {

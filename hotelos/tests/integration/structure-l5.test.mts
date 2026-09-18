@@ -665,10 +665,16 @@ describe("C7 · permisos por centro (accounting.entity.read)", () => {
     assert.equal(settings.status, 200, settings.text.slice(0, 200));
     assert.equal(settings.body.sociedad.code, "TST");
     });
-    // Back in dev/demo mode the union grants the entity key to the same session: the whole-sociedad model opens.
-    const unioned = await getJson<Report>("/fiscal/models/303?period=2026-Q2", directorHeaders);
-    assert.equal(unioned.status, 200, `demo union expected in dev mode: ${unioned.text.slice(0, 200)}`);
-    assert.equal(casilla(unioned.body, "27"), 30);
+    // Tanda 8a (§6.4 / H10): the demo union is the explicit switch HOTELOS_DEMO_PERMISSION_UNION=true (off by
+    // default, also in the local demo); with it the union grants the entity key to the same session and the
+    // whole-sociedad model opens — without it the director keeps its 404.
+    const stillDenied = await getJson<ErrorBody>("/fiscal/models/303?period=2026-Q2", directorHeaders);
+    assert.equal(stillDenied.status, 404, `no demo union by default: ${stillDenied.text.slice(0, 200)}`);
+    await withEnv({ HOTELOS_DEMO_PERMISSION_UNION: "true" }, async () => {
+      const unioned = await getJson<Report>("/fiscal/models/303?period=2026-Q2", directorHeaders);
+      assert.equal(unioned.status, 200, `demo union expected with the switch: ${unioned.text.slice(0, 200)}`);
+      assert.equal(casilla(unioned.body, "27"), 30);
+    });
   });
 
   it("HTTP (sesión demo, org_123, solo lectura): badge de la sociedad en modelos, régimen, PyG por centro, reparto y USALI comparado", async (t) => {

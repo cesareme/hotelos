@@ -25,7 +25,7 @@ describe("estructura societaria · árbol de navegación", () => {
     assert.equal(item.label, "Estructura societaria");
     assert.equal(item.url, "/configuracion/estructura-societaria");
     assert.equal(item.baseTab, "Datos fiscales");
-    assert.deepEqual(item.roles, ["finanzas", "direccion", "admin"]);
+    assert.deepEqual(item.roles, ["finanzas", "direccion", "admin", "activos", "auditoria"]); // Tanda 8a: gestión del activo y auditoría interna (design §5.1)
     assert.deepEqual(item.modulesAny, []);
   });
 

@@ -39,8 +39,11 @@ import { createId, nowIso } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import type { SimplifiedInvoiceResult } from "../invoicing/simplified-invoice.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
+import { consumeSupervisorAuthorization } from "../rbac/supervisor.service.js";
 import { computePosTicketTax, folioLineTypeForOutlet, type PosRateTable, type PosTaxCategory, type PosTaxableLine, type PosTicketTax } from "./pos-tax.js";
 import { findBlockingCashClosureTx } from "./pos-cash-closure.service.js";
+import { POS_VOID_REASON_CODES, type PosVoidReasonCode } from "./pos.schemas.js";
 
 const Decimal = PrismaRuntime.Decimal;
 
@@ -863,6 +866,180 @@ async function closePosTicketLocked(input: { context: UserContext; ticketId: str
   }
 
   return (await loadTicket(ticket.id)) as PosTicket;
+}
+
+// ── Tanda 8a · void of a closed ticket (pos.order.void, design §4.6) ─────────
+
+export type PosVoidResult = {
+  ticketId: string;
+  status: "voided";
+  settlement: PosSettlement | null;
+  total: number;
+  taxTotal: number;
+  businessDate: string | null;
+  voidedAt: string;
+  voidedByUserId: string;
+  voidReasonCode: PosVoidReasonCode;
+  reasonText: string | null;
+  /** Inverse folio lines posted for a room-settled ticket (empty for cash / card). */
+  inverseFolioLineIds: string[];
+  /** Simplified invoice of a cash / card ticket: it stays intact (VeriFactu); the fiscal correction is the invoice anulación flow. */
+  invoiceId: string | null;
+  fiscalCorrectionRequired: boolean;
+  authorization: { mode: "void_key" | "supervisor"; supervisorAuthorizationId: string | null; authorizerUserId: string | null };
+};
+
+/**
+ * Void gate, separated for the unit tests: the actor holds `pos.order.void`,
+ * or presents a valid single-use supervisor authorisation for that key bound
+ * to (pos_order, ticketId); otherwise the standard 403 of the missing key.
+ */
+export async function assertPosVoidAuthorized(
+  input: { context: UserContext; ticketId: string; supervisorAuthorizationId?: string | null },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<PosVoidResult["authorization"]> {
+  if (input.context.permissions.includes("pos.order.void")) return { mode: "void_key", supervisorAuthorizationId: null, authorizerUserId: null };
+  if (input.supervisorAuthorizationId) {
+    const authorization = await consumeSupervisorAuthorization(
+      input.supervisorAuthorizationId,
+      { actorUserId: input.context.userId, permissionKey: "pos.order.void", entityType: "pos_order", entityId: input.ticketId },
+      deps
+    );
+    if (authorization) return { mode: "supervisor", supervisorAuthorizationId: authorization.id, authorizerUserId: authorization.authorizerUserId };
+  }
+  requirePermissions(input.context, ["pos.order.void"]);
+  return { mode: "void_key", supervisorAuthorizationId: null, authorizerUserId: null };
+}
+
+/**
+ * POST /pos/tickets/:id/void — voids a CLOSED ticket of the property's
+ * CURRENT business date with a reason code (POS_VOID_REASON_CODES). Nothing
+ * is deleted: the PosOrder keeps its lines and gets status `voided` +
+ * voidedAt / voidedByUserId / voidReasonCode (optimistic lock on `closed`).
+ *   · room settlement → one INVERSE folio line per tax group on the same
+ *     (open) folio, so the guest's balance is restored; a closed folio → 409
+ *     POS_VOID_FOLIO_CLOSED (the charge was invoiced: use the anulación);
+ *   · cash / card → the simplified invoice, its VeriFactu record and its
+ *     journal entry stay untouched; the void records the ticket and points
+ *     to the invoice (`fiscalCorrectionRequired`), whose anulación is the
+ *     invoice flow with its own separation of duties;
+ *   · a signed cash closure of the outlet / day refuses the void (409
+ *     CASH_CLOSURE_CLOSED) like a sale would be refused.
+ * Audit POS_TICKET_VOIDED with settlement, totals, reason and authoriser.
+ */
+export async function voidPosTicket(input: {
+  context: UserContext;
+  ticketId: string;
+  reasonCode: string;
+  reasonText?: string;
+  supervisorAuthorizationId?: string | null;
+  correlationId: string;
+  rbac?: RbacDeps;
+}): Promise<PosVoidResult> {
+  if (!(input.reasonCode in POS_VOID_REASON_CODES)) {
+    throw new BadRequestError(`reasonCode no válido: usa uno de ${Object.keys(POS_VOID_REASON_CODES).join(", ")}.`);
+  }
+  const reasonCode = input.reasonCode as PosVoidReasonCode;
+  return withTicketLock(input.ticketId, async () => {
+    const row = await prisma.posOrder.findUnique({ where: { id: input.ticketId } });
+    if (!row) throw new NotFoundError("Comanda no encontrada.");
+    if (row.status === "voided") throw new ConflictError("La comanda ya está anulada.", { code: "POS_TICKET_ALREADY_VOIDED", ticketId: row.id, voidedAt: row.voidedAt?.toISOString() ?? null });
+    if (row.status !== "closed") throw new ConflictError("Solo se anula una comanda cerrada.", { code: "POS_TICKET_NOT_CLOSED", ticketId: row.id, status: row.status });
+    const property = await prisma.property.findUnique({ where: { id: row.propertyId }, select: { organizationId: true } });
+    if (!property) throw new NotFoundError("Propiedad no encontrada.");
+    const { timeZone } = await resolvePropertyTimeZone(row.propertyId);
+    const today = businessDayOf(new Date(), timeZone);
+    const ticketDay = row.businessDate ? row.businessDate.toISOString().slice(0, 10) : row.closedAt ? businessDayOf(row.closedAt, timeZone).iso : null;
+    if (ticketDay !== today.iso) {
+      throw new ConflictError(`Solo se anulan comandas de la fecha de negocio vigente (${today.iso}); esta es del ${ticketDay ?? "día desconocido"}.`, { code: "POS_VOID_OUT_OF_BUSINESS_DAY", ticketId: row.id, businessDate: ticketDay, currentBusinessDate: today.iso });
+    }
+    const authorization = await assertPosVoidAuthorized({ context: input.context, ticketId: row.id, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null }, input.rbac ?? defaultRbacDeps);
+
+    const [ticket] = await hydrateTickets(row.propertyId, [row]);
+    const outlet = await prisma.outlet.findUnique({ where: { id: row.outletId }, select: { id: true, outletType: true, name: true } });
+    const outletType = outlet?.outletType ?? (ticket ? outletCode(ticket.outletId) : null);
+    const outletLabel = ticket?.outletName ?? outlet?.name ?? "TPV";
+    const settlement = isPosSettlement(row.settlement) ? row.settlement : null;
+    const blocking = await findBlockingCashClosureTx(prisma, row.propertyId, row.outletId, today.date);
+    if (blocking) throw cashClosureClosedError(today.iso, outletLabel, blocking);
+
+    const voidedAt = new Date();
+    const inverseFolioLineIds: string[] = [];
+    await prisma.$transaction(
+      async (tx) => {
+        const flipped = await tx.posOrder.updateMany({
+          where: { id: row.id, status: "closed" },
+          data: { status: "voided", voidedAt, voidedByUserId: input.context.userId, voidReasonCode: reasonCode }
+        });
+        if (flipped.count === 0) throw new ConflictError("La comanda ya está anulada.", { code: "POS_TICKET_ALREADY_VOIDED", ticketId: row.id });
+        if (settlement === "room" && ticket) {
+          if (!row.reservationId) throw new ConflictError("La comanda cargada a habitación no conserva su reserva; anúlala desde el folio.", { code: "POS_VOID_FOLIO_UNKNOWN", ticketId: row.id });
+          const { getReservationFolio } = await import("../folio/folio.service.js");
+          const folio = await getReservationFolio(row.reservationId);
+          const target = await tx.folio.findUnique({ where: { id: folio.folio.id }, select: { id: true, status: true } });
+          if (!target || target.status !== "open") {
+            throw new ConflictError("El folio del cargo ya está cerrado o facturado: anula la factura en vez de la comanda.", { code: "POS_VOID_FOLIO_CLOSED", ticketId: row.id, folioId: folio.folio.id });
+          }
+          const rates = await resolvePosRates(row.propertyId, outletType, row.closedAt ?? voidedAt);
+          const tax = computePosTicketTax(await taxableLinesOf(ticket), outletType, rates);
+          for (const group of tax.groups) {
+            const posted = await postRoomChargeTx(tx, {
+              folioId: target.id,
+              type: folioLineTypeForOutlet(outletType),
+              description: `Anulación comanda ${row.id} · ${groupDescription(outletLabel, group)}`,
+              amount: new Decimal(group.total).negated().toFixed(2),
+              postedBy: input.context.userId,
+              taxCategory: group.taxCategory
+            });
+            inverseFolioLineIds.push(posted.id);
+          }
+        }
+      },
+      { maxWait: 10_000, timeout: 30_000 }
+    );
+
+    const result: PosVoidResult = {
+      ticketId: row.id,
+      status: "voided",
+      settlement,
+      total: dec(row.total),
+      taxTotal: dec(row.taxTotal),
+      businessDate: ticketDay,
+      voidedAt: voidedAt.toISOString(),
+      voidedByUserId: input.context.userId,
+      voidReasonCode: reasonCode,
+      reasonText: input.reasonText ?? null,
+      inverseFolioLineIds,
+      invoiceId: row.invoiceId ?? null,
+      fiscalCorrectionRequired: settlement !== "room" && Boolean(row.invoiceId),
+      authorization
+    };
+    recordAuditEvent({
+      organizationId: property.organizationId,
+      propertyId: row.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "user",
+      action: "POS_TICKET_VOIDED",
+      entityType: "pos_order",
+      entityId: row.id,
+      beforeJson: { status: row.status, settlement, total: dec(row.total), closedByUserId: row.closedByUserId ?? null, invoiceId: row.invoiceId ?? null },
+      afterJson: { ...result, outletId: row.outletId, roomNumber: row.roomNumber ?? null, reservationId: row.reservationId ?? null },
+      deviceId: input.context.deviceId,
+      correlationId: input.correlationId
+    });
+    recordDomainEvent({
+      organizationId: property.organizationId,
+      propertyId: row.propertyId,
+      entityType: "pos_order",
+      entityId: row.id,
+      eventType: "PosTicketVoided",
+      payload: { settlement, total: result.total, reasonCode, inverseFolioLineIds, invoiceId: result.invoiceId },
+      actorType: "user",
+      actorUserId: input.context.userId,
+      correlationId: input.correlationId
+    });
+    return result;
+  });
 }
 
 // Cash summary and cash closures live in pos-cash-closure.service.ts (they

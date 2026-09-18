@@ -35,12 +35,14 @@ describe("unionPermissions · demo union without platform keys", () => {
     assert.ok(effective.includes("admin.tenants.manage" as PermissionKey));
   });
 
-  it("the demo mode switch is the explicit opt-in (NODE_ENV=development|dev or HOTELOS_ALLOW_DEMO_AUTH=true)", () => {
-    assert.equal(isDemoPermissionUnionEnabled({ NODE_ENV: "development" }), true);
-    assert.equal(isDemoPermissionUnionEnabled({ NODE_ENV: "dev" }), true);
-    assert.equal(isDemoPermissionUnionEnabled({ NODE_ENV: "production", HOTELOS_ALLOW_DEMO_AUTH: "true" }), true);
-    assert.equal(isDemoPermissionUnionEnabled({ NODE_ENV: "production" }), false);
+  it("the demo mode switch is the dedicated HOTELOS_DEMO_PERMISSION_UNION=true (Tanda 8a): never NODE_ENV nor HOTELOS_ALLOW_DEMO_AUTH", () => {
+    assert.equal(isDemoPermissionUnionEnabled({ HOTELOS_DEMO_PERMISSION_UNION: "true" }), true);
+    assert.equal(isDemoPermissionUnionEnabled({ HOTELOS_DEMO_PERMISSION_UNION: "true", NODE_ENV: "production" }), true, "the variable is what decides (production forbids it at validate-env / boot level)");
+    assert.equal(isDemoPermissionUnionEnabled({ NODE_ENV: "development" }), false, "NODE_ENV=development no longer masks the real RBAC");
+    assert.equal(isDemoPermissionUnionEnabled({ NODE_ENV: "dev" }), false);
+    assert.equal(isDemoPermissionUnionEnabled({ NODE_ENV: "production", HOTELOS_ALLOW_DEMO_AUTH: "true" }), false, "the demo AUTH fallback flag is unrelated to the permission union");
+    assert.equal(isDemoPermissionUnionEnabled({ HOTELOS_DEMO_PERMISSION_UNION: "false", NODE_ENV: "development", HOTELOS_ALLOW_DEMO_AUTH: "true" }), false);
+    assert.equal(isDemoPermissionUnionEnabled({ HOTELOS_DEMO_PERMISSION_UNION: "1" }), false, "only the literal true");
     assert.equal(isDemoPermissionUnionEnabled({}), false);
-    assert.equal(isDemoPermissionUnionEnabled({ HOTELOS_ALLOW_DEMO_AUTH: "false", NODE_ENV: "test" }), false);
   });
 });

@@ -49,7 +49,8 @@ const AMOUNT_GETS = [
   "/organizations/:organizationId/depreciation-runs"
 ];
 
-const FINANCE_READERS: RoleKey[] = ["manager", "accountant", "compliance", "owner", "admin"];
+// Tanda 8a (RBAC · L0): `admin` is «Administración de sistema» without finance keys; `owner` (Propiedad) still reads amounts.
+const FINANCE_READERS: RoleKey[] = ["manager", "accountant", "compliance", "owner"];
 const NEVER_FINANCE: RoleKey[] = ["receptionist", "housekeeper", "maintenance", "revenue", "sales", "fnb"];
 
 /** The Contabilidad writes of the ERP (t6#10): suppliers, received invoices, fixed assets, gestoría export. */
@@ -89,16 +90,33 @@ describe("accounting.reports.read · the finance reads with amounts leave the ca
     }
   });
 
-  it("every finance read with amounts requires exactly accounting.reports.read; finanzas + direccion pass, reception does not", () => {
+  /**
+   * Tanda 8a (design §4.3): reads that left accounting.reports.read for their
+   * module key — the journal EXPORT is the gestoría export (M10 · P,
+   * analytics.export: accountant, controller, auditor…) and the supplier
+   * bills / aging are M9 · V (payables.read: admin_clerk, manager, accountant,
+   * controller…; compliance holds neither).
+   */
+  const EXPORT_GETS: Record<string, PermissionKey> = {
+    "/accounting/journal/export": "analytics.export",
+    "/properties/:propertyId/payables/supplier-bills": "payables.read",
+    "/properties/:propertyId/payables/aging": "payables.read"
+  };
+
+  it("every finance read with amounts requires exactly accounting.reports.read (the journal export, analytics.export); finanzas + direccion pass, reception does not", () => {
     for (const path of AMOUNT_GETS) {
       const entry = findRoutePermission("GET", path);
       assert.ok(entry, `GET ${path} has no manifest entry`);
-      assert.deepEqual(entry.permissions, [ACCOUNTING_REPORTS_KEY], `GET ${path}`);
+      const expected = EXPORT_GETS[path] ?? ACCOUNTING_REPORTS_KEY;
+      assert.deepEqual(entry.permissions, [expected], `GET ${path}`);
       for (const template of FINANCE_READERS) {
+        if (path in EXPORT_GETS && !ROLE_PERMISSION_MAP[template].includes(expected)) continue; // module key of §4.3: not every finance reader holds it (direccion de hotel does not export the books; cumplimiento has no M9)
         assert.doesNotThrow(() => assertPermissions(ROLE_PERMISSION_MAP[template], entry.permissions), `${template} → GET ${path}`);
       }
       assert.throws(() => assertPermissions(ROLE_PERMISSION_MAP.receptionist, entry.permissions), `receptionist must be refused on GET ${path}`);
     }
+    assert.ok(ROLE_PERMISSION_MAP.accountant.includes("analytics.export"), "contabilidad exports to the gestoría");
+    assert.ok(ROLE_PERMISSION_MAP.accountant.includes("payables.read") && ROLE_PERMISSION_MAP.manager.includes("payables.read"), "contabilidad and dirección read the supplier bills");
   });
 
   it("no /accounting, /fiscal or payables GET is open through analytics.read or accounting.read any more", () => {

@@ -1,12 +1,20 @@
 // Role tokens of the Tanda 5 navigation tree (Tanda 5 · L1a).
 //
 // The tree (`nav-tree.generated.json`, built from pilots/tanda5-nav-tree.csv)
-// gates every item and tab with the nine role tokens of the CSV `roles`
-// column plus `publico` for the two screens outside the menu. Tokens are NOT
-// RBAC roles: they are derived from the `templateKey` of the roles a user
-// holds in the active property (`GET /users/me`), see `roleTokenFromTemplate`.
-// A user with several roles sees the union; a custom role without template
-// maps to no token (the caller then filters by permissions and modules only).
+// gates every item and tab with the fifteen authenticated role tokens of the
+// CSV `roles` column plus `publico` for the two screens outside the menu.
+// Tokens are NOT RBAC roles: they are derived from the `templateKey` of the
+// roles a user holds in the active property (`GET /users/me`), see
+// `roleTokenFromTemplate`. A user with several roles sees the union; a custom
+// role without template maps to no token (the caller then filters by
+// permissions and modules only).
+//
+// Tanda 8a (RBAC por departamento y nivel, design §4.2 / §5.1): six tokens
+// join the nine of Tanda 5 — `administracion` (admin_clerk), `rrhh`
+// (payroll_hr), `propiedad` (owner, no longer «dirección»), `activos`
+// (asset_manager), `auditoria` (auditor, read-only) and `sistemas` (the
+// organisation `admin` template, without money keys). The `admin` token is
+// the PLATFORM administrator only (`isPlatformAdmin`, never a template).
 //
 // L1b replaces `navigation/roles.ts` (persona views in localStorage) with this
 // module; until then both coexist and nothing here reads localStorage.
@@ -20,6 +28,12 @@ export type RoleToken =
   | "finanzas"
   | "comercial"
   | "fnb"
+  | "administracion"
+  | "rrhh"
+  | "propiedad"
+  | "activos"
+  | "auditoria"
+  | "sistemas"
   | "admin"
   | "publico";
 
@@ -32,6 +46,12 @@ export const ROLE_TOKENS: readonly RoleToken[] = [
   "finanzas",
   "comercial",
   "fnb",
+  "administracion",
+  "rrhh",
+  "propiedad",
+  "activos",
+  "auditoria",
+  "sistemas",
   "admin",
   "publico"
 ];
@@ -46,42 +66,80 @@ export const ROLE_TOKEN_LABELS: Record<RoleToken, string> = {
   finanzas: "Finanzas",
   comercial: "Comercial",
   fnb: "Punto de venta y F&B",
+  administracion: "Administración de hotel",
+  rrhh: "RRHH y nóminas",
+  propiedad: "Propiedad",
+  activos: "Gestión del activo",
+  auditoria: "Auditoría interna",
+  sistemas: "Administración de sistema",
   admin: "Administrador de plataforma",
   publico: "Público"
 };
 
 /**
- * RBAC template keys (`ROLE_TEMPLATE_KEYS` in packages/shared/src/permissions.ts)
- * plus the two templates the tree needs and L1 creates: `sales` (comercial)
- * and `fnb`. Kept as a local union so this module has no runtime dependency
- * on @hotelos/shared; tests/nav-tree-contract.test.mjs checks the shared list
- * stays covered.
+ * RBAC template keys (`ROLE_TEMPLATE_KEYS` in packages/shared/src/permissions.ts):
+ * the 24 templates of Tanda 8a (design §4.2), `break_glass` included. Kept as
+ * a local union so this module has no runtime dependency on @hotelos/shared;
+ * tests/nav-tree-contract.test.mjs checks the shared list stays covered and
+ * tests/rbac-nav-contract.test.mjs that both sets are identical.
  */
 export type RoleTemplateKey =
-  | "owner"
-  | "admin"
-  | "manager"
   | "receptionist"
+  | "night_auditor"
+  | "front_office_manager"
   | "housekeeper"
+  | "housekeeping_manager"
   | "maintenance"
-  | "accountant"
-  | "compliance"
-  | "revenue"
+  | "maintenance_manager"
+  | "fnb"
+  | "fnb_manager"
   | "sales"
-  | "fnb";
+  | "admin_clerk"
+  | "manager"
+  | "operations_director"
+  | "general_manager"
+  | "break_glass"
+  | "revenue"
+  | "accountant"
+  | "controller"
+  | "compliance"
+  | "payroll_hr"
+  | "asset_manager"
+  | "owner"
+  | "auditor"
+  | "admin";
 
+/**
+ * Template → token (design §4.2). The organisation `admin` template maps to
+ * `sistemas`: the `admin` token stays the platform administrator's only
+ * (H11). `break_glass` holds every hotel key, so it takes the broadest hotel
+ * token; it never yields `admin`.
+ */
 export const ROLE_TEMPLATE_TO_TOKEN: Record<RoleTemplateKey, RoleToken> = {
-  owner: "direccion",
-  admin: "admin",
-  manager: "direccion",
   receptionist: "recepcion",
+  night_auditor: "recepcion",
+  front_office_manager: "recepcion",
   housekeeper: "pisos",
+  housekeeping_manager: "pisos",
   maintenance: "mantenimiento",
-  accountant: "finanzas",
-  compliance: "finanzas",
-  revenue: "revenue",
+  maintenance_manager: "mantenimiento",
+  fnb: "fnb",
+  fnb_manager: "fnb",
   sales: "comercial",
-  fnb: "fnb"
+  admin_clerk: "administracion",
+  manager: "direccion",
+  operations_director: "direccion",
+  general_manager: "direccion",
+  break_glass: "direccion",
+  revenue: "revenue",
+  accountant: "finanzas",
+  controller: "finanzas",
+  compliance: "finanzas",
+  payroll_hr: "rrhh",
+  asset_manager: "activos",
+  owner: "propiedad",
+  auditor: "auditoria",
+  admin: "sistemas"
 };
 
 export const ROLE_TEMPLATE_KEYS_MAPPED: readonly RoleTemplateKey[] = Object.keys(ROLE_TEMPLATE_TO_TOKEN) as RoleTemplateKey[];
@@ -93,10 +151,16 @@ export const ROLE_TEMPLATE_KEYS_MAPPED: readonly RoleTemplateKey[] = Object.keys
  */
 export const ROLE_TOKEN_PRIORITY: readonly RoleToken[] = [
   "admin",
+  "sistemas",
   "direccion",
+  "propiedad",
+  "auditoria",
   "finanzas",
+  "rrhh",
+  "activos",
   "revenue",
   "comercial",
+  "administracion",
   "recepcion",
   "fnb",
   "mantenimiento",
@@ -139,7 +203,7 @@ export function primaryRoleToken(tokens: readonly RoleToken[]): RoleToken | null
 export type RoleHomeOptions = {
   /** Viewport narrower than MOBILE_BREAKPOINT_PX: pisos/mantenimiento land on their mobile tab. */
   mobile?: boolean;
-  /** Distinguishes owner (`/hoy/propietario`) from manager inside `direccion`. */
+  /** Kept for callers of Tanda 5: `owner` used to live inside `direccion` and land on `/hoy/propietario`; since Tanda 8a it is the `propiedad` token. */
   templateKey?: string | null;
 };
 
@@ -147,14 +211,26 @@ export type RoleHomeOptions = {
 export const NO_ROLE_HOME = "/hoy";
 
 /**
- * Landing URL per role (pilots/tanda5-nav-tree.md §3). URLs are the ones of
- * the tree; tests/nav-tree-contract.test.mjs checks every home exists there.
+ * Landing URL per role (pilots/tanda5-nav-tree.md §3; Tanda 8a design §4.9 /
+ * §10.2 for the six new tokens). URLs are the ones of the tree;
+ * tests/nav-tree-contract.test.mjs checks every home exists there.
+ *   - `administracion` → the supplier-bill inbox of Facturación y cobros;
+ *   - `rrhh` → Nóminas; `activos` → Cumplimiento › Centro de cumplimiento
+ *     (obligaciones, licencias e inspecciones del inmueble) until Finanzas ›
+ *     Activo inmobiliario exists (§10.2 named Proveedores y gastos ›
+ *     Inmovilizado, but `asset_manager` holds no `payables.read` and the base
+ *     screen of that item would answer 403, so the token is not on that row);
+ *     `auditoria` → Sistema (Auditoría); `sistemas` → Usuarios y roles: none of
+ *     the last four sees Mi día, so they land on their own screen;
+ *   - `propiedad` → the owner tab of Mi día (`/hoy/propietario`).
  */
 export function roleHome(token: RoleToken | null | undefined, options: RoleHomeOptions = {}): string {
   const mobile = options.mobile === true;
   switch (token) {
     case "direccion":
       return options.templateKey?.trim().toLowerCase() === "owner" ? "/hoy/propietario" : "/hoy/direccion";
+    case "propiedad":
+      return "/hoy/propietario";
     case "recepcion":
       return "/hoy";
     case "pisos":
@@ -168,6 +244,16 @@ export function roleHome(token: RoleToken | null | undefined, options: RoleHomeO
     case "comercial":
     case "admin":
       return "/hoy/direccion";
+    case "administracion":
+      return "/finanzas/facturacion";
+    case "rrhh":
+      return "/finanzas/nominas";
+    case "activos":
+      return "/cumplimiento/centro";
+    case "auditoria":
+      return "/configuracion/sistema";
+    case "sistemas":
+      return "/configuracion/usuarios";
     case "publico":
       return "/acceso";
     default:
@@ -274,18 +360,35 @@ export type ResolvedRoleTokens = {
   fromPermissions: boolean;
 };
 
-/** Order used to pick `templateKey` among several: owner wins over manager, then catalogue order. */
+/**
+ * Order used to pick `templateKey` among several: `owner` first (its landing
+ * tab is Propietario), then the ROLE_TEMPLATE_KEYS order of packages/shared
+ * (most specific first: general_manager before manager…), `admin` last.
+ */
 const TEMPLATE_PRIORITY: readonly RoleTemplateKey[] = [
   "owner",
+  "general_manager",
+  "operations_director",
+  "front_office_manager",
+  "housekeeping_manager",
+  "maintenance_manager",
+  "fnb_manager",
+  "night_auditor",
+  "admin_clerk",
+  "controller",
+  "payroll_hr",
+  "asset_manager",
+  "auditor",
+  "break_glass",
   "manager",
+  "receptionist",
+  "housekeeper",
+  "maintenance",
   "accountant",
   "compliance",
   "revenue",
   "sales",
-  "receptionist",
   "fnb",
-  "maintenance",
-  "housekeeper",
   "admin"
 ];
 
@@ -319,7 +422,12 @@ export function resolveRoleTokens(source: RoleTokenSource): ResolvedRoleTokens {
   return { tokens: ROLE_TOKEN_PRIORITY.filter((token) => found.has(token)), templateKey, fromPermissions };
 }
 
-/** Screen keys with `roles` covering every authenticated token are visible even without a role (§8: Mi día y el asistente). */
+/**
+ * The fifteen authenticated tokens (every token but `publico`). An entry whose
+ * `roles` cover all of them is visible even without a role (§8); since Tanda
+ * 8a no menu entry lists the fifteen (`rrhh`, `activos` and `sistemas` do not
+ * see Mi día), so a custom role without template sees the no-role notice only.
+ */
 export const AUTHENTICATED_ROLE_TOKENS: readonly RoleToken[] = ROLE_TOKENS.filter((token) => token !== "publico");
 
 export function roleAllowsEveryone(gate: NavGate): boolean {

@@ -71,8 +71,9 @@ function applyEnv(entries: Record<string, string | undefined>): void {
 // unionPermissions: every real session also holds the demoStore baseline).
 // The union is read per request, so the cases that prove REAL grants pin the
 // strict setting for their duration; the union case pins demo mode.
-const STRICT_ENV = { HOTELOS_ALLOW_DEMO_AUTH: "false", NODE_ENV: "production" };
-const DEMO_ENV = { HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" };
+// Tanda 8a (RBAC · L1): the union has its own switch (HOTELOS_DEMO_PERMISSION_UNION); NODE_ENV and the auth fallback flag no longer enable it.
+const STRICT_ENV = { HOTELOS_ALLOW_DEMO_AUTH: "false", NODE_ENV: "production", HOTELOS_DEMO_PERMISSION_UNION: "false" };
+const DEMO_ENV = { HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development", HOTELOS_DEMO_PERMISSION_UNION: "true" };
 function withEnv<T>(overrides: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
   const previous = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
   applyEnv(overrides);
@@ -263,5 +264,324 @@ describe("L1c · AI tool registry: unknown tool name is a 404, not a 500", () =>
     assert.equal(res.status, 404, res.text.slice(0, 160));
     assert.equal(res.body?.message, "Herramienta no encontrada.");
     assert.ok(!res.text.includes("no-existe"), "the message never echoes the requested name");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Tanda 8a · L1 · motor de acceso: ámbito por petición, asignaciones,
+// aprobaciones, break glass y auditoría — organización AISLADA `org_rbac_<run>`
+// (sociedad + propiedades A y B, roles de plantilla, usuarios ficticios con
+// contraseña y sesiones reales por POST /auth/login; limpieza en `after`).
+// Sin variables de entorno: todo se siembra aquí. Run with:
+//   cd apps/api && node --import tsx --test ../../tests/integration/rbac-scope.test.mts
+// ═════════════════════════════════════════════════════════════════════════════
+const { prisma } = await import("@hotelos/database");
+const { hashPassword } = await import("@hotelos/database");
+const { syncPermissionCatalog, provisionDefaultTemplateRoles, ensureBreakGlassRole } = await import("../../apps/api/src/lib/rbac-catalog.js");
+const { flushAuditQueues } = await import("../../apps/api/src/modules/audit/audit.service.js");
+const { resetRbacScopeCacheForTests } = await import("../../apps/api/src/lib/rbac-scope.js");
+
+const RUN = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const RBAC_ORG = `org_rbac_${RUN}`;
+const RBAC_LE = `le_rbac_${RUN}`;
+const RBAC_A = `prop_rbac_a_${RUN}`;
+const RBAC_B = `prop_rbac_b_${RUN}`;
+const RBAC_PASSWORD = "Rbac-Test-2026!";
+const RBAC_USERS = {
+  u1: { id: `usr_rbac_u1_${RUN}`, email: `recepcion.a.${RUN}@faranda.test`, fullName: "Recepción A" },
+  u2: { id: `usr_rbac_u2_${RUN}`, email: `recepcion.contabilidad.${RUN}@faranda.test`, fullName: "Recepción A + Contabilidad B" },
+  u3: { id: `usr_rbac_u3_${RUN}`, email: `sin.asignaciones.${RUN}@faranda.test`, fullName: "Sin asignaciones" },
+  u4: { id: `usr_rbac_u4_${RUN}`, email: `direccion.a.${RUN}@faranda.test`, fullName: "Dirección de hotel A" },
+  u5: { id: `usr_rbac_u5_${RUN}`, email: `direccion.general.${RUN}@faranda.test`, fullName: "Dirección general" },
+  emergency: { id: `usr_rbac_bg_${RUN}`, email: `emergencia-1@rbac-${RUN}.test`, fullName: "Emergencia 1" }
+} as const;
+type RbacUserKey = keyof typeof RBAC_USERS;
+
+const rbacRoles: Record<string, string> = {};
+const rbacSessions: Partial<Record<RbacUserKey, Session>> = {};
+let rbacReservationB = "";
+let rbacSeeded = false;
+let rbacSeedError: string | null = null;
+
+type ErrorBody = { statusCode?: number; message?: string; details?: { code?: string; [k: string]: unknown } };
+
+async function inject(method: "GET" | "POST" | "DELETE", url: string, session: Session, payload?: unknown, extraHeaders: Headers = {}): Promise<{ status: number; body: ErrorBody & Record<string, unknown>; text: string }> {
+  const res = await app.inject({ method, url, headers: { ...session.headers, ...extraHeaders }, ...(payload !== undefined ? { payload } : {}) });
+  let body: Record<string, unknown> = {};
+  try {
+    body = JSON.parse(res.body) as Record<string, unknown>;
+  } catch {
+    body = {};
+  }
+  return { status: res.statusCode, body: body as ErrorBody & Record<string, unknown>, text: res.body };
+}
+
+async function rbacCleanup(): Promise<void> {
+  const userIds = Object.values(RBAC_USERS).map((user) => user.id);
+  const roleIds = (await prisma.role.findMany({ where: { organizationId: RBAC_ORG }, select: { id: true } })).map((row) => row.id);
+  await prisma.approvalRequest.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.supervisorAuthorization.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.breakGlassSession.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.userRoleAssignment.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.userPropertyRole.deleteMany({ where: { userId: { in: userIds } } });
+  await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
+  await prisma.mfaChallenge.deleteMany({ where: { userId: { in: userIds } } });
+  await prisma.user.deleteMany({ where: { organizationId: RBAC_ORG } });
+  if (roleIds.length > 0) await prisma.rolePermission.deleteMany({ where: { roleId: { in: roleIds } } });
+  await prisma.roleThreshold.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.role.deleteMany({ where: { organizationId: RBAC_ORG } });
+  const groups = await prisma.propertyGroup.findMany({ where: { organizationId: RBAC_ORG }, select: { id: true } });
+  if (groups.length > 0) await prisma.propertyGroupMember.deleteMany({ where: { propertyGroupId: { in: groups.map((group) => group.id) } } });
+  await prisma.propertyGroup.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.reservation.deleteMany({ where: { propertyId: { in: [RBAC_A, RBAC_B] } } });
+  await prisma.property.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.legalEntity.deleteMany({ where: { organizationId: RBAC_ORG } });
+  await prisma.organization.deleteMany({ where: { id: RBAC_ORG } });
+}
+
+async function assign(userKey: RbacUserKey, templateKey: string, scope: { scopeType: "property" | "organization"; propertyId?: string }): Promise<void> {
+  await prisma.userRoleAssignment.create({
+    data: {
+      userId: RBAC_USERS[userKey].id,
+      roleId: rbacRoles[templateKey],
+      scopeType: scope.scopeType,
+      propertyId: scope.propertyId ?? null,
+      organizationId: RBAC_ORG,
+      reason: "seed rbac-scope test"
+    }
+  });
+}
+
+before(async () => {
+  try {
+    await syncPermissionCatalog();
+    await prisma.organization.create({ data: { id: RBAC_ORG, name: `[rbac-scope test] ${RUN}`, country: "ES" } });
+    await prisma.legalEntity.create({ data: { id: RBAC_LE, organizationId: RBAC_ORG, code: "RBT", legalName: `RBAC Test ${RUN} SL`, isDefault: true } });
+    for (const [id, name] of [[RBAC_A, "Hotel RBAC A"], [RBAC_B, "Hotel RBAC B"]] as const) {
+      await prisma.property.create({ data: { id, organizationId: RBAC_ORG, name: `${name} ${RUN}`, timezone: "Europe/Madrid", country: "ES", taxRegion: "ES_PENINSULA_BALEARES", legalEntityId: RBAC_LE, kind: "hotel" } });
+    }
+    for (const role of await provisionDefaultTemplateRoles(RBAC_ORG)) rbacRoles[role.templateKey] = role.id;
+    rbacRoles.break_glass = (await ensureBreakGlassRole(RBAC_ORG)).id;
+    for (const [key, user] of Object.entries(RBAC_USERS) as Array<[RbacUserKey, (typeof RBAC_USERS)[RbacUserKey]]>) {
+      await prisma.user.create({
+        data: { id: user.id, organizationId: RBAC_ORG, email: user.email, fullName: user.fullName, status: key === "emergency" ? "emergency" : "active", passwordHash: key === "emergency" ? null : hashPassword(RBAC_PASSWORD), mustChangePassword: false, passwordChangedAt: new Date() }
+      });
+    }
+    await assign("u1", "receptionist", { scopeType: "property", propertyId: RBAC_A });
+    await assign("u2", "receptionist", { scopeType: "property", propertyId: RBAC_A });
+    await assign("u2", "accountant", { scopeType: "property", propertyId: RBAC_B });
+    await assign("u4", "manager", { scopeType: "property", propertyId: RBAC_A });
+    await assign("u5", "general_manager", { scopeType: "organization" });
+    const reservation = await prisma.reservation.create({
+      data: { propertyId: RBAC_B, code: `RBAC-${RUN}`, channel: "direct", status: "confirmed", arrivalDate: new Date("2031-05-04T00:00:00Z"), departureDate: new Date("2031-05-06T00:00:00Z") },
+      select: { id: true }
+    });
+    rbacReservationB = reservation.id;
+    resetRbacScopeCacheForTests();
+    for (const key of ["u1", "u2", "u3", "u4", "u5"] as const) {
+      const session = await login(app, RBAC_USERS[key].email, RBAC_PASSWORD, `integration-rbac-${key}`);
+      if (!session) throw new Error(`login failed for ${key}`);
+      rbacSessions[key] = session;
+    }
+    rbacSeeded = true;
+  } catch (error) {
+    rbacSeedError = error instanceof Error ? error.message : String(error);
+    console.error(`[rbac-scope test] seeding the isolated organisation failed, Tanda 8a cases will fail: ${rbacSeedError}`);
+  }
+});
+
+after(async () => {
+  try {
+    await flushAuditQueues();
+    await rbacCleanup();
+  } finally {
+    await prisma.$disconnect();
+  }
+});
+
+const s = (key: RbacUserKey): Session => {
+  const session = rbacSessions[key];
+  assert.ok(session, `session of ${key} unavailable${rbacSeedError ? ` (${rbacSeedError})` : ""}`);
+  return session;
+};
+
+describe("Tanda 8a · L1 · ámbito por petición (org_rbac aislada)", () => {
+  it("U1 receptionist in A: 200 in A, opaque 404 in B, x-property-id=B → 404 + ACCESS_DENIED out_of_scope, /users/me lists A with its real grants", async () => {
+    assert.ok(rbacSeeded, rbacSeedError ?? "seed failed");
+    const u1 = s("u1");
+    const own = await inject("GET", `/properties/${RBAC_A}/reservations`, u1);
+    assert.equal(own.status, 200, own.text.slice(0, 200));
+    const sister = await inject("GET", `/properties/${RBAC_B}/reservations`, u1);
+    assert.equal(sister.status, 404, sister.text.slice(0, 200));
+    assert.equal(sister.body.message, "Propiedad no encontrada.");
+    assert.ok(!sister.text.includes(RBAC_B), "the 404 never echoes the property id");
+    const header = await inject("GET", "/users/me/properties", u1, undefined, { "x-property-id": RBAC_B });
+    assert.equal(header.status, 404, header.text.slice(0, 200));
+    assert.equal(header.body.message, "Propiedad no encontrada.");
+    await flushAuditQueues();
+    const denied = await prisma.auditEvent.findMany({ where: { organizationId: RBAC_ORG, action: "ACCESS_DENIED", actorUserId: RBAC_USERS.u1.id } });
+    const outOfScope = denied.filter((row) => (row.afterJson as { reason?: string } | null)?.reason === "out_of_scope");
+    // One row per route: the param 404 on B and the header 404 on the switcher.
+    assert.deepEqual(outOfScope.map((row) => row.entityId).sort(), ["GET /properties/:propertyId/reservations", "GET /users/me/properties"]);
+    assert.ok(outOfScope.every((row) => (row.afterJson as { resolvedFrom?: string }).resolvedFrom !== undefined && row.ipAddress));
+    const me = await inject("GET", "/users/me", u1);
+    assert.equal(me.status, 200, me.text.slice(0, 200));
+    const profile = me.body as unknown as { properties: Array<{ id: string; grantedPermissions: string[]; templateKeys: string[] }>; scopes: Array<{ scopeType: string; ref: string }>; orgScope: boolean; grantedPermissions: string[] };
+    assert.deepEqual(profile.properties.map((property) => property.id), [RBAC_A]);
+    assert.deepEqual(profile.properties[0].templateKeys, ["receptionist"]);
+    assert.ok(profile.properties[0].grantedPermissions.includes("pms.reservation.read"));
+    assert.equal(profile.properties[0].grantedPermissions.includes("accounting.journal.post"), false);
+    assert.deepEqual(profile.scopes, [{ scopeType: "property", ref: RBAC_A, propertyIds: [RBAC_A] }]);
+    assert.equal(profile.orgScope, false);
+    const switcher = await inject("GET", "/users/me/properties", u1);
+    assert.deepEqual((switcher.body as unknown as Array<{ id: string }>).map((property) => property.id), [RBAC_A], "the switcher only lists covered properties");
+  });
+
+  it("U2 receptionist in A + accountant in B: reads payables in B, cannot create reservations in B, can in A; an entity of B with header A is evaluated with the keys of B", async () => {
+    assert.ok(rbacSeeded, rbacSeedError ?? "seed failed");
+    const u2 = s("u2");
+    const bills = await inject("GET", `/properties/${RBAC_B}/payables/supplier-bills`, u2);
+    assert.equal(bills.status, 200, bills.text.slice(0, 200));
+    const createInB = await inject("POST", `/properties/${RBAC_B}/reservations`, u2, { arrivalDate: "2031-06-01", departureDate: "2031-06-03" });
+    assert.equal(createInB.status, 403, createInB.text.slice(0, 200));
+    assert.match(createInB.body.message ?? "", /pms\.reservation\.create/);
+    const createInA = await inject("POST", `/properties/${RBAC_A}/reservations`, u2, { arrivalDate: "2031-06-01", departureDate: "2031-06-03" });
+    assert.ok(![401, 403, 404].includes(createInA.status), `the gate must pass in A (got ${createInA.status}: ${createInA.text.slice(0, 160)})`);
+    // The gate evaluated the receptionist keys of A (header), the entity hangs from B: the service sees the accountant keys of B → 403.
+    const cancel = await inject("POST", `/reservations/${rbacReservationB}/cancel`, u2, { reason: "prueba" }, { "x-property-id": RBAC_A });
+    assert.equal(cancel.status, 403, cancel.text.slice(0, 200));
+    assert.match(cancel.body.message ?? "", /pms\.reservation\.modify/);
+    const still = await prisma.reservation.findUnique({ where: { id: rbacReservationB }, select: { status: true } });
+    assert.equal(still?.status, "confirmed", "nothing was cancelled");
+    const me = await inject("GET", "/users/me", u2);
+    const profile = me.body as unknown as { properties: Array<{ id: string; templateKeys: string[] }> };
+    assert.deepEqual(profile.properties.map((property) => [property.id, property.templateKeys.join(",")]).sort(), [[RBAC_A, "receptionist"], [RBAC_B, "accountant"]].sort());
+  });
+
+  it("U3 without assignments: opaque 404 on every property, /users/me with properties = [] and an empty switcher", async () => {
+    assert.ok(rbacSeeded, rbacSeedError ?? "seed failed");
+    const u3 = s("u3");
+    for (const property of [RBAC_A, RBAC_B]) {
+      const res = await inject("GET", `/properties/${property}/reservations`, u3);
+      assert.equal(res.status, 404, res.text.slice(0, 200));
+      assert.equal(res.body.message, "Propiedad no encontrada.");
+    }
+    const me = await inject("GET", "/users/me", u3);
+    assert.equal(me.status, 200, me.text.slice(0, 200));
+    assert.deepEqual((me.body as unknown as { properties: unknown[] }).properties, []);
+    assert.deepEqual((me.body as unknown as { grantedPermissions: string[] }).grantedPermissions, []);
+    const switcher = await inject("GET", "/users/me/properties", u3);
+    assert.deepEqual(switcher.body, []);
+  });
+});
+
+describe("Tanda 8a · L1 · aprobaciones, asignaciones, break glass y auditoría de denegaciones", () => {
+  it("two-step approval: U1 requests a 400 € refund (pending, T3), cannot approve it (409 APPROVAL_SELF_DECISION); U4 (hotel director of A) approves", async () => {
+    assert.ok(rbacSeeded, rbacSeedError ?? "seed failed");
+    const u1 = s("u1");
+    const u4 = s("u4");
+    const created = await inject("POST", "/approvals", u1, { kind: "refund", entityType: "payment", entityId: `pay_${RUN}`, propertyId: RBAC_A, amount: "400.00", reasonCode: "guest_complaint" });
+    assert.equal(created.status, 201, created.text.slice(0, 200));
+    assert.equal(created.body.status, "pending");
+    assert.equal(created.body.thresholdTier, "T3");
+    const id = created.body.id as string;
+    const self = await inject("POST", `/approvals/${id}/approve`, u1, {});
+    assert.equal(self.status, 409, self.text.slice(0, 200));
+    assert.equal(self.body.details?.code, "APPROVAL_SELF_DECISION");
+    const inbox = await inject("GET", "/approvals?status=pending", u4);
+    assert.ok((inbox.body as unknown as Array<{ id: string }>).some((row) => row.id === id), "the director sees the pending request of A");
+    const approved = await inject("POST", `/approvals/${id}/approve`, u4, { note: "ok" });
+    assert.equal(approved.status, 200, approved.text.slice(0, 200));
+    assert.equal(approved.body.status, "approved");
+    assert.equal(approved.body.decidedByUserId, RBAC_USERS.u4.id);
+  });
+
+  it("assignments by U4 (manager in A): a higher level → 403 RBAC_LEVEL_EXCEEDED, another property → 403 RBAC_SCOPE_EXCEEDED, break_glass → 404, a SoD combination → 409, a valid one → 201", async () => {
+    assert.ok(rbacSeeded, rbacSeedError ?? "seed failed");
+    const u4 = s("u4");
+    const level = await inject("POST", "/rbac/assignments", u4, { userId: RBAC_USERS.u3.id, roleId: rbacRoles.controller, scopeType: "property", scopeRef: RBAC_A });
+    assert.equal(level.status, 403, level.text.slice(0, 200));
+    assert.equal(level.body.details?.code, "RBAC_LEVEL_EXCEEDED");
+    const scope = await inject("POST", "/rbac/assignments", u4, { userId: RBAC_USERS.u1.id, roleId: rbacRoles.receptionist, scopeType: "property", scopeRef: RBAC_B });
+    assert.equal(scope.status, 403, scope.text.slice(0, 200));
+    assert.equal(scope.body.details?.code, "RBAC_SCOPE_EXCEEDED");
+    const emergency = await inject("POST", "/rbac/assignments", u4, { userId: RBAC_USERS.u3.id, roleId: rbacRoles.break_glass, scopeType: "property", scopeRef: RBAC_A });
+    assert.equal(emergency.status, 404, emergency.text.slice(0, 200));
+    assert.ok(!emergency.text.includes("break_glass"), "the emergency template never leaks");
+    // receptionist (payment.capture) + front_office_manager (payments.refund_approve) in the same property.
+    const sod = await inject("POST", "/rbac/assignments", u4, { userId: RBAC_USERS.u1.id, roleId: rbacRoles.front_office_manager, scopeType: "property", scopeRef: RBAC_A });
+    assert.equal(sod.status, 409, sod.text.slice(0, 200));
+    assert.equal(sod.body.details?.code, "RBAC_SOD_CONFLICT");
+    const ok = await inject("POST", "/rbac/assignments", u4, { userId: RBAC_USERS.u3.id, roleId: rbacRoles.housekeeper, scopeType: "property", scopeRef: RBAC_A, reason: "alta de pisos" });
+    assert.equal(ok.status, 201, ok.text.slice(0, 200));
+    assert.equal(ok.body.templateKey, "housekeeper");
+    await flushAuditQueues();
+    const assigned = await prisma.auditEvent.findFirst({ where: { organizationId: RBAC_ORG, action: "ROLE_ASSIGNED", entityId: ok.body.id as string } });
+    assert.ok(assigned, "ROLE_ASSIGNED audited");
+    // U3 now reaches A on the next request (rbac_version bumped → scope re-read).
+    const u3 = s("u3");
+    const board = await inject("GET", `/properties/${RBAC_A}/reservations`, u3);
+    assert.notEqual(board.status, 404, board.text.slice(0, 200));
+    const revoked = await inject("DELETE", `/rbac/assignments/${ok.body.id as string}?reason=fin%20de%20prueba`, u4);
+    assert.equal(revoked.status, 200, revoked.text.slice(0, 200));
+    assert.ok(revoked.body.revokedAt);
+    const afterRevoke = await inject("GET", `/properties/${RBAC_A}/reservations`, u3);
+    assert.equal(afterRevoke.status, 404, "the revocation applies on the next request");
+  });
+
+  it("break glass: open without password → 403 BREAK_GLASS_REAUTH_REQUIRED; with password → session with every organisation key; that session cannot assign; listed; closed → 401", async () => {
+    assert.ok(rbacSeeded, rbacSeedError ?? "seed failed");
+    const u5 = s("u5");
+    const refused = await inject("POST", "/rbac/break-glass", u5, { reason: "Caída del PMS", confirmHighRisk: true });
+    assert.equal(refused.status, 403, refused.text.slice(0, 200));
+    assert.equal(refused.body.details?.code, "BREAK_GLASS_REAUTH_REQUIRED");
+    const opened = await inject("POST", "/rbac/break-glass", u5, { reason: "Caída del PMS", ticket: `INC-${RUN}`, password: RBAC_PASSWORD, confirmHighRisk: true });
+    assert.equal(opened.status, 201, opened.text.slice(0, 300));
+    const session = opened.body.session as { id: string; accountUserId: string; closesAt: string };
+    assert.equal(session.accountUserId, RBAC_USERS.emergency.id);
+    const emergency: Session = { token: opened.body.token as string, headers: { Authorization: `Bearer ${opened.body.token as string}` } };
+    const me = await inject("GET", "/users/me", emergency);
+    assert.equal(me.status, 200, me.text.slice(0, 200));
+    const profile = me.body as unknown as { grantedPermissions: string[]; breakGlassSessionId: string | null; orgScope: boolean };
+    assert.ok(profile.grantedPermissions.length >= 200, `the emergency session holds every organisation key (got ${profile.grantedPermissions.length})`);
+    assert.equal(profile.grantedPermissions.includes("admin.tenants.manage"), false, "never a platform key");
+    assert.equal(profile.breakGlassSessionId, session.id);
+    assert.equal(profile.orgScope, true);
+    const forbidden = await inject("POST", "/rbac/assignments", emergency, { userId: RBAC_USERS.u3.id, roleId: rbacRoles.receptionist, scopeType: "property", scopeRef: RBAC_A });
+    assert.equal(forbidden.status, 403, forbidden.text.slice(0, 200));
+    assert.equal(forbidden.body.details?.code, "RBAC_BREAK_GLASS_FORBIDDEN");
+    const listed = await inject("GET", "/rbac/break-glass", u5);
+    assert.equal(listed.status, 200, listed.text.slice(0, 200));
+    assert.ok((listed.body as unknown as Array<{ id: string }>).some((row) => row.id === session.id));
+    const closed = await inject("POST", `/rbac/break-glass/${session.id}/close`, u5, {});
+    assert.equal(closed.status, 200, closed.text.slice(0, 200));
+    assert.ok(closed.body.closedAt);
+    const dead = await inject("GET", "/users/me", emergency);
+    assert.equal(dead.status, 401, dead.text.slice(0, 200));
+    await flushAuditQueues();
+    const events = await prisma.auditEvent.findMany({ where: { organizationId: RBAC_ORG, entityType: "break_glass_session", entityId: session.id }, select: { action: true } });
+    assert.deepEqual(events.map((event) => event.action).sort(), ["BREAK_GLASS_CLOSED", "BREAK_GLASS_OPENED"]);
+  });
+
+  it("a provoked 403 leaves ONE ACCESS_DENIED row per user, route and minute, with the missing keys", async () => {
+    assert.ok(rbacSeeded, rbacSeedError ?? "seed failed");
+    const u1 = s("u1");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const res = await inject("POST", "/rbac/assignments", u1, { userId: RBAC_USERS.u3.id, roleId: rbacRoles.receptionist, scopeType: "property", scopeRef: RBAC_A });
+      assert.equal(res.status, 403, res.text.slice(0, 200));
+    }
+    await flushAuditQueues();
+    const denied = await prisma.auditEvent.findMany({ where: { organizationId: RBAC_ORG, action: "ACCESS_DENIED", actorUserId: RBAC_USERS.u1.id, entityId: "POST /rbac/assignments" } });
+    assert.equal(denied.length, 1, `one row per minute expected, got ${denied.length}`);
+    const after = denied[0].afterJson as { missing?: string[]; riskLevel?: string; scopeType?: string | null };
+    assert.deepEqual(after.missing, ["users.assign"]);
+    assert.equal(after.riskLevel, "high");
+    assert.ok(denied[0].ipAddress, "the IP is recorded");
+    const log = await inject("GET", "/rbac/access-log?action=ACCESS_DENIED", s("u5"));
+    assert.equal(log.status, 200, log.text.slice(0, 200));
+    const items = (log.body as unknown as { items: Array<{ entityId: string | null; required?: string[] }> }).items;
+    const row = items.find((item) => item.entityId === "POST /rbac/assignments");
+    assert.ok(row, "the access log serves the denial");
+    assert.deepEqual(row.required, ["users.assign"], "the decision is recomputed for the route");
   });
 });

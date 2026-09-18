@@ -75,7 +75,8 @@ const context = {
   userId: USER,
   fullName: "Contable PR",
   deviceId: "pr-test",
-  permissions: ["accounting.journal.post", "accounting.read", "accounting.entity.read"]
+  // Tanda 8a (design §4.6): the period close is accounting.period.close, apart from the manual asiento.
+  permissions: ["accounting.journal.post", "accounting.period.close", "accounting.read", "accounting.entity.read"]
 } as unknown as UserContext;
 const reader = { ...context, permissions: ["accounting.read"] } as unknown as UserContext;
 const noPermission = { ...context, permissions: ["pms.reservation.read"] } as unknown as UserContext;

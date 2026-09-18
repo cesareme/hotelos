@@ -331,7 +331,7 @@ describe("API route permission manifest (AUTH-03)", () => {
   it("protects critical money, compliance, and inventory routes", () => {
     for (const expected of [
       'path: "/payments/:id/refund"',
-      '"payment.refund", "ai.high_risk.confirm"',
+      'permissions: ["payment.refund"]',
       'path: "/invoices/:id/issue"',
       'permissions: ["invoice.issue"]',
       'path: "/journal-entries/:id/post"',
@@ -352,6 +352,59 @@ describe("API route permission manifest (AUTH-03)", () => {
     assert.match(docs, /Every registered route/);
     assert.match(docs, /RBAC_STRICT/);
     assert.match(docs, /service-level validation/);
+  });
+});
+
+// ── Tanda 8a · RBAC por departamento (L1): riskLevel "authenticated" y claves dinámicas ──
+// A non-public route with `permissions: []` is NOT public: it needs a real
+// session (or the explicit demo fallback, like `low`). The value
+// `authenticated` makes that declarative; the only `permissions: []` routes
+// allowed to keep a higher risk level are the ones whose key is DYNAMIC —
+// decided in the service from the approval kind, the authoriser or the
+// account owner — and the service pins prove the check exists.
+const DYNAMIC_KEY_ROUTES = [
+  "POST /approvals",
+  "POST /approvals/:id/approve",
+  "POST /approvals/:id/reject",
+  "POST /rbac/supervisor-authorizations",
+  "POST /rbac/pin"
+];
+
+describe("Tanda 8a · RBAC (L1): riskLevel authenticated, dynamic-key allowlist and the rbac partial", () => {
+  const approvalsService = readApi("modules/rbac/approvals.service.ts");
+  const supervisorService = readApi("modules/rbac/supervisor.service.ts");
+
+  it('riskLevel "authenticated" never carries permissions (session only)', () => {
+    const offending = manifest.filter((entry) => entry.riskLevel === "authenticated" && entry.permissions.length > 0).map(routeKey);
+    assert.deepEqual(offending, [], "an authenticated route must declare permissions: []");
+    assert.match(manifestSource, /riskLevel: "public" \| "authenticated" \| "low" \| "medium" \| "high" \| "critical"/);
+    assert.ok(manifest.some((entry) => entry.riskLevel === "authenticated"), "at least one route uses the authenticated risk level");
+  });
+
+  it("every route without permissions is public or authenticated, except the literal dynamic-key allowlist", () => {
+    const offending = manifest
+      .filter((entry) => entry.permissions.length === 0 && entry.riskLevel !== "public" && entry.riskLevel !== "authenticated" && !DYNAMIC_KEY_ROUTES.includes(routeKey(entry)))
+      .map((entry) => `${routeKey(entry)} (${entry.riskLevel})`);
+    assert.deepEqual(offending, [], `permissions: [] routes must be public / authenticated (or in DYNAMIC_KEY_ROUTES):\n${offending.join("\n")}`);
+  });
+
+  it("the dynamic-key routes exist, are high / critical and their service checks the dynamic key", () => {
+    for (const key of DYNAMIC_KEY_ROUTES) {
+      const entry = manifest.find((candidate) => routeKey(candidate) === key);
+      assert.ok(entry, `${key} missing from the manifest`);
+      assert.deepEqual(entry.permissions.map((p) => p.key), [], `${key} must declare permissions: []`);
+      assert.ok(entry.riskLevel === "high" || entry.riskLevel === "critical", `${key} must be high or critical (is ${entry.riskLevel})`);
+    }
+    assert.match(approvalsService, /APPROVAL_KIND_PERMISSION\[/, "approvals.service.ts must resolve the approver key from the kind");
+    assert.match(approvalsService, /APPROVAL_KIND_REQUEST_PERMISSION\[/, "approvals.service.ts must resolve the requester key from the kind");
+    assert.match(supervisorService, /verifyPassword\(/, "supervisor.service.ts must verify the password / PIN hash");
+    assert.match(supervisorService, /requirePermissions\(\{ \.\.\.context, userId: authorizer\.id/, "supervisor.service.ts must check the requested key on the AUTHORISER");
+  });
+
+  it("the rbac partial is spread into the runtime manifest (a partial without spread would be discovered by name but never enforced)", () => {
+    assert.ok(manifestPartials.includes("modules/rbac/route-permissions.partial.ts"), "modules/rbac/route-permissions.partial.ts not found");
+    assert.match(manifestSource, /\.\.\.rbacRoutePermissions,/);
+    assert.match(manifestSource, /import \{ rbacRoutePermissions \} from "\.\.\/modules\/rbac\/route-permissions\.partial\.js";/);
   });
 });
 

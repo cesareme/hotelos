@@ -94,6 +94,8 @@ const ITEM_NARRATION: Record<string, string> = {
   ShiftManagerScreen: "El turno de recepción de un vistazo: productividad del equipo, caja del día y bloqueos que impiden avanzar.",
   NightAuditScreen:
     "El cierre del día guiado: comprueba llegadas sin registrar, folios abiertos y salidas pendientes, y cambia la fecha de negocio cuando todo está en verde.",
+  ApprovalsInbox:
+    "La bandeja de aprobaciones: reembolsos, ajustes, descuentos, tarifas, facturas de proveedor, pedidos, nóminas y anulaciones que puedes decidir con tus claves, y el estado de las solicitudes que has pedido tú. Quien solicita nunca aprueba; por encima de T4 hacen falta dos firmas.",
   AiOwnerSummaryScreen: "Qué ha hecho la inteligencia artificial hoy, qué ha propuesto, cuánto ha costado y con qué controles trabaja. Sin tecnicismos.",
   AiHumanReviewQueueScreen: "Las propuestas de la IA que una persona debe aprobar o rechazar antes de aplicarse (correo → reserva, confirmaciones, acciones de riesgo).",
   // Recepción
@@ -257,6 +259,16 @@ export const ROLE_STARTER_TOUR: Record<RoleToken, string> = {
   finanzas: "finanzas",
   comercial: "comercial",
   fnb: "operaciones",
+  // Tanda 8a (RBAC por departamento, design §4.9): the six new tokens land on
+  // the category of their roleHome (role-tokens.ts) — administración de hotel
+  // and propiedad on Finanzas, RRHH on Finanzas (Nóminas), gestión del activo
+  // on Cumplimiento (Centro), auditoría interna and sistemas on Configuración.
+  administracion: "finanzas",
+  rrhh: "finanzas",
+  propiedad: "finanzas",
+  activos: "cumplimiento",
+  auditoria: "configuracion",
+  sistemas: "configuracion",
   admin: "configuracion",
   publico: WELCOME_TOUR_ID
 };

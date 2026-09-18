@@ -345,8 +345,17 @@ import {
   registerDevice,
   requirePermissions,
   revokeSession,
+  unionPermissions,
   verifyMfaChallenge
 } from "./modules/auth/auth.service.js";
+// RBAC por departamento (Tanda 8a · L1): ámbito por petición (lib/rbac-scope.ts),
+// decisión pura para la auditoría de denegaciones (security/access-decision.ts)
+// y las rutas /rbac + /approvals (modules/rbac/rbac.routes.ts; permisos en
+// modules/rbac/route-permissions.partial.ts).
+import { coversProperty, loadUserScope, permissionsFor } from "./lib/rbac-scope.js";
+import { accessDecision } from "./security/access-decision.js";
+import { registerRbacRoutes } from "./modules/rbac/rbac.routes.js";
+import { PermissionDeniedError } from "@hotelos/shared";
 import { createCheckInFromScanConfirmation, executeConfirmation } from "./modules/ai/check-in.command.js";
 import {
   annulAuthorityCommunication,
@@ -481,7 +490,13 @@ const InviteBackOfficeUserSchema = z.object({
   // A staff user without a role holds zero permissions in production (AUTH-07):
   // the role is part of the invitation, not an afterthought.
   roleId: z.string().trim().min(1).max(80),
-  mfaRequired: z.boolean().optional()
+  mfaRequired: z.boolean().optional(),
+  // Tanda 8a (RBAC · L1, design §5.5): an invitation may carry the scope of
+  // the assignment it creates on acceptance (property / property_group /
+  // legal_entity / organization + the id). Forwarded to the service; the
+  // backoffice service of L3 persists it — until then it is ignored.
+  scopeType: z.enum(["property", "property_group", "legal_entity", "organization"]).optional(),
+  scopeRef: z.string().trim().min(1).max(64).optional()
 });
 // Tanda 4 (rutas-cors): POST /backoffice/properties/:propertyId/roles. The
 // template must be one of the shared ROLE_TEMPLATE_KEYS (packages/shared):
@@ -648,7 +663,7 @@ import {
   ResetPasswordSchema,
   CreateUserSchema,
   CreateReservationSchema,
-  UpdateReservationSchema,
+  UpdateReservationBodySchema,
   CheckInSchema,
   CheckOutSchema,
   CancelReservationSchema,
@@ -1232,7 +1247,7 @@ export async function buildApiServer() {
     },
     credentials: false,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id", "x-property-id"],
     // Headers the SPA is allowed to READ on a cross-origin response (dev:
     // :5173 → :3000): pagination (lib/pagination.ts), correlation id and the
     // rate-limit budget. Same-origin (production behind Caddy) never needs it.
@@ -1327,12 +1342,145 @@ export async function buildApiServer() {
   // public routes and unknown paths (404) are left alone. Mounted BEFORE the
   // permission gate: a user who must rotate first gets that answer, not a 403
   // about permissions they may also lack.
+  // Tanda 8a (RBAC · L1): the property id of a request is picked ONCE
+  // (path param, then query string, then the exact `propertyId` body key) and
+  // shared by the scope hook below and the tenant guard further down.
+  function pickPropertyId(request: { params: unknown; query: unknown; body: unknown }): string | null {
+    for (const source of [request.params, request.query, request.body]) {
+      const candidate = (source as { propertyId?: unknown } | null | undefined)?.propertyId;
+      if (typeof candidate === "string" && candidate.length > 0) return candidate;
+    }
+    return null;
+  }
+
   app.addHook("preHandler", async (request) => {
     if (request.is404) return;
     if (!request.isAuthenticated || !request.userContext?.mustChangePassword) return;
     const routePath = request.routeOptions.url ?? request.url.split("?")[0];
     if (isPublicRoute(routePath) || isPasswordChangeAllowedRoute(routePath)) return;
     throw passwordChangeRequiredError();
+  });
+
+  // ── Tanda 8a (RBAC · L1) · ámbito por petición (design §6.2, H1) ────────────
+  // ONE access decision per request = template × scope × module, computed for
+  // the property the request acts on, not for the user's first assignment:
+  //   1. `:propertyId` param / query / body (`pickPropertyId`) — not validated
+  //      here for platform admins (the tenant guard behind the gate still does
+  //      existence, organisation and re-pointing); a NON-platform user whose
+  //      scope does not cover it gets the same opaque 404 the tenant guard
+  //      answers, but BEFORE the permission gate (with an empty key set the
+  //      gate would answer 403 and leak that the property exists);
+  //   2. the `x-property-id` header the front sends for routes without a
+  //      property (≤ 64 chars, [A-Za-z0-9_-]): out of scope → audit
+  //      ACCESS_DENIED { reason: "out_of_scope" } (1/min per user and route)
+  //      and opaque 404; platform admins go through grantPropertyAccess (the
+  //      property must exist; organizationId is re-pointed);
+  //   3. nothing → `null` = organisation route: union of the legal_entity /
+  //      organization assignments, or the intersection of the property ones
+  //      (lib/rbac-scope.ts permissionsFor).
+  // The resolved keys are written into `request.userContext.permissions` (the
+  // gate below keeps reading `userContext?.permissions ?? []`, pinned by
+  // tests/api-route-permissions-contract.test.mjs) and the property into
+  // `request.rbacScope`; lib/tenancy.ts assertEntityAccess re-resolves both when
+  // an entity hangs from another property (the entity always wins). Switching
+  // the active property is audited once per (session, property). Inside a
+  // break-glass session every request carries `bg_<sessionId>_<corr>` as
+  // correlation id (§4.8). The token-less demo fallback is left untouched.
+  const PROPERTY_HEADER = "x-property-id";
+  const PROPERTY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+  const ACCESS_DENIED_DEDUPE_MS = 60_000;
+  const accessDeniedSeen = new Map<string, number>();
+  const propertySwitchSeen = new Set<string>();
+  /** True once per minute per (user, key): the audit trail records one ACCESS_DENIED per user, route and minute. */
+  function shouldAuditDenial(userId: string, key: string): boolean {
+    const now = Date.now();
+    if (accessDeniedSeen.size > 10_000) {
+      for (const [seenKey, at] of accessDeniedSeen) if (at + ACCESS_DENIED_DEDUPE_MS < now) accessDeniedSeen.delete(seenKey);
+    }
+    const dedupeKey = `${userId}|${key}`;
+    const last = accessDeniedSeen.get(dedupeKey);
+    if (last !== undefined && last + ACCESS_DENIED_DEDUPE_MS > now) return false;
+    accessDeniedSeen.set(dedupeKey, now);
+    return true;
+  }
+  function requestCorrelationId(request: { headers: Record<string, unknown> }): string | undefined {
+    const value = request.headers[OBSERVABILITY_HEADERS.correlationId];
+    return typeof value === "string" ? value : undefined;
+  }
+  function headerPropertyId(request: { headers: Record<string, unknown> }): string | null {
+    const raw = request.headers[PROPERTY_HEADER];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    return typeof value === "string" && PROPERTY_ID_PATTERN.test(value) ? value : null;
+  }
+
+  app.addHook("preHandler", async (request, reply) => {
+    if (request.is404) return;
+    if (!request.isAuthenticated) return;
+    const routePath = request.routeOptions.url ?? request.url.split("?")[0];
+    if (isPublicRoute(routePath)) return;
+    const context = request.userContext;
+    if (!context?.assignments) return; // contexts assembled outside loadUserContext keep their permissions
+    if (context.breakGlassSessionId) {
+      const correlationId = requestCorrelationId(request) ?? createId("corr");
+      const tagged = correlationId.startsWith("bg_") ? correlationId : `bg_${context.breakGlassSessionId}_${correlationId}`;
+      request.headers[OBSERVABILITY_HEADERS.correlationId] = tagged;
+      reply.header(OBSERVABILITY_HEADERS.correlationId, tagged);
+    }
+    let propertyId = pickPropertyId(request);
+    let resolvedFrom: "param" | "header" | "none" = propertyId ? "param" : "none";
+    if (!propertyId) {
+      propertyId = headerPropertyId(request);
+      if (propertyId) resolvedFrom = "header";
+    }
+    const scope = await loadUserScope(context.userId, context.organizationId);
+    const platformAdmin = context.isPlatformAdmin === true;
+    if (propertyId && !platformAdmin && !coversProperty(scope, propertyId)) {
+      if (shouldAuditDenial(context.userId, `scope:${request.method} ${routePath}`)) {
+        recordAuditEvent({
+          organizationId: context.organizationId,
+          actorUserId: context.userId,
+          actorType: "user",
+          action: "ACCESS_DENIED",
+          entityType: "route",
+          entityId: `${request.method} ${routePath}`,
+          afterJson: { reason: "out_of_scope", resolvedFrom, riskLevel: routeRiskLevel(request.method, routePath) },
+          ipAddress: request.ip,
+          deviceId: context.deviceId,
+          correlationId: requestCorrelationId(request)
+        });
+      }
+      throw new NotFoundError("Propiedad no encontrada.");
+    }
+    if (propertyId && resolvedFrom === "header" && platformAdmin) {
+      // The property must exist; organizationId is re-pointed like the tenant guard does.
+      await grantPropertyAccess(request, propertyId);
+    }
+    request.rbacScope = { propertyId, resolvedFrom };
+    const resolved = propertyId && platformAdmin && !coversProperty(scope, propertyId) ? permissionsFor(scope, null) : permissionsFor(scope, propertyId);
+    context.permissions = unionPermissions(resolved);
+    if (propertyId && propertyId !== context.propertyId) {
+      const previous = context.propertyId;
+      context.propertyId = propertyId;
+      const switchKey = `${context.sessionId ?? context.userId}|${propertyId}`;
+      if (!propertySwitchSeen.has(switchKey)) {
+        if (propertySwitchSeen.size > 10_000) propertySwitchSeen.clear();
+        propertySwitchSeen.add(switchKey);
+        recordAuditEvent({
+          organizationId: context.organizationId,
+          propertyId,
+          actorUserId: context.userId,
+          actorType: "user",
+          action: "PROPERTY_SWITCHED",
+          entityType: "property",
+          entityId: propertyId,
+          beforeJson: { propertyId: previous },
+          afterJson: { propertyId, resolvedFrom },
+          ipAddress: request.ip,
+          deviceId: context.deviceId,
+          correlationId: requestCorrelationId(request)
+        });
+      }
+    }
   });
 
   app.addHook("preHandler", async (request) => {
@@ -1355,15 +1503,56 @@ export async function buildApiServer() {
         throw new UnauthorizedError("Authentication required.");
       }
     }
-    assertRoutePermission({
-      method: request.method,
-      path: routePath,
-      // SECURITY (audit 2026-06 · NUEVO-2): default-deny. If no userContext is
-      // present, evaluate against an EMPTY permission set — never the demoStore
-      // super-user (which holds every permission). Defense in depth behind the
-      // auth-context production gate.
-      userPermissions: request.userContext?.permissions ?? []
-    });
+    try {
+      assertRoutePermission({
+        method: request.method,
+        path: routePath,
+        // SECURITY (audit 2026-06 · NUEVO-2): default-deny. If no userContext is
+        // present, evaluate against an EMPTY permission set — never the demoStore
+        // super-user (which holds every permission). Defense in depth behind the
+        // auth-context production gate.
+        userPermissions: request.userContext?.permissions ?? []
+      });
+    } catch (error) {
+      // Tanda 8a (RBAC · L1, design §6.6): every refusal of the gate leaves an
+      // ACCESS_DENIED audit row — route, missing keys, scope and risk — at most
+      // one per user, route and minute. The decision itself is recomputed with
+      // the pure `accessDecision` (security/access-decision.ts); the error is
+      // re-thrown untouched so the 403 body stays the same.
+      if ((error instanceof PermissionDeniedError || error instanceof ForbiddenError) && request.isAuthenticated && request.userContext) {
+        const context = request.userContext;
+        if (shouldAuditDenial(context.userId, `${request.method} ${routePath}`)) {
+          const scopeType = request.rbacScope?.propertyId ? "property" : context.orgScope ? "organization" : null;
+          const decision = accessDecision({
+            method: request.method,
+            path: routePath,
+            permissions: context.permissions ?? [],
+            authenticated: request.isAuthenticated,
+            propertyId: request.rbacScope?.propertyId ?? null,
+            scopeType
+          });
+          recordAuditEvent({
+            organizationId: context.organizationId,
+            propertyId: request.rbacScope?.propertyId ?? undefined,
+            actorUserId: context.userId,
+            actorType: "user",
+            action: "ACCESS_DENIED",
+            entityType: "route",
+            entityId: `${request.method} ${routePath}`,
+            afterJson: {
+              missing: error instanceof PermissionDeniedError ? error.missing : decision.missing,
+              scopeType,
+              riskLevel: decision.riskLevel,
+              reason: decision.reason ?? "missing_permission"
+            },
+            ipAddress: request.ip,
+            deviceId: context.deviceId,
+            correlationId: requestCorrelationId(request)
+          });
+        }
+      }
+      throw error;
+    }
   });
 
   // ── Global tenant guard for property-scoped routes (CFG-P0-2 / SEC-1) ──────
@@ -1388,13 +1577,8 @@ export async function buildApiServer() {
   // Mismatch → 404 (never 403) so we don't leak other tenants' property ids.
   // By design, demoStore-only properties (e.g. prop_456) are NOT reachable
   // through this guard: they don't exist in Prisma and the UI never lists them.
-  function pickPropertyId(request: { params: unknown; query: unknown; body: unknown }): string | null {
-    for (const source of [request.params, request.query, request.body]) {
-      const candidate = (source as { propertyId?: unknown } | null | undefined)?.propertyId;
-      if (typeof candidate === "string" && candidate.length > 0) return candidate;
-    }
-    return null;
-  }
+  // `pickPropertyId` is declared above the password guard (Tanda 8a: shared
+  // with the scope hook).
 
   // `grantPropertyAccess` (lib/tenancy.ts) resolves the property and grants
   // access or throws the opaque 404; platform admins get organizationId
@@ -1625,7 +1809,8 @@ export async function buildApiServer() {
     const result = await loginWithEmailPassword({
       email: body.email,
       password: body.password,
-      deviceId: body.deviceId ?? "unknown_device"
+      deviceId: body.deviceId ?? "unknown_device",
+      ipAddress: request.ip
     });
     return {
       token: result.token,
@@ -2735,6 +2920,10 @@ export async function buildApiServer() {
   // /legal-entities/**, PATCH /properties/:propertyId/establishment and the
   // console route /admin/legal-entities/:legalEntityId/verifactu-scope.
   registerStructureRoutes(app);
+  // RBAC por departamento (Tanda 8a · L1): asignaciones, roles, grupos de
+  // propiedades, umbrales, bandeja de aprobaciones, PIN de supervisor, break
+  // glass, informe y registro de accesos (/rbac/*, /approvals*).
+  registerRbacRoutes(app);
   // Coste de personal importado (Tanda 6c · L3): previsualizar, importar y
   // contabilizar el informe de RRHH agregado, revertir lotes e informe
   // centros × meses (GET /payroll/cost-report).
@@ -4593,6 +4782,8 @@ export async function buildApiServer() {
       totalAmount?: number;
       currency?: string;
       primaryGuest?: GuestIdentityFields;
+      discountReasonCode?: string;
+      supervisorAuthorizationId?: string | null;
     };
 
     return createReservation({
@@ -4630,6 +4821,9 @@ export async function buildApiServer() {
       totalAmount: body.totalAmount,
       currency: body.currency,
       primaryGuest: body.primaryGuest,
+      // Tanda 8a (corrector · FSOD-06): the discount reason code and the supervisor PIN reach the service.
+      discountReasonCode: body.discountReasonCode,
+      supervisorAuthorizationId: body.supervisorAuthorizationId ?? null,
       correlationId: createId("corr")
     });
   });
@@ -4676,11 +4870,15 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "reservation", id: params.id });
     // REC-01: the service receives the VALIDATED allowlist (the raw body used
     // to pass through untouched, so unknown keys like `status` reached Prisma).
-    const patch = parse(UpdateReservationSchema, request.body);
+    const parsed = parse(UpdateReservationBodySchema, request.body);
+    // Tanda 8a (corrector · FSOD-06): the two non-column fields travel beside the patch, never inside it.
+    const { discountReasonCode, supervisorAuthorizationId, ...patch } = parsed;
     return patchReservation({
       context: request.userContext,
       reservationId: params.id,
       patch,
+      discountReasonCode,
+      supervisorAuthorizationId: supervisorAuthorizationId ?? null,
       correlationId: createId("corr")
     });
   });
@@ -5102,6 +5300,7 @@ export async function buildApiServer() {
       amount: body.amount,
       clientRequestId: body.clientRequestId ?? null,
       refundMethod: body.refundMethod ?? null,
+      supervisorAuthorizationId: body.supervisorAuthorizationId ?? null,
       correlationId: createId("corr")
     });
   });
@@ -5202,6 +5401,7 @@ export async function buildApiServer() {
       invoiceId: params.id,
       reason: body.reason ?? "Anulación manual",
       refundPayments: body.refundPayments ?? false,
+      supervisorAuthorizationId: body.supervisorAuthorizationId ?? null,
       correlationId: createId("corr")
     });
   });

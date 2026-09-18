@@ -47,7 +47,8 @@ describe("nav-tree · generated tree shape", () => {
     // Tanda 5: 64 items · 80 tabs. Tanda 6 (Finanzas): +2 items (Contabilidad, Proveedores y gastos) · +14 tabs.
     // Tanda 6b (Estructura societaria): +1 item (Configuración) · +4 tabs. Tanda 7 (Reservas › Importar): +1 tab.
     // Tanda 7b (Módulos e integraciones › Modo sombra OPERA): +1 tab. Tanda 7c (Contabilidad › Importar desde Sage 200): +1 tab.
-    assert.equal(NAV_TREE.meta.counts.items, 67);
+    // Tanda 8a (RBAC): +1 item (Hoy › Pendientes de aprobación).
+    assert.equal(NAV_TREE.meta.counts.items, 68);
     assert.equal(NAV_TREE.meta.counts.tabs, 101);
     assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
@@ -131,7 +132,7 @@ describe("nav-tree · lookups", () => {
 
   it("lists every URL the router must register, unique and without /backoffice", () => {
     const urls = allUrls();
-    assert.equal(urls.length, 67 + 101 + 21 + 2);
+    assert.equal(urls.length, 68 + 101 + 21 + 2);
     assert.equal(new Set(urls).size, urls.length);
     assert.ok(urls.every((url) => !url.startsWith("/backoffice")));
   });
@@ -169,15 +170,24 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
   const expected: Record<Exclude<RoleToken, "publico">, { items: number; categories: number }> = {
     // Tanda 6 (Finanzas): Contabilidad and Proveedores y gastos add 2 items for direccion, finanzas and admin.
     // Tanda 6b: Estructura societaria adds 1 item for direccion, finanzas and admin.
-    direccion: { items: 67, categories: 9 },
-    recepcion: { items: 22, categories: 9 },
-    pisos: { items: 5, categories: 3 },
-    mantenimiento: { items: 8, categories: 3 },
-    revenue: { items: 20, categories: 5 },
-    finanzas: { items: 31, categories: 6 },
+    // Tanda 8a (RBAC): Hoy › Pendientes de aprobación (+1 for direccion, recepcion, pisos, mantenimiento,
+    // fnb, revenue, finanzas, propiedad and admin) and the six department tokens of design §5.1
+    // (computed over nav-tree.generated.json, see scripts/check-route-access.mjs).
+    direccion: { items: 68, categories: 9 },
+    recepcion: { items: 23, categories: 9 },
+    pisos: { items: 6, categories: 3 },
+    mantenimiento: { items: 9, categories: 3 },
+    revenue: { items: 21, categories: 5 },
+    finanzas: { items: 32, categories: 6 },
     comercial: { items: 14, categories: 5 },
-    fnb: { items: 5, categories: 2 },
-    admin: { items: 67, categories: 9 }
+    fnb: { items: 6, categories: 2 },
+    administracion: { items: 12, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
+    rrhh: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
+    propiedad: { items: 5, categories: 3 },
+    activos: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
+    auditoria: { items: 65, categories: 9 },
+    sistemas: { items: 4, categories: 1 },
+    admin: { items: 68, categories: 9 }
   };
 
   for (const [token, counts] of Object.entries(expected) as Array<[RoleToken, { items: number; categories: number }]>) {
@@ -190,8 +200,8 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
 
   it("hides the 14 entries that would open 403 in Faranda (§6) and nothing else", () => {
     const visible = countVisible(["direccion"], FARANDA_MODULES);
-    // Tanda 6b: Estructura societaria (core) adds one visible item.
-    assert.equal(visible.items, 61);
+    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another.
+    assert.equal(visible.items, 62);
     const upsells = visibleCategories(["direccion"], FARANDA_MODULES)
       .find((category) => category.key === "comercial")
       ?.items.find((entry) => entry.label === "Ventas adicionales");
@@ -214,8 +224,8 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
         for (const tab of entry.tabs) assert.deepEqual(tab.modulesAny, [], `${tab.label} is gated`);
       }
     }
-    // Tanda 6b: Estructura societaria is core → 51.
-    assert.equal(countVisible(["admin"], []).items, 51);
+    // Tanda 6b: Estructura societaria is core → 51; Tanda 8a: Pendientes de aprobación is core → 52.
+    assert.equal(countVisible(["admin"], []).items, 52);
   });
 
   it("filters tabs by role inside a visible item", () => {
@@ -249,8 +259,12 @@ describe("nav-tree · landing tab (§1/§3)", () => {
     assert.equal(landingTabFor(today, ["revenue"], [])?.url, "/hoy/direccion");
     assert.equal(landingTabFor(today, ["direccion"], [], { templateKey: "owner" })?.url, "/hoy/propietario");
     assert.equal(landingTabFor(today, ["direccion"], [], { templateKey: "manager" })?.url, "/hoy/direccion");
-    // Reception's home is the base screen itself.
+    // Tanda 8a: the owner template is the `propiedad` token and lands on Propietario without a template hint.
+    assert.equal(landingTabFor(today, ["propiedad"], [])?.url, "/hoy/propietario");
+    // Reception's home is the base screen itself; so is the hotel clerk's and the auditor's (their homes are not tabs of Mi día).
     assert.equal(landingTabFor(today, ["recepcion"], []), null);
+    assert.equal(landingTabFor(today, ["administracion"], []), null);
+    assert.equal(landingTabFor(today, ["auditoria"], []), null);
   });
 
   it("lands on the first paintable tab elsewhere, never on a detail sub-URL", () => {
@@ -260,11 +274,16 @@ describe("nav-tree · landing tab (§1/§3)", () => {
     assert.equal(landingTabFor(item("Turno"), ["recepcion"], []), null);
   });
 
-  it("role homes exist in the tree", () => {
+  it("role homes exist in the tree and every authenticated token sees its own home", () => {
     const urls = new Set(allUrls());
     for (const token of ROLE_TOKENS) {
       assert.ok(urls.has(roleHome(token)), `${token} home missing`);
       assert.ok(urls.has(roleHome(token, { mobile: true })), `${token} mobile home missing`);
+      if (token === "publico") continue;
+      const home = findByUrl(roleHome(token));
+      assert.ok(home && (home.kind === "item" || home.kind === "tab"), `${token} home is a menu entry`);
+      const entry = home.kind === "item" ? home.item : home.tab;
+      assert.ok(entry.roles.includes(token), `${token} sees its home ${roleHome(token)}`);
     }
     assert.ok(urls.has(roleHome("direccion", { templateKey: "owner" })));
   });

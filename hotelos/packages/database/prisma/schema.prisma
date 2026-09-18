@@ -278,6 +278,67 @@ enum VerifactuRoute {
   igic
 }
 
+// ---- RBAC por departamento, nivel y ámbito (Tanda 8a · L0, 2026-09-18) ----
+// Design: docs/design/RBAC-DEPARTAMENTOS.md §4.1 (levels × scope), §4.7
+// (thresholds, approvals), §6.1 (data model). Same values as the `as const`
+// arrays of packages/shared/src/rbac-types.ts (tests/rbac-sod-contract pins it).
+
+/// Level of a role template (N1 operative … N7 central administration).
+enum RoleLevel {
+  operative
+  supervisor
+  hotel_director
+  operations_director
+  general_management
+  ownership
+  central_admin
+}
+
+/// Scope of a role assignment: one property, a property group (clúster), the
+/// legal entity (sociedad: every work centre) or the whole organisation.
+enum ScopeType {
+  property
+  property_group
+  legal_entity
+  organization
+}
+
+/// Operations with an amount / percentage threshold (role_thresholds).
+enum ThresholdAction {
+  folio_adjust
+  refund
+  discount
+  invoice_cancel
+  day_reopen
+  rate_change
+  supplier_bill
+  purchase_order
+  payroll
+  capex
+  accounting_export
+}
+
+/// Kind of maker/checker approval request.
+enum ApprovalKind {
+  refund
+  folio_adjust
+  discount
+  rate_change
+  supplier_bill
+  purchase_order
+  payroll
+  capex
+  invoice_cancel
+  day_reopen
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+  expired
+}
+
 model Organization {
   id        String   @id @default(cuid())
   name      String
@@ -290,6 +351,8 @@ model Organization {
   taxId     String?  @map("tax_id")
   country   String   @default("ES")
   createdAt DateTime @default(now()) @map("created_at")
+  /// Tanda 8a: incremented on every write of roles / assignments → invalidates the permission caches of live sessions.
+  rbacVersion Int    @default(0) @map("rbac_version")
 
   @@map("organizations")
 }
@@ -460,6 +523,12 @@ model User {
   accentColor          String    @default("#007aff") @map("accent_color")
   reducedMotion        Boolean   @default(false) @map("reduced_motion")
   highContrast         Boolean   @default(false) @map("high_contrast")
+  // Tanda 8a (RBAC · §5.6 PIN de supervisor): hashed PIN, lockout counters. `status` stays a
+  // String: the break-glass accounts use the new value "emergency" (§4.8).
+  pinHash              String?   @map("pin_hash")
+  pinUpdatedAt         DateTime? @map("pin_updated_at")
+  pinFailedAttempts    Int       @default(0) @map("pin_failed_attempts")
+  pinLockedUntil       DateTime? @map("pin_locked_until")
 
   @@index([organizationId])
   @@map("users")
@@ -480,6 +549,11 @@ model UserInvitation {
   deliveryId      String?   @map("delivery_id")
   deliveryStatus  String?   @map("delivery_status")
   createdAt       DateTime  @default(now()) @map("created_at")
+  // Tanda 8a (RBAC · §5.5): invitations carry the scope of the assignment they create on
+  // acceptance (scopeRef = property / group / legal entity / organisation id) and the inviter.
+  scopeType       ScopeType? @map("scope_type")
+  scopeRef        String?   @map("scope_ref")
+  invitedByUserId String?   @map("invited_by_user_id")
 
   @@index([userId])
   @@index([organizationId, createdAt])
@@ -2822,6 +2896,10 @@ model PosOrder {
   cashClosureId  String?   @map("cash_closure_id")
   taxTotal       Decimal   @default(0) @map("tax_total") @db.Decimal(12, 2)
   businessDate   DateTime? @map("business_date") @db.Date
+  // Tanda 8a (pos.order.void · §4.6): a voided ticket is a record, never a delete.
+  voidedAt       DateTime? @map("voided_at")
+  voidedByUserId String?   @map("voided_by_user_id")
+  voidReasonCode String?   @map("void_reason_code")
 
   @@index([propertyId, status])
   @@index([propertyId, closedAt])
@@ -2850,6 +2928,13 @@ model Role {
   name           String
   /// Tanda 4 (AUTH-07): role template this role was created from ('owner' | 'manager' | 'reception' | ...); null = custom role.
   templateKey    String?  @map("template_key")
+  // Tanda 8a (RBAC · §4.2, §6.5): level and department of the template, the template version the
+  // role was last converged to (0 = before versioning; upgradeRoleTemplate applies the revocations
+  // of newer versions) and `managed` (false = custom role the backfill never touches).
+  level           RoleLevel? 
+  department      String?
+  templateVersion Int      @default(0) @map("template_version")
+  managed         Boolean  @default(true)
 
   @@unique([organizationId, name])
   @@index([organizationId, templateKey])
@@ -2881,6 +2966,159 @@ model UserPropertyRole {
 
   @@unique([userId, propertyId, roleId])
   @@map("user_property_roles")
+}
+
+// ---- RBAC por departamento, nivel y ámbito (Tanda 8a · L0, 2026-09-18) ----
+// docs/design/RBAC-DEPARTAMENTOS.md §6.1. No foreign keys, like the other RBAC
+// tables (roles / permissions / role_permissions / user_property_roles):
+// tenancy and referential checks live in the services. user_property_roles is
+// kept (dual-read with user_role_assignments) until the L6 cut-over.
+
+/// Clúster of properties (Galicia = LT + RA, Asturias-Cantabria = PG + MC + AS…): scope of an assignment.
+model PropertyGroup {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  code           String
+  name           String
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@map("property_groups")
+}
+
+model PropertyGroupMember {
+  id              String   @id @default(cuid())
+  propertyGroupId String   @map("property_group_id")
+  propertyId      String   @map("property_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([propertyGroupId, propertyId])
+  @@index([propertyId])
+  @@map("property_group_members")
+}
+
+/// Assignment of a role to a user in a scope (template × scope). Revocation is a row update
+/// (revokedAt / revokedByUserId / reason), never a delete: the row is the audit trail of the access.
+model UserRoleAssignment {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  roleId          String    @map("role_id")
+  scopeType       ScopeType @map("scope_type")
+  propertyId      String?   @map("property_id")
+  propertyGroupId String?   @map("property_group_id")
+  legalEntityId   String?   @map("legal_entity_id")
+  organizationId  String    @map("organization_id")
+  validFrom       DateTime  @default(now()) @map("valid_from")
+  validTo         DateTime? @map("valid_to")
+  grantedByUserId String?   @map("granted_by_user_id")
+  revokedAt       DateTime? @map("revoked_at")
+  revokedByUserId String?   @map("revoked_by_user_id")
+  reason          String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([userId, roleId, scopeType, propertyId, propertyGroupId, legalEntityId])
+  @@index([userId, revokedAt])
+  @@index([organizationId, scopeType])
+  @@index([roleId])
+  @@map("user_role_assignments")
+}
+
+/// Amount / percentage limit of an action for a role (roleId) or a level (custom roles), per organisation.
+model RoleThreshold {
+  id                     String          @id @default(cuid())
+  organizationId         String          @map("organization_id")
+  roleId                 String?         @map("role_id")
+  level                  RoleLevel?
+  action                 ThresholdAction
+  tier                   String
+  maxAmount              Decimal?        @map("max_amount") @db.Decimal(14, 2)
+  maxPct                 Decimal?        @map("max_pct") @db.Decimal(5, 2)
+  currency               String          @default("EUR")
+  requiresSecondApproval Boolean         @default(false) @map("requires_second_approval")
+  createdAt              DateTime        @default(now()) @map("created_at")
+  updatedAt              DateTime        @default(now()) @updatedAt @map("updated_at")
+
+  @@index([organizationId, action])
+  @@index([roleId])
+  @@map("role_thresholds")
+}
+
+/// Maker/checker request (§4.7): whoever requests never decides — CHECK constraints
+/// approval_requests_no_self_decision / approval_requests_no_self_second in migration
+/// 20260918100000 enforce it in the database too.
+model ApprovalRequest {
+  id                   String         @id @default(cuid())
+  organizationId       String         @map("organization_id")
+  propertyId           String?        @map("property_id")
+  kind                 ApprovalKind
+  entityType           String         @map("entity_type")
+  entityId             String         @map("entity_id")
+  amount               Decimal?       @db.Decimal(14, 2)
+  currency             String         @default("EUR")
+  reasonCode           String         @map("reason_code")
+  reasonText           String?        @map("reason_text")
+  payloadJson          Json?          @map("payload_json")
+  requestedByUserId    String         @map("requested_by_user_id")
+  status               ApprovalStatus @default(pending)
+  decidedByUserId      String?        @map("decided_by_user_id")
+  decidedAt            DateTime?      @map("decided_at")
+  decisionNote         String?        @map("decision_note")
+  secondApproverUserId String?        @map("second_approver_user_id")
+  secondDecidedAt      DateTime?      @map("second_decided_at")
+  consumedAt           DateTime?      @map("consumed_at")
+  consumedByUserId     String?        @map("consumed_by_user_id")
+  expiresAt            DateTime       @map("expires_at")
+  createdAt            DateTime       @default(now()) @map("created_at")
+
+  @@index([organizationId, status, kind])
+  @@index([entityType, entityId])
+  @@index([requestedByUserId, createdAt])
+  @@map("approval_requests")
+}
+
+/// Supervisor PIN authorisation (§5.6): one action, 60 s, actor ≠ authorizer.
+model SupervisorAuthorization {
+  id               String    @id @default(cuid())
+  organizationId   String    @map("organization_id")
+  propertyId       String?   @map("property_id")
+  actorUserId      String    @map("actor_user_id")
+  authorizerUserId String    @map("authorizer_user_id")
+  permissionKey    String    @map("permission_key")
+  entityType       String    @map("entity_type")
+  entityId         String    @map("entity_id")
+  amount           Decimal?  @db.Decimal(14, 2)
+  reasonCode       String    @map("reason_code")
+  expiresAt        DateTime  @map("expires_at")
+  usedAt           DateTime? @map("used_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([organizationId, actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@map("supervisor_authorizations")
+}
+
+/// Break-glass session (§4.8): opened by a real DG / Adm session on an emergency account,
+/// four hours max, reviewed within 24 h.
+model BreakGlassSession {
+  id               String    @id @default(cuid())
+  organizationId   String    @map("organization_id")
+  openedByUserId   String    @map("opened_by_user_id")
+  accountUserId    String    @map("account_user_id")
+  sessionId        String?   @unique @map("session_id")
+  reason           String
+  ticket           String?
+  openedAt         DateTime  @default(now()) @map("opened_at")
+  closesAt         DateTime  @map("closes_at")
+  closedAt         DateTime? @map("closed_at")
+  closedByUserId   String?   @map("closed_by_user_id")
+  reviewedByUserId String?   @map("reviewed_by_user_id")
+  reviewedAt       DateTime? @map("reviewed_at")
+
+  @@index([organizationId, openedAt])
+  @@index([accountUserId, closedAt])
+  @@map("break_glass_sessions")
 }
 
 model RoomType {
@@ -3504,6 +3742,8 @@ model Payment {
   /// Cobro que este registro deshace (devolución / anulación): importe positivo, asiento inverso.
   reversalOfId    String?       @map("reversal_of_id")
   journalEntryId  String?       @map("journal_entry_id")
+  /// Tanda 8a (SoD dinámica): who captured the payment (cashier ≠ refund approver).
+  capturedByUserId String?      @map("captured_by_user_id")
 
   folio        Folio         @relation(fields: [folioId], references: [id], onDelete: Cascade)
   invoice      Invoice?      @relation("InvoicePayments", fields: [invoiceId], references: [id], onDelete: SetNull)
@@ -3582,6 +3822,9 @@ model Invoice {
   // immutable by trigger invoices_issuer_inmutable (migration 20260916100000).
   legalEntityId       String?       @map("legal_entity_id")
   installationId      String?       @map("installation_id")
+  // Tanda 8a (SoD dinámica, RD 1007/2023 art. 11): issuer ≠ canceller.
+  issuedByUserId      String?       @map("issued_by_user_id")
+  cancelledByUserId   String?       @map("cancelled_by_user_id")
 
   folio               Folio?        @relation("FolioInvoices", fields: [folioId], references: [id], onDelete: SetNull)
   payments            Payment[]     @relation("InvoicePayments")
@@ -3820,6 +4063,8 @@ model SupplierBill {
   cancelledAt          DateTime? @map("cancelled_at")
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
+  /// Tanda 8a (SoD dinámica): who registered the bill (registrar ≠ approver ≠ payer).
+  createdByUserId      String?   @map("created_by_user_id")
 
   lines                SupplierBillLine[]
 
@@ -4195,6 +4440,8 @@ model CapexProject {
   startDate       DateTime? @map("start_date") @db.Date
   targetEndDate   DateTime? @map("target_end_date") @db.Date
   ownerApprovedBy String?   @map("owner_approved_by")
+  /// Tanda 8a (SoD dinámica): proposer ≠ approver (asset.capex.approve).
+  createdByUserId String?   @map("created_by_user_id")
 
   @@index([propertyId, status])
   @@map("capex_projects")
@@ -4788,6 +5035,12 @@ model NightAuditRun {
   errorMessage    String?   @map("error_message")
   correlationId   String?   @map("correlation_id")
   createdAt       DateTime  @default(now()) @map("created_at")
+  // Tanda 8a (SoD dinámica · §4.7): who ran the audit (startedBy) ≠ who reviewed it; reopen with a reason.
+  reviewedByUserId String?  @map("reviewed_by_user_id")
+  reviewedAt       DateTime? @map("reviewed_at")
+  reopenedByUserId String?  @map("reopened_by_user_id")
+  reopenedAt       DateTime? @map("reopened_at")
+  reopenReasonCode String?  @map("reopen_reason_code")
 
   @@unique([propertyId, businessDate])
   @@index([propertyId, status])
@@ -5148,6 +5401,10 @@ model PayrollPeriod {
   reversedAt              DateTime? @map("reversed_at")
   paymentJournalEntryId   String?   @map("payment_journal_entry_id")
   paidAt                  DateTime? @map("paid_at")
+  // Tanda 8a (SoD dinámica · §4.7): RRHH calculates, general management approves, then it is paid.
+  calculatedByUserId      String?   @map("calculated_by_user_id")
+  approvedByUserId        String?   @map("approved_by_user_id")
+  approvedAt              DateTime? @map("approved_at")
 
   @@unique([organizationId, periodCode, propertyId])
   @@index([organizationId, status])

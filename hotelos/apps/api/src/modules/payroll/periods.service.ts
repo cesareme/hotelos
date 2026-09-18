@@ -5,8 +5,24 @@ import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-er
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { ledger, type Db } from "../treasury/ledger-bridge.js";
 import { dayUtc, dec, isoDay, money, moneyNumber, round2, sum, type Dec } from "../treasury/money.js";
-import { PAYROLL_WRITE_KEYS, requireAnyPermission } from "../treasury/permissions.js";
+import { PAYROLL_WRITE_KEYS, assertSeparationOfDuties, requireAnyPermission, sodAuditFields } from "../treasury/permissions.js";
+import { requirePermissions } from "../auth/auth.service.js";
 import { requireWithholdingWorkCenter, workCenterRequiredError } from "../accounting/posting-rules/withholding-tax.js";
+
+// Tanda 8a (RBAC · L2, design §4.7 «Nómina», decision D10): RRHH prepares
+// (createPeriod / calculatePeriod with payroll.manage; calculatedByUserId is
+// stamped), general management approves the monthly register
+// (approvePeriod with payroll.approve; approver ≠ calculator → 409
+// RBAC_SOD_CONFLICT calculator_ne_approver; status `approved`), dirección
+// financiera pays (payPeriod from the route with payables.pay; an unapproved
+// period → 409 PAYROLL_NOT_APPROVED; payer ≠ approver → 409). Recalculating
+// resets the approval. INTERNAL USE WITHOUT CONTEXT: only the bank
+// reconciliation (modules/banking/reconciliation.service.ts, a bank movement
+// matched to the payroll payment) calls payPeriod without a context; that
+// path records the payment of money that already left the bank, so it is
+// not gated here but it is audited as a system event with `approved: false`
+// when the period was never approved — moving it behind the approval is the
+// integrator's call (the caller module is outside this lot).
 
 // ---- Payroll periods (lote tesoreria-banca) ----
 //
@@ -60,7 +76,7 @@ export type PayrollPeriodRecord = {
   periodCode: string;
   startDate: string;
   endDate: string;
-  status: "open" | "calculated" | "exported" | "closed";
+  status: "open" | "calculated" | "exported" | "approved" | "closed";
   totalGross: number;
   totalNet: number;
   totalIrpf: number;
@@ -73,6 +89,10 @@ export type PayrollPeriodRecord = {
   reversedAt: string | null;
   paymentJournalEntryId: string | null;
   paidAt: string | null;
+  // Tanda 8a (SoD): who calculated, who approved.
+  calculatedByUserId: string | null;
+  approvedByUserId: string | null;
+  approvedAt: string | null;
 };
 
 export type PayrollSlipRecord = {
@@ -103,7 +123,7 @@ export type PayrollLineRecord = {
 };
 
 function isPeriodStatus(s: string): s is PayrollPeriodRecord["status"] {
-  return s === "open" || s === "calculated" || s === "exported" || s === "closed";
+  return s === "open" || s === "calculated" || s === "exported" || s === "approved" || s === "closed";
 }
 
 function isSlipStatus(s: string): s is PayrollSlipRecord["status"] {
@@ -136,7 +156,10 @@ function mapPeriod(row: PeriodRow): PayrollPeriodRecord {
     postedAt: row.postedAt?.toISOString() ?? null,
     reversedAt: row.reversedAt?.toISOString() ?? null,
     paymentJournalEntryId: row.paymentJournalEntryId,
-    paidAt: row.paidAt?.toISOString() ?? null
+    paidAt: row.paidAt?.toISOString() ?? null,
+    calculatedByUserId: row.calculatedByUserId ?? null,
+    approvedByUserId: row.approvedByUserId ?? null,
+    approvedAt: row.approvedAt?.toISOString() ?? null
   };
 }
 
@@ -427,7 +450,11 @@ export async function calculatePeriod(input: { context: UserContext; periodId: s
         journalEntryIds,
         reversalJournalEntryIds: Array.from(new Set([...period.reversalJournalEntryIds, ...reversedIds])),
         postedAt: journalEntryIds.length > 0 ? now : null,
-        reversedAt: reversedIds.length > 0 ? now : period.reversedAt
+        reversedAt: reversedIds.length > 0 ? now : period.reversedAt,
+        // Tanda 8a (SoD): the calculator is stamped; a recalculation invalidates a previous approval.
+        calculatedByUserId: input.context.userId,
+        approvedByUserId: null,
+        approvedAt: null
       }
     });
     return { updated, slipIds, journalEntryIds, reversedIds };
@@ -459,6 +486,51 @@ export async function calculatePeriod(input: { context: UserContext; periodId: s
   return { period: record, slipIds: result.slipIds, journalEntryIds: result.journalEntryIds, reversedJournalEntryIds: result.reversedIds };
 }
 
+// ---------------------------------------------------------------------------
+// Tanda 8a · approval of the monthly register (payroll.approve)
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /payroll/periods/:id/approve — general management approves the
+ * calculated register: `payroll.approve`, on a calculated / exported period
+ * that is not paid, by someone other than the calculator (409
+ * RBAC_SOD_CONFLICT calculator_ne_approver; a period calculated before the
+ * migration has no calculator: «autor desconocido», annotated). Writes
+ * approvedByUserId / approvedAt and status `approved`; audit
+ * PAYROLL_PERIOD_APPROVED.
+ */
+export async function approvePeriod(input: { context: UserContext; periodId: string; note?: string; correlationId: string }): Promise<PayrollPeriodRecord> {
+  requirePermissions(input.context, ["payroll.approve"]);
+  const period = await prisma.payrollPeriod.findUnique({ where: { id: input.periodId } });
+  if (!period) throw new NotFoundError("El periodo de nómina no existe.");
+  if (period.paidAt) throw new ConflictError(`El periodo ${period.periodCode} ya está pagado.`, { code: "PAYROLL_PERIOD_PAID" });
+  if (period.status === "closed") throw new ConflictError(`El periodo ${period.periodCode} está cerrado.`, { code: "PAYROLL_PERIOD_CLOSED" });
+  if (period.status === "open" || period.journalEntryIds.length === 0) {
+    throw new ConflictError(`El periodo ${period.periodCode} no está calculado ni contabilizado.`, { code: "PAYROLL_PERIOD_NOT_CALCULATED" });
+  }
+  if (period.approvedByUserId) {
+    throw new ConflictError(`El periodo ${period.periodCode} ya está aprobado.`, { code: "PAYROLL_PERIOD_ALREADY_APPROVED", approvedByUserId: period.approvedByUserId, approvedAt: period.approvedAt?.toISOString() ?? null });
+  }
+  const sod = assertSeparationOfDuties(input.context, period.calculatedByUserId ?? null, "calculator_ne_approver", { periodId: period.id, periodCode: period.periodCode });
+  const approvedAt = new Date();
+  const updated = await prisma.payrollPeriod.update({ where: { id: period.id }, data: { status: "approved", approvedByUserId: input.context.userId, approvedAt } });
+  const record = mapPeriod(updated);
+  recordAuditEvent({
+    organizationId: period.organizationId,
+    propertyId: period.propertyId ?? undefined,
+    actorUserId: input.context.userId,
+    actorType: "user",
+    action: "PAYROLL_PERIOD_APPROVED",
+    entityType: "payroll_period",
+    entityId: period.id,
+    beforeJson: { status: period.status, calculatedByUserId: period.calculatedByUserId ?? null, approvedByUserId: null },
+    afterJson: { status: record.status, approvedByUserId: input.context.userId, approvedAt: approvedAt.toISOString(), totalNet: record.totalNet, note: input.note ?? null, ...sodAuditFields(sod) },
+    deviceId: input.context.deviceId,
+    correlationId: input.correlationId
+  });
+  return record;
+}
+
 export type PayPeriodInput = {
   context?: UserContext;
   periodId: string;
@@ -470,12 +542,45 @@ export type PayPeriodInput = {
   db?: Db;
 };
 
+export type PayrollPaymentGate = ReturnType<typeof assertSeparationOfDuties> & {
+  /** Set when a platform / break-glass session paid a register nobody approved (audited exception, engine mode 3). */
+  approvalBypassed: "platform_admin" | "break_glass" | null;
+};
+
+/**
+ * Tanda 8a · the pay gate, separated for the unit tests: `payables.pay` on
+ * the actor, an approved period (409 PAYROLL_NOT_APPROVED) and payer ≠
+ * approver (409 RBAC_SOD_CONFLICT approver_ne_payer). A platform admin or a
+ * break-glass session may pay an unapproved register — the same audited
+ * exception the L1 engine grants (assertApprovedOrAuthorized mode 3) and the
+ * brief keeps for the demo super-user — flagged `approvalBypassed` so the
+ * trail shows it. Pure except the key check.
+ */
+export function assertPayrollPaymentAuthorized(
+  context: UserContext,
+  period: { id: string; periodCode: string; approvedByUserId: string | null }
+): PayrollPaymentGate {
+  requirePermissions(context, ["payables.pay"]);
+  if (!period.approvedByUserId) {
+    const privileged = context.isPlatformAdmin === true ? "platform_admin" : typeof context.breakGlassSessionId === "string" && context.breakGlassSessionId.length > 0 ? "break_glass" : null;
+    if (!privileged) {
+      throw new ConflictError(`El registro de nómina ${period.periodCode} no está aprobado.`, { code: "PAYROLL_NOT_APPROVED", periodId: period.id });
+    }
+    return { rule: "approver_ne_payer", authorUserId: null, authorUnknown: true, privileged, approvalBypassed: privileged };
+  }
+  return { ...assertSeparationOfDuties(context, period.approvedByUserId, "approver_ne_payer", { periodId: period.id, periodCode: period.periodCode }), approvalBypassed: null };
+}
+
 /** Pago de la nómina del periodo: D 465 / H 572 por el total líquido. Idempotente. */
 export async function payPeriod(input: PayPeriodInput): Promise<PayrollPeriodRecord> {
-  if (input.context) requireAnyPermission(input.context, PAYROLL_WRITE_KEYS);
   const db = input.db ?? prisma;
   const period = await db.payrollPeriod.findUnique({ where: { id: input.periodId } });
   if (!period) throw new NotFoundError("El periodo de nómina no existe.");
+  // Tanda 8a: with a context (the route) the pay gate applies BEFORE the
+  // idempotent short-circuit (a user without payables.pay never reads a
+  // period through this path); without one (bank reconciliation, see the
+  // module header) the payment is recorded and audited as a system event.
+  const paySod = input.context ? assertPayrollPaymentAuthorized(input.context, { id: period.id, periodCode: period.periodCode, approvedByUserId: period.approvedByUserId ?? null }) : null;
   if (period.paymentJournalEntryId && period.paidAt) return mapPeriod(period);
   if (period.status === "open" || period.journalEntryIds.length === 0) {
     throw new ConflictError(`El periodo ${period.periodCode} no está calculado ni contabilizado.`, { code: "PAYROLL_PERIOD_NOT_CALCULATED" });
@@ -510,7 +615,21 @@ export async function payPeriod(input: PayPeriodInput): Promise<PayrollPeriodRec
       action: "PAYROLL_PERIOD_PAID",
       entityType: "payroll_period",
       entityId: period.id,
-      afterJson: { paidAt: paidAt.toISOString(), journalEntryId: entry.id, totalNet: money(net) },
+      afterJson: { paidAt: paidAt.toISOString(), journalEntryId: entry.id, totalNet: money(net), paidByUserId: input.context.userId, approvedByUserId: period.approvedByUserId ?? null, approvalBypassed: paySod?.approvalBypassed ?? null, ...(paySod ? sodAuditFields(paySod) : {}) },
+      correlationId: input.correlationId
+    });
+  } else {
+    // Internal path (bank reconciliation): never silent — the trail shows the
+    // payment was recorded from a bank movement and whether the register had
+    // been approved (Tanda 8a; QC-06).
+    recordAuditEvent({
+      organizationId: period.organizationId,
+      propertyId: period.propertyId ?? undefined,
+      actorType: "system",
+      action: "PAYROLL_PERIOD_PAID",
+      entityType: "payroll_period",
+      entityId: period.id,
+      afterJson: { paidAt: paidAt.toISOString(), journalEntryId: entry.id, totalNet: money(net), source: "bank_reconciliation", approved: Boolean(period.approvedByUserId), approvedByUserId: period.approvedByUserId ?? null },
       correlationId: input.correlationId
     });
   }

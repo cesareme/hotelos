@@ -2,6 +2,8 @@
 // code, and the global error handler (server.ts) can map them to a clean
 // JSON response instead of a generic 500.
 
+import type { ApprovalKind, RbacErrorCode, ThresholdTier } from "@hotelos/shared";
+
 export class HttpError extends Error {
   readonly statusCode: number;
   readonly expose: boolean;
@@ -41,9 +43,35 @@ export class NotFoundError extends HttpError {
 }
 
 export class ConflictError extends HttpError {
-  /** `details` is forwarded on the 409 body (e.g. { code: "RESERVATION_CODE_CONFLICT" }). */
+  /** `details` is forwarded on the 409 body (e.g. { code: "RESERVATION_CODE_CONFLICT" }, { code: "RBAC_SOD_CONFLICT", pair, templates }). */
   constructor(message = "Conflict", details?: unknown) {
     super(409, message, true, details);
+  }
+}
+
+/**
+ * Tanda 8a (RBAC · L1): a 403 of the access engine with a machine-readable
+ * `details.code` (RbacErrorCode of packages/shared: RBAC_LEVEL_EXCEEDED,
+ * RBAC_SCOPE_EXCEEDED, RBAC_SELF_ASSIGNMENT, RBAC_BREAK_GLASS_FORBIDDEN,
+ * SUPERVISOR_PIN_INVALID, BREAK_GLASS_REAUTH_REQUIRED…) so the front branches
+ * on the code instead of parsing the Spanish message. Extra `details` fields
+ * are merged after the code (never overwrite it).
+ */
+export class RbacForbiddenError extends HttpError {
+  constructor(message: string, code: RbacErrorCode, details?: object) {
+    super(403, message, true, { ...(details ?? {}), code });
+  }
+}
+
+/**
+ * Tanda 8a (RBAC · L1, §4.7): the operation needs a prior approval
+ * (approval_requests) — 409 with `details.code = "APPROVAL_REQUIRED"`, the
+ * kind, the amount tier and, when the caller already opened a request that
+ * does not match yet, its id.
+ */
+export class ApprovalRequiredError extends HttpError {
+  constructor(message: string, details: { kind: ApprovalKind; tier: ThresholdTier; requestId?: string }) {
+    super(409, message, true, { code: "APPROVAL_REQUIRED", kind: details.kind, tier: details.tier, ...(details.requestId ? { requestId: details.requestId } : {}) });
   }
 }
 

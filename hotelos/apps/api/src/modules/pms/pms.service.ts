@@ -1,5 +1,6 @@
 import type { GuestIdentityFields } from "@hotelos/shared";
-import type { ReservationStatus } from "@hotelos/shared";
+import type { ReservationStatus, ThresholdTier } from "@hotelos/shared";
+import { RESERVATION_IMPORT_BOOKING_SOURCE_PREFIX } from "@hotelos/shared";
 import { prisma } from "@hotelos/database";
 // Value import (not the type-only re-export of @hotelos/database): `Prisma.DbNull`
 // is required to clear nullable Json columns. Same generated client as the
@@ -24,6 +25,10 @@ import { queueSesBajaForReservation } from "../compliance/compliance.service.js"
 import { getReservationBalance, getFolioBalance } from "../folio/folio.service.js";
 import { createSystemHousekeepingTask } from "../housekeeping/housekeeping.service.js";
 import { getCurrentBusinessDate } from "../night-audit/night-audit.service.js";
+import { assertApprovedOrAuthorized, type AuthorizationOutcome } from "../rbac/approvals.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
+import { consumeSupervisorAuthorization } from "../rbac/supervisor.service.js";
+import { getThresholds } from "../rbac/thresholds.service.js";
 import { canAssignRoom, type RoomAssignmentInput, type RoomAssignmentValidation } from "./inventory.engine.js";
 
 type ReservationRow = NonNullable<Awaited<ReturnType<typeof prisma.reservation.findUnique>>>;
@@ -544,6 +549,198 @@ export async function getReservation(id: string): Promise<ReservationRecord> {
 }
 
 /** First argument that is a non-blank string, trimmed; undefined otherwise. */
+// ---------------------------------------------------------------------------
+// Tanda 8a (RBAC · L2, design §4.6 / §4.7): discount and override gates
+// ---------------------------------------------------------------------------
+
+/** Catálogo de motivos de descuento (discount_reason): obligatorio en todo descuento. */
+export const DISCOUNT_REASON_CODES = {
+  loyalty: "Cliente habitual / fidelización",
+  corporate_agreement: "Acuerdo de empresa",
+  service_recovery: "Compensación por incidencia",
+  long_stay: "Estancia larga",
+  group_rate: "Tarifa de grupo",
+  promotion: "Promoción vigente",
+  walk_in: "Walk-in / última hora",
+  other: "Otro motivo (indicar en el texto)",
+  /** No discountReasonCode reached the service (the operator sent none); audited as reasonMissing. */
+  unspecified: "Motivo no indicado (pendiente en el formulario)"
+} as const;
+export type DiscountReasonCode = keyof typeof DISCOUNT_REASON_CODES;
+
+/** Catálogo de motivos de override (rate_override_reason): overbooking consentido, tarifa fuera de banda, restricción. */
+export const OVERRIDE_REASON_CODES = {
+  overbooking_authorized: "Overbooking autorizado por dirección",
+  vip: "Huésped VIP",
+  group_block: "Bloqueo de grupo",
+  channel_error: "Error de canal / cupo",
+  maintenance_release: "Habitación liberada de mantenimiento",
+  other: "Otro motivo (indicar en el texto)"
+} as const;
+export type OverrideReasonCode = keyof typeof OVERRIDE_REASON_CODES;
+
+/** What the audit trail records about the price of a reservation write (`afterJson.discount`). */
+export type ReservationDiscountAudit = {
+  quotedTotal: number | null;
+  requestedTotal: number | null;
+  discountAmount: number;
+  discountPct: number;
+  /** none = at or above the published price; T1 = operative band; T2 = supervisor band; above = explicit approval. */
+  band: "none" | "T1" | "T2" | "above";
+  reasonCode: string | null;
+  /** True when no discountReasonCode reached the service (the route forwards it since corrector 8a · FSOD-06) — the audit keeps it visible. */
+  reasonMissing: boolean;
+  authorization: { mode: AuthorizationOutcome["mode"]; tier: ThresholdTier; requestId: string | null; supervisorAuthorizationId: string | null } | null;
+  /** Why no evaluation took place. */
+  skipped: "import" | "no_total" | "no_published_rate" | null;
+};
+
+function pct2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** Discount percentage of `requested` against `quoted` (0 when at or above the quote). Pure. */
+export function discountPctOf(quoted: number, requested: number): number {
+  if (!Number.isFinite(quoted) || quoted <= 0 || !Number.isFinite(requested)) return 0;
+  const pct = ((quoted - requested) / quoted) * 100;
+  return pct <= 0 ? 0 : pct2(pct);
+}
+
+/**
+ * Discount gate of a reservation write (create / PATCH with totalAmount):
+ *   · import flow (bookingSource `import:<id>`, Tanda 7) → not evaluated (the
+ *     PMS total of the row is not a discount by the actor), annotated;
+ *   · no totalAmount / no published rate for the stay → not evaluated, annotated;
+ *   · discount ≤ discountPctT1 → `pms.reservation.discount` + reason code;
+ *   · ≤ discountPctT2 → the actor's `pms.reservation.override` within its tier
+ *     (engine implicit mode), an approved discount request of another
+ *     person, or a supervisor PIN (assertApprovedOrAuthorized kind discount,
+ *     amount = money discounted);
+ *   · above discountPctT2 → explicit approval only (request or the actor's
+ *     own override within tier; a supervisor PIN is not accepted).
+ * Fail-secure: without the discount / override key any discount is a 403.
+ */
+export async function assertReservationDiscountAuthorized(
+  input: {
+    context: UserContext;
+    propertyId: string;
+    entityType: "reservation" | "reservation_create";
+    entityId: string;
+    quotedTotal: number | null;
+    requestedTotal: number | undefined;
+    discountReasonCode?: string | null;
+    supervisorAuthorizationId?: string | null;
+    importFlow?: boolean;
+  },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<ReservationDiscountAudit> {
+  const base: ReservationDiscountAudit = { quotedTotal: input.quotedTotal, requestedTotal: input.requestedTotal ?? null, discountAmount: 0, discountPct: 0, band: "none", reasonCode: null, reasonMissing: false, authorization: null, skipped: null };
+  if (input.importFlow) return { ...base, skipped: "import" };
+  if (input.requestedTotal === undefined) return { ...base, skipped: "no_total" };
+  if (input.quotedTotal === null || input.quotedTotal <= 0) return { ...base, skipped: "no_published_rate" };
+  const discountPct = discountPctOf(input.quotedTotal, input.requestedTotal);
+  if (discountPct === 0) return base;
+  const discountAmount = pct2(input.quotedTotal - input.requestedTotal);
+  const held = new Set(input.context.permissions);
+  if (!held.has("pms.reservation.discount") && !held.has("pms.reservation.override")) {
+    requirePermissions(input.context, ["pms.reservation.discount"]);
+  }
+  // The reason code is mandatory: a provided code must be in the catalogue
+  // (400). A MISSING code is the transitional case — the HTTP route
+  // (server.ts) and the reservation schemas do not forward
+  // `discountReasonCode` yet — so it is recorded as `unspecified` with
+  // `reasonMissing: true` in the audit instead of refusing every negotiated
+  // price of the demo; the band gate below is never relaxed.
+  const provided = input.discountReasonCode ?? null;
+  if (provided !== null && !(provided in DISCOUNT_REASON_CODES)) {
+    throw new BadRequestError(`discountReasonCode no válido: usa uno de ${Object.keys(DISCOUNT_REASON_CODES).filter((key) => key !== "unspecified").join(", ")}.`);
+  }
+  const reasonCode: DiscountReasonCode = provided === null ? "unspecified" : (provided as DiscountReasonCode);
+  const reasonMissing = provided === null;
+  const thresholds = await getThresholds(input.context.organizationId, deps);
+  if (discountPct <= thresholds.discountPctT1) {
+    return { ...base, discountAmount, discountPct, band: "T1", reasonCode, reasonMissing };
+  }
+  const band: ReservationDiscountAudit["band"] = discountPct <= thresholds.discountPctT2 ? "T2" : "above";
+  const outcome = await assertApprovedOrAuthorized(
+    {
+      context: input.context,
+      kind: "discount",
+      entityType: input.entityType,
+      entityId: input.entityId,
+      propertyId: input.propertyId,
+      amount: discountAmount.toFixed(2),
+      baseAuthorUserId: null,
+      // Above the supervisor band the approval is explicit: no PIN.
+      supervisorAuthorizationId: band === "T2" ? (input.supervisorAuthorizationId ?? null) : null
+    },
+    deps
+  );
+  return {
+    ...base,
+    discountAmount,
+    discountPct,
+    band,
+    reasonCode,
+    reasonMissing,
+    authorization: { mode: outcome.mode, tier: outcome.tier, requestId: outcome.requestId ?? null, supervisorAuthorizationId: outcome.supervisorAuthorizationId ?? null }
+  };
+}
+
+/**
+ * Overbooking gate: `allowOverbooking: true` outside the import flow needs
+ * `pms.reservation.override` on the actor or a single-use supervisor
+ * authorisation for that key bound to (entityType, entityId). Returns how it
+ * was authorised for the audit; 403 otherwise (fail-secure).
+ */
+export async function assertOverbookingAuthorized(
+  input: { context: UserContext; entityType: string; entityId: string; supervisorAuthorizationId?: string | null; importFlow?: boolean },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<{ mode: "import" | "override_key" | "supervisor"; supervisorAuthorizationId: string | null; authorizerUserId: string | null }> {
+  if (input.importFlow) return { mode: "import", supervisorAuthorizationId: null, authorizerUserId: null };
+  if (input.context.permissions.includes("pms.reservation.override")) return { mode: "override_key", supervisorAuthorizationId: null, authorizerUserId: null };
+  if (input.supervisorAuthorizationId) {
+    const authorization = await consumeSupervisorAuthorization(
+      input.supervisorAuthorizationId,
+      { actorUserId: input.context.userId, permissionKey: "pms.reservation.override", entityType: input.entityType, entityId: input.entityId },
+      deps
+    );
+    if (authorization) return { mode: "supervisor", supervisorAuthorizationId: authorization.id, authorizerUserId: authorization.authorizerUserId };
+  }
+  // No key, no valid authorisation: the standard 403 of the missing override key.
+  requirePermissions(input.context, ["pms.reservation.override"]);
+  return { mode: "override_key", supervisorAuthorizationId: null, authorizerUserId: null };
+}
+
+/** Published quote of the stay for the discount gate: lowest published price per night × rooms; null without a published rate. */
+async function quotedTotalForStay(input: { propertyId: string; arrivalDate: string; departureDate: string; roomTypeId: string | null | undefined; ratePlanId?: string | null; roomsCount: number }): Promise<number | null> {
+  if (!input.roomTypeId) return null;
+  let items: AvailabilityQuoteItem[];
+  try {
+    items = await quoteAvailability({
+      propertyId: input.propertyId,
+      arrivalDate: input.arrivalDate,
+      departureDate: input.departureDate,
+      // Occupancy is irrelevant for the published price: quote the type itself.
+      adults: 1,
+      roomTypeId: input.roomTypeId,
+      ...(input.ratePlanId ? { ratePlanId: input.ratePlanId } : {})
+    });
+  } catch (error) {
+    // A type / plan that is not of this property has no published rate here;
+    // the reservation writers keep answering their own 400 for the foreign id.
+    if (error instanceof NotFoundError || error instanceof BadRequestError) return null;
+    throw error;
+  }
+  const item = items.find((candidate) => candidate.roomTypeId === input.roomTypeId);
+  if (!item || item.priceSource !== "rate_plan") return null;
+  return pct2(item.totalAmount * Math.max(1, input.roomsCount));
+}
+
+function isImportFlow(bookingSource: string | null | undefined): boolean {
+  return typeof bookingSource === "string" && bookingSource.startsWith(RESERVATION_IMPORT_BOOKING_SOURCE_PREFIX);
+}
+
 function firstNonBlank(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) return value.trim();
@@ -617,6 +814,15 @@ export async function createReservation(input: {
    * propiedad. No bloquea inventario ni deja folios abiertos.
    */
   historical?: boolean;
+  /**
+   * Tanda 8a (RBAC · L2): reason code of the catalogue when `totalAmount` is
+   * below the published quote (mandatory for any discount); single-use
+   * supervisor PIN authorisation for the discount (T2 band) or the overbooking
+   * override; injectable rbac collaborators for the unit tests.
+   */
+  discountReasonCode?: string;
+  supervisorAuthorizationId?: string | null;
+  rbac?: RbacDeps;
   correlationId: string;
 }): Promise<ReservationRecord> {
   requirePermissions(input.context, ["pms.reservation.create"]);
@@ -624,6 +830,24 @@ export async function createReservation(input: {
   if (input.arrivalDate >= input.departureDate) {
     throw new BadRequestError("Departure date must be after arrival date.");
   }
+
+  // Tanda 8a: separation of duties on the price BEFORE the transaction (the
+  // retry wrapper re-runs the transaction, the gate runs once). The Tanda 7
+  // mass import (bookingSource `import:<id>`) keeps `allowOverbooking` and its
+  // PMS totals as before: both gates only annotate `skipped: "import"`.
+  const importFlow = isImportFlow(input.bookingSource);
+  const rbac = input.rbac ?? defaultRbacDeps;
+  const createEntity = { entityType: "reservation_create" as const, entityId: `${input.propertyId}:${input.roomTypeId}:${input.arrivalDate}:${input.departureDate}` };
+  const overbookingAuthorization = input.allowOverbooking
+    ? await assertOverbookingAuthorized({ context: input.context, ...createEntity, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null, importFlow }, rbac)
+    : null;
+  const quotedTotal = importFlow || input.totalAmount === undefined
+    ? null
+    : await quotedTotalForStay({ propertyId: input.propertyId, arrivalDate: input.arrivalDate, departureDate: input.departureDate, roomTypeId: input.roomTypeId, ratePlanId: input.ratePlanId ?? null, roomsCount: input.roomsCount ?? 1 });
+  const discount = await assertReservationDiscountAuthorized(
+    { context: input.context, propertyId: input.propertyId, ...createEntity, quotedTotal, requestedTotal: input.totalAmount, discountReasonCode: input.discountReasonCode ?? null, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null, importFlow },
+    rbac
+  );
 
   // T4 regression: the reservation code is allocated from the MAX existing
   // suffix under an advisory lock (see lib/reservation-code.ts), never from a
@@ -910,10 +1134,15 @@ export async function createReservation(input: {
     entityId: mapped.id,
     // Tanda 7: el overbooking consentido y el alta histórica dejan rastro en la
     // auditoría; sin esas opciones el afterJson es la reserva, como siempre.
-    afterJson:
-      reservation.overbooking || input.historical
-        ? { ...mapped, ...(reservation.overbooking ? { overbooking: reservation.overbooking } : {}), ...(input.historical ? { historical: true } : {}) }
-        : mapped,
+    // Tanda 8a: `discount` (cotización, % y autorización) siempre, y la
+    // autorización del overbooking cuando se pidió.
+    afterJson: {
+      ...mapped,
+      ...(reservation.overbooking ? { overbooking: reservation.overbooking } : {}),
+      ...(overbookingAuthorization ? { overbookingAuthorization } : {}),
+      ...(input.historical ? { historical: true } : {}),
+      discount
+    },
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });
@@ -1010,6 +1239,10 @@ export async function patchReservation(input: {
   context: UserContext;
   reservationId: string;
   patch: UpdateReservationInput;
+  /** Tanda 8a: reason code + supervisor authorisation when `patch.totalAmount` goes below the published quote. */
+  discountReasonCode?: string;
+  supervisorAuthorizationId?: string | null;
+  rbac?: RbacDeps;
   correlationId: string;
 }): Promise<ReservationRecord> {
   requirePermissions(input.context, ["pms.reservation.modify"]);
@@ -1101,6 +1334,35 @@ export async function patchReservation(input: {
     }
   }
 
+  // Tanda 8a: a totalAmount below the published quote of the (patched) stay is
+  // a discount → reason code + band gate (design §4.7); unchanged totals are
+  // not re-evaluated.
+  const totalChanged = patch.totalAmount !== undefined && !moneyEquals(existing.totalAmount, patch.totalAmount);
+  const quotedTotal = totalChanged
+    ? await quotedTotalForStay({
+        propertyId: existing.propertyId,
+        arrivalDate: nextArrival,
+        departureDate: nextDeparture,
+        roomTypeId: patch.roomTypeId ?? existing.roomTypeId,
+        ratePlanId: patch.ratePlanId !== undefined ? patch.ratePlanId : existing.ratePlanId,
+        roomsCount: patch.roomsCount ?? existing.roomsCount
+      })
+    : null;
+  const discount = await assertReservationDiscountAuthorized(
+    {
+      context: input.context,
+      propertyId: existing.propertyId,
+      entityType: "reservation",
+      entityId: existing.id,
+      quotedTotal,
+      requestedTotal: totalChanged ? patch.totalAmount : undefined,
+      discountReasonCode: input.discountReasonCode ?? null,
+      supervisorAuthorizationId: input.supervisorAuthorizationId ?? null,
+      importFlow: isImportFlow(existing.bookingSource)
+    },
+    input.rbac ?? defaultRbacDeps
+  );
+
   const data = buildReservationPatchData(patch);
   if (roomKeySent) {
     data.assignedRoomId = nextAssignedRoomId ?? null;
@@ -1167,7 +1429,7 @@ export async function patchReservation(input: {
     entityType: "reservation",
     entityId: after.id,
     beforeJson: before,
-    afterJson: { ...after, changedKeys: sentKeys },
+    afterJson: { ...after, changedKeys: sentKeys, discount },
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });

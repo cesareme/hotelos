@@ -19,11 +19,15 @@ import {
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { Prisma as PrismaRuntime } from "@prisma/client";
+import type { ApprovalRequestDto } from "@hotelos/shared";
 import type { UserContext } from "../../lib/demo-store.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { buildPage, DEFAULT_PAGE_LIMIT, decodeCursor, MAX_PAGE_LIMIT, type Page } from "../../lib/pagination.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { assertApprovedOrAuthorized, requestApproval, type AuthorizationOutcome } from "../rbac/approvals.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
+import { assertSeparationOfDuties, sodAuditFields, type SodCheckOutcome } from "../treasury/permissions.js";
 import { getPropertyTaxProfile, resolveTaxRate, type PropertyTaxProfileRateSource, type ResolvedRate } from "../accounting/tax-rate.service.js";
 import { getExchangeRate } from "../accounting/currency.service.js";
 import {
@@ -2165,6 +2169,8 @@ export async function issueInvoice(input: {
       data: {
         status: "issued",
         issuedAt,
+        // Tanda 8a (SoD, RD 1007/2023 art. 11): the issuer never cancels its own invoice.
+        issuedByUserId: input.context.userId,
         invoiceNumber,
         customerName,
         total,
@@ -2311,6 +2317,93 @@ export async function issueInvoice(input: {
 
 export type CancelInvoiceResult = InvoiceRecord & { cancellation: InvoiceCancellationPayments };
 
+// ---------------------------------------------------------------------------
+// Tanda 8a (RBAC · L2): cancellation with separation of duties
+// ---------------------------------------------------------------------------
+
+/** Catálogo de motivos de anulación (cancel_reason): obligatorio en la solicitud. */
+export const CANCEL_REASON_CODES = {
+  data_error: "Error en los datos de la factura",
+  duplicate: "Factura duplicada",
+  wrong_recipient: "Destinatario incorrecto",
+  service_not_provided: "Servicio no prestado",
+  customer_request: "Petición del cliente",
+  other: "Otro motivo (indicar en el texto)"
+} as const;
+export type CancelReasonCode = keyof typeof CANCEL_REASON_CODES;
+
+/**
+ * The cancellation gate, separated so it can be unit-tested with a fake
+ * context and a fake Prisma of the rbac tables. Order: `invoice.cancel` on
+ * the actor (checked by the caller), issuer ≠ canceller (409
+ * RBAC_SOD_CONFLICT { rule: "issuer_ne_canceller" }; null issuer = «autor
+ * desconocido», never blocks), then the engine (kind invoice_cancel, amount =
+ * total, base author = issuer).
+ */
+export async function assertInvoiceCancellationAuthorized(
+  input: {
+    context: UserContext;
+    invoice: { id: string; propertyId: string; issuedByUserId: string | null; total: Prisma.Decimal | number | string | null };
+    supervisorAuthorizationId?: string | null;
+  },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<{ sod: SodCheckOutcome; outcome: AuthorizationOutcome }> {
+  const sod = assertSeparationOfDuties(input.context, input.invoice.issuedByUserId, "issuer_ne_canceller", { invoiceId: input.invoice.id });
+  const total = new PrismaRuntime.Decimal(input.invoice.total ?? 0).abs().toFixed(2);
+  const outcome = await assertApprovedOrAuthorized(
+    {
+      context: input.context,
+      kind: "invoice_cancel",
+      entityType: "invoice",
+      entityId: input.invoice.id,
+      propertyId: input.invoice.propertyId,
+      amount: total,
+      baseAuthorUserId: input.invoice.issuedByUserId,
+      supervisorAuthorizationId: input.supervisorAuthorizationId ?? null
+    },
+    deps
+  );
+  return { sod, outcome };
+}
+
+/**
+ * POST /invoices/:id/cancel-request — the maker side of the anulación
+ * (invoice.cancel_request in the property of the invoice): opens the
+ * invoice_cancel approval request with the reason code of the catalogue.
+ * The decision (invoice.cancel_approve) lives in /approvals and the
+ * execution in POST /invoices/:id/cancel (invoice.cancel + the gate above).
+ */
+export async function requestInvoiceCancellation(input: {
+  context: UserContext;
+  invoiceId: string;
+  reasonCode: string;
+  reasonText?: string;
+  correlationId: string;
+  rbac?: RbacDeps;
+}): Promise<ApprovalRequestDto> {
+  if (!(input.reasonCode in CANCEL_REASON_CODES)) {
+    throw new BadRequestError(`reasonCode no válido: usa uno de ${Object.keys(CANCEL_REASON_CODES).join(", ")}.`);
+  }
+  const existing = await prisma.invoice.findUnique({ where: { id: input.invoiceId }, select: { id: true, propertyId: true, status: true, invoiceNumber: true, total: true, currencyCode: true, issuedByUserId: true } });
+  if (!existing) throw new NotFoundError("Factura no encontrada.");
+  if (existing.status !== "issued") throw new ConflictError("Solo las facturas emitidas admiten anulación.");
+  return requestApproval(
+    {
+      context: input.context,
+      kind: "invoice_cancel",
+      entityType: "invoice",
+      entityId: existing.id,
+      propertyId: existing.propertyId,
+      amount: new PrismaRuntime.Decimal(existing.total ?? 0).abs().toFixed(2),
+      currency: existing.currencyCode ?? undefined,
+      reasonCode: input.reasonCode,
+      reasonText: input.reasonText,
+      payload: { invoiceNumber: existing.invoiceNumber, issuedByUserId: existing.issuedByUserId ?? null, correlationId: input.correlationId }
+    },
+    input.rbac ?? defaultRbacDeps
+  );
+}
+
 export async function cancelInvoice(input: {
   context: UserContext;
   invoiceId: string;
@@ -2322,7 +2415,11 @@ export async function cancelInvoice(input: {
    * through the payments service (reversal payment + inverse entry).
    */
   refundPayments?: boolean;
+  /** Tanda 8a: single-use supervisor PIN authorisation for invoice.cancel_approve (design §5.6). */
+  supervisorAuthorizationId?: string | null;
   correlationId: string;
+  /** Injectable rbac collaborators (tests). */
+  rbac?: RbacDeps;
 }): Promise<CancelInvoiceResult> {
   requirePermissions(input.context, ["invoice.cancel"]);
   const existing = await prisma.invoice.findUnique({ where: { id: input.invoiceId } });
@@ -2333,6 +2430,17 @@ export async function cancelInvoice(input: {
   if (!existing.invoiceNumber || !existing.issuedAt) {
     throw new ConflictError("La factura no tiene número o fecha de expedición; no se puede anular.");
   }
+  // Tanda 8a (design §4.7, RD 1007/2023 art. 11): the anulación is a record
+  // another person makes — issuer ≠ canceller over Invoice.issuedByUserId
+  // (null = pre-migration document: «autor desconocido», annotated) — and it
+  // needs the invoice_cancel authorisation of the L1 engine (an approved
+  // request of another person, the actor's own invoice.cancel_approve within
+  // its tier, a supervisor PIN or a privileged session; every path audited).
+  // The VeriFactu RegistroAnulacion below is untouched by this gate.
+  const cancelGate = await assertInvoiceCancellationAuthorized(
+    { context: input.context, invoice: { id: existing.id, propertyId: existing.propertyId, issuedByUserId: existing.issuedByUserId ?? null, total: existing.total }, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null },
+    input.rbac ?? defaultRbacDeps
+  );
   // A document expedited without a VeriFactu record (sociedad in the SII, R7/R8)
   // is cancelled without a RegistroAnulacion: the exclusion frozen in its
   // snapshot decides, the live flag only for documents issued before the key.
@@ -2364,7 +2472,8 @@ export async function cancelInvoice(input: {
     const fresh = await tx.invoice.findUnique({ where: { id: existing.id }, select: { status: true } });
     if (!fresh || fresh.status !== "issued") throw new ConflictError("Solo las facturas emitidas admiten anulación.");
     const cancelledAt = new Date();
-    await tx.invoice.update({ where: { id: existing.id }, data: { status: "cancelled", cancelledAt } });
+    // Tanda 8a: the canceller is recorded next to the issuer (SoD trace).
+    await tx.invoice.update({ where: { id: existing.id }, data: { status: "cancelled", cancelledAt, cancelledByUserId: input.context.userId } });
     const prepared = exclusion ? null : await prepareVerifactuAnulacion(tx, existing.id);
     if (!exclusion && !prepared) {
       throw new ConflictError("No se pudo generar el registro de anulación VeriFactu de la factura; revisa que esté emitida con número y huella.");
@@ -2507,7 +2616,10 @@ export async function cancelInvoice(input: {
       cancellationEmitterTaxId: emitterTaxId,
       journalEntryId: cancelled.reversal.journalEntryId,
       cancellation,
-      ...previousFields
+      ...previousFields,
+      cancelledByUserId: input.context.userId,
+      ...sodAuditFields(cancelGate.sod),
+      authorization: { mode: cancelGate.outcome.mode, tier: cancelGate.outcome.tier, requestId: cancelGate.outcome.requestId ?? null, supervisorAuthorizationId: cancelGate.outcome.supervisorAuthorizationId ?? null }
     },
     correlationId: input.correlationId
   });
@@ -2892,6 +3004,8 @@ export async function createRectifyingInvoice(input: {
         currencyCode: original.currencyCode,
         status: "issued",
         issuedAt,
+        // Tanda 8a (SoD): the rectifying document has its own issuer.
+        issuedByUserId: input.context.userId,
         total,
         taxTotal,
         taxBreakdownJson: breakdownJson(totals.breakdown),

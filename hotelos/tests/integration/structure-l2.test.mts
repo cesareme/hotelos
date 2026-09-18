@@ -105,7 +105,9 @@ function ownerContext(extra: Partial<UserContext> = {}): UserContext {
       "billing.configure",
       "property.configure",
       "property_profile.edit",
-      "accounting.journal.post"
+      "accounting.journal.post",
+      // Tanda 8a (design §4.6): the day close is night_audit.run (the office answers 409 WORK_CENTER_NOT_OPERATIONAL after the key check).
+      "night_audit.run"
     ] as UserContext["permissions"],
     isPlatformAdmin: false,
     ...extra

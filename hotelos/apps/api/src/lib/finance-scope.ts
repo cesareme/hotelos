@@ -51,7 +51,7 @@ export type LegalIdentity = LegalIdentityDto;
 export type FinanceDb = Pick<typeof prisma, "legalEntity" | "organization" | "property">;
 
 /** The part of the user context the scope resolution reads. */
-export type ScopeContext = Pick<UserContext, "organizationId"> & Partial<Pick<UserContext, "assignedPropertyIds" | "isPlatformAdmin">>;
+export type ScopeContext = Pick<UserContext, "organizationId"> & Partial<Pick<UserContext, "assignedPropertyIds" | "isPlatformAdmin" | "orgScope">>;
 
 const ORGANIZATION_NOT_FOUND = "Organización no encontrada.";
 const LEGAL_ENTITY_NOT_FOUND = "Sociedad no encontrada.";
@@ -180,17 +180,22 @@ export type LedgerScope = {
 };
 
 /**
- * Mirror of `isPropertyAssigned` (lib/tenancy.ts): a context without
- * assignments keeps the organization-wide scope; otherwise the property must
- * be one the user holds a role in. Kept local so lib/tenancy.ts can re-export
- * `listOperationalProperties` from here without an import cycle; the unit test
- * asserts parity with the tenancy predicate.
+ * Mirror of `isPropertyAssigned` (lib/tenancy.ts). Tanda 8a (RBAC · L1): the
+ * organization-wide scope is EXPLICIT (`orgScope === true`: a live
+ * organization / legal_entity assignment, or the token-less demo fallback);
+ * a real session with an EMPTY assignment list reaches nothing; a context with
+ * no list at all (assembled outside loadUserContext) keeps the organization.
+ * Otherwise the property must be covered by one of the user's assignments.
+ * Kept local so lib/tenancy.ts can re-export `listOperationalProperties` from
+ * here without an import cycle; the unit test asserts parity with the tenancy
+ * predicate.
  */
-export function propertyWithinScope(context: Pick<ScopeContext, "assignedPropertyIds" | "isPlatformAdmin">, propertyId: string): boolean {
+export function propertyWithinScope(context: Pick<ScopeContext, "assignedPropertyIds" | "isPlatformAdmin" | "orgScope">, propertyId: string): boolean {
   if (context.isPlatformAdmin) return true;
   const assigned = context.assignedPropertyIds;
-  if (!assigned || assigned.length === 0) return true;
-  return assigned.includes(propertyId);
+  if (assigned === undefined) return context.orgScope !== false;
+  if (assigned.length === 0) return context.orgScope === true;
+  return assigned.includes(propertyId) || context.orgScope === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,19 +206,21 @@ export function propertyWithinScope(context: Pick<ScopeContext, "assignedPropert
 
 export const ENTITY_READ_PERMISSION: PermissionKey = "accounting.entity.read";
 
-export type FinanceScopeContext = Pick<UserContext, "permissions"> & Partial<Pick<UserContext, "assignedPropertyIds" | "isPlatformAdmin">>;
+export type FinanceScopeContext = Pick<UserContext, "permissions"> & Partial<Pick<UserContext, "assignedPropertyIds" | "isPlatformAdmin" | "orgScope">>;
 
 /**
  * True when the context may read the finances of the WHOLE sociedad: platform
- * admin, holder of `accounting.entity.read`, or a context without property
- * assignments (organization-wide by construction — demo fallback, owners
- * without user_property_roles — exactly like `isPropertyAssigned`).
+ * admin, holder of `accounting.entity.read`, or an EXPLICIT organization-wide
+ * scope (Tanda 8a: `orgScope === true` — a live organization / legal_entity
+ * assignment or the demo fallback; a real session with an EMPTY assignment
+ * list is no longer organization-wide, exactly like `isPropertyAssigned`; a
+ * context with no list at all keeps the organization).
  */
 export function hasEntityReadScope(context: FinanceScopeContext): boolean {
   if (context.isPlatformAdmin) return true;
   if (context.permissions.includes(ENTITY_READ_PERMISSION)) return true;
-  const assigned = context.assignedPropertyIds;
-  return !assigned || assigned.length === 0;
+  if (context.assignedPropertyIds === undefined) return context.orgScope !== false;
+  return context.orgScope === true;
 }
 
 const ENTITY_SCOPE_UNAVAILABLE = "Ámbito no disponible: indica el centro de trabajo asignado (propertyId).";

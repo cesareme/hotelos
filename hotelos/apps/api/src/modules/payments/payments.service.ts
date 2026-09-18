@@ -21,11 +21,26 @@
 //
 // Every entry goes through the invoicing ledger port (docs/runbooks/
 // finanzas-contabilidad.md §1.3); amounts are Decimal, never float.
+//
+// Tanda 8a (RBAC · L2, design §4.7 «Reembolso: siempre aprobado»):
+//   · postFolioPayment writes Payment.capturedByUserId (the cashier);
+//   · refundFolioPayment needs `payment.refund` AND an authorisation of the L1
+//     engine (assertApprovedOrAuthorized kind refund): an approved
+//     approval_request of another person, the actor's own
+//     payments.refund_approve within its tier (never on a payment it
+//     captured), a supervisor PIN, or a platform / break-glass session — every
+//     path audited; PaymentRefund.requiresApproval = true and approvedBy = the
+//     decider (or the actor on implicit approval);
+//   · requestRefund opens the approval request (payments.refund_request);
+//   · adjustFolio posts a folio adjustment line (folio.adjust): ≤ T1 with a
+//     reason code, above it the folio_adjust approval of the engine.
+// Reason codes are catalogues (REFUND_REASON_CODES / ADJUSTMENT_REASON_CODES).
 
 import { createHash } from "node:crypto";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { Prisma as PrismaRuntime } from "@prisma/client";
+import type { ApprovalRequestDto, ThresholdTier } from "@hotelos/shared";
 import type { UserContext } from "../../lib/demo-store.js";
 import { BadRequestError, ConflictError, HttpError, NotFoundError, UnauthorizedError } from "../../lib/http-error.js";
 import { grantPropertyAccess, type TenantRequest } from "../../lib/tenancy.js";
@@ -33,7 +48,10 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { CUSTOMER_ACCOUNT_CODE } from "../invoicing/invoice-snapshot.js";
 import { getLedgerPort } from "../invoicing/ledger.port.js";
-import { getFolioBalance, mirrorPaymentRecord, planRefund, syncInvoicePaidAfterRefund } from "../folio/folio.service.js";
+import { getFolioBalance, mirrorPaymentRecord, planRefund, postFolioLine, syncInvoicePaidAfterRefund } from "../folio/folio.service.js";
+import { assertApprovedOrAuthorized, requestApproval, type AuthorizationOutcome } from "../rbac/approvals.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
+import { getThresholds, tierFor } from "../rbac/thresholds.service.js";
 import { legacyMethodLabel, methodCodeOfRow, methodRequiresPsp, normalizePaymentMethod } from "./payment-method.js";
 import {
   PAYMENT_ERROR_CODES,
@@ -112,6 +130,88 @@ export function pspNotConfiguredError(status: PspStatusWire, methodCode?: Paymen
     `No se puede registrar ${method} como cobrado: no hay ninguna pasarela de pago (PSP) configurada. ${status.message} Registra el cobro con efectivo, datáfono o transferencia si el dinero ya se ha recibido por esos medios.`,
     { code: PAYMENT_ERROR_CODES.PSP_NOT_CONFIGURED, methodCode: methodCode ?? null, psp: status }
   );
+}
+
+// ── Tanda 8a · reason catalogues and authorisation helpers ───────────────────
+
+/** Catálogo de motivos de devolución (código → etiqueta ES). Todo reembolso o solicitud lleva uno. */
+export const REFUND_REASON_CODES = {
+  guest_complaint: "Reclamación del huésped",
+  duplicate_charge: "Cobro duplicado",
+  cancellation: "Cancelación de la reserva",
+  service_failure: "Servicio no prestado",
+  price_error: "Error de precio",
+  goodwill: "Gesto comercial",
+  other: "Otro motivo (indicar en el texto)"
+} as const;
+export type RefundReasonCode = keyof typeof REFUND_REASON_CODES;
+
+/** Catálogo de motivos de ajuste de folio (adjustment_reason, design §4.7). */
+export const ADJUSTMENT_REASON_CODES = {
+  posting_error: "Error de cargo",
+  rebate: "Rebate / descuento posterior",
+  guest_complaint: "Reclamación del huésped",
+  service_failure: "Servicio no prestado",
+  goodwill: "Gesto comercial",
+  tax_correction: "Corrección de impuesto",
+  other: "Otro motivo (indicar en el texto)"
+} as const;
+export type AdjustmentReasonCode = keyof typeof ADJUSTMENT_REASON_CODES;
+
+function requireReasonCode<T extends Record<string, string>>(catalogue: T, value: unknown, label: string): keyof T & string {
+  if (typeof value !== "string" || !(value in catalogue)) {
+    throw new BadRequestError(`${label} no válido: usa uno de ${Object.keys(catalogue).join(", ")}.`);
+  }
+  return value as keyof T & string;
+}
+
+/** Audit fragment of an engine authorisation (spread into `afterJson`). */
+function authorizationAuditFields(outcome: AuthorizationOutcome, approvedBy: string | null, baseAuthorUserId: string | null): Record<string, unknown> {
+  return {
+    authorization: {
+      mode: outcome.mode,
+      tier: outcome.tier,
+      requestId: outcome.requestId ?? null,
+      supervisorAuthorizationId: outcome.supervisorAuthorizationId ?? null,
+      approvedBy,
+      baseAuthorUserId,
+      baseAuthorUnknown: baseAuthorUserId === null
+    }
+  };
+}
+
+/**
+ * Who counts as the approver of an authorised operation: the decider of the
+ * consumed request (second approver included), the supervisor that typed the
+ * PIN, or the actor itself on implicit / privileged approval.
+ */
+async function approverOf(outcome: AuthorizationOutcome, context: UserContext, deps: RbacDeps): Promise<string> {
+  if (outcome.mode === "approved" && outcome.requestId) {
+    const request = await deps.db.approvalRequest.findFirst({ where: { id: outcome.requestId }, select: { decidedByUserId: true, secondApproverUserId: true } });
+    return request?.decidedByUserId ?? request?.secondApproverUserId ?? context.userId;
+  }
+  if (outcome.mode === "supervisor" && outcome.supervisorAuthorizationId) {
+    const authorization = await deps.db.supervisorAuthorization.findFirst({ where: { id: outcome.supervisorAuthorizationId }, select: { authorizerUserId: true } });
+    return authorization?.authorizerUserId ?? context.userId;
+  }
+  return context.userId;
+}
+
+/**
+ * Tenant guard for routes addressed by a Payment id (same semantics as
+ * assertPaymentIntentAccess / assertEntityAccess: opaque 404 for a missing
+ * row, a row of another organisation or a property the caller holds no role
+ * in). Default guard of POST /payments/:id/refund-requests; server.ts may
+ * pass its own `assertBillingAccess` through the route deps.
+ */
+export const PAYMENT_NOT_FOUND = "Pago no encontrado.";
+
+export async function assertPaymentAccess(request: TenantRequest, paymentId: string): Promise<{ organizationId: string; propertyId: string }> {
+  if (typeof paymentId !== "string" || paymentId.length === 0) throw new BadRequestError("Identificador inválido.");
+  const row = await prisma.payment.findUnique({ where: { id: paymentId }, select: { propertyId: true, deletedAt: true } });
+  if (!row || row.deletedAt) throw new NotFoundError(PAYMENT_NOT_FOUND);
+  const organizationId = await grantPropertyAccess(request, row.propertyId, PAYMENT_NOT_FOUND);
+  return { organizationId, propertyId: row.propertyId };
 }
 
 async function resolveFolioContext(folioId: string): Promise<{ folio: Prisma.FolioGetPayload<Record<string, never>>; propertyId: string; organizationId: string; reservationCode: string; bookerEmail: string | null }> {
@@ -196,7 +296,9 @@ export async function postFolioPayment(input: PostFolioPaymentInput): Promise<Po
         methodCode,
         pspReference: reference,
         status: "captured",
-        clientRequestId
+        clientRequestId,
+        // Tanda 8a: the cashier (SoD: never the approver of its own refund).
+        capturedByUserId: input.context.userId
       }
     });
     const posted = await getLedgerPort().postJournalEntry(
@@ -273,13 +375,52 @@ export type RefundFolioPaymentInput = {
   clientRequestId?: string | null;
   /** How the money goes back (defaults to the original method); cash / bank_transfer allow a manual refund of an online payment. */
   refundMethod?: string | null;
+  /** Tanda 8a: single-use supervisor PIN authorisation for payments.refund_approve (design §5.6). */
+  supervisorAuthorizationId?: string | null;
   correlationId: string;
+  /** Injectable rbac collaborators (tests); the engine and its audit by default. */
+  rbac?: RbacDeps;
 };
 
 const PSP_REFUND_FAILED_CODE = "PSP_REFUND_FAILED";
 
+/**
+ * Tanda 8a · the refund gate, separated so it can be unit-tested with a fake
+ * context and a fake Prisma of the rbac tables: `payment.refund` on the actor,
+ * then the L1 engine over the payment (kind refund, base author = the cashier
+ * that captured it, null = «autor desconocido» — pre-migration row — never
+ * blocks). Returns the engine outcome and who counts as approver.
+ */
+export async function assertRefundAuthorized(
+  input: {
+    context: UserContext;
+    payment: { id: string; propertyId: string; capturedByUserId: string | null };
+    amount: number;
+    supervisorAuthorizationId?: string | null;
+  },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<{ outcome: AuthorizationOutcome; approvedBy: string; baseAuthorUserId: string | null }> {
+  requirePermissions(input.context, ["payment.refund"]);
+  const baseAuthorUserId = input.payment.capturedByUserId ?? null;
+  const outcome = await assertApprovedOrAuthorized(
+    {
+      context: input.context,
+      kind: "refund",
+      entityType: "payment",
+      entityId: input.payment.id,
+      propertyId: input.payment.propertyId,
+      amount: new D(input.amount).toFixed(2),
+      baseAuthorUserId,
+      supervisorAuthorizationId: input.supervisorAuthorizationId ?? null
+    },
+    deps
+  );
+  const approvedBy = await approverOf(outcome, input.context, deps);
+  return { outcome, approvedBy, baseAuthorUserId };
+}
+
 export async function refundFolioPayment(input: RefundFolioPaymentInput): Promise<RefundResponse> {
-  requirePermissions(input.context, ["payment.refund", "ai.high_risk.confirm"]);
+  requirePermissions(input.context, ["payment.refund"]);
   const original = await prisma.payment.findUnique({ where: { id: input.paymentId } });
   if (!original || original.deletedAt) throw new NotFoundError("Pago no encontrado.");
   if (original.reversalOfId) throw new ConflictError("Este registro ya es una devolución; no se puede devolver una devolución.");
@@ -300,6 +441,16 @@ export async function refundFolioPayment(input: RefundFolioPaymentInput): Promis
     throw new ConflictError(original.status === "refunded" ? "El cobro ya está devuelto por completo." : "Solo se pueden devolver cobros capturados.");
   }
   if (input.amount !== undefined && (!Number.isFinite(input.amount) || input.amount <= 0)) throw new BadRequestError("El importe a devolver debe ser positivo.");
+
+  // Tanda 8a: the separation of duties gate runs BEFORE the PSP is touched (a
+  // refused refund never moves money) and after the replay check (a replayed
+  // refund was already authorised). The consumed request is spent from here
+  // on: a PSP failure below leaves APPROVAL_CONSUMED without PAYMENT_REFUNDED.
+  const previewPlan = planRefund({ paymentAmount: toNumber(dec(original.amount)), refundedBefore: (await sumCountedRefunds(prisma, original.id)).toNumber(), requested: input.amount });
+  const authorization = await assertRefundAuthorized(
+    { context: input.context, payment: { id: original.id, propertyId: original.propertyId, capturedByUserId: original.capturedByUserId ?? null }, amount: previewPlan.amount, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null },
+    input.rbac ?? defaultRbacDeps
+  );
 
   // Online money goes back through the PSP unless the caller records a manual refund.
   let pspRefundReference: string | null = null;
@@ -339,8 +490,11 @@ export async function refundFolioPayment(input: RefundFolioPaymentInput): Promis
     const refundedBefore = (await sumCountedRefunds(tx, original.id)).toNumber();
     const plan = planRefund({ paymentAmount: toNumber(dec(original.amount)), refundedBefore, requested: input.amount });
     const amount = new D(plan.amount);
+    // Tanda 8a: every refund is approved (design §4.7 «siempre aprobado»);
+    // approvedBy = the decider of the consumed request, the supervisor that
+    // authorised, or the actor on implicit / privileged approval.
     const refund = await tx.paymentRefund.create({
-      data: { paymentId: original.id, amount: amount.toFixed(2), status: "completed", requiresApproval: false, approvedBy: input.context.userId, providerReference: pspRefundReference }
+      data: { paymentId: original.id, amount: amount.toFixed(2), status: "completed", requiresApproval: true, approvedBy: authorization.approvedBy, providerReference: pspRefundReference }
     });
     const reversal = await tx.payment.create({
       data: {
@@ -400,7 +554,16 @@ export async function refundFolioPayment(input: RefundFolioPaymentInput): Promis
     entityType: "payment",
     entityId: original.id,
     beforeJson: mapPaymentWire(original),
-    afterJson: { ...response, refundId: outcome.refundId, amount: outcome.plan?.amount, partial: outcome.plan ? !outcome.plan.full : null, reason: input.reason, refundMethod, pspRefundReference },
+    afterJson: {
+      ...response,
+      refundId: outcome.refundId,
+      amount: outcome.plan?.amount,
+      partial: outcome.plan ? !outcome.plan.full : null,
+      reason: input.reason,
+      refundMethod,
+      pspRefundReference,
+      ...authorizationAuditFields(authorization.outcome, authorization.approvedBy, authorization.baseAuthorUserId)
+    },
     correlationId: input.correlationId
   });
   // entityId = the reversal row so the legacy accounting projection (keyed by
@@ -417,6 +580,160 @@ export async function refundFolioPayment(input: RefundFolioPaymentInput): Promis
     correlationId: input.correlationId
   });
   return response;
+}
+
+// ── Tanda 8a · refund request (maker) and folio adjustment ───────────────────
+
+export type RequestRefundInput = {
+  context: UserContext;
+  paymentId: string;
+  /** Amount to refund; omitted → everything still pending on the payment. */
+  amount?: number;
+  reasonCode: string;
+  reasonText?: string;
+  refundMethod?: string | null;
+  correlationId: string;
+  rbac?: RbacDeps;
+};
+
+/**
+ * POST /payments/:id/refund-requests — opens the approval request of a refund
+ * (kind refund, payments.refund_request in the property of the payment). The
+ * amount is validated against what is still refundable; the request carries
+ * the reason code of the catalogue and the intended refund method. Idempotent
+ * per (payment, requester) while a pending request lives (engine rule).
+ */
+export async function requestRefund(input: RequestRefundInput): Promise<ApprovalRequestDto> {
+  const reasonCode = requireReasonCode(REFUND_REASON_CODES, input.reasonCode, "reasonCode");
+  const original = await prisma.payment.findUnique({ where: { id: input.paymentId } });
+  if (!original || original.deletedAt) throw new NotFoundError(PAYMENT_NOT_FOUND);
+  if (original.reversalOfId) throw new ConflictError("Este registro ya es una devolución; no se puede devolver una devolución.");
+  if (original.status !== "captured") {
+    throw new ConflictError(original.status === "refunded" ? "El cobro ya está devuelto por completo." : "Solo se pueden devolver cobros capturados.");
+  }
+  if (input.amount !== undefined && (!Number.isFinite(input.amount) || input.amount <= 0)) throw new BadRequestError("El importe a devolver debe ser positivo.");
+  const refundedBefore = (await sumCountedRefunds(prisma, original.id)).toNumber();
+  const plan = planRefund({ paymentAmount: toNumber(dec(original.amount)), refundedBefore, requested: input.amount });
+  const refundMethod = input.refundMethod ? normalizePaymentMethod(input.refundMethod).methodCode : methodCodeOfRow(original);
+  return requestApproval(
+    {
+      context: input.context,
+      kind: "refund",
+      entityType: "payment",
+      entityId: original.id,
+      propertyId: original.propertyId,
+      amount: new D(plan.amount).toFixed(2),
+      currency: original.currency,
+      reasonCode,
+      reasonText: input.reasonText,
+      payload: { folioId: original.folioId, refundMethod, full: plan.full, capturedByUserId: original.capturedByUserId ?? null, correlationId: input.correlationId }
+    },
+    input.rbac ?? defaultRbacDeps
+  );
+}
+
+export type AdjustFolioInput = {
+  context: UserContext;
+  folioId: string;
+  /** Signed amount: negative = rebate / credit to the guest, positive = correction charge. Never 0. */
+  amount: number;
+  reasonCode: string;
+  reasonText?: string;
+  supervisorAuthorizationId?: string | null;
+  correlationId: string;
+  rbac?: RbacDeps;
+};
+
+export type AdjustFolioResult = {
+  line: Awaited<ReturnType<typeof postFolioLine>>;
+  amount: number;
+  tier: ThresholdTier;
+  reasonCode: AdjustmentReasonCode;
+  authorization: AuthorizationOutcome | null;
+};
+
+/**
+ * Tanda 8a · the adjustment gate, separated for the unit tests: `folio.adjust`
+ * on the actor; |amount| ≤ T1 of the organisation executes with the reason
+ * code; above it the folio_adjust approval of the engine (an approved request
+ * of another person, the actor's own folio.adjust_approve within its tier, a
+ * supervisor PIN, or a privileged session — every path audited).
+ */
+export async function assertFolioAdjustmentAuthorized(
+  input: { context: UserContext; folioId: string; propertyId: string; amount: number; supervisorAuthorizationId?: string | null },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<{ tier: ThresholdTier; authorization: AuthorizationOutcome | null }> {
+  requirePermissions(input.context, ["folio.adjust"]);
+  const absolute = Math.abs(input.amount);
+  const thresholds = await getThresholds(input.context.organizationId, deps);
+  const tier = tierFor(absolute, thresholds, "folio_adjust");
+  if (tier === "T1") return { tier, authorization: null };
+  const authorization = await assertApprovedOrAuthorized(
+    {
+      context: input.context,
+      kind: "folio_adjust",
+      entityType: "folio",
+      entityId: input.folioId,
+      propertyId: input.propertyId,
+      amount: new D(absolute).toFixed(2),
+      baseAuthorUserId: null,
+      supervisorAuthorizationId: input.supervisorAuthorizationId ?? null
+    },
+    deps
+  );
+  return { tier, authorization };
+}
+
+/**
+ * POST /folios/:id/adjustments — posts an `adjustment` folio line (the
+ * existing folio line mechanism: routing rules, FOLIO_CHARGE_POSTED audit,
+ * ChargePosted event) once the adjustment gate passes. The line is written
+ * with the actor's context plus `folio.charge.post`, which the gate above
+ * stands for (the adjustment key + SoD replace the charge key for this one
+ * line); the FOLIO_ADJUSTED event carries the reason and the authorisation.
+ */
+export async function adjustFolio(input: AdjustFolioInput): Promise<AdjustFolioResult> {
+  const reasonCode = requireReasonCode(ADJUSTMENT_REASON_CODES, input.reasonCode, "reasonCode");
+  if (!Number.isFinite(input.amount) || input.amount === 0) throw new BadRequestError("El importe del ajuste debe ser distinto de cero.");
+  const amount = toNumber(dec(input.amount).toDecimalPlaces(2, D.ROUND_HALF_UP));
+  if (amount === 0) throw new BadRequestError("El importe del ajuste debe ser distinto de cero.");
+  const { folio, propertyId, organizationId } = await resolveFolioContext(input.folioId);
+  if (folio.status !== "open") throw new ConflictError("El folio está cerrado; no admite más cargos ni movimientos.");
+  const gate = await assertFolioAdjustmentAuthorized(
+    { context: input.context, folioId: folio.id, propertyId, amount, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null },
+    input.rbac ?? defaultRbacDeps
+  );
+  const description = `Ajuste · ${ADJUSTMENT_REASON_CODES[reasonCode]}${input.reasonText ? ` · ${input.reasonText.trim()}` : ""}`.slice(0, 300);
+  const lineContext: UserContext = { ...input.context, permissions: Array.from(new Set([...input.context.permissions, "folio.charge.post" as const])) };
+  const line = await postFolioLine({
+    context: lineContext,
+    folioId: folio.id,
+    type: "adjustment",
+    description,
+    quantity: 1,
+    unitPrice: amount,
+    correlationId: input.correlationId
+  });
+  recordAuditEvent({
+    organizationId,
+    propertyId,
+    actorUserId: input.context.userId,
+    actorType: "user",
+    action: "FOLIO_ADJUSTED",
+    entityType: "folio_line",
+    entityId: line.id,
+    afterJson: {
+      folioId: folio.id,
+      amount,
+      tier: gate.tier,
+      reasonCode,
+      reasonText: input.reasonText ?? null,
+      ...(gate.authorization ? authorizationAuditFields(gate.authorization, await approverOf(gate.authorization, input.context, input.rbac ?? defaultRbacDeps), null) : { authorization: null })
+    },
+    deviceId: input.context.deviceId,
+    correlationId: input.correlationId
+  });
+  return { line, amount, tier: gate.tier, reasonCode, authorization: gate.authorization };
 }
 
 const REFUND_FAILED_STATUSES = ["failed", "rejected", "cancelled"];

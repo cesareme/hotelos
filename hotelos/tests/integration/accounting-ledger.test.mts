@@ -77,7 +77,8 @@ const context = {
   userId: USER_ID,
   fullName: "Ledger Test",
   deviceId: "dev_ledgertest",
-  permissions: ["accounting.read", "accounting.journal.post", "accounting.configure", "ai.high_risk.confirm", "analytics.read"] as never
+  // Tanda 8a (design §4.6): closing a period / year is accounting.period.close (dirección financiera), apart from the manual asiento.
+  permissions: ["accounting.read", "accounting.journal.post", "accounting.period.close", "accounting.configure", "ai.high_risk.confirm", "analytics.read"] as never
 };
 
 function codeOf(error: unknown): string | undefined {

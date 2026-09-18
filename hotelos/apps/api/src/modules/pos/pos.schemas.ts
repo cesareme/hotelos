@@ -26,6 +26,28 @@ export const PosLineSchema = z
 
 export const PosCloseSchema = z.object({ settlement: z.enum(["room", "cash", "card"]) }).strict();
 
+/** Tanda 8a (pos.order.void, design §4.6): catálogo de motivos de anulación de comanda (void_reason). */
+export const POS_VOID_REASON_CODES = {
+  order_error: "Error al tomar la comanda",
+  wrong_room: "Cargo a habitación equivocada",
+  duplicate: "Comanda duplicada",
+  guest_complaint: "Reclamación del cliente",
+  not_served: "Consumo no servido",
+  other: "Otro motivo (indicar en el texto)"
+} as const;
+export type PosVoidReasonCode = keyof typeof POS_VOID_REASON_CODES;
+
+const posVoidReasonCodes = Object.keys(POS_VOID_REASON_CODES) as [PosVoidReasonCode, ...PosVoidReasonCode[]];
+
+/** Body of POST /pos/tickets/:id/void: reason code of the catalogue, optional text and supervisor PIN authorisation. */
+export const PosVoidSchema = z
+  .object({
+    reasonCode: z.enum(posVoidReasonCodes),
+    reasonText: z.string().trim().min(1).max(500).optional(),
+    supervisorAuthorizationId: z.string().trim().min(1).max(64).optional()
+  })
+  .strict();
+
 export const PosTicketsQuerySchema = z
   .object({
     status: z.enum(["open", "closed", "all"]).optional(),
@@ -99,6 +121,7 @@ export const CashClosureListQuerySchema = z
 export type PosTicketOpenInput = z.infer<typeof PosTicketOpenSchema>;
 export type PosLineInput = z.infer<typeof PosLineSchema>;
 export type PosCloseInput = z.infer<typeof PosCloseSchema>;
+export type PosVoidInput = z.infer<typeof PosVoidSchema>;
 export type PosTicketsQuery = z.infer<typeof PosTicketsQuerySchema>;
 export type CashClosureOpenInput = z.infer<typeof CashClosureOpenSchema>;
 export type CashClosureCloseInput = z.infer<typeof CashClosureCloseSchema>;

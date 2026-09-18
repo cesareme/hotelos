@@ -119,7 +119,9 @@ const DIRECTORA_KEYS = [
   "analytics.read",
   "banking.read",
   "property.configure",
-  "property_profile.edit"
+  "property_profile.edit",
+  // Tanda 8a (design §4.6): the day close is night_audit.run (no longer accounting.journal.post).
+  "night_audit.run"
 ] as const;
 /** REAL grants of the director of H2: reads with amounts, posting and issuing — never the entity key nor the structure key. */
 const DIRECTOR_KEYS = ["accounting.read", "accounting.reports.read", "accounting.journal.post", "invoice.issue", "invoice.read", "banking.read"] as const;

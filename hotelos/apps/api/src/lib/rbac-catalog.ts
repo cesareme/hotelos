@@ -42,6 +42,19 @@
 //     (invite / POST /users): a role with 0 grants gets its template applied,
 //     or the caller receives a 409 — an invitee with an empty role would get
 //     403 on every route in production (no demo permission union).
+//   - Tanda 8a (L0 · RBAC por departamento y nivel, 2026-09-18): the templates
+//     carry a VERSION (ROLE_TEMPLATE_VERSION, packages/shared) and a list of
+//     the keys the version REMOVES (ROLE_TEMPLATE_REVOCATIONS). The boot
+//     top-up stays additive; upgradeRoleTemplate() is the only writer that
+//     revokes: managed roles behind the version lose exactly the revoked keys,
+//     gain the missing ones, get level / department / templateVersion stamped
+//     and an audit event ROLE_TEMPLATE_UPGRADED. backfillTemplateRoles({
+//     upgrade: true }) runs it per managed template role (rbac:sync
+//     --upgrade-templates, L3); without the flag it only REPORTS what an
+//     upgrade would revoke (revocationsByRole). Roles with managed = false are
+//     never touched. ensureBreakGlassRole() creates the «Emergencia» role of
+//     an organisation (template break_glass = whole org scope, §4.8); it is
+//     never provisioned by default nor creatable through createRoleFromTemplate.
 //
 // server.ts calls syncPermissionCatalog() + backfillTemplateRoles() at boot;
 // apps/api/src/scripts/rbac-sync.ts exposes the same with --prune/--dry-run.
@@ -56,8 +69,12 @@ import {
   PERMISSIONS,
   PLATFORM_PERMISSION_KEYS,
   ROLE_PERMISSION_MAP,
+  ROLE_TEMPLATE_DEPARTMENT_ES,
   ROLE_TEMPLATE_KEYS,
   ROLE_TEMPLATE_LABELS_ES,
+  ROLE_TEMPLATE_LEVEL,
+  ROLE_TEMPLATE_REVOCATIONS,
+  ROLE_TEMPLATE_VERSION,
   isPlatformPermission,
   type PermissionKey,
   type RoleKey
@@ -206,6 +223,34 @@ export function templatePermissionKeys(templateKey: string): PermissionKey[] {
   return Array.from(new Set(keys.filter((key) => orgScope.has(key))));
 }
 
+/**
+ * Keys ROLE_TEMPLATE_VERSION removes from a template with respect to the
+ * previous version (Tanda 8a): never a key the template still holds, never a
+ * platform key. Empty for templates that lost nothing and for new templates.
+ */
+export function templateRevocationKeys(templateKey: string): PermissionKey[] {
+  if (!isRoleTemplateKey(templateKey)) {
+    throw new Error(`Unknown role template "${templateKey}". Known: ${ROLE_TEMPLATE_KEYS.join(", ")}.`);
+  }
+  const held = new Set<string>(ROLE_PERMISSION_MAP[templateKey]);
+  return Array.from(new Set((ROLE_TEMPLATE_REVOCATIONS[templateKey] ?? []).filter((key) => !held.has(key) && !isPlatformPermission(key))));
+}
+
+/** Level, Spanish department, version and managed flag a Role row created from `templateKey` carries (Tanda 8a). */
+export function templateRoleMetadata(templateKey: RoleKey): {
+  level: (typeof ROLE_TEMPLATE_LEVEL)[RoleKey];
+  department: string;
+  templateVersion: number;
+  managed: true;
+} {
+  return {
+    level: ROLE_TEMPLATE_LEVEL[templateKey],
+    department: ROLE_TEMPLATE_DEPARTMENT_ES[templateKey],
+    templateVersion: ROLE_TEMPLATE_VERSION,
+    managed: true
+  };
+}
+
 export type ApplyRoleTemplateOptions = {
   db?: RbacDb;
   dryRun?: boolean;
@@ -250,6 +295,108 @@ export async function applyRoleTemplate(
 export async function applyFullCatalog(roleId: string, options: ApplyRoleTemplateOptions = {}): Promise<{ granted: number }> {
   const grant = await grantKeysToRole(roleId, Object.keys(PERMISSIONS) as PermissionKey[], options);
   return { granted: grant.granted };
+}
+
+export type UpgradeRoleTemplateOptions = {
+  db?: RbacDb;
+  /** Compute the diff without writing (CLI --dry-run). */
+  dryRun?: boolean;
+  /** Who ran the upgrade (audit trail); null / undefined = system (boot, CLI). */
+  actorUserId?: string | null;
+  /** Skip the audit event (tests with an injected store). */
+  audit?: boolean;
+};
+
+export type UpgradeRoleTemplateResult = {
+  roleId: string;
+  templateKey: RoleKey | null;
+  /** Template keys the role lacked and received (dry-run: would receive). */
+  added: PermissionKey[];
+  /** Revoked keys the role held and lost (dry-run: would lose). */
+  revoked: PermissionKey[];
+  dryRun: boolean;
+  /** false when nothing was (would be) done: see skippedReason. */
+  upgraded: boolean;
+  fromVersion: number;
+  toVersion: number;
+  skippedReason?: "custom" | "no_template" | "unknown_template" | "platform" | "up_to_date";
+};
+
+/**
+ * Converge ONE managed template role to ROLE_TEMPLATE_VERSION (Tanda 8a · L0,
+ * design §6.5): when `role.managed` and `role.templateKey` is a known template
+ * and `role.templateVersion < ROLE_TEMPLATE_VERSION`, grant the template keys
+ * it lacks, DELETE the role_permissions of ROLE_TEMPLATE_REVOCATIONS[template]
+ * it still holds, stamp level / department / templateVersion and record
+ * ROLE_TEMPLATE_UPGRADED (beforeJson = revoked keys, afterJson = added keys).
+ * This is the ONLY writer that removes a grant from a template role; the boot
+ * top-up never does. Custom roles (managed = false), roles without or with an
+ * unknown template, platform roles (they hold a platform key) and roles
+ * already at the version are left untouched and reported as skipped.
+ */
+export async function upgradeRoleTemplate(roleId: string, options: UpgradeRoleTemplateOptions = {}): Promise<UpgradeRoleTemplateResult> {
+  const db = options.db ?? prisma;
+  const dryRun = options.dryRun === true;
+  const role = await db.role.findUnique({
+    where: { id: roleId },
+    select: { id: true, name: true, organizationId: true, templateKey: true, managed: true, templateVersion: true }
+  });
+  if (!role) {
+    throw new NotFoundError("Rol no encontrado.");
+  }
+  const fromVersion = role.templateVersion ?? 0;
+  const base = { roleId, dryRun, added: [] as PermissionKey[], revoked: [] as PermissionKey[], upgraded: false, fromVersion, toVersion: ROLE_TEMPLATE_VERSION };
+  if (role.managed === false) return { ...base, templateKey: null, skippedReason: "custom" };
+  if (role.templateKey === null) return { ...base, templateKey: null, skippedReason: "no_template" };
+  if (!isRoleTemplateKey(role.templateKey)) return { ...base, templateKey: null, skippedReason: "unknown_template" };
+  const templateKey: RoleKey = role.templateKey;
+  if (fromVersion >= ROLE_TEMPLATE_VERSION) return { ...base, templateKey, skippedReason: "up_to_date" };
+
+  const grants = await db.rolePermission.findMany({ where: { roleId }, select: { permissionId: true } });
+  const permissionIds = grants.map((row) => row.permissionId);
+  const rows = permissionIds.length > 0 ? await db.permission.findMany({ where: { id: { in: permissionIds } }, select: { id: true, key: true } }) : [];
+  const held = new Set(rows.map((row) => row.key));
+  if (rows.some((row) => isPlatformPermission(row.key))) {
+    // A platform role is never a managed template role: a revocation there would
+    // strip cross-tenant access the platform detection of the backfill relies on.
+    return { ...base, templateKey, skippedReason: "platform" };
+  }
+  const templateKeys = templatePermissionKeys(templateKey);
+  const added = templateKeys.filter((key) => !held.has(key));
+  const revokedSet = new Set<string>(templateRevocationKeys(templateKey));
+  const revoked = rows.filter((row) => revokedSet.has(row.key)).map((row) => row.key as PermissionKey).sort();
+  const revokedIds = rows.filter((row) => revokedSet.has(row.key)).map((row) => row.id);
+
+  if (!dryRun) {
+    const metadata = templateRoleMetadata(templateKey);
+    await runInTransaction(db, async (tx) => {
+      if (added.length > 0) await grantKeysToRole(roleId, templateKeys, { db: tx });
+      if (revokedIds.length > 0) await tx.rolePermission.deleteMany({ where: { roleId, permissionId: { in: revokedIds } } });
+      await tx.role.updateMany({
+        where: { id: roleId },
+        data: { templateVersion: metadata.templateVersion, level: metadata.level, department: metadata.department }
+      });
+    });
+    if (options.audit !== false) {
+      try {
+        // Dynamic import (see createRoleFromTemplate): audit.service must not be a static dependency of lib/.
+        const { recordAuditEvent } = await import("../modules/audit/audit.service.js");
+        recordAuditEvent({
+          organizationId: role.organizationId,
+          actorUserId: options.actorUserId ?? undefined,
+          actorType: options.actorUserId ? "user" : "system",
+          action: "ROLE_TEMPLATE_UPGRADED",
+          entityType: "role",
+          entityId: roleId,
+          beforeJson: { name: role.name, templateKey, templateVersion: fromVersion, revoked },
+          afterJson: { name: role.name, templateKey, templateVersion: ROLE_TEMPLATE_VERSION, added }
+        });
+      } catch (error) {
+        console.warn("[rbac] audit event for upgradeRoleTemplate failed", { roleId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+  return { ...base, templateKey, added, revoked, upgraded: true };
 }
 
 /** Shared grant primitive: materialise missing catalog keys, then createMany(skipDuplicates) the diff. */
@@ -361,6 +508,12 @@ export async function createRoleFromTemplate(
     );
   }
   const templateKey: RoleKey = input.templateKey;
+  if (templateKey === "break_glass") {
+    // §4.8: the emergency role is created only by ensureBreakGlassRole and is
+    // never offered by the role selector; opaque 404 so the template does not
+    // leak through the error message.
+    throw new NotFoundError("Plantilla de rol no disponible.");
+  }
   const db = options.db ?? prisma;
 
   const duplicate = await db.role.findFirst({
@@ -375,7 +528,7 @@ export async function createRoleFromTemplate(
     let role: { id: string; name: string; templateKey: string | null };
     try {
       role = await tx.role.create({
-        data: { organizationId: input.organizationId, name, templateKey },
+        data: { organizationId: input.organizationId, name, templateKey, ...templateRoleMetadata(templateKey) },
         select: { id: true, name: true, templateKey: true }
       });
     } catch (error) {
@@ -421,13 +574,13 @@ export async function createRoleFromTemplate(
 /**
  * Template roles every new tenant gets: one Role row per template of
  * ORGANIZATION_TEMPLATE_ROLE_KEYS, named after ROLE_TEMPLATE_LABELS_ES
- * (Tanda 5 · L1b — the 10 templates the navigation tree binds its tokens to;
- * until then only Manager / Recepción / Housekeeping were provisioned). The
- * owner entry is matched by templateKey against the "Owner" row createTenant
- * creates first, so a tenant never gets a second full-scope role. Names are
- * what the hotel sees; each one also resolves through
- * resolveTemplateKeyForRoleName, so a row that lost its templateKey would be
- * adopted again by the boot backfill.
+ * (Tanda 5 · L1b materialised the 10 templates the navigation tree binds its
+ * tokens to; Tanda 8a · L0 raises them to the 22 templates of design §4.2 —
+ * every template but `admin` and `break_glass`). The owner entry is matched by
+ * templateKey against the "Owner" row createTenant creates first, so a tenant
+ * never gets a second owner role. Names are what the hotel sees; each one also
+ * resolves through resolveTemplateKeyForRoleName, so a row that lost its
+ * templateKey would be adopted again by the boot backfill.
  */
 export const DEFAULT_TENANT_ROLE_TEMPLATES: ReadonlyArray<{ name: string; templateKey: RoleKey }> =
   ORGANIZATION_TEMPLATE_ROLE_KEYS.map((templateKey) => ({ name: ROLE_TEMPLATE_LABELS_ES[templateKey], templateKey }));
@@ -492,10 +645,17 @@ export async function provisionDefaultTemplateRoles(
     const role =
       existing ??
       (await db.role.create({
-        data: { organizationId, name: template.name, templateKey: template.templateKey },
+        data: { organizationId, name: template.name, templateKey: template.templateKey, ...templateRoleMetadata(template.templateKey) },
         select: { id: true, name: true, templateKey: true }
       }));
     await applyRoleTemplate(role.id, template.templateKey, { db });
+    if (existing) {
+      // Rows that predate Tanda 8a carry no level / department: fill them (never
+      // the version — that is upgradeRoleTemplate's job, with the revocations).
+      const metadata = templateRoleMetadata(template.templateKey);
+      await db.role.updateMany({ where: { id: role.id, level: null }, data: { level: metadata.level } });
+      await db.role.updateMany({ where: { id: role.id, department: null }, data: { department: metadata.department } });
+    }
     const permissionsCount = await db.rolePermission.count({ where: { roleId: role.id } });
     provisioned.push({
       id: role.id,
@@ -506,6 +666,66 @@ export async function provisionDefaultTemplateRoles(
     });
   }
   return provisioned;
+}
+
+export type EnsureBreakGlassRoleResult = {
+  id: string;
+  name: string;
+  permissionsCount: number;
+  /** false when the organisation already had its emergency role (still topped up). */
+  created: boolean;
+};
+
+/**
+ * Idempotently create the «Emergencia» role of an organisation (Tanda 8a,
+ * design §4.8): templateKey `break_glass`, managed, level general_management,
+ * every org-scope key (never a platform key). Only the break-glass service
+ * (L1), the backfill / seeds (L3, L5) call it: the template is excluded from
+ * ORGANIZATION_TEMPLATE_ROLE_KEYS, from createRoleFromTemplate and from the
+ * invite selector, so no hotel user can create or receive it by accident. A
+ * role already stamped `break_glass` is topped up; a row named «Emergencia»
+ * without template is adopted; one that follows ANOTHER template is a 409.
+ */
+export async function ensureBreakGlassRole(organizationId: string, options: { db?: RbacDb } = {}): Promise<EnsureBreakGlassRoleResult> {
+  const db = options.db ?? prisma;
+  const templateKey: RoleKey = "break_glass";
+  const name = ROLE_TEMPLATE_LABELS_ES[templateKey];
+  const stamped = await db.role.findFirst({
+    where: { organizationId, templateKey },
+    orderBy: { id: "asc" },
+    select: { id: true, name: true, templateKey: true }
+  });
+  const byName =
+    stamped ??
+    (await db.role.findUnique({
+      where: { organizationId_name: { organizationId, name } },
+      select: { id: true, name: true, templateKey: true }
+    }));
+  if (byName && byName.templateKey !== null && byName.templateKey !== templateKey) {
+    throw new ConflictError(`«${byName.name}» sigue la plantilla "${byName.templateKey}"; no se puede crear el rol de emergencia con ese nombre.`);
+  }
+  const metadata = templateRoleMetadata(templateKey);
+  let role = byName;
+  if (!role) {
+    try {
+      role = await db.role.create({
+        data: { organizationId, name, templateKey, ...metadata },
+        select: { id: true, name: true, templateKey: true }
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      // Lost the race against a concurrent ensureBreakGlassRole: reuse the winner's row.
+      role = await db.role.findUnique({ where: { organizationId_name: { organizationId, name } }, select: { id: true, name: true, templateKey: true } });
+      if (!role) throw error;
+    }
+  }
+  await applyRoleTemplate(role.id, templateKey, { db });
+  await db.role.updateMany({
+    where: { id: role.id },
+    data: { level: metadata.level, department: metadata.department, templateVersion: metadata.templateVersion, managed: true }
+  });
+  const permissionsCount = await db.rolePermission.count({ where: { roleId: role.id } });
+  return { id: role.id, name: role.name, permissionsCount, created: byName === null };
 }
 
 export type EnsureRoleHasPermissionsResult = {
@@ -571,14 +791,33 @@ function normalizeRoleName(name: string): string {
     .trim();
 }
 
-// Whole-word aliases (already normalized). Order = ROLE_TEMPLATE_KEYS priority.
+// Whole-word aliases (already normalized). Order = ROLE_TEMPLATE_KEYS priority
+// (most specific first: the Tanda 8a templates before manager / accountant, so
+// «Director general», «Dirección financiera» or «Administración de hotel» never
+// fall through to the generic «director» / «administracion» aliases). Every
+// label of ROLE_TEMPLATE_LABELS_ES, normalized, is ALSO an exact alias of its
+// template (resolveTemplateKeyForRoleName checks the labels first).
 const ROLE_TEMPLATE_ALIASES: Record<RoleKey, readonly string[]> = {
-  owner: ["owner", "owners", "propietario", "propietaria", "propietarios", "dueno", "duena", "titular"],
-  admin: ["admin", "administrator", "administrador", "administradora", "superadmin", "super admin"],
+  general_manager: ["general manager", "gm", "director general", "directora general", "direccion general", "ceo"],
+  operations_director: ["director de operaciones", "directora de operaciones", "direccion de operaciones", "operaciones", "coo"],
+  front_office_manager: ["jefe de recepcion", "jefa de recepcion", "jefatura de recepcion", "front office manager"],
+  housekeeping_manager: ["gobernanta", "gobernante", "housekeeping manager"],
+  maintenance_manager: ["encargado de mantenimiento", "encargada de mantenimiento", "jefe de mantenimiento", "jefa de mantenimiento"],
+  fnb_manager: ["jefatura de a b", "jefe de sala", "jefa de sala", "jefe de cocina", "jefa de cocina", "maitre"],
+  night_auditor: ["auditoria nocturna", "auditor nocturno", "auditora nocturna", "night audit", "night auditor"],
+  admin_clerk: ["administracion de hotel", "administrativo", "administrativa"],
+  controller: ["direccion financiera", "controller", "director financiero", "directora financiera", "cfo"],
+  payroll_hr: ["rrhh y nominas", "rrhh", "nominas", "recursos humanos", "laboral"],
+  asset_manager: ["gestion del activo", "activos", "patrimonio", "asset manager"],
+  auditor: ["auditoria interna", "auditor", "auditora", "auditoria"],
+  break_glass: ["emergencia", "break glass"],
+  owner: ["owner", "owners", "propietario", "propietaria", "propietarios", "propiedad", "dueno", "duena", "titular"],
+  admin: ["administracion de sistema", "sistemas", "admin", "administrator", "administrador", "administradora", "superadmin", "super admin"],
   manager: [
+    "direccion de hotel",
+    "director de hotel",
+    "directora de hotel",
     "manager",
-    "general manager",
-    "gm",
     "gestor",
     "gestora",
     "gestion",
@@ -589,21 +828,12 @@ const ROLE_TEMPLATE_ALIASES: Record<RoleKey, readonly string[]> = {
     "gerencia",
     "management"
   ],
-  receptionist: [
-    "receptionist",
-    "reception",
-    "recepcion",
-    "recepcionista",
-    "front desk",
-    "frontdesk",
-    "front office",
-    "jefe de recepcion"
-  ],
-  housekeeper: ["housekeeper", "housekeeping", "pisos", "limpieza", "gobernanta", "camarera de pisos"],
+  receptionist: ["receptionist", "reception", "recepcion", "recepcionista", "front desk", "frontdesk", "front office"],
+  housekeeper: ["housekeeper", "housekeeping", "pisos", "limpieza", "camarera de pisos", "camarero de pisos"],
   maintenance: ["maintenance", "mantenimiento", "tecnico", "tecnica", "sat"],
   accountant: ["accountant", "accounting", "contable", "contabilidad", "finanzas", "finance", "administracion"],
   compliance: ["compliance", "cumplimiento", "legal", "rgpd", "gdpr"],
-  revenue: ["revenue", "revenue manager", "yield", "pricing", "distribucion", "distribution"],
+  revenue: ["revenue corporativo", "revenue", "revenue manager", "yield", "pricing", "distribucion", "distribution"],
   // Tanda 5 (L1a · rbac): Comercial/Ventas and Punto de venta / F&B. Names
   // match ROLE_TEMPLATE_LABELS_ES (packages/shared) so a row created by
   // reseed-property-roles that lost its template_key is adopted again.
@@ -615,7 +845,10 @@ const ROLE_TEMPLATE_ALIASES: Record<RoleKey, readonly string[]> = {
 export function resolveTemplateKeyForRoleName(name: string): RoleKey | undefined {
   const normalized = normalizeRoleName(name);
   if (!normalized) return undefined;
-  // 1) exact alias match
+  // 1) exact match: the Spanish label of the template, then its aliases
+  for (const key of ROLE_TEMPLATE_KEYS) {
+    if (normalizeRoleName(ROLE_TEMPLATE_LABELS_ES[key]) === normalized) return key;
+  }
   for (const key of ROLE_TEMPLATE_KEYS) {
     if (ROLE_TEMPLATE_ALIASES[key].includes(normalized)) return key;
   }
@@ -650,6 +883,17 @@ export function isPlatformRoleName(name: string): boolean {
 export type BackfillTemplateRolesOptions = {
   db?: RbacDb;
   dryRun?: boolean;
+  /**
+   * Tanda 8a: also run upgradeRoleTemplate on every managed template role
+   * behind ROLE_TEMPLATE_VERSION (revocations + version stamp + audit).
+   * Default false = the boot behaviour (additive top-up only); the CLI
+   * `rbac:sync --upgrade-templates` is the only caller that sets it.
+   */
+  upgrade?: boolean;
+  /** Who ran the upgrade (audit trail); undefined = system. */
+  actorUserId?: string | null;
+  /** Skip the ROLE_TEMPLATE_UPGRADED audit events (tests with an injected store). */
+  audit?: boolean;
 };
 
 export type BackfillTemplateRolesResult = {
@@ -673,6 +917,19 @@ export type BackfillTemplateRolesResult = {
   platformRolesToppedUp?: number;
   /** "<name> (<organizationId>) ← full catalog: +<granted>" per detected platform role. */
   platformRoles?: string[];
+  /**
+   * Tanda 8a: "<name> (<organizationId>) ← <template> v<from>→v<to>: +<added> −<revoked>" per managed
+   * template role upgraded in this run (with `upgrade: true`; in dry-run, the ones that would be).
+   */
+  upgraded?: string[];
+  /**
+   * Tanda 8a: keys an upgrade WOULD revoke (or, with `upgrade`, revoked), by role id, for every
+   * managed template role behind ROLE_TEMPLATE_VERSION that still holds a revoked key — filled with
+   * and without `upgrade`, in dry-run too, so the boot log and `rbac:sync --dry-run` can list them.
+   */
+  revocationsByRole?: Record<string, PermissionKey[]>;
+  /** Managed template roles still behind ROLE_TEMPLATE_VERSION after this run. */
+  templateRolesBehindVersion?: number;
 };
 
 /**
@@ -700,8 +957,9 @@ export type BackfillTemplateRolesResult = {
 export async function backfillTemplateRoles(options: BackfillTemplateRolesOptions = {}): Promise<BackfillTemplateRolesResult> {
   const db = options.db ?? prisma;
   const dryRun = options.dryRun === true;
+  const upgrade = options.upgrade === true;
   const roles = await db.role.findMany({
-    select: { id: true, name: true, organizationId: true, templateKey: true },
+    select: { id: true, name: true, organizationId: true, templateKey: true, managed: true, templateVersion: true },
     orderBy: { id: "asc" }
   });
   if (roles.length === 0) {
@@ -715,7 +973,10 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
       templateKeysAssignedRoles: [],
       customRoles: [],
       platformRolesToppedUp: 0,
-      platformRoles: []
+      platformRoles: [],
+      upgraded: [],
+      revocationsByRole: {},
+      templateRolesBehindVersion: 0
     };
   }
 
@@ -761,9 +1022,12 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
   const customRoles: string[] = [];
   const templateKeysAssignedRoles: string[] = [];
   const platformRoles: string[] = [];
+  const upgraded: string[] = [];
+  const revocationsByRole: Record<string, PermissionKey[]> = {};
   let templateRoles = 0;
   let templateRolesToppedUp = 0;
   let platformRolesToppedUp = 0;
+  let templateRolesBehindVersion = 0;
 
   for (const role of roles) {
     const label = `${role.name} (${role.organizationId})`;
@@ -771,6 +1035,12 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
       const result = await applyFullCatalog(role.id, { db, dryRun });
       platformRoles.push(`${label} ← full catalog: +${result.granted}`);
       if (result.granted > 0) platformRolesToppedUp += 1;
+      continue;
+    }
+    if (role.managed === false) {
+      // Tanda 8a: a role the hotel edited by hand (PATCH /rbac/roles/:id/permissions
+      // or created as custom) is never topped up nor upgraded, whatever its name.
+      customRoles.push(`${label} [managed=false]`);
       continue;
     }
 
@@ -798,7 +1068,11 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
         // Provisioned before the column existed (e.g. the 4 Owners) or a custom
         // role that happens to carry a template-like name: adopt only when it
         // holds nothing outside the template — extra keys mean hand-crafted.
-        const template = new Set<string>(templatePermissionKeys(byName));
+        // Tanda 8a: the envelope is the template PLUS the keys the current
+        // version revoked, so a role converged to the previous version (the
+        // 222-key Owners of v1) is still recognised; the revoked keys stay
+        // until `rbac:sync --upgrade-templates` (the boot top-up never revokes).
+        const template = new Set<string>([...templatePermissionKeys(byName), ...templateRevocationKeys(byName)]);
         const extra = Array.from(heldKeys).filter((key) => !template.has(key));
         if (extra.length > 0) {
           customRoles.push(`${label} [${extra.length} key(s) outside "${byName}"]`);
@@ -818,6 +1092,34 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
       templateRolesToppedUp += 1;
       filled.push(`${label} ← ${templateKey}: +${result.granted}`);
     }
+
+    // Tanda 8a: version convergence. Report what the version revokes from this
+    // role; apply it only with `upgrade` (and never in dry-run).
+    const fromVersion = role.templateVersion ?? 0;
+    if (fromVersion < ROLE_TEMPLATE_VERSION) {
+      const revocable = new Set<string>(templateRevocationKeys(templateKey));
+      const wouldRevoke = Array.from(heldKeys).filter((key) => revocable.has(key)).sort() as PermissionKey[];
+      if (wouldRevoke.length > 0) revocationsByRole[role.id] = wouldRevoke;
+      if (upgrade) {
+        if (dryRun) {
+          const wouldAdd = templatePermissionKeys(templateKey).filter((key) => !heldKeys.has(key)).length;
+          upgraded.push(`${label} ← ${templateKey} v${fromVersion}→v${ROLE_TEMPLATE_VERSION}: +${wouldAdd} −${wouldRevoke.length} [dry-run]`);
+        } else {
+          // applyRoleTemplate stamped templateKey on adopted roles, so the upgrade
+          // finds the template on the row; it re-reads the grants after the top-up.
+          const up = await upgradeRoleTemplate(role.id, { db, actorUserId: options.actorUserId ?? null, audit: options.audit });
+          if (up.upgraded) {
+            upgraded.push(`${label} ← ${templateKey} v${up.fromVersion}→v${up.toVersion}: +${up.added.length} −${up.revoked.length}`);
+            revocationsByRole[role.id] = up.revoked;
+            if (up.revoked.length === 0) delete revocationsByRole[role.id];
+          } else {
+            templateRolesBehindVersion += 1;
+          }
+        }
+      } else {
+        templateRolesBehindVersion += 1;
+      }
+    }
   }
 
   const suffix = dryRun ? " [dry-run]" : "";
@@ -827,6 +1129,17 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
       `${unmatched.length} EMPTY without template` +
       (templateKeysAssignedRoles.length > 0 ? ` (stamped: ${templateKeysAssignedRoles.join(", ")})` : "")
   );
+  const pendingRevocations = Object.keys(revocationsByRole).length;
+  if (upgraded.length > 0) {
+    console.log(`[rbac] template roles upgraded to v${ROLE_TEMPLATE_VERSION}${suffix}: ${upgraded.join(", ")}`);
+  }
+  if (!upgrade && (pendingRevocations > 0 || templateRolesBehindVersion > 0)) {
+    console.warn(
+      `[rbac] ${templateRolesBehindVersion} template role(s) behind template version ${ROLE_TEMPLATE_VERSION} ` +
+        `(${pendingRevocations} still hold keys the version revokes; the boot top-up never revokes) — ` +
+        `run rbac:sync --upgrade-templates after --dry-run and a backup (docs/runbooks/rbac-sync.md)`
+    );
+  }
   if (unmatched.length > 0) {
     console.warn(
       `[rbac] ${unmatched.length} role(s) hold 0 permissions and match no template — a user assigned to them is 403 everywhere: ${unmatched.join(" · ")}`
@@ -847,15 +1160,24 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
     templateKeysAssignedRoles,
     customRoles,
     platformRolesToppedUp,
-    platformRoles
+    platformRoles,
+    upgraded,
+    revocationsByRole,
+    templateRolesBehindVersion
   };
 }
 
-/** Sanity check exposed for tests/CLI: no template may carry a platform key. */
+/** Sanity check exposed for tests/CLI: no template (nor revocation list) may carry a platform key; every template is listed. */
 export function assertTemplatesExcludePlatformKeys(): void {
   const platform = new Set<string>(PLATFORM_PERMISSION_KEYS);
+  const listed = new Set<string>(ROLE_TEMPLATE_KEYS);
+  for (const key of Object.keys(ROLE_PERMISSION_MAP)) {
+    if (!listed.has(key)) throw new Error(`Role template "${key}" is missing from ROLE_TEMPLATE_KEYS`);
+  }
   for (const key of ROLE_TEMPLATE_KEYS) {
-    const leaked = ROLE_PERMISSION_MAP[key].filter((permission) => platform.has(permission) || isPlatformPermission(permission));
+    const leaked = [...ROLE_PERMISSION_MAP[key], ...(ROLE_TEMPLATE_REVOCATIONS[key] ?? [])].filter(
+      (permission) => platform.has(permission) || isPlatformPermission(permission)
+    );
     if (leaked.length > 0) {
       throw new Error(`Role template "${key}" carries platform permission(s): ${leaked.join(", ")}`);
     }

@@ -87,6 +87,8 @@ import {
   type RestrictionColumns
 } from "./rate-grid.merge.js";
 import { derivePushScope } from "./publish-scope.js";
+import { assertRateChangeAuthorized } from "./rate-changes.service.js";
+import type { RbacDeps } from "../rbac/assignments.service.js";
 import {
   STAR,
   executeRateGridWrite,
@@ -345,7 +347,34 @@ export type BulkUpdateRateGridInput = RateGridBulkUpdateRequest & {
   context: UserContext;
   correlationId?: string;
   outbox?: RateGridOutbox;
+  /** Tanda 8a: single-use supervisor PIN authorisation for revenue.rates.approve (out-of-band / bulk changes). */
+  supervisorAuthorizationId?: string | null;
+  /** Injectable rbac collaborators (tests). */
+  rbac?: RbacDeps;
 };
+
+/** Tanda 8a: current base price of every patched cell (null without a RateDay row) for the band gate. */
+async function loadCurrentPricesFor(propertyId: string, patches: ReadonlyArray<Pick<EnginePatch, "ratePlanId" | "roomTypeId" | "date" | "price">>): Promise<Map<string, number | null>> {
+  const priced = patches.filter((p) => typeof p.price === "number");
+  const out = new Map<string, number | null>();
+  if (priced.length === 0) return out;
+  const dates = priced.map((p) => p.date).sort();
+  const rows = await prisma.rateDay.findMany({
+    where: {
+      propertyId,
+      ratePlanId: { in: Array.from(new Set(priced.map((p) => p.ratePlanId))) },
+      roomTypeId: { in: Array.from(new Set(priced.map((p) => p.roomTypeId))) },
+      date: { gte: dayUtc(dates[0]!), lte: dayUtc(dates[dates.length - 1]!) }
+    },
+    select: { ratePlanId: true, roomTypeId: true, date: true, price: true }
+  });
+  for (const p of priced) out.set(cellKey(p.ratePlanId, p.roomTypeId, p.date), null);
+  for (const r of rows) {
+    const key = cellKey(r.ratePlanId, r.roomTypeId, isoDate(r.date));
+    if (out.has(key)) out.set(key, dec(r.price));
+  }
+  return out;
+}
 
 /** Snapshot the bulk-op expansion needs: current base prices of the ops' window. */
 async function loadBulkSnapshot(catalog: PropertyCatalog, ops: NonNullable<RateGridBulkUpdateRequest["ops"]>): Promise<BulkGridSnapshot> {
@@ -420,6 +449,30 @@ export async function bulkUpdateRateGrid(input: BulkUpdateRateGridInput): Promis
   }
   if (patches.some((p) => p.restrictions && Object.keys(p.restrictions).length > 0)) {
     requirePermissions(input.context, ["revenue.manage_restrictions"]);
+  }
+  // Tanda 8a (design §4.7 «Cambio de tarifa»): within ± rateBandPct of the
+  // current base price and ≤ MAX_RATE_CHANGE_CELLS_WITHOUT_APPROVAL patches
+  // the change passes with the (mandatory) reason; out of band or bulk it
+  // needs revenue.rates.approve on the actor, an approved rate_change request
+  // of another person (the executor path), a supervisor PIN or a privileged
+  // session — audited in rate-changes.service. Runs BEFORE the write.
+  const rateGate = await assertRateChangeAuthorized(
+    {
+      context: input.context,
+      propertyId: input.propertyId,
+      patches,
+      currentPrices: await loadCurrentPricesFor(input.propertyId, patches),
+      supervisorAuthorizationId: input.supervisorAuthorizationId ?? null,
+      correlationId: input.correlationId
+    },
+    input.rbac
+  );
+  if (rateGate.authorization) {
+    warnings.push(
+      rateGate.evaluation.bulk
+        ? `cambio masivo (${rateGate.evaluation.patches} celdas) autorizado (${rateGate.authorization.mode})`
+        : `${rateGate.evaluation.outOfBand.length} celda(s) fuera de la banda ±${rateGate.evaluation.bandPct} % autorizada(s) (${rateGate.authorization.mode})`
+    );
   }
   if (body.publish) {
     const unknown = body.publish.channelIds.filter((id) => !catalog.channelIds.has(id));

@@ -3,6 +3,7 @@ import { verifyJwt } from "@hotelos/database";
 import { loadIsPlatformAdmin, loadUserContext } from "../modules/auth/auth.service.js";
 import { demoStore, type UserContext } from "./demo-store.js";
 import { HttpError } from "./http-error.js";
+import type { RbacRequestScope } from "./rbac-scope.js";
 
 // The demo fallback (no token → usr_123) does not go through loadUserContext,
 // so it must derive `isPlatformAdmin` from the REAL DB grants itself. Memoized
@@ -40,6 +41,13 @@ declare module "fastify" {
   interface FastifyRequest {
     userContext: UserContext;
     isAuthenticated: boolean;
+    /**
+     * Tanda 8a (RBAC · L1): property the request acts on and where it came
+     * from (route param → `x-property-id` header → entity resolved by
+     * lib/tenancy.ts → null = organisation routes). Set by the scope
+     * preHandler of server.ts; `userContext.permissions` is resolved for it.
+     */
+    rbacScope: RbacRequestScope | null;
   }
 }
 
@@ -192,6 +200,9 @@ export function registerAuthContext(app: FastifyInstance): void {
 
   app.decorateRequest("userContext", null as unknown as UserContext);
   app.decorateRequest("isAuthenticated", false);
+  // Tanda 8a (RBAC · L1): property scope of the request, filled by the scope
+  // preHandler of server.ts (param → x-property-id → entity → null).
+  app.decorateRequest("rbacScope", null);
 
   app.addHook("onRequest", async (request: FastifyRequest) => {
     const authHeader = request.headers.authorization;
@@ -233,8 +244,14 @@ export function registerAuthContext(app: FastifyInstance): void {
     // for platform admins and must never mutate the shared demoStore context.
     // Without the demo flag this context only reaches public routes, so skip
     // the DB lookup and never grant platform-admin there.
+    // Tanda 8a (RBAC · L1): the fallback is organization-wide BY DECLARATION
+    // (`orgScope: true`, no assignment list) — since this lot an empty
+    // `assignedPropertyIds` no longer means «every property» (lib/tenancy.ts
+    // isPropertyAssigned keys on orgScope). Still `isAuthenticated = false`.
     request.userContext = {
       ...demoStore.userContext,
+      orgScope: true,
+      assignedPropertyIds: undefined,
       isPlatformAdmin: allowDemoFallback ? await resolveDemoPlatformAdmin() : false
     };
     request.isAuthenticated = false;

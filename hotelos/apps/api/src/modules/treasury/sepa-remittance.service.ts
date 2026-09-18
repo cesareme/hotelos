@@ -30,7 +30,7 @@ import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { generateSepaRemittance, validateCreditorId, validateIban, type SepaRemittance } from "../banking-spain/sepa-norma19.generator.js";
 import { generateSepaTransferRemittance, type SepaTransferRemittance } from "../banking-spain/sepa-norma34.generator.js";
 import { dec, money, round2, sum } from "./money.js";
-import { TREASURY_READ_KEYS, TREASURY_WRITE_KEYS, requireAnyPermission } from "./permissions.js";
+import { REMITTANCE_WRITE_KEYS, TREASURY_READ_KEYS, requireAnyPermission } from "./permissions.js";
 import { bankAccountServesCentre } from "./treasury.service.js";
 
 export const SEPA_JOB_NAME = "treasury.sepa_remittance";
@@ -243,7 +243,7 @@ export type CreateRemittanceInput = {
 export type CreateRemittanceResult = SepaRemittanceRecord & { xml: string; totalAmount: string; warnings: string[] };
 
 export async function createRemittance(input: CreateRemittanceInput): Promise<CreateRemittanceResult> {
-  requireAnyPermission(input.context, TREASURY_WRITE_KEYS);
+  requireAnyPermission(input.context, REMITTANCE_WRITE_KEYS);
   const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
   if (!property) throw new NotFoundError("La propiedad no existe.");
   if (property.organizationId !== input.context.organizationId && !input.context.isPlatformAdmin) throw new NotFoundError("La propiedad no existe.");
@@ -321,7 +321,7 @@ export async function getRemittance(input: { context: UserContext; id: string })
 }
 
 export async function updateRemittanceStatus(input: { context: UserContext; id: string; body: unknown }): Promise<SepaRemittanceRecord> {
-  requireAnyPermission(input.context, TREASURY_WRITE_KEYS);
+  requireAnyPermission(input.context, REMITTANCE_WRITE_KEYS);
   const { status, note } = parseOr400(remittanceStatusSchema, input.body, "estado de la remesa");
   const current = await store.get(input.id, input.context.organizationId, false);
   if (!current) throw new NotFoundError("La remesa no existe.");
@@ -337,7 +337,7 @@ export async function updateRemittanceStatus(input: { context: UserContext; id: 
  * supplier IBAN are reported, never silently dropped.
  */
 export async function buildSupplierPaymentRemittance(input: { context: UserContext; propertyId: string; bankAccountId: string; billIds: string[]; executionDate: string }): Promise<{ body: SepaTransferRemittance; skipped: Array<{ billId: string; reason: string }>; totalAmount: string }> {
-  requireAnyPermission(input.context, TREASURY_WRITE_KEYS);
+  requireAnyPermission(input.context, REMITTANCE_WRITE_KEYS);
   const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
   if (!property) throw new NotFoundError("La propiedad no existe.");
   // The payer account is the centre's or the sociedad's (no centre); another centre's → opaque 404.

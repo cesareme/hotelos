@@ -1,4 +1,5 @@
 import { clearSession, getToken as readStoredToken, getUser } from "./auth-storage";
+import { getActivePropertyId } from "./activeProperty";
 import { logBreadcrumb } from "../lib/breadcrumb";
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
@@ -118,6 +119,41 @@ export async function getCurrentUserPermissions(): Promise<string[]> {
   return cachedPermissions ?? [];
 }
 
+// ---------------------------------------------------------------------------
+// Active-property scope header (Tanda 8a · RBAC por departamento, design §6.2)
+//
+// The API resolves the permissions of every request for the property it acts
+// on: the `:propertyId` param, the entity, or — for routes without a property
+// in the URL (`/reservations/:id`, `/approvals`, `/rbac/*`…) — the
+// `x-property-id` header the client sends from the ACTIVE property
+// (services/activeProperty.ts). Sent by apiRequest and apiRequestBlob when the
+// stored id is a valid identifier; never by publicRequest (screens/auth) and
+// never on the session routes that must keep working while the stored
+// selection is stale (`/users/me`, `/users/me/properties`, `/auth/*`): the
+// AuthGate repoints the property from `/users/me/properties` BEFORE the shell
+// mounts, and a stale header there would answer the opaque 404 forever.
+// ---------------------------------------------------------------------------
+
+export const ACTIVE_PROPERTY_HEADER = "x-property-id";
+
+/** Same shape the API accepts (server.ts PROPERTY_ID_PATTERN). */
+const PROPERTY_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Session routes resolved without the active property (prefix match, like the API's allowlists). */
+const SCOPE_HEADER_EXEMPT_PREFIXES: readonly string[] = ["/users/me", "/auth"];
+
+function scopeHeaderExempt(path: string): boolean {
+  const pathname = path.startsWith("http") ? new URL(path).pathname : path.split(/[?#]/)[0] ?? "";
+  return SCOPE_HEADER_EXEMPT_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+/** `x-property-id` for a request path: the active property when valid, nothing on the exempt session routes. */
+export function activePropertyHeader(path: string): Record<string, string> {
+  if (scopeHeaderExempt(path)) return {};
+  const propertyId = getActivePropertyId();
+  return PROPERTY_ID_PATTERN.test(propertyId) ? { [ACTIVE_PROPERTY_HEADER]: propertyId } : {};
+}
+
 export type RequestOptions = {
   /** Surface a 401 as an ApiError instead of clearing the session (change-password form). */
   keepSessionOn401?: boolean;
@@ -164,6 +200,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     method,
     headers: {
       Authorization: `Bearer ${token}`,
+      ...activePropertyHeader(path),
       ...(options.body ? { "Content-Type": "application/json" } : {})
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
@@ -266,6 +303,7 @@ export async function apiRequestBlob(path: string, options: BlobRequestOptions =
     method,
     headers: {
       Authorization: `Bearer ${token}`,
+      ...activePropertyHeader(path),
       ...(options.body ? { "Content-Type": "application/json" } : {})
     },
     body: options.body ? JSON.stringify(options.body) : undefined,

@@ -346,7 +346,15 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "labor-forecast": "la previsión de personal",
   "labor-costs": "el coste de personal",
   // OPERA Cloud modo sombra (Tanda 7b): un lote de ingresos por (hotel, business date).
-  revenue: "el lote de ingresos diarios"
+  revenue: "el lote de ingresos diarios",
+  // RBAC por departamento (Tanda 8a · corrector): asignaciones, grupos, aprobaciones, PIN y emergencia.
+  assignments: "la asignación de rol",
+  "property-groups": "el grupo de hoteles",
+  approvals: "la solicitud de aprobación",
+  "supervisor-authorizations": "la autorización de supervisor",
+  "break-glass": "la sesión de emergencia",
+  "rate-changes": "el cambio de tarifa",
+  adjustments: "el ajuste"
 };
 
 /** Recursos únicos (sin colección): GET → «Obtener <label>.», PUT → «Sustituir <label>.». */
@@ -486,6 +494,11 @@ export const SINGLETON_LABELS: Record<string, string> = {
   "cancellation-charge": "el cargo de cancelación",
   remaining: "el importe pendiente",
   "remaining-for-day": "el importe pendiente del día",
+  // RBAC por departamento (Tanda 8a · corrector): «/rbac/thresholds», «/rbac/pin», «/rbac/access-log».
+  rbac: "el control de acceso",
+  thresholds: "los umbrales de aprobación",
+  pin: "el PIN de supervisor",
+  "access-log": "el registro de accesos",
   folio: "el folio",
   "master-folio": "el folio maestro",
   invoice: "la factura",
@@ -562,6 +575,10 @@ export const ACTION_LABELS: Record<string, string> = {
   approve: "Aprobar",
   cancel: "Cancelar",
   reject: "Rechazar",
+  // RBAC por departamento (Tanda 8a · corrector): anulación de tique, solicitudes maker/checker.
+  void: "Anular",
+  "cancel-request": "Solicitar la anulación de",
+  "refund-requests": "Solicitar la devolución de",
   retry: "Reintentar",
   export: "Exportar",
   import: "Importar",
@@ -859,6 +876,9 @@ export function describeEndpoint(method: string, path: string): string {
   if (isParam(last) && parts[lastIndex - 1] === "reconciliation" && parts[lastIndex - 2] === "ledger-imports") {
     return "Obtener el detalle de la reconciliación contable.";
   }
+  // RBAC por departamento (Tanda 8a · corrector): la asignación se revoca (no se borra) y la emergencia se abre.
+  if (verb === "DELETE" && isParam(last) && parts[lastIndex - 1] === "assignments" && parts[lastIndex - 2] === "rbac") return "Revocar la asignación de rol (con motivo).";
+  if (verb === "POST" && last === "break-glass" && parts[lastIndex - 1] === "rbac") return "Abrir una sesión de emergencia auditada.";
   if (last === "rotate-secret") return "Rotar el secreto OAuth2 de la aplicación de desarrollador.";
   if (last === "install") return "Instalar la aplicación del marketplace en una propiedad.";
   if (last === "uninstall") return "Desinstalar la aplicación del marketplace.";

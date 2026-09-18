@@ -18,7 +18,7 @@ import { BadRequestError } from "../../lib/http-error.js";
 import { assertEntityAccess } from "../../lib/tenancy.js";
 import { parse } from "../../lib/validate.js";
 import { approveCashClosure, closeCashClosure, getCashClosure, getPosCashSummary, listCashClosures, openCashClosure } from "./pos-cash-closure.service.js";
-import { addPosLine, closePosTicket, listPosOutlets, listPosTickets, openPosTicket } from "./pos.service.js";
+import { addPosLine, closePosTicket, listPosOutlets, listPosTickets, openPosTicket, voidPosTicket } from "./pos.service.js";
 import {
   CashClosureApproveSchema,
   CashClosureCloseSchema,
@@ -28,7 +28,8 @@ import {
   PosCloseSchema,
   PosLineSchema,
   PosTicketOpenSchema,
-  PosTicketsQuerySchema
+  PosTicketsQuerySchema,
+  PosVoidSchema
 } from "./pos.schemas.js";
 
 type PropertyParams = { propertyId: string };
@@ -83,6 +84,22 @@ export function registerPosRoutes(app: FastifyInstance): void {
     await assertTicketAccess(request, id);
     const body = parse(PosCloseSchema, requireObjectBody(request.body));
     return closePosTicket({ context: request.userContext, ticketId: id, settlement: body.settlement, correlationId: createId("corr") });
+  });
+
+  // Tanda 8a · void of a closed ticket of the current business day
+  // (pos.order.void or a supervisor PIN for that key); nothing is deleted.
+  app.post("/pos/tickets/:id/void", async (request) => {
+    const { id } = request.params as TicketParams;
+    await assertTicketAccess(request, id);
+    const body = parse(PosVoidSchema, requireObjectBody(request.body));
+    return voidPosTicket({
+      context: request.userContext,
+      ticketId: id,
+      reasonCode: body.reasonCode,
+      reasonText: body.reasonText,
+      supervisorAuthorizationId: body.supervisorAuthorizationId ?? null,
+      correlationId: createId("corr")
+    });
   });
 
   // ── Cash summary (read model) ────────────────────────────────────────────

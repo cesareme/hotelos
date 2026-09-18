@@ -87,7 +87,9 @@ describe("AUTH-08 · CORS is an allow-list resolved by lib/env.ts (no reflected 
     assert.match(registration, /credentials: false/);
     assert.doesNotMatch(code, /credentials: true/, "Access-Control-Allow-Credentials must never be reflected again");
     assert.match(registration, /methods: \["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"\]/);
-    assert.match(registration, /allowedHeaders: \["Content-Type", "Authorization", "x-correlation-id"\]/);
+    // Tanda 8a (L1/L4): el front envía `x-property-id` (services/api-client.ts, ACTIVE_PROPERTY_HEADER) para las rutas sin
+    // :propertyId; sin listarla en allowedHeaders el preflight del navegador (:5173 → :3000) rechazaría toda petición.
+    assert.match(registration, /allowedHeaders: \["Content-Type", "Authorization", "x-correlation-id", "x-property-id"\]/);
     assert.match(registration, /exposedHeaders: \["x-correlation-id", "X-Total-Count", "X-Next-Cursor", "x-ratelimit-limit", "x-ratelimit-remaining", "retry-after"\]/);
     assert.match(registration, /maxAge: 600/);
     // The design is documented next to the code (why credentials are off and

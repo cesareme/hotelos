@@ -11,13 +11,23 @@
 // (plans, room types, channels, journal) are validated by the services (400
 // UNKNOWN_IDS / 404). Bodies and queries are zod-validated in the services so
 // direct callers get the same 400s.
+//
+// Tanda 8a (RBAC · L2, design §4.7 «Cambio de tarifa»):
+// `POST /properties/:propertyId/rate-changes` opens the rate_change approval
+// request (revenue.manage_rates + reason code); registering the routes also
+// registers the executor of that kind in the L1 engine, so an approval in
+// /approvals applies the change through bulkUpdateRateGrid as a system actor
+// with the correlationId of the request. `bulk-update` accepts
+// `supervisorAuthorizationId` for out-of-band / bulk changes.
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { createId } from "../../lib/ids.js";
 import { parsePageQuery } from "../../lib/pagination.js";
 import type { RateGridOutbox } from "./channel-outbox.bridge.js";
 import { setRateGridOutbox } from "./channel-outbox.bridge.js";
 import { getRateJournal, getRateJournalEntry, revertRateJournal } from "./journal.service.js";
+import { RATE_OVERRIDE_REASON_CODES, registerRateChangeExecutor, requestRateChange } from "./rate-changes.service.js";
 import { gridQuerySchema, parseOr400, rederiveQuerySchema, syncStatusQuerySchema } from "./rate-grid.schemas.js";
 import { bulkUpdateRateGrid, getRateGrid, getRateGridSyncStatus, pushRateGrid, rederiveRatePlan } from "./rate-grid.service.js";
 
@@ -28,8 +38,31 @@ export type RateGridRouteDeps = {
 
 type PropertyParams = { propertyId: string };
 
+const rateOverrideReasonCodes = Object.keys(RATE_OVERRIDE_REASON_CODES) as [keyof typeof RATE_OVERRIDE_REASON_CODES, ...Array<keyof typeof RATE_OVERRIDE_REASON_CODES>];
+
+/** Body of POST /properties/:propertyId/rate-changes (the cells are validated by the bulk-update schema in the service). */
+export const RateChangeRequestSchema = z
+  .object({
+    cells: z.array(z.record(z.string(), z.unknown())).min(1),
+    reasonCode: z.enum(rateOverrideReasonCodes),
+    reasonText: z.string().trim().min(1).max(500).optional()
+  })
+  .strict();
+
 export function registerRateGridRoutes(app: FastifyInstance, deps: RateGridRouteDeps = {}): void {
   if (deps.outbox) setRateGridOutbox(deps.outbox);
+  // Executor of approved rate changes (Tanda 8a): the same service, a system actor.
+  registerRateChangeExecutor((change) =>
+    bulkUpdateRateGrid({
+      propertyId: change.propertyId,
+      context: change.context,
+      cells: change.cells,
+      reason: change.reason,
+      clientRequestId: change.clientRequestId,
+      correlationId: change.correlationId,
+      outbox: deps.outbox
+    })
+  );
 
   app.get("/properties/:propertyId/rate-grid", async (request) => {
     const { propertyId } = request.params as PropertyParams;
@@ -57,9 +90,25 @@ export function registerRateGridRoutes(app: FastifyInstance, deps: RateGridRoute
       reason: body.reason as never,
       publish: body.publish as never,
       clientRequestId: body.clientRequestId as never,
+      supervisorAuthorizationId: typeof body.supervisorAuthorizationId === "string" ? body.supervisorAuthorizationId : null,
       correlationId: createId("corr"),
       outbox: deps.outbox
     });
+  });
+
+  app.post("/properties/:propertyId/rate-changes", async (request, reply) => {
+    const { propertyId } = request.params as PropertyParams;
+    const body = parseOr400(RateChangeRequestSchema, request.body ?? {}, "rate-change");
+    const result = await requestRateChange({
+      context: request.userContext,
+      propertyId,
+      cells: body.cells,
+      reasonCode: body.reasonCode,
+      reasonText: body.reasonText,
+      correlationId: createId("corr")
+    });
+    reply.code(201);
+    return result;
   });
 
   app.post("/properties/:propertyId/rate-grid/push", async (request) => {

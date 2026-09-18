@@ -942,19 +942,26 @@ export type SwitchableProperty = {
 
 /**
  * Properties the signed-in user may switch to. Tenant isolation: only the
- * platform admin sees every organization. Falls back to the in-memory demo
- * store when the database holds no property (unseeded instance).
+ * platform admin sees every organization. Tanda 8a (RBAC · L1): a non-platform
+ * user only sees the properties COVERED by its scope (`assignedPropertyIds`,
+ * groups / sociedad / organisation already expanded by lib/rbac-scope.ts) —
+ * never the whole organisation; a user without assignments sees none.
+ * Contexts without an assignment list (demo fallback, contexts assembled
+ * elsewhere) keep the organisation. Falls back to the in-memory demo store
+ * when the database holds no property (unseeded instance).
  */
 export async function listSwitchableProperties(userContext: UserContext, db: Db = prisma): Promise<SwitchableProperty[]> {
   const platformAdmin = await isPlatformAdmin(userContext);
+  const assigned = platformAdmin ? null : userContext.assignedPropertyIds;
   const [properties, organizations] = await Promise.all([
     db.property.findMany({
-      where: platformAdmin ? {} : { organizationId: userContext.organizationId },
+      where: platformAdmin ? {} : { organizationId: userContext.organizationId, ...(assigned ? { id: { in: assigned } } : {}) },
       select: { id: true, name: true, organizationId: true, municipality: true, province: true, status: true, kind: true, code: true, legalEntityId: true },
       orderBy: { name: "asc" }
     }),
     db.organization.findMany({ where: platformAdmin ? {} : { id: userContext.organizationId }, select: { id: true, name: true } })
   ]);
+  if (assigned && assigned.length === 0) return [];
   const orgName = new Map(organizations.map((org) => [org.id, org.name]));
   if (properties.length === 0) {
     return listPropertiesForUser(userContext).map((property) => ({

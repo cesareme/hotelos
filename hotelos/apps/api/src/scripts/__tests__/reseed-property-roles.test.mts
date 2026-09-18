@@ -138,7 +138,8 @@ describe("planTemplateRoles", () => {
     const kb = new Map<string, Set<string>>([keys("r_platform", ["admin.tenants.manage", "audit.read"]), keys("r_weird", ["audit.read"])]);
     const plan = planTemplateRoles({ organizationId: ORG, templates: ["owner"], roles: rows, keysByRole: kb, platformOrganizations: new Set([ORG]) });
     assert.equal(plan.templates[0]!.action, "create");
-    assert.equal(plan.templates[0]!.roleName, "Propietario");
+    // Tanda 8a (design §4.2): the owner template is «Propiedad» (no longer «todo»).
+    assert.equal(plan.templates[0]!.roleName, "Propiedad");
     assert.deepEqual(
       plan.skipped.map((s) => [s.roleId, /plataforma/.test(s.reason) || /desconocido/.test(s.reason)]),
       [["r_platform", true], ["r_weird", true]]

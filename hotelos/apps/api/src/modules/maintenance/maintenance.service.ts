@@ -152,7 +152,10 @@ export async function createWorkOrder(input: {
   blocksRoom: boolean;
   correlationId: string;
 }): Promise<WorkOrderRecord> {
-  requirePermissions(input.context, ["maintenance.workorder.manage"]);
+  // Tanda 8a (RBAC · L2, design §4.6): any employee opens a parte with
+  // maintenance.workorder.create; updating, blocking and resolving keep
+  // maintenance.workorder.manage.
+  requirePermissions(input.context, ["maintenance.workorder.create"]);
   // Body-only guards run first (HK-04c): they leak nothing about the rows and
   // keep Prisma from throwing a 500 on a malformed request.
   assertRequiredString("El título", input.title);

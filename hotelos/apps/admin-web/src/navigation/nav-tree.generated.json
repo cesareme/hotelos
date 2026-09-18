@@ -5,9 +5,9 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 287,
+      "csvRows": 288,
       "categories": 9,
-      "items": 67,
+      "items": 68,
       "tabs": 101,
       "devOnly": 21,
       "retired": 72,
@@ -35,7 +35,10 @@
             "finanzas",
             "comercial",
             "fnb",
-            "admin"
+            "admin",
+            "administracion",
+            "propiedad",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -48,7 +51,8 @@
                 "mantenimiento",
                 "fnb",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -61,7 +65,9 @@
                 "revenue",
                 "finanzas",
                 "comercial",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -71,7 +77,9 @@
               "url": "/hoy/propietario",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -91,7 +99,9 @@
             "finanzas",
             "comercial",
             "fnb",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -104,7 +114,8 @@
           "roles": [
             "recepcion",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -118,6 +129,30 @@
             "recepcion",
             "finanzas",
             "direccion",
+            "admin",
+            "administracion",
+            "auditoria"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "ApprovalsInbox",
+          "label": "Pendientes de aprobación",
+          "url": "/hoy/pendientes",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "recepcion",
+            "pisos",
+            "mantenimiento",
+            "fnb",
+            "revenue",
+            "finanzas",
+            "propiedad",
+            "administracion",
+            "rrhh",
+            "activos",
             "admin"
           ],
           "modulesAny": [],
@@ -132,7 +167,8 @@
             "direccion",
             "revenue",
             "finanzas",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -145,7 +181,8 @@
           "roles": [
             "recepcion",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -167,7 +204,8 @@
             "comercial",
             "revenue",
             "pisos",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -180,7 +218,8 @@
                 "direccion",
                 "comercial",
                 "revenue",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -192,7 +231,8 @@
                 "recepcion",
                 "pisos",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -204,7 +244,8 @@
                 "recepcion",
                 "pisos",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -217,7 +258,8 @@
                 "direccion",
                 "comercial",
                 "revenue",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -229,7 +271,8 @@
               "roles": [
                 "recepcion",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -242,7 +285,8 @@
                 "recepcion",
                 "direccion",
                 "comercial",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -257,7 +301,8 @@
             "recepcion",
             "direccion",
             "comercial",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -269,7 +314,8 @@
                 "recepcion",
                 "direccion",
                 "comercial",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -284,7 +330,8 @@
             "recepcion",
             "direccion",
             "comercial",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -296,7 +343,8 @@
                 "recepcion",
                 "direccion",
                 "comercial",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -309,7 +357,8 @@
                 "recepcion",
                 "direccion",
                 "comercial",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -324,7 +373,8 @@
           "roles": [
             "recepcion",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -338,7 +388,8 @@
             "recepcion",
             "comercial",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -350,7 +401,8 @@
                 "recepcion",
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -361,7 +413,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -381,7 +434,8 @@
           "roles": [
             "pisos",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -392,7 +446,8 @@
               "roles": [
                 "pisos",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -402,7 +457,8 @@
               "url": "/operaciones/pisos/ajustes",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -416,7 +472,8 @@
           "roles": [
             "mantenimiento",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -427,7 +484,8 @@
               "roles": [
                 "mantenimiento",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -437,7 +495,8 @@
               "url": "/operaciones/mantenimiento/ajustes",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -453,7 +512,8 @@
             "recepcion",
             "direccion",
             "finanzas",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "outlet_pos"
@@ -466,7 +526,8 @@
               "roles": [
                 "fnb",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "outlet_pos"
@@ -480,7 +541,8 @@
                 "fnb",
                 "direccion",
                 "finanzas",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "outlet_pos"
@@ -495,7 +557,8 @@
                 "recepcion",
                 "direccion",
                 "finanzas",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "outlet_pos"
@@ -513,7 +576,9 @@
             "pisos",
             "mantenimiento",
             "fnb",
-            "admin"
+            "admin",
+            "rrhh",
+            "auditoria"
           ],
           "modulesAny": [
             "workforce_labor"
@@ -529,7 +594,8 @@
             "direccion",
             "mantenimiento",
             "recepcion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "safety_incident_management"
@@ -545,7 +611,9 @@
             "direccion",
             "fnb",
             "finanzas",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [
             "procurement_inventory"
@@ -559,7 +627,9 @@
                 "direccion",
                 "fnb",
                 "finanzas",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": [
                 "procurement_inventory"
@@ -576,7 +646,8 @@
             "mantenimiento",
             "direccion",
             "finanzas",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -589,7 +660,8 @@
           "roles": [
             "mantenimiento",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -609,7 +681,8 @@
             "comercial",
             "direccion",
             "recepcion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "guest_data_crm_loyalty"
@@ -622,7 +695,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "guest_data_crm_loyalty"
@@ -636,7 +710,8 @@
                 "comercial",
                 "direccion",
                 "recepcion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "guest_data_crm_loyalty"
@@ -649,7 +724,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "guest_data_crm_loyalty"
@@ -662,7 +738,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "guest_data_crm_loyalty"
@@ -678,7 +755,8 @@
           "roles": [
             "comercial",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "reputation_quality"
@@ -691,7 +769,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "reputation_quality"
@@ -704,7 +783,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "reputation_quality"
@@ -721,7 +801,8 @@
             "recepcion",
             "comercial",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -732,7 +813,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -743,7 +825,8 @@
               "roles": [
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "guest_self_service"
@@ -759,7 +842,8 @@
           "roles": [
             "comercial",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -773,7 +857,8 @@
             "revenue",
             "comercial",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "distribution_hub"
@@ -787,7 +872,8 @@
                 "revenue",
                 "comercial",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "distribution_hub"
@@ -809,7 +895,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -824,7 +911,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -837,7 +925,8 @@
               "roles": [
                 "revenue",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "revenue_profit_engine"
@@ -854,7 +943,8 @@
             "revenue",
             "direccion",
             "recepcion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -867,7 +957,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -882,7 +973,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -895,7 +987,8 @@
               "roles": [
                 "revenue",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "revenue_profit_engine"
@@ -908,7 +1001,8 @@
               "roles": [
                 "revenue",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "revenue_profit_engine"
@@ -924,7 +1018,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -939,7 +1034,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -954,7 +1050,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -969,7 +1066,8 @@
           "roles": [
             "revenue",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "revenue_profit_engine"
@@ -985,7 +1083,8 @@
             "revenue",
             "direccion",
             "recepcion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1005,7 +1104,9 @@
             "recepcion",
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1017,7 +1118,9 @@
                 "recepcion",
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -1030,7 +1133,9 @@
                 "finanzas",
                 "direccion",
                 "recepcion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1042,7 +1147,9 @@
                 "finanzas",
                 "direccion",
                 "recepcion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1056,7 +1163,9 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1067,7 +1176,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1081,7 +1192,9 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1092,7 +1205,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1106,7 +1221,8 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1117,7 +1233,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1128,7 +1245,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1139,7 +1257,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1150,7 +1269,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1161,7 +1281,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1172,7 +1293,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1186,7 +1308,9 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "propiedad",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1197,7 +1321,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1208,7 +1334,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1219,7 +1347,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1230,7 +1360,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1241,7 +1373,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1255,7 +1389,9 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1266,7 +1402,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1277,7 +1415,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1288,7 +1428,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1303,7 +1445,8 @@
             "finanzas",
             "direccion",
             "comercial",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1316,7 +1459,9 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "rrhh",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1336,7 +1481,9 @@
             "recepcion",
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1349,7 +1496,9 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "activos",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1362,7 +1511,8 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1373,7 +1523,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1388,7 +1539,8 @@
             "finanzas",
             "recepcion",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1401,7 +1553,8 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1412,7 +1565,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1423,7 +1577,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1434,7 +1589,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1445,7 +1601,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1456,7 +1613,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1467,7 +1625,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1478,7 +1637,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1518,7 +1678,9 @@
             "recepcion",
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "administracion",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1530,7 +1692,9 @@
                 "recepcion",
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "administracion",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1541,7 +1705,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1552,7 +1717,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1566,7 +1732,8 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1580,7 +1747,8 @@
             "direccion",
             "mantenimiento",
             "finanzas",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1591,7 +1759,8 @@
               "roles": [
                 "direccion",
                 "finanzas",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1614,7 +1783,10 @@
             "direccion",
             "revenue",
             "comercial",
-            "admin"
+            "admin",
+            "administracion",
+            "propiedad",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1625,7 +1797,8 @@
               "roles": [
                 "revenue",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [
                 "revenue_profit_engine"
@@ -1642,7 +1815,8 @@
             "direccion",
             "revenue",
             "finanzas",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [
             "hotel_intelligence_platform"
@@ -1658,7 +1832,8 @@
             "direccion",
             "revenue",
             "finanzas",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1672,7 +1847,9 @@
             "direccion",
             "revenue",
             "finanzas",
-            "admin"
+            "admin",
+            "propiedad",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1684,7 +1861,9 @@
                 "direccion",
                 "revenue",
                 "finanzas",
-                "admin"
+                "admin",
+                "propiedad",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -1700,7 +1879,8 @@
             "revenue",
             "comercial",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1718,7 +1898,8 @@
           "baseTab": "Resumen",
           "roles": [
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1728,7 +1909,8 @@
               "url": "/configuracion/puesta-en-marcha/salida-en-vivo",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1738,7 +1920,8 @@
               "url": "/configuracion/puesta-en-marcha/importar-documentos",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1751,7 +1934,8 @@
           "baseTab": "Perfil",
           "roles": [
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1761,7 +1945,8 @@
               "url": "/configuracion/propiedad/edificios",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1771,7 +1956,8 @@
               "url": "/configuracion/propiedad/plantas",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1781,7 +1967,8 @@
               "url": "/configuracion/propiedad/zonas",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1791,7 +1978,8 @@
               "url": "/configuracion/propiedad/departamentos",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1801,7 +1989,8 @@
               "url": "/configuracion/propiedad/categorias",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1811,7 +2000,8 @@
               "url": "/configuracion/propiedad/categorias/:codigo",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -1822,7 +2012,8 @@
               "url": "/configuracion/propiedad/categorias/:codigo/opciones/nueva",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": [],
               "detail": true
@@ -1833,7 +2024,8 @@
               "url": "/configuracion/propiedad/campos-personalizados",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1847,7 +2039,9 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "activos",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1858,7 +2052,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "activos",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1869,7 +2065,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "activos",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1880,7 +2078,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "activos",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1891,7 +2091,9 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "activos",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1904,7 +2106,8 @@
           "baseTab": "Habitaciones",
           "roles": [
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1914,7 +2117,8 @@
               "url": "/configuracion/habitaciones/tipos",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -1924,7 +2128,8 @@
               "url": "/configuracion/habitaciones/espacios",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1937,7 +2142,8 @@
           "baseTab": null,
           "roles": [
             "direccion",
-            "admin"
+            "admin",
+            "sistemas"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1950,7 +2156,9 @@
           "roles": [
             "direccion",
             "recepcion",
-            "admin"
+            "admin",
+            "sistemas",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1960,7 +2168,8 @@
               "url": "/configuracion/comunicaciones/correo-entrante",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "sistemas"
               ],
               "modulesAny": []
             }
@@ -1974,7 +2183,8 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -1985,7 +2195,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -1999,7 +2210,8 @@
           "roles": [
             "finanzas",
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -2010,7 +2222,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -2021,7 +2234,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -2032,7 +2246,8 @@
               "roles": [
                 "finanzas",
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -2045,7 +2260,9 @@
           "baseTab": "Módulos",
           "roles": [
             "direccion",
-            "admin"
+            "admin",
+            "sistemas",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -2055,7 +2272,9 @@
               "url": "/configuracion/modulos/salud",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "sistemas",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -2065,7 +2284,9 @@
               "url": "/configuracion/modulos/integraciones",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "sistemas",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -2075,7 +2296,8 @@
               "url": "/configuracion/modulos/modo-sombra",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -2088,7 +2310,8 @@
           "baseTab": "Ajustes",
           "roles": [
             "direccion",
-            "admin"
+            "admin",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -2098,7 +2321,8 @@
               "url": "/configuracion/ia/herramientas",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -2108,7 +2332,8 @@
               "url": "/configuracion/ia/actividad",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -2118,7 +2343,8 @@
               "url": "/configuracion/ia/gobernanza",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             },
@@ -2128,7 +2354,8 @@
               "url": "/configuracion/ia/alta",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "auditoria"
               ],
               "modulesAny": []
             }
@@ -2141,7 +2368,9 @@
           "baseTab": "Auditoría",
           "roles": [
             "direccion",
-            "admin"
+            "admin",
+            "sistemas",
+            "auditoria"
           ],
           "modulesAny": [],
           "tabs": [
@@ -2150,7 +2379,8 @@
               "label": "Webhooks",
               "url": "/configuracion/sistema/webhooks",
               "roles": [
-                "admin"
+                "admin",
+                "sistemas"
               ],
               "modulesAny": []
             },
@@ -2159,7 +2389,8 @@
               "label": "Aplicaciones",
               "url": "/configuracion/sistema/aplicaciones",
               "roles": [
-                "admin"
+                "admin",
+                "sistemas"
               ],
               "modulesAny": []
             },
@@ -2169,7 +2400,9 @@
               "url": "/configuracion/sistema/api",
               "roles": [
                 "direccion",
-                "admin"
+                "admin",
+                "sistemas",
+                "auditoria"
               ],
               "modulesAny": []
             },

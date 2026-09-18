@@ -2,7 +2,10 @@
 //
 // Permite arrancar una instancia desde DB vacía sin recurrir a scripts manuales:
 //   POST /onboarding/bootstrap → crea Organization + Property + Admin User
-//   + Role "Owner" con TODOS los permisos canónicos + UserPropertyRole.
+//   + Role "Owner" con la plantilla compartida + la asignación en AMBAS
+//   tablas (Tanda 8a · L3: user_property_roles del primer centro y
+//   user_role_assignments de ámbito organization; auditoría ROLE_ASSIGNED
+//   de sistema tras el commit).
 //
 // Defensa contra abuso (defensa en profundidad):
 //   1. Requiere header `x-bootstrap-token` que coincida con BOOTSTRAP_TOKEN env.
@@ -16,7 +19,7 @@ import { prisma, hashPassword } from "@hotelos/database";
 import { ROLE_PERMISSION_MAP } from "@hotelos/shared";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ForbiddenError } from "../../lib/http-error.js";
-import { assertPasswordPolicy } from "../auth/auth-pilot.service.js";
+import { assertPasswordPolicy, recordRoleAssigned, writeRoleAssignment } from "../auth/auth-pilot.service.js";
 import { applyRoleTemplate, syncPermissionCatalog } from "../../lib/rbac-catalog.js";
 import { ensurePropertySettings, ensurePropertyTaxes, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
 import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
@@ -75,6 +78,8 @@ export type BootstrapResult = {
   propertyId: string;
   userId: string;
   ownerRoleId: string;
+  /** Tanda 8a: user_role_assignments row of the first owner (scope organization). */
+  ownerAssignmentId: string;
   permissionsSeeded: number;
   /** Tanda 3: statutory tax catalogue provisioned for the property's region (contract C). */
   taxProvisioning: { ok: boolean; taxRegion: string | null; provisioned?: number; skipped?: number; error?: string };
@@ -225,12 +230,23 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       }
     });
 
+    // Legacy per-property row (dual-read until the cut of L6)…
     await tx.userPropertyRole.create({
       data: {
         userId: user.id,
         propertyId: property.id,
         roleId: ownerRole.id
       }
+    });
+    // …and the real scope (Tanda 8a): the first owner covers the whole
+    // organisation, in user_role_assignments, same transaction.
+    const ownerAssignment = await writeRoleAssignment(tx, {
+      userId: user.id,
+      organizationId: org.id,
+      roleId: ownerRole.id,
+      scopeType: "organization",
+      grantedByUserId: null,
+      reason: "bootstrap del piloto"
     });
 
     return {
@@ -240,9 +256,13 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       propertyId: property.id,
       userId: user.id,
       ownerRoleId: ownerRole.id,
+      ownerAssignment,
       permissionsSeeded
     };
   });
+
+  // Audit of the grant after the commit (system actor: nobody is logged in yet).
+  recordRoleAssigned(result.ownerAssignment, { actorUserId: null, correlationId: "bootstrap" });
 
   // Settings por propiedad (PropertyAiSetting + PropertyComplianceSetting) y
   // espejos en memoria, igual que createTenant, para que el piloto sea usable
@@ -286,6 +306,7 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       propertyName: input.property.name,
       adminEmail: input.adminUser.email,
       permissionsSeeded: result.permissionsSeeded,
+      ownerAssignmentId: result.ownerAssignment.assignmentId,
       fiscal: {
         taxRegion: fiscal.taxRegion,
         taxRegionSource: fiscal.taxRegionSource,
@@ -303,6 +324,7 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
     propertyId: result.propertyId,
     userId: result.userId,
     ownerRoleId: result.ownerRoleId,
+    ownerAssignmentId: result.ownerAssignment.assignmentId,
     permissionsSeeded: result.permissionsSeeded,
     taxProvisioning,
     message: "Piloto inicializado. El endpoint /onboarding/bootstrap queda deshabilitado a partir de ahora."

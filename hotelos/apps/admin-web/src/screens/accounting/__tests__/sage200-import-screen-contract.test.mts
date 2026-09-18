@@ -327,7 +327,7 @@ describe("Contabilidad › Importar desde Sage 200 · navegación", () => {
     assert.ok(tab, "Importar desde Sage 200 tab");
     assert.equal(tab.label, "Importar desde Sage 200");
     assert.equal(tab.url, "/finanzas/contabilidad/importar-sage200");
-    assert.deepEqual(tab.roles, ["finanzas", "direccion", "admin"]);
+    assert.deepEqual(tab.roles, ["finanzas", "direccion", "admin", "auditoria"]); // Tanda 8a: auditoría interna (solo lectura) ve toda Contabilidad
     assert.equal(contabilidad.tabs.length, 6);
     assert.equal(contabilidad.tabs.indexOf(tab), 5, "Importar desde Sage 200 is the last tab (orden 6)");
   });
@@ -345,7 +345,7 @@ describe("Contabilidad › Importar desde Sage 200 · navegación", () => {
       .find((line) => line.startsWith("Sage200ImportScreen;"));
     assert.ok(navRow, "nav tree row");
     assert.equal(navRow.split(";").length, 11);
-    assert.match(navRow, /;merge-into;JournalScreen;Importar desde Sage 200;\/finanzas\/contabilidad\/importar-sage200;Importar desde Sage 200;finanzas\|direccion\|admin;core;.*;6$/);
+    assert.match(navRow, /;merge-into;JournalScreen;Importar desde Sage 200;\/finanzas\/contabilidad\/importar-sage200;Importar desde Sage 200;finanzas\|direccion\|admin\|auditoria;core;.*;6$/);
     const inventoryRow = readFileSync(inventoryCsvUrl, "utf8")
       .split("\n")
       .find((line) => line.startsWith("Sage200ImportScreen,"));

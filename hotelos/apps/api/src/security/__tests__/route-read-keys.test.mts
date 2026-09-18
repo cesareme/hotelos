@@ -21,9 +21,10 @@ const READ_GATED_GETS: Expectation[] = [
   { path: "/reservations/:id/routing-rules", permission: "folio.read", templates: FINANZAS_AND_FRONT },
   { path: "/tourist-tax/rates", permission: "tourist_tax.read", templates: FINANZAS_AND_FRONT },
   { path: "/properties/:propertyId/tourist-tax/applications", permission: "tourist_tax.read", templates: FINANZAS_AND_FRONT },
-  { path: "/properties/:propertyId/pos/outlets", permission: "pos.read", templates: ["fnb", ...FINANZAS_AND_FRONT] },
-  { path: "/properties/:propertyId/pos/tickets", permission: "pos.read", templates: ["fnb", ...FINANZAS_AND_FRONT] },
-  { path: "/properties/:propertyId/pos/cash-summary", permission: "pos.read", templates: ["fnb", ...FINANZAS_AND_FRONT] },
+  // Tanda 8a (L0): `compliance` no longer holds pos.read (revocation, design §6.5).
+  { path: "/properties/:propertyId/pos/outlets", permission: "pos.read", templates: ["fnb", "manager", "receptionist", "accountant"] },
+  { path: "/properties/:propertyId/pos/tickets", permission: "pos.read", templates: ["fnb", "manager", "receptionist", "accountant"] },
+  { path: "/properties/:propertyId/pos/cash-summary", permission: "pos.read", templates: ["fnb", "manager", "receptionist", "accountant"] },
   { path: "/properties/:propertyId/verifactu/submissions", permission: "billing.compliance.view", templates: FINANZAS_AND_FRONT },
   { path: "/verifactu/submissions/:id", permission: "billing.compliance.view", templates: FINANZAS_AND_FRONT },
   { path: "/invoices/:id/verifactu", permission: "billing.compliance.view", templates: FINANZAS_AND_FRONT },
@@ -58,9 +59,10 @@ const L1C_READ_GATED_GETS: Expectation[] = [
   { path: "/banking/accounts/:id/statements", permission: "banking.read", templates: ["manager", "accountant"] },
   { path: "/banking/accounts/:id/reconciliation-status", permission: "banking.read", templates: ["manager", "accountant"] },
   { path: "/banking/statements/:id", permission: "banking.read", templates: ["manager", "accountant"] },
-  { path: "/commissions/rules", permission: "commissions.read", templates: ["manager", "accountant", "compliance", "sales"] },
-  { path: "/commissions/accruals", permission: "commissions.read", templates: ["manager", "accountant", "compliance", "sales"] },
-  { path: "/commissions/summary", permission: "commissions.read", templates: ["manager", "accountant", "compliance", "sales"] },
+  // Tanda 8a (L0): accountant and compliance lost commissions.read (revocations, design §6.5).
+  { path: "/commissions/rules", permission: "commissions.read", templates: ["manager", "sales"] },
+  { path: "/commissions/accruals", permission: "commissions.read", templates: ["manager", "sales"] },
+  { path: "/commissions/summary", permission: "commissions.read", templates: ["manager", "sales"] },
   { path: "/finance/exchange-rates", permission: "accounting.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
   { path: "/accounting/fiscal-years", permission: "accounting.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
   { path: "/accounting/fiscal-years/:id/status", permission: "accounting.read", templates: ["manager", "receptionist", "accountant", "compliance"] },
@@ -95,14 +97,17 @@ describe("route manifest · read keys for the GET routes of folios, POS, tourist
     // The mutations keep their write gates.
     assert.deepEqual(findRoutePermission("POST", "/tourist-tax/apply")?.permissions, ["folio.charge.post"]);
     assert.deepEqual(findRoutePermission("POST", "/guest-register-records/:id/queue-ses")?.permissions, ["compliance.ses.submit"]);
-    assert.deepEqual(findRoutePermission("POST", "/pos/tickets/:id/close")?.permissions, ["folio.charge.post"]);
+    // Tanda 8a (design §4.6): closing a ticket is the cashier key pos.order.pay; the room-charge settlement still checks folio.charge.post in the service.
+    assert.deepEqual(findRoutePermission("POST", "/pos/tickets/:id/close")?.permissions, ["pos.order.pay"]);
   });
 
-  it("every template of the tokens that see the screen passes the route gate (assertPermissions), owner and admin included", () => {
+  // Tanda 8a (RBAC · L0/L1): `admin` is «Administración de sistema» (no finance / operations keys, token sistemas) and
+  // `owner` is «Propiedad» (read + approvals): only owner is still expected to open every read-gated screen.
+  it("every template of the tokens that see the screen passes the route gate (assertPermissions), owner included", () => {
     for (const expected of READ_GATED_GETS) {
       const entry = findRoutePermission("GET", expected.path);
       assert.ok(entry);
-      for (const template of [...expected.templates, "owner", "admin"] as RoleKey[]) {
+      for (const template of [...expected.templates, "owner"] as RoleKey[]) {
         assert.doesNotThrow(() => assertPermissions(ROLE_PERMISSION_MAP[template], entry.permissions), `${template} → GET ${expected.path}`);
       }
     }
@@ -137,7 +142,8 @@ describe("route manifest · L1c read keys (invoices, SES settings, finance, seco
       assert.ok(entry, `GET ${expected.path} has no manifest entry`);
       assert.deepEqual(entry.permissions, [expected.permission], `GET ${expected.path}`);
       assert.ok(expected.permission in PERMISSIONS, `${expected.permission} not in PERMISSIONS`);
-      for (const template of [...expected.templates, "owner", "admin"] as RoleKey[]) {
+      // Tanda 8a: admin (Administración de sistema) no longer opens finance / operations screens; owner still reads everything.
+      for (const template of [...expected.templates, "owner"] as RoleKey[]) {
         assert.doesNotThrow(() => assertPermissions(ROLE_PERMISSION_MAP[template], entry.permissions), `${template} → GET ${expected.path}`);
       }
     }

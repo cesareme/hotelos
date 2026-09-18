@@ -98,6 +98,9 @@ const SHARED_TAX_ID = cifFor("B", Date.now() + 8_080);
 
 const context = (propertyId: string, organizationId: string, permissions: string[] = ["invoice.issue", "invoice.cancel"]): UserContext =>
   ({ organizationId, propertyId, userId: `usr_l3f_${RUN}`, fullName: "L3 Fixes", deviceId: `dev_l3f_${RUN}`, permissions: permissions as never }) as UserContext;
+/** Tanda 8a (§4.7): the anulación is a record ANOTHER person makes (issuer ≠ canceller) with the invoice_cancel authorisation; these VeriFactu tests use a privileged canceller (platform admin, audited), never the issuer. */
+const canceller = (propertyId: string, organizationId: string): UserContext =>
+  ({ ...context(propertyId, organizationId, ["invoice.cancel"]), userId: `usr_l3f_cancel_${RUN}`, fullName: "L3 Canceller", isPlatformAdmin: true }) as UserContext;
 
 const year = invoicing.fiscalYearInMadrid(new Date());
 const baseline = { invoices: 0, installations: 0, sequences: 0, submissions: 0 };
@@ -321,7 +324,7 @@ describe("t6b#2 · sociedad in the SII: no VeriFactu record, nothing queued, can
   it("cancel: a SII document is cancelled without RegistroAnulacion (no 409 for the missing huella)", async () => {
     const other = await issueDraft(LT, ORG, 33, 3, "SII cancel SL");
     assert.equal(other.verifactuHash, undefined);
-    const cancelled = await invoicing.cancelInvoice({ context: context(LT, ORG), invoiceId: other.id, reason: "prueba SII", correlationId: `l3f-cancel-${RUN}` });
+    const cancelled = await invoicing.cancelInvoice({ context: canceller(LT, ORG), invoiceId: other.id, reason: "prueba SII", correlationId: `l3f-cancel-${RUN}` });
     assert.equal(cancelled.status, "cancelled");
     assert.equal(cancelled.cancellationHash, null);
     await verifactu.flushVerifactuQueue();
@@ -329,7 +332,7 @@ describe("t6b#2 · sociedad in the SII: no VeriFactu record, nothing queued, can
   });
 
   it("a record hashed before the flag: its anulación is retired with errorCode VERIFACTU_EXCLUDED_BY_SII and the manual retry answers 409 with that code", async () => {
-    const cancelled = await invoicing.cancelInvoice({ context: context(RA, ORG), invoiceId: hashedBefore.id, reason: "anulación tras SII", correlationId: `l3f-cancel2-${RUN}` });
+    const cancelled = await invoicing.cancelInvoice({ context: canceller(RA, ORG), invoiceId: hashedBefore.id, reason: "anulación tras SII", correlationId: `l3f-cancel2-${RUN}` });
     assert.ok(cancelled.cancellationHash, "the internal chain still computes the anulación huella");
     await verifactu.flushVerifactuQueue();
     const anulacion = await prisma.verifactuSubmission.findUniqueOrThrow({ where: { invoiceId_registroType: { invoiceId: hashedBefore.id, registroType: "anulacion" } } });

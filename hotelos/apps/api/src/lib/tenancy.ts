@@ -54,14 +54,44 @@
 import { prisma } from "@hotelos/database";
 import { BadRequestError, NotFoundError } from "./http-error.js";
 import { demoStore, type UserContext } from "./demo-store.js";
-import { isPlatformAdmin } from "../modules/auth/auth.service.js";
+import { isPlatformAdmin, unionPermissions } from "../modules/auth/auth.service.js";
+import { coversProperty, loadUserScope, permissionsFor, type RbacRequestScope } from "./rbac-scope.js";
 import {
   getOnboardingProject,
   listMappingSuggestions,
   listOnboardingProjects
 } from "../modules/onboarding/onboarding.service.js";
 
-export type TenantRequest = { userContext: UserContext };
+/**
+ * The request fields the guards read. `rbacScope` (Tanda 8a · RBAC L1) is the
+ * property the scope preHandler of server.ts resolved the permissions for;
+ * absent or null on contexts assembled outside an HTTP request.
+ */
+export type TenantRequest = { userContext: UserContext; rbacScope?: RbacRequestScope | null };
+
+/**
+ * Tanda 8a (RBAC · L1, design §6.2): the property of the ENTITY always wins
+ * over the header / active property. Once `assertEntityAccess` resolved a
+ * property-owned row, the request's permissions are re-resolved for THAT
+ * property (`permissionsFor` of lib/rbac-scope.ts) and `rbacScope` is
+ * re-pointed (`resolvedFrom: "entity"`), so «x-property-id = A, entidad en B»
+ * is evaluated with the keys the user holds in B. Only real sessions carry
+ * `assignments` (loadUserContext); the demo fallback and synthetic contexts
+ * keep their permissions. A platform admin acting on a property outside its
+ * own assignments keeps its home (organisation-level) keys, exactly like the
+ * scope preHandler.
+ */
+async function rescopePermissionsToEntity(request: TenantRequest, propertyId: string): Promise<void> {
+  const current = request.rbacScope?.propertyId ?? null;
+  if (current === propertyId) return;
+  const context = request.userContext;
+  if (!context.assignments) return;
+  const scope = await loadUserScope(context.userId, context.organizationId);
+  const platformAdmin = context.isPlatformAdmin === true;
+  const resolved = platformAdmin && !coversProperty(scope, propertyId) ? permissionsFor(scope, null) : permissionsFor(scope, propertyId);
+  context.permissions = unionPermissions(resolved);
+  request.rbacScope = { propertyId, resolvedFrom: "entity" };
+}
 
 // Tanda 6b (L2 · estructura societaria, design §5.2 R6): the ONLY `kind = hotel`
 // filter for night audit, portfolio, occupancy, tourist tax, SES and per-room
@@ -85,15 +115,23 @@ const PROPERTY_NOT_FOUND = "Propiedad no encontrada.";
 const ORGANIZATION_NOT_FOUND = "Organización no encontrada.";
 
 /**
- * Property scope inside the organization (L1c): true when the context has no
- * property assignments (organization-wide by construction) or holds a role in
- * `propertyId`. Platform admins are handled by the callers (they may act in
- * any property of any organization).
+ * Property scope inside the organization (L1c → Tanda 8a · RBAC L1): true when
+ * the context holds a live assignment covering `propertyId`, or when its scope
+ * is EXPLICITLY organization-wide (`orgScope === true`: a live organization /
+ * legal_entity assignment, or the token-less demo fallback). An EMPTY
+ * assignment list is NOT organization-wide any more (the H1/H2 gap: «sin
+ * asignaciones = todo»): every real session carries the list resolved by
+ * loadUserContext, so a user without assignments reaches nothing. A context
+ * with NO list at all (`undefined`: assembled outside loadUserContext — CLI
+ * scripts, jobs, service-level tests) keeps the organization unless it says
+ * `orgScope: false`. Platform admins are handled by the callers (they may act
+ * in any property of any organization).
  */
-export function isPropertyAssigned(context: Pick<UserContext, "assignedPropertyIds">, propertyId: string): boolean {
+export function isPropertyAssigned(context: Pick<UserContext, "assignedPropertyIds" | "orgScope">, propertyId: string): boolean {
   const assigned = context.assignedPropertyIds;
-  if (!assigned || assigned.length === 0) return true;
-  return assigned.includes(propertyId);
+  if (assigned === undefined) return context.orgScope !== false;
+  if (assigned.length === 0) return context.orgScope === true;
+  return assigned.includes(propertyId) || context.orgScope === true;
 }
 
 // ── Property / organization grants (shared with the global hook) ────────────
@@ -905,11 +943,18 @@ export async function assertEntityAccess(request: TenantRequest, input: EntityAc
     if ("propertyId" in owner && !isPropertyAssigned(request.userContext, owner.propertyId) && !(await isPlatformAdmin(request.userContext))) {
       throw new NotFoundError(notFound);
     }
-    return "propertyId" in owner ? { organizationId, propertyId: owner.propertyId } : { organizationId };
+    if ("propertyId" in owner) {
+      await rescopePermissionsToEntity(request, owner.propertyId);
+      return { organizationId, propertyId: owner.propertyId };
+    }
+    return { organizationId };
   }
 
   if ("propertyId" in owner) {
     const organizationId = await grantPropertyAccess(request, owner.propertyId, notFound);
+    // The entity's property ALWAYS wins over the header (Tanda 8a): permissions
+    // are re-resolved for the row's property before the handler runs.
+    await rescopePermissionsToEntity(request, owner.propertyId);
     return { organizationId, propertyId: owner.propertyId };
   }
   await grantOrganizationAccess(request, owner.organizationId, notFound);

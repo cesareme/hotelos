@@ -161,7 +161,10 @@ describe("t6b#9 · la estructura se redacta por centro asignado y la sociedad co
     assert.doesNotMatch(receptionist, /"accounting\.entity\.read"/);
     assert.doesNotMatch(receptionist, /"organization\.structure\.manage"/);
     assert.match(receptionist, /"accounting\.read"/, "reception keeps the calendar key (and the redacted structure)");
-    for (const key of ["manager", "accountant"]) assert.match(templateBlock(permissions, key), /"accounting\.entity\.read"/, `${key} reads the whole sociedad`);
+    // Tanda 8a (design §6.5): the sociedad scope moved to the assignment — `manager` (dirección de hotel) lost
+    // accounting.entity.read; contabilidad, dirección financiera and dirección general keep it (§4.5 M20 · V).
+    for (const key of ["accountant", "controller", "general_manager"]) assert.match(templateBlock(permissions, key), /"accounting\.entity\.read"/, `${key} reads the whole sociedad`);
+    assert.doesNotMatch(templateBlock(permissions, "manager"), /"accounting\.entity\.read"/, "a hotel director reads its centre; the sociedad is an assignment scope");
   });
 });
 

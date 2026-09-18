@@ -98,7 +98,9 @@ export const RefundPaymentSchema = z
     amount: moneyAmount.optional(),
     clientRequestId: z.string().trim().min(1).max(120).optional(),
     /** How the money goes back (default: the original method); cash / bank_transfer record a manual refund of an online payment. */
-    refundMethod: PaymentMethodWireSchema.optional()
+    refundMethod: PaymentMethodWireSchema.optional(),
+    /** Tanda 8a (§5.6): single-use supervisor PIN authorisation for payments.refund_approve (the alternative to an approved request). */
+    supervisorAuthorizationId: z.string().trim().min(1).max(64).nullable().optional()
   })
   .strict();
 
@@ -188,7 +190,9 @@ export type CloseFolioInput = z.infer<typeof CloseFolioSchema>;
 export const CancelInvoiceSchema = z
   .object({
     reason: z.string().max(500).optional(),
-    refundPayments: z.boolean().optional()
+    refundPayments: z.boolean().optional(),
+    /** Tanda 8a (§5.6): single-use supervisor PIN authorisation for invoice.cancel_approve. */
+    supervisorAuthorizationId: z.string().trim().min(1).max(64).nullable().optional()
   })
   .partial()
   .strict(strictBody);

@@ -308,7 +308,9 @@ export async function closeFiscalYear(input: {
   correlationId: string;
   createNextYear?: boolean;
 }): Promise<CloseFiscalYearResult> {
-  requirePermissions(input.context, ["accounting.journal.post", "ai.high_risk.confirm"]);
+  // Tanda 8a (RBAC · L2, design §4.6): the year close is accounting.period.close
+  // (dirección financiera) + the high-risk confirmation; reopening is unchanged.
+  requirePermissions(input.context, ["accounting.period.close", "ai.high_risk.confirm"]);
 
   const year = await loadYear(input.context, input.id);
   if (year.status === "closed") throw yearConflict("FISCAL_YEAR_ALREADY_CLOSED", `El ejercicio ${year.code} ya está cerrado.`, { yearCode: year.code });

@@ -22,9 +22,18 @@
 //                          screen URL.
 //   - /desarrollo/*      = the 21 dev-only screens behind ONE guard
 //                          (`isDevRouteAllowed`: dev mode AND platform admin).
+//   - role / module gate = since Tanda 8a (RBAC · L4) `resolveLocation` applies
+//                          the SAME `accessDecision` as the menu when the caller
+//                          hands it the session tokens (`RouteGuardInput.tokens`):
+//                          a URL the menu hides answers `forbidden` (reason role
+//                          or module) instead of mounting a screen that would
+//                          collect 403s. Without tokens the Tanda 5 behaviour is
+//                          unchanged (App.tsx resolves synchronously and the
+//                          shell's RouteAccessGate decides once the gate is known).
 //
 // Pure module: no `window`, no React; App.tsx owns the history writes.
 
+import { accessDecision, tabAccessDecision, type AccessDecisionKind, type AccessScope } from "../navigation/access-decision";
 import {
   NAV_TREE,
   allUrls,
@@ -43,6 +52,7 @@ import {
   type NavLegacyRoute,
   type NavRetiredScreen
 } from "../navigation/nav-tree";
+import type { RoleToken } from "../navigation/role-tokens";
 
 export type RouteKind = "item" | "tab" | "dev-only" | "public";
 
@@ -365,20 +375,79 @@ export function resolveLegacyLocation(location: LocationLike): LegacyResolution 
   return { pathname: target, screen: route.screen, devOnly: route.devOnly, consumed };
 }
 
-// ----------------------------------------------------------------- dev-only guard
+// ----------------------------------------------------------------- guards (dev-only, role, module)
 
-export type DevGuardInput = {
+export type RouteGuardInput = {
   /** `window.location.search` (`?dev=1`). */
   search?: string | null;
   /** `localStorage["anfitorio.dev"]`. */
   storageValue?: string | null;
   /** Real platform-admin flag of the session (never the demo union). */
   isPlatformAdmin?: boolean | null;
+  /**
+   * Tanda 8a: tokens of the session (already simulated by «Ver como…»). When
+   * present the resolution applies `accessDecision` to the tree entry of the
+   * URL; `undefined` keeps the role/module gate out (Tanda 5 callers).
+   */
+  tokens?: readonly RoleToken[];
+  /** Enabled module codes of the active property (`[]` while unknown). */
+  modules?: readonly string[];
+  /** True once the module list is known: a module gate then answers `forbidden` instead of letting the container explain. */
+  modulesKnown?: boolean;
+  /** The user holds `modules.enable`: a module-gated URL still opens (the entry is `locked`, painted with «Activar módulo»). */
+  canEnableModules?: boolean;
 };
+
+/** Name of Tanda 5, kept for its callers: the dev-only guard reads the same input. */
+export type DevGuardInput = RouteGuardInput;
 
 /** ONE guard for the 21 /desarrollo/* screens: dev mode (`?dev=1` or storage) AND the platform admin. */
 export function isDevRouteAllowed(input: DevGuardInput): boolean {
   return isDevModeEnabled({ search: input.search, storageValue: input.storageValue }) && input.isPlatformAdmin === true;
+}
+
+/** Scope of `accessDecision` for a guard that carries tokens (null when the caller does not gate by role). */
+export function accessScopeOf(guard: RouteGuardInput): AccessScope | null {
+  if (guard.tokens === undefined) return null;
+  return {
+    tokens: guard.tokens,
+    modules: guard.modules ?? [],
+    modulesKnown: guard.modulesKnown === true,
+    isPlatformAdmin: guard.isPlatformAdmin === true,
+    devMode: isDevModeEnabled({ search: guard.search, storageValue: guard.storageValue }),
+    canEnableModules: guard.canEnableModules === true
+  };
+}
+
+/** Why a URL is refused by the role/module gate. */
+export type ForbiddenReason = "role" | "module";
+
+/**
+ * Decision of the role/module gate for a tree URL (items and tabs; a tab only
+ * opens when its item does). Dev-only and public URLs are not gated here —
+ * the dev-only guard and App.tsx own them. Null when the URL is not a menu
+ * entry or the guard carries no tokens.
+ */
+export function routeAccessDecision(pathname: string, guard: RouteGuardInput): AccessDecisionKind | null {
+  const scope = accessScopeOf(guard);
+  if (!scope) return null;
+  const match = findByUrl(pathname);
+  if (!match) return null;
+  if (match.kind === "item") return accessDecision(match.item, scope);
+  if (match.kind === "tab") return tabAccessDecision(match.item, match.tab, scope);
+  return null;
+}
+
+/**
+ * `forbidden` reason of a decision, or null when the URL opens: `hidden-role`
+ * is always refused; `hidden-module` only once the module list is known (an
+ * unknown list lets the container paint its honest «no hemos podido comprobar
+ * los módulos»); `locked` opens (the entry is painted with «Activar módulo»).
+ */
+export function forbiddenReasonOf(decision: AccessDecisionKind | null, guard: RouteGuardInput): ForbiddenReason | null {
+  if (decision === "hidden-role") return "role";
+  if (decision === "hidden-module" && guard.modulesKnown === true) return "module";
+  return null;
 }
 
 // ----------------------------------------------------------------- location → screen
@@ -395,15 +464,18 @@ export type RouteResolution =
       consumed?: LegacyIdMatch | null;
     }
   | { kind: "dev-locked"; pathname: string }
+  /** Tanda 8a: the tree entry of the URL is hidden for the session tokens (`reason: "role"`) or its module is off (`reason: "module"`). */
+  | { kind: "forbidden"; pathname: string; reason: ForbiddenReason }
   | { kind: "not-found"; pathname: string };
 
 /**
  * What the shell renders for a location: the role home for `/` and
  * `/backoffice`, a legacy redirect (308 on the client), a registered screen,
- * the dev-only lock, or not-found. Public URLs resolve to their public route;
+ * the dev-only lock, the role/module refusal (only when the guard carries
+ * tokens, Tanda 8a), or not-found. Public URLs resolve to their public route;
  * App.tsx decides what to do with them for an authenticated session.
  */
-export function resolveLocation(location: LocationLike, guard: DevGuardInput = {}): RouteResolution {
+export function resolveLocation(location: LocationLike, guard: RouteGuardInput = {}): RouteResolution {
   const pathname = normalizePathname(location.pathname);
   if (isHomePath(pathname)) return { kind: "home" };
   if (isLegacyPath(pathname)) {
@@ -412,11 +484,15 @@ export function resolveLocation(location: LocationLike, guard: DevGuardInput = {
     if (legacy.devOnly && !isDevRouteAllowed(guard)) return { kind: "dev-locked", pathname: legacy.pathname };
     const route = routeForPathname(legacy.pathname);
     if (!route) return { kind: "not-found", pathname };
+    const refused = route.devOnly || route.public ? null : forbiddenReasonOf(routeAccessDecision(legacy.pathname, guard), guard);
+    if (refused) return { kind: "forbidden", pathname: legacy.pathname, reason: refused };
     return { kind: "screen", screen: legacy.screen, route, redirect: legacy.pathname, consumed: legacy.consumed };
   }
   const route = routeForPathname(pathname);
   if (!route) return { kind: "not-found", pathname };
   if (route.devOnly && !isDevRouteAllowed(guard)) return { kind: "dev-locked", pathname };
+  const refused = route.devOnly || route.public ? null : forbiddenReasonOf(routeAccessDecision(pathname, guard), guard);
+  if (refused) return { kind: "forbidden", pathname, reason: refused };
   return { kind: "screen", screen: route.screen, route };
 }
 

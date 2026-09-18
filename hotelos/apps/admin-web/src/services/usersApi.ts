@@ -15,6 +15,7 @@
 // write only happens when the subset actually changed, so it can never loop.
 
 import { useCallback, useEffect, useState } from "react";
+import type { UserScopeDto } from "@hotelos/shared";
 import { ApiError, apiRequest } from "./api-client";
 import { getActivePropertyId } from "./activeProperty";
 import { getToken, getUser, onAuthChange, setSession, type AuthUser } from "./auth-storage";
@@ -33,6 +34,8 @@ export type CurrentUserProperty = {
   roles: CurrentUserPropertyRole[];
   /** Distinct template keys of the roles held in this property. */
   templateKeys: string[];
+  /** Tanda 8a (H1): keys REALLY granted in this property (union of the assignments covering it); absent on an older API. */
+  grantedPermissions?: string[];
 };
 
 export type CurrentUserProfile = {
@@ -52,6 +55,8 @@ export type CurrentUserProfile = {
   /** Template keys held in the session property (shortcut of properties[].templateKeys). */
   templateKeys: string[];
   properties: CurrentUserProperty[];
+  /** Tanda 8a: scopes of the live assignments (property / group / sociedad / organisation, expanded); absent on an older API. */
+  scopes?: UserScopeDto[];
 };
 
 /**
@@ -81,22 +86,26 @@ function isProfile(value: unknown): value is CurrentUserProfile {
   );
 }
 
+const stringList = (value: unknown): string[] => (Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : []);
+
 function normalizeProfile(raw: CurrentUserProfile): CurrentUserProfile {
   const properties = (raw.properties ?? []).map((property) => ({
     id: property.id,
     name: property.name,
     organizationId: property.organizationId,
     roles: Array.isArray(property.roles) ? property.roles : [],
-    templateKeys: Array.isArray(property.templateKeys) ? property.templateKeys.filter((key): key is string => typeof key === "string") : []
+    templateKeys: stringList(property.templateKeys),
+    ...(Array.isArray(property.grantedPermissions) ? { grantedPermissions: stringList(property.grantedPermissions) } : {})
   }));
   return {
     ...raw,
     permissions: Array.isArray(raw.permissions) ? raw.permissions : [],
-    grantedPermissions: Array.isArray(raw.grantedPermissions) ? raw.grantedPermissions : [],
+    grantedPermissions: stringList(raw.grantedPermissions),
     isPlatformAdmin: raw.isPlatformAdmin === true,
     mustChangePassword: raw.mustChangePassword === true,
-    templateKeys: Array.isArray(raw.templateKeys) ? raw.templateKeys.filter((key): key is string => typeof key === "string") : [],
-    properties
+    templateKeys: stringList(raw.templateKeys),
+    properties,
+    ...(Array.isArray(raw.scopes) ? { scopes: raw.scopes } : {})
   };
 }
 
@@ -104,6 +113,20 @@ function normalizeProfile(raw: CurrentUserProfile): CurrentUserProfile {
 export function templateKeysForProperty(profile: Pick<CurrentUserProfile, "properties" | "templateKeys">, propertyId: string): string[] {
   const property = profile.properties.find((row) => row.id === propertyId);
   return property ? property.templateKeys : profile.templateKeys;
+}
+
+/**
+ * Tanda 8a (H1): the grants of `propertyId` — `properties[].grantedPermissions`
+ * when the API serves them, else the session-property grants (older API).
+ */
+export function grantedPermissionsForProperty(profile: Pick<CurrentUserProfile, "properties" | "grantedPermissions">, propertyId: string): string[] {
+  const property = profile.properties.find((row) => row.id === propertyId);
+  return property?.grantedPermissions ?? profile.grantedPermissions;
+}
+
+/** Tanda 8a: true with a live assignment of scope organisation or sociedad (the «Sociedad» tab of Usuarios y roles). */
+export function hasWideScope(profile: Pick<CurrentUserProfile, "scopes"> | null | undefined): boolean {
+  return (profile?.scopes ?? []).some((scope) => scope.scopeType === "organization" || scope.scopeType === "legal_entity");
 }
 
 /** The snapshot to persist next to the session for a loaded profile. */
@@ -114,7 +137,8 @@ export function sessionSnapshotFor(profile: CurrentUserProfile): Required<Sessio
     isPlatformAdmin: profile.isPlatformAdmin,
     templateKeysByProperty,
     templateKeys: [...profile.templateKeys],
-    grantedPermissions: [...profile.grantedPermissions]
+    // The snapshot keeps the grants of the ACTIVE property (Tanda 8a): what the gate trusts after a reload.
+    grantedPermissions: [...grantedPermissionsForProperty(profile, getActivePropertyId())]
   };
 }
 
@@ -208,7 +232,7 @@ export function getSessionRoleSnapshot(propertyId: string = getActivePropertyId(
     return {
       templateKeys: templateKeysForProperty(cachedProfile, propertyId),
       isPlatformAdmin: cachedProfile.isPlatformAdmin,
-      grantedPermissions: cachedProfile.grantedPermissions,
+      grantedPermissions: grantedPermissionsForProperty(cachedProfile, propertyId),
       known: true
     };
   }

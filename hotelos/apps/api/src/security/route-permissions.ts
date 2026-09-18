@@ -42,6 +42,14 @@ import { pmsShadowRoutePermissions as pmsShadowRoutePermissionsAsWritten } from 
 // fiscal-route-permissions.partial.ts). Claves accounting.read / configure /
 // journal.post y ai.high_risk.confirm ya existentes (sin rbac:sync).
 import { ledgerImportRoutePermissions as ledgerImportRoutePermissionsAsWritten } from "../modules/accounting/ledger-import-route-permissions.partial.js";
+// RBAC por departamento (Tanda 8a · L1): /rbac/* y /approvals* (modules/rbac/
+// rbac.routes.ts). Claves users.read / users.assign / roles.manage /
+// permissions.manage / organization.structure.manage / accounting.read /
+// accounting.configure / ai.high_risk.confirm / security.break_glass /
+// audit.read del catálogo v2 (L0); las rutas con `permissions: []` de riesgo
+// high / critical (aprobaciones, PIN, autorizaciones de supervisor) exigen su
+// clave DINÁMICA en el servicio (DYNAMIC_KEY_ROUTES del contract test).
+import { rbacRoutePermissions } from "../modules/rbac/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -55,7 +63,7 @@ export type ApiRoutePermission = {
   method: "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
   path: string;
   permissions: PermissionKey[];
-  riskLevel: "public" | "low" | "medium" | "high" | "critical";
+  riskLevel: "public" | "authenticated" | "low" | "medium" | "high" | "critical";
 };
 
 // Finanzas (2026-09-16, fix t6#9 · integrador): `accounting.read` is the
@@ -123,7 +131,12 @@ export const ACCOUNTING_CALENDAR_GET_PATHS: readonly string[] = [
   // service answers a REDACTED view (assigned centres only; no series,
   // installations, VAT settings or fiscal data of the sociedad), and the full
   // DTO of GET /legal-entities/:id moved to accounting.entity.read.
-  "/organizations/me/structure"
+  "/organizations/me/structure",
+  // Tanda 8a (RBAC · L1): the approval thresholds of the organisation are
+  // configuration (limits per action and tier, never ledger amounts) — read
+  // with the calendar key like the structure; written with accounting.configure
+  // + ai.high_risk.confirm (PUT, critical).
+  "/rbac/thresholds"
 ];
 
 export const routePermissionManifest: ApiRoutePermission[] = [
@@ -155,12 +168,14 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...pmsShadowRoutePermissions,
   // Importación contable desde Sage 200 (Tanda 7c): 15 entradas, ver modules/accounting/ledger-import-route-permissions.partial.ts
   ...ledgerImportRoutePermissions,
+  // RBAC por departamento (Tanda 8a · L1): 24 entradas, ver modules/rbac/route-permissions.partial.ts.
+  ...rbacRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/auth/forgot-password", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/auth/reset-password", permissions: [], riskLevel: "public" },
-  { method: "POST", path: "/auth/change-password", permissions: [], riskLevel: "low" },
+  { method: "POST", path: "/auth/change-password", permissions: [], riskLevel: "authenticated" },
   { method: "GET", path: "/auth/password-policy", permissions: [], riskLevel: "public" },
   // Tanda 3 (CFG-P1-6) · staff invitations: the token IS the credential. Both
   // routes are public here AND in PUBLIC_PREFIXES (lib/auth-context.ts) —
@@ -173,71 +188,71 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/onboarding/bootstrap/status", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/onboarding/bootstrap", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/users", permissions: ["users.invite"], riskLevel: "high" },
-  { method: "POST", path: "/auth/register-device", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/auth/sessions", permissions: [], riskLevel: "low" },
-  { method: "POST", path: "/auth/sessions/:id/revoke", permissions: [], riskLevel: "medium" },
-  { method: "POST", path: "/auth/mfa/challenge", permissions: [], riskLevel: "medium" },
-  { method: "POST", path: "/auth/mfa/verify", permissions: [], riskLevel: "medium" },
+  { method: "POST", path: "/auth/register-device", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/auth/sessions", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/auth/sessions/:id/revoke", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/auth/mfa/challenge", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/auth/mfa/verify", permissions: [], riskLevel: "authenticated" },
   // Tanda 5 (L1a · rbac): current user + template per property, for the
   // role-token navigation (apps/admin-web/src/navigation/role-tokens.ts).
-  { method: "GET", path: "/users/me", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/users/me/properties", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/users/me/preferences", permissions: [], riskLevel: "low" },
-  { method: "PATCH", path: "/users/me/preferences", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/properties", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/search", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/webhooks/event-types", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/users/me", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/users/me/properties", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/users/me/preferences", permissions: [], riskLevel: "authenticated" },
+  { method: "PATCH", path: "/users/me/preferences", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/properties", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/search", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/webhooks/event-types", permissions: [], riskLevel: "authenticated" },
   { method: "GET", path: "/webhooks/subscriptions", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
   { method: "POST", path: "/webhooks/subscriptions", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
   { method: "PATCH", path: "/webhooks/subscriptions/:id", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
   { method: "DELETE", path: "/webhooks/subscriptions/:id", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
   { method: "GET", path: "/webhooks/subscriptions/:id/deliveries", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
   { method: "POST", path: "/webhooks/subscriptions/:id/test", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
-  { method: "GET", path: "/assistant/tools", permissions: [], riskLevel: "low" },
-  { method: "POST", path: "/assistant/chat", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/assistant/tools", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/assistant/chat", permissions: [], riskLevel: "authenticated" },
   // Tanda 5 (L1b · api-side): GET routes carry READ keys (folio.read, pos.read,
   // tourist_tax.read, billing.compliance.view, guest_register.read); the write
   // keys they used to require stay on the mutations only.
   { method: "GET", path: "/tourist-tax/rates", permissions: ["tourist_tax.read"], riskLevel: "low" },
   { method: "POST", path: "/tourist-tax/rates", permissions: ["compliance.configure"], riskLevel: "high" },
   { method: "POST", path: "/tourist-tax/seed", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "POST", path: "/tourist-tax/compute", permissions: [], riskLevel: "low" },
+  { method: "POST", path: "/tourist-tax/compute", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/tourist-tax/apply", permissions: ["folio.charge.post"], riskLevel: "high" },
   { method: "GET", path: "/properties/:propertyId/tourist-tax/applications", permissions: ["tourist_tax.read"], riskLevel: "medium" },
   { method: "POST", path: "/reservations/:id/wallet-pass", permissions: ["pms.checkin.execute"], riskLevel: "high" },
-  { method: "POST", path: "/mobile-keys/:serial/verify", permissions: [], riskLevel: "medium" },
+  { method: "POST", path: "/mobile-keys/:serial/verify", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/mobile-keys/:serial/revoke", permissions: ["pms.checkin.execute"], riskLevel: "high" },
-  { method: "GET", path: "/tbai/territories", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/tbai/territories", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/invoices/:id/tbai/submit", permissions: ["compliance.configure"], riskLevel: "high" },
-  { method: "GET", path: "/properties/:propertyId/tbai/chain/:territory/verify", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/properties/:propertyId/tbai/chain/:territory/verify", permissions: ["compliance.read"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/tbai/submissions", permissions: ["billing.compliance.view"], riskLevel: "medium" },
   // Finanzas (2026-09-16, FIN-17): bank imports and SEPA remittances are the
   // reconciler's work (banking.reconcile: manager/accountant); the services
   // accept banking.reconcile OR accounting.journal.post.
   { method: "POST", path: "/properties/:propertyId/banking/csb43/import", permissions: ["banking.reconcile"], riskLevel: "high" },
   { method: "POST", path: "/banking/sepa/remittances", permissions: ["banking.reconcile"], riskLevel: "high" },
-  { method: "POST", path: "/banking/iban/validate", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/esrs/catalog", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/organizations/:orgId/esrs/:year/indicators", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "POST", path: "/banking/iban/validate", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/esrs/catalog", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/organizations/:orgId/esrs/:year/indicators", permissions: ["compliance.read"], riskLevel: "medium" },
   { method: "POST", path: "/esrs/indicators", permissions: ["compliance.configure"], riskLevel: "high" },
   { method: "POST", path: "/organizations/:orgId/esrs/:year/generate", permissions: ["compliance.configure"], riskLevel: "high" },
-  { method: "GET", path: "/organizations/:orgId/esrs/:year/report", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/marketplace/categories", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/marketplace/listings", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/marketplace/listings/:appId", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/organizations/:orgId/esrs/:year/report", permissions: ["compliance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/marketplace/categories", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/marketplace/listings", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/marketplace/listings/:appId", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/marketplace/listings", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
-  { method: "POST", path: "/marketplace/listings/:appId/install", permissions: [], riskLevel: "medium" },
-  { method: "POST", path: "/marketplace/listings/:appId/uninstall", permissions: [], riskLevel: "medium" },
-  { method: "GET", path: "/marketplace/installations", permissions: [], riskLevel: "low" },
+  { method: "POST", path: "/marketplace/listings/:appId/install", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/marketplace/listings/:appId/uninstall", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/marketplace/installations", permissions: [], riskLevel: "authenticated" },
   { method: "GET", path: "/developer/apps", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
   { method: "POST", path: "/developer/apps", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
   { method: "POST", path: "/developer/apps/:appId/rotate-secret", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
-  { method: "GET", path: "/oauth/scopes", permissions: [], riskLevel: "low" },
-  { method: "POST", path: "/oauth/authorize", permissions: [], riskLevel: "high" },
-  { method: "POST", path: "/oauth/token", permissions: [], riskLevel: "high" },
-  { method: "GET", path: "/notifications", permissions: [], riskLevel: "low" },
-  { method: "POST", path: "/notifications/:id/read", permissions: [], riskLevel: "low" },
-  { method: "GET", path: "/settings/security", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/oauth/scopes", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/oauth/authorize", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/oauth/token", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/notifications", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/notifications/:id/read", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/settings/security", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/onboarding/projects", permissions: ["onboarding.create"], riskLevel: "high" },
   { method: "GET", path: "/onboarding/projects", permissions: ["onboarding.read"], riskLevel: "medium" },
   { method: "GET", path: "/onboarding/projects/:projectId", permissions: ["onboarding.read"], riskLevel: "medium" },
@@ -659,7 +674,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   {
     method: "GET",
     path: "/backoffice/properties/:propertyId/compliance-settings",
-    permissions: ["compliance.configure"],
+    permissions: ["compliance.read"],
     riskLevel: "high"
   },
   {
@@ -668,7 +683,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
     permissions: ["compliance.configure"],
     riskLevel: "critical"
   },
-  { method: "GET", path: "/backoffice/properties/:propertyId/billing-settings", permissions: ["billing.configure"], riskLevel: "high" },
+  { method: "GET", path: "/backoffice/properties/:propertyId/billing-settings", permissions: ["configuration.read"], riskLevel: "high" },
   { method: "PATCH", path: "/backoffice/properties/:propertyId/billing-settings", permissions: ["billing.configure"], riskLevel: "critical" },
   // Tanda 3 (iva-catalogo) · indirect-tax profile per property. The read shares
   // the compliance-settings read gate (compliance.configure) — the same screen
@@ -680,7 +695,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   {
     method: "GET",
     path: "/backoffice/properties/:propertyId/accounting-settings",
-    permissions: ["accounting.configure"],
+    permissions: ["configuration.read"],
     riskLevel: "high"
   },
   {
@@ -748,7 +763,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/reservations/:id/folio", permissions: ["pms.reservation.read"], riskLevel: "low" },
   { method: "POST", path: "/folios/:id/lines", permissions: ["folio.charge.post"], riskLevel: "medium" },
   { method: "POST", path: "/folios/:id/payments", permissions: ["payment.capture"], riskLevel: "high" },
-  { method: "POST", path: "/payments/:id/refund", permissions: ["payment.refund", "ai.high_risk.confirm"], riskLevel: "critical" },
+  { method: "POST", path: "/payments/:id/refund", permissions: ["payment.refund"], riskLevel: "critical" },
   { method: "POST", path: "/folios/:id/close", permissions: ["folio.charge.post"], riskLevel: "medium" },
   // Tanda 5 (L1c · api): invoice GETs carry invoice.read (were invoice.issue,
   // a write key: reception opened Facturación y cobros and got 403).
@@ -793,14 +808,14 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/banking/statements/:id/auto-match", permissions: ["banking.reconcile"], riskLevel: "high" },
   { method: "POST", path: "/banking/lines/:bankLineId/match", permissions: ["banking.reconcile"], riskLevel: "high" },
   { method: "DELETE", path: "/banking/lines/:bankLineId/match", permissions: ["banking.reconcile"], riskLevel: "high" },
-  { method: "GET", path: "/properties/:propertyId/housekeeping/board", permissions: ["housekeeping.task.manage"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/housekeeping/board", permissions: ["housekeeping.read"], riskLevel: "low" },
   { method: "POST", path: "/housekeeping/tasks", permissions: ["housekeeping.task.manage"], riskLevel: "low" },
   { method: "PATCH", path: "/housekeeping/tasks/:id", permissions: ["housekeeping.task.manage"], riskLevel: "low" },
   { method: "POST", path: "/housekeeping/tasks/:id/photo", permissions: ["housekeeping.task.manage"], riskLevel: "low" },
   { method: "POST", path: "/rooms/:id/mark-clean", permissions: ["housekeeping.task.manage"], riskLevel: "medium" },
   { method: "POST", path: "/rooms/:id/mark-inspected", permissions: ["housekeeping.task.manage"], riskLevel: "high" },
-  { method: "GET", path: "/properties/:propertyId/work-orders", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
-  { method: "POST", path: "/work-orders", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/work-orders", permissions: ["maintenance.read"], riskLevel: "low" },
+  { method: "POST", path: "/work-orders", permissions: ["maintenance.workorder.create"], riskLevel: "low" },
   { method: "PATCH", path: "/work-orders/:id", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
   { method: "POST", path: "/work-orders/:id/media", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
   {
@@ -842,16 +857,16 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/menu-items/:id/recipes", permissions: ["inventory.manage"], riskLevel: "low" },
   { method: "DELETE", path: "/menu-recipes/:id", permissions: ["inventory.manage"], riskLevel: "low" },
   { method: "DELETE", path: "/compliance/documents/:id", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/properties/:propertyId/capex", permissions: ["asset.capex.approve"], riskLevel: "medium" },
-  { method: "GET", path: "/properties/:propertyId/assets", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/capex", permissions: ["capex.read"], riskLevel: "medium" },
+  { method: "GET", path: "/properties/:propertyId/assets", permissions: ["assets.read"], riskLevel: "low" },
   { method: "POST", path: "/assets", permissions: ["maintenance.workorder.manage"], riskLevel: "medium" },
   { method: "PATCH", path: "/assets/:id", permissions: ["maintenance.workorder.manage"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/fixed-assets", permissions: ["accounting.journal.post"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/room-profitability", permissions: ["pms.reservation.read"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/owner-dashboard", permissions: ["pms.reservation.read"], riskLevel: "medium" },
-  { method: "POST", path: "/capex-projects", permissions: ["asset.capex.approve"], riskLevel: "high" },
-  { method: "PATCH", path: "/capex-projects/:id", permissions: ["asset.capex.approve"], riskLevel: "high" },
-  { method: "POST", path: "/capex-projects/:id/items", permissions: ["asset.capex.approve"], riskLevel: "high" },
+  { method: "POST", path: "/capex-projects", permissions: ["capex.create"], riskLevel: "high" },
+  { method: "PATCH", path: "/capex-projects/:id", permissions: ["capex.create"], riskLevel: "high" },
+  { method: "POST", path: "/capex-projects/:id/items", permissions: ["capex.create"], riskLevel: "high" },
   { method: "GET", path: "/properties/:propertyId/conversations", permissions: ["ai.tool.execute"], riskLevel: "low" },
   { method: "GET", path: "/conversations/:id/messages", permissions: ["ai.tool.execute"], riskLevel: "low" },
   { method: "POST", path: "/conversations/:id/messages", permissions: ["ai.tool.execute"], riskLevel: "medium" },
@@ -1003,8 +1018,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "PATCH", path: "/guests/:id", permissions: ["guests.manage"], riskLevel: "high" },
   // GDPR DSAR + Right-to-erasure (Sprint 31). Guarded by compliance.gdpr.manage.
   { method: "POST", path: "/gdpr/requests", permissions: ["compliance.gdpr.manage"], riskLevel: "critical" },
-  { method: "GET", path: "/gdpr/requests", permissions: ["compliance.gdpr.manage"], riskLevel: "medium" },
-  { method: "GET", path: "/gdpr/requests/:id", permissions: ["compliance.gdpr.manage"], riskLevel: "medium" },
+  { method: "GET", path: "/gdpr/requests", permissions: ["compliance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/gdpr/requests/:id", permissions: ["compliance.read"], riskLevel: "medium" },
   { method: "POST", path: "/gdpr/requests/:id/acknowledge", permissions: ["compliance.gdpr.manage"], riskLevel: "high" },
   { method: "POST", path: "/gdpr/requests/:id/fulfill-dsar", permissions: ["compliance.gdpr.manage"], riskLevel: "critical" },
   { method: "POST", path: "/gdpr/requests/:id/execute-erasure", permissions: ["compliance.gdpr.manage"], riskLevel: "critical" },
@@ -1048,14 +1063,14 @@ export const routePermissionManifest: ApiRoutePermission[] = [
     permissions: ["ai.tool.execute", "pms.checkin.execute"],
     riskLevel: "critical"
   },
-  { method: "GET", path: "/audit-events", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
-  { method: "GET", path: "/audit-events/facets", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
-  { method: "GET", path: "/audit-events/integrity", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
-  { method: "GET", path: "/events", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
-  { method: "GET", path: "/events/integrity", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
-  { method: "GET", path: "/ai/tool-calls", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
+  { method: "GET", path: "/audit-events", permissions: ["audit.read"], riskLevel: "high" },
+  { method: "GET", path: "/audit-events/facets", permissions: ["audit.read"], riskLevel: "high" },
+  { method: "GET", path: "/audit-events/integrity", permissions: ["audit.read"], riskLevel: "high" },
+  { method: "GET", path: "/events", permissions: ["audit.read"], riskLevel: "high" },
+  { method: "GET", path: "/events/integrity", permissions: ["audit.read"], riskLevel: "high" },
+  { method: "GET", path: "/ai/tool-calls", permissions: ["audit.read"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods", permissions: ["accounting.journal.post"], riskLevel: "high" },
-  { method: "POST", path: "/accounting/fiscal-periods/:id/close", permissions: ["accounting.journal.post"], riskLevel: "high" },
+  { method: "POST", path: "/accounting/fiscal-periods/:id/close", permissions: ["accounting.period.close"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods/:id/reopen", permissions: ["accounting.journal.post", "ai.high_risk.confirm"], riskLevel: "high" },
   // Sprint 25 — Year-end close (Spanish PGC).
   // Tanda 5 (L1c · api): the fiscal calendar is accounting reference data —
@@ -1063,7 +1078,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/accounting/fiscal-years", permissions: ["accounting.read"], riskLevel: "low" },
   { method: "POST", path: "/accounting/fiscal-years", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "GET", path: "/accounting/fiscal-years/:id/status", permissions: ["accounting.read"], riskLevel: "medium" },
-  { method: "POST", path: "/accounting/fiscal-years/:id/close", permissions: ["accounting.journal.post", "ai.high_risk.confirm"], riskLevel: "critical" },
+  { method: "POST", path: "/accounting/fiscal-years/:id/close", permissions: ["accounting.period.close", "ai.high_risk.confirm"], riskLevel: "critical" },
   { method: "POST", path: "/accounting/fiscal-years/:id/reopen", permissions: ["accounting.journal.post", "ai.high_risk.confirm"], riskLevel: "critical" },
   { method: "POST", path: "/folios/:id/invoice", permissions: ["invoice.issue"], riskLevel: "medium" },
   { method: "POST", path: "/verifactu/submissions/:id/retry", permissions: ["compliance.ses.submit"], riskLevel: "medium" },
@@ -1101,8 +1116,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/developer/api-reference", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/rooms/:id/housekeeping-status", permissions: ["housekeeping.task.manage"], riskLevel: "low" },
   { method: "POST", path: "/rooms/:id/sellable", permissions: ["housekeeping.task.manage"], riskLevel: "low" },
-  { method: "GET", path: "/copilot/presets", permissions: [], riskLevel: "low" },
-  { method: "POST", path: "/copilot/ask", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/copilot/presets", permissions: [], riskLevel: "authenticated" },
+  { method: "POST", path: "/copilot/ask", permissions: [], riskLevel: "authenticated" },
   { method: "GET", path: "/guests/:id/timeline", permissions: ["guests.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/maintenance", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/finance-position", permissions: ["analytics.read"], riskLevel: "medium" },
@@ -1150,13 +1165,13 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/finance/exchange-rates", permissions: ["accounting.read"], riskLevel: "low" },
   { method: "POST", path: "/finance/exchange-rates", permissions: ["accounting.journal.post"], riskLevel: "high" },
   // Notification engine (Sprint 26)
-  { method: "GET", path: "/notifications/templates", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/notifications/templates", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/notifications/templates", permissions: ["notifications.manage"], riskLevel: "medium" },
   { method: "POST", path: "/notifications/templates/:id/deactivate", permissions: ["notifications.manage"], riskLevel: "medium" },
-  { method: "GET", path: "/notifications/deliveries", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/notifications/deliveries", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/notifications/deliveries/:id/retry", permissions: ["notifications.manage"], riskLevel: "medium" },
   { method: "POST", path: "/notifications/dispatch", permissions: ["notifications.manage"], riskLevel: "high" },
-  { method: "GET", path: "/notifications/template-stats", permissions: [], riskLevel: "low" },
+  { method: "GET", path: "/notifications/template-stats", permissions: [], riskLevel: "authenticated" },
   // Tanda 3 (CFG-P1-6): whether outbound email is real, simulated or disabled,
   // so invitation screens show a copyable link instead of a fake "sent".
   // Gated like the invitation itself (users.invite): it reveals provider config.
@@ -1247,12 +1262,12 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // findRoutePermission is first-wins they never applied at runtime and were
   // removed in the 2026-09-13 audit (0 duplicates is now enforced by CI, see
   // tests/api-route-permissions-contract.test.mjs).
-  { method: "GET", path: "/compliance/properties/:propertyId/center", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/tasks", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/documents", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/alerts", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/inspection-folder", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/assistant", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/center", permissions: ["compliance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/tasks", permissions: ["compliance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/documents", permissions: ["compliance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/alerts", permissions: ["compliance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/inspection-folder", permissions: ["compliance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/assistant", permissions: ["compliance.read"], riskLevel: "medium" },
 
   // Fase 0: Rate Plan CRUD. Mutations are FAIL-CLOSED without a manifest entry
   // (they throw 500), so these are required for the endpoints to work at all.

@@ -27,6 +27,21 @@
 // answers 409 NIGHT_AUDIT_ALREADY_COMPLETED; an in-progress one 409
 // NIGHT_AUDIT_IN_PROGRESS; a failed run can be re-executed (idempotent steps).
 // Texts are Spanish (they reach the operator and the folio).
+//
+// Tanda 8a (RBAC · L2, design §4.7 «Cierre del día», H7): running needs
+// `night_audit.run` (auditor nocturno; startedBy is the runner); the income
+// audit of the next morning is `reviewNightAuditRun` (`night_audit.review`,
+// reviewer ≠ runner → 409 RBAC_SOD_CONFLICT runner_ne_reviewer); reopening a
+// closed day is `reopenNightAuditRun` (`night_audit.reopen`, a reason code of
+// REOPEN_REASON_CODES): within 7 days of the business date the key suffices,
+// later the day_reopen approval of the L1 engine by ANOTHER person (the actor
+// is treated as the base author, so its own key never approves a late reopen:
+// an approved request, a supervisor PIN of someone else, or a privileged
+// session). Reopening NEVER reverses entries or charges: it records
+// reopenedBy / reopenedAt / reopenReasonCode and status `reopened`; the
+// engine only runs the CURRENT business date, so a reopened past day cannot
+// be re-run today — it stays recorded for the review (documented limit).
+import { ROLE_LEVEL_RANK } from "@hotelos/shared";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { Prisma as PrismaRuntime } from "@prisma/client";
@@ -34,14 +49,31 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { processNoShows } from "../cancellation-policy/cancellation-policy.service.js";
-import { ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { isOperationalKind } from "../../lib/tenancy.js";
 import { postNightlyRoomChargeTx, quoteNightlyRate, type NightlyPriceSource } from "../pms/room-charge.service.js";
 import { resolvePropertyTimeZone, zonedMidnight } from "../pos/pos.service.js";
+import { assertApprovedOrAuthorized, registerApprovalDecisionPolicy, type AuthorizationOutcome } from "../rbac/approvals.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
+import { assertSeparationOfDuties, sodAuditFields } from "../treasury/permissions.js";
 
 const Decimal = PrismaRuntime.Decimal;
 
-export type NightAuditStatus = "not_started" | "in_progress" | "completed" | "failed";
+export type NightAuditStatus = "not_started" | "in_progress" | "completed" | "failed" | "reopened";
+
+/** Días desde la fecha de negocio dentro de los cuales la clave night_audit.reopen basta (ventana Mews, design §4.7). */
+export const NIGHT_AUDIT_REOPEN_WINDOW_DAYS = 7;
+
+/** Catálogo de motivos de reapertura (reopen_reason). */
+export const REOPEN_REASON_CODES = {
+  missing_charge: "Cargo no contabilizado",
+  wrong_charge: "Cargo erróneo",
+  no_show_error: "No-show mal procesado",
+  payment_correction: "Corrección de cobro",
+  audit_finding: "Hallazgo de la revisión (income audit)",
+  other: "Otro motivo (indicar en el texto)"
+} as const;
+export type ReopenReasonCode = keyof typeof REOPEN_REASON_CODES;
 
 export type NightAuditStepResult = {
   step: string;
@@ -86,6 +118,12 @@ export type NightAuditRunRecord = {
   report: NightAuditReport | null;
   errorMessage?: string;
   createdAt: string;
+  // Tanda 8a: income audit (review) and reopening trace.
+  reviewedByUserId?: string | null;
+  reviewedAt?: string | null;
+  reopenedByUserId?: string | null;
+  reopenedAt?: string | null;
+  reopenReasonCode?: string | null;
 };
 
 function isoDate(d: Date): string {
@@ -122,7 +160,12 @@ function mapRun(row: NonNullable<Awaited<ReturnType<typeof prisma.nightAuditRun.
     stepResults: json.steps ?? [],
     report: json.report ?? null,
     errorMessage: row.errorMessage ?? undefined,
-    createdAt: row.createdAt.toISOString()
+    createdAt: row.createdAt.toISOString(),
+    reviewedByUserId: row.reviewedByUserId ?? null,
+    reviewedAt: row.reviewedAt?.toISOString() ?? null,
+    reopenedByUserId: row.reopenedByUserId ?? null,
+    reopenedAt: row.reopenedAt?.toISOString() ?? null,
+    reopenReasonCode: row.reopenReasonCode ?? null
   };
 }
 
@@ -188,6 +231,160 @@ export async function getNightAuditRun(propertyId: string, runId: string): Promi
   return mapRun(row);
 }
 
+// ---------------------------------------------------------------------------
+// Tanda 8a · income audit (review) and reopening of a closed day
+// ---------------------------------------------------------------------------
+
+async function requireRunInProperty(propertyId: string, runId: string) {
+  const row = await prisma.nightAuditRun.findUnique({ where: { id: runId } });
+  if (!row || row.propertyId !== propertyId) throw new NotFoundError("Ejecución del cierre del día no encontrada.");
+  return row;
+}
+
+/**
+ * POST …/night-audit/runs/:runId/review — the income audit of the next
+ * morning: `night_audit.review`, on a completed run, by someone other than
+ * the runner (startedBy; a legacy run without runner is «autor desconocido»,
+ * annotated). Writes reviewedByUserId / reviewedAt; audit NIGHT_AUDIT_REVIEWED.
+ */
+export async function reviewNightAuditRun(input: { context: UserContext; propertyId: string; runId: string; note?: string; correlationId: string }): Promise<NightAuditRunRecord> {
+  requirePermissions(input.context, ["night_audit.review"]);
+  const row = await requireRunInProperty(input.propertyId, input.runId);
+  if (row.status !== "completed") {
+    throw new ConflictError("Solo se revisa un cierre del día completado.", { code: "NIGHT_AUDIT_NOT_COMPLETED", status: row.status });
+  }
+  if (row.reviewedByUserId) {
+    throw new ConflictError("Este cierre del día ya está revisado.", { code: "NIGHT_AUDIT_ALREADY_REVIEWED", reviewedByUserId: row.reviewedByUserId, reviewedAt: row.reviewedAt?.toISOString() ?? null });
+  }
+  const sod = assertSeparationOfDuties(input.context, row.startedBy ?? null, "runner_ne_reviewer", { runId: row.id, businessDate: isoDate(row.businessDate) });
+  const reviewedAt = new Date();
+  const updated = await prisma.nightAuditRun.update({ where: { id: row.id }, data: { reviewedByUserId: input.context.userId, reviewedAt } });
+  recordAuditEvent({
+    organizationId: input.context.organizationId,
+    propertyId: input.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "user",
+    action: "NIGHT_AUDIT_REVIEWED",
+    entityType: "night_audit_run",
+    entityId: row.id,
+    beforeJson: { status: row.status, startedBy: row.startedBy ?? null, reviewedByUserId: null },
+    afterJson: { businessDate: isoDate(row.businessDate), reviewedByUserId: input.context.userId, reviewedAt: reviewedAt.toISOString(), note: input.note ?? null, ...sodAuditFields(sod) },
+    deviceId: input.context.deviceId,
+    correlationId: input.correlationId
+  });
+  return mapRun(updated);
+}
+
+/** Calendar days between the business date and «today» in the property's time zone (negative never happens: a future day is 0). Pure. */
+export function daysSinceBusinessDate(businessDate: string, todayIso: string): number {
+  const from = new Date(`${businessDate}T00:00:00.000Z`).getTime();
+  const to = new Date(`${todayIso}T00:00:00.000Z`).getTime();
+  return Math.max(0, Math.round((to - from) / 86_400_000));
+}
+
+/**
+ * POST …/night-audit/runs/:runId/reopen — reopens a completed day with a
+ * reason code: `night_audit.reopen`; ≤ NIGHT_AUDIT_REOPEN_WINDOW_DAYS since
+ * the business date the key suffices; later, the day_reopen approval of the
+ * engine by ANOTHER person (see the module header). Nothing is reversed: the
+ * run keeps its entries and report; status → `reopened` with the trace.
+ */
+/** Rank the decider of a late reopen (> NIGHT_AUDIT_REOPEN_WINDOW_DAYS) needs: dirección financiera / general (§4.7). */
+export const LATE_REOPEN_MIN_DECIDER_RANK = ROLE_LEVEL_RANK.general_management;
+
+/**
+ * Decision policy of `day_reopen` (registered in the approvals engine, §4.7):
+ * a request over a run whose business date is past the window can only be
+ * APPROVED by dirección financiera / general (rank ≥ general_management);
+ * within the window the hotel director decides. Pure over the run row; a
+ * missing run leaves the default rule (the executor answers 404 later).
+ */
+export async function lateReopenDecisionPolicy(request: { entityType: string; entityId: string; propertyId: string | null }): Promise<{ minDeciderRank?: number; reason?: string } | null> {
+  if (request.entityType !== "night_audit_run" || !request.propertyId) return null;
+  const run = await prisma.nightAuditRun.findFirst({ where: { id: request.entityId, propertyId: request.propertyId }, select: { businessDate: true } });
+  if (!run) return null;
+  const { timeZone } = await resolvePropertyTimeZone(request.propertyId);
+  const days = daysSinceBusinessDate(isoDate(run.businessDate), todayInTimezone(timeZone));
+  if (days <= NIGHT_AUDIT_REOPEN_WINDOW_DAYS) return null;
+  return { minDeciderRank: LATE_REOPEN_MIN_DECIDER_RANK, reason: `La reapertura de un día cerrado hace más de ${NIGHT_AUDIT_REOPEN_WINDOW_DAYS} días la decide dirección financiera o dirección general.` };
+}
+
+registerApprovalDecisionPolicy("day_reopen", (request) => lateReopenDecisionPolicy(request));
+
+export async function reopenNightAuditRun(input: {
+  context: UserContext;
+  propertyId: string;
+  runId: string;
+  reasonCode: string;
+  reasonText?: string;
+  supervisorAuthorizationId?: string | null;
+  correlationId: string;
+  rbac?: RbacDeps;
+}): Promise<NightAuditRunRecord & { daysSinceBusinessDate: number; authorization: AuthorizationOutcome | null }> {
+  requirePermissions(input.context, ["night_audit.reopen"]);
+  if (!(input.reasonCode in REOPEN_REASON_CODES)) {
+    throw new BadRequestError(`reasonCode no válido: usa uno de ${Object.keys(REOPEN_REASON_CODES).join(", ")}.`);
+  }
+  const row = await requireRunInProperty(input.propertyId, input.runId);
+  if (row.status !== "completed") {
+    throw new ConflictError("Solo se reabre un cierre del día completado.", { code: "NIGHT_AUDIT_NOT_COMPLETED", status: row.status });
+  }
+  const { timeZone } = await resolvePropertyTimeZone(input.propertyId);
+  const businessDate = isoDate(row.businessDate);
+  const days = daysSinceBusinessDate(businessDate, todayInTimezone(timeZone));
+  let authorization: AuthorizationOutcome | null = null;
+  if (days > NIGHT_AUDIT_REOPEN_WINDOW_DAYS) {
+    // The actor is the base author on purpose: its own key never approves a
+    // late reopen (mode 2 refused) — another person must have approved, and
+    // that person is dirección financiera / general (§4.7 «DirFin reabre > 7
+    // días»): the decider of the consumed request (or the PIN authoriser)
+    // needs rank ≥ general_management (corrector 8a · FSOD-05).
+    authorization = await assertApprovedOrAuthorized(
+      {
+        context: input.context,
+        kind: "day_reopen",
+        entityType: "night_audit_run",
+        entityId: row.id,
+        propertyId: input.propertyId,
+        amount: null,
+        baseAuthorUserId: input.context.userId,
+        supervisorAuthorizationId: input.supervisorAuthorizationId ?? null,
+        minDeciderRank: LATE_REOPEN_MIN_DECIDER_RANK
+      },
+      input.rbac ?? defaultRbacDeps
+    );
+  }
+  const reopenedAt = new Date();
+  const updated = await prisma.nightAuditRun.update({
+    where: { id: row.id },
+    data: { status: "reopened", reopenedByUserId: input.context.userId, reopenedAt, reopenReasonCode: input.reasonCode }
+  });
+  recordAuditEvent({
+    organizationId: input.context.organizationId,
+    propertyId: input.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "user",
+    action: "NIGHT_AUDIT_REOPENED",
+    entityType: "night_audit_run",
+    entityId: row.id,
+    beforeJson: { status: row.status, startedBy: row.startedBy ?? null, reviewedByUserId: row.reviewedByUserId ?? null },
+    afterJson: {
+      businessDate,
+      daysSinceBusinessDate: days,
+      withinWindow: days <= NIGHT_AUDIT_REOPEN_WINDOW_DAYS,
+      reasonCode: input.reasonCode,
+      reasonText: input.reasonText ?? null,
+      reopenedByUserId: input.context.userId,
+      reopenedAt: reopenedAt.toISOString(),
+      entriesReversed: false,
+      authorization: authorization ? { mode: authorization.mode, tier: authorization.tier, requestId: authorization.requestId ?? null, supervisorAuthorizationId: authorization.supervisorAuthorizationId ?? null } : null
+    },
+    deviceId: input.context.deviceId,
+    correlationId: input.correlationId
+  });
+  return { ...mapRun(updated), daysSinceBusinessDate: days, authorization };
+}
+
 type RunContext = { context: UserContext; propertyId: string; correlationId: string; businessDate: string; timeZone: string };
 
 export async function runNightAudit(input: {
@@ -195,7 +392,8 @@ export async function runNightAudit(input: {
   propertyId: string;
   correlationId: string;
 }): Promise<NightAuditRunRecord> {
-  requirePermissions(input.context, ["accounting.journal.post"]);
+  // Tanda 8a (H7): the night audit has its own key (night_audit.run); startedBy = the runner.
+  requirePermissions(input.context, ["night_audit.run"]);
 
   // Tanda 6b (R6): the night audit is a lodging routine. The head office and
   // other non-lodging centres have no rooms, no business date to close and no

@@ -62,15 +62,15 @@ const PASS = "Ptt-integration-Passw0rd-2026!";
 
 type Tenant = { orgId: string; propId: string; ownerEmail: string };
 
-/** Organisation + property + the default template roles + one «owner» user (org permissions, not a platform admin). */
+/** Organisation + property + the default template roles + one «receptionist» user (payment.capture, payments.create_link, folio.charge.post, invoice.issue; Tanda 8a narrowed the owner to «Propiedad», which never captures nor issues). */
 async function createTenant(tag: string): Promise<Tenant> {
   const orgId = `pttorg_${tag}_${RUN}`;
   const propId = `pttprop_${tag}_${RUN}`;
   await prisma.organization.create({ data: { id: orgId, name: `Tenencia pagos ${tag} ${RUN}`, legalName: `Tenencia pagos ${tag} ${RUN} SL`, taxId: "B12345674" } });
   await prisma.property.create({ data: { id: propId, organizationId: orgId, name: `Hotel ${tag} ${RUN}`, timezone: "Europe/Madrid" } });
   const roles = await provisionDefaultTemplateRoles(orgId);
-  const owner = roles.find((role) => role.templateKey === "owner");
-  assert.ok(owner, "the owner template role must be provisioned");
+  const owner = roles.find((role) => role.templateKey === "receptionist");
+  assert.ok(owner, "the receptionist template role must be provisioned");
   const ownerEmail = `ptt-owner-${tag}-${RUN}@example.com`;
   const user = await prisma.user.create({ data: { organizationId: orgId, email: ownerEmail, fullName: `Owner ${tag} ${RUN}`, status: "active", passwordHash: hashPassword(PASS) } });
   await prisma.userPropertyRole.create({ data: { userId: user.id, propertyId: propId, roleId: owner.id } });

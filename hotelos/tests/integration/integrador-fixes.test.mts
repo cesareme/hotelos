@@ -62,6 +62,7 @@ const USERS = {
   ownerA: { id: "usr_t6fix_owner_a", email: "owner.a@t6fix.test", organizationId: ORG_A, fullName: `${MARK} Owner A` },
   receptionA: { id: "usr_t6fix_reception_a", email: "recepcion.a@t6fix.test", organizationId: ORG_A, fullName: `${MARK} Recepción A` },
   accountantA: { id: "usr_t6fix_accountant_a", email: "contable.a@t6fix.test", organizationId: ORG_A, fullName: `${MARK} Contabilidad A` },
+  hrA: { id: "usr_t6fix_hr_a", email: "rrhh.a@t6fix.test", organizationId: ORG_A, fullName: `${MARK} RRHH A` },
   staffA: { id: "usr_t6fix_staff_a", email: "staff.a@t6fix.test", organizationId: ORG_A, fullName: `${MARK} Staff A` },
   staffB: { id: "usr_t6fix_staff_b", email: "staff.b@t6fix.test", organizationId: ORG_B, fullName: `${MARK} Staff B` }
 } as const;
@@ -98,6 +99,7 @@ const strict = <T>(run: () => Promise<T>): Promise<T> => withEnv(STRICT_ENV, run
 
 let app: ApiApp;
 let ownerA: Session;
+let hrA: Session;
 let receptionA: Session;
 let accountantA: Session;
 let platformAdmin: Session | null = null;
@@ -165,12 +167,16 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
     const owner = await createRoleFromTemplate({ organizationId: ORG_A, name: `${MARK} Propietario`, templateKey: "owner", actorUserId: null }, { audit: false });
     const reception = await createRoleFromTemplate({ organizationId: ORG_A, name: `${MARK} Recepción`, templateKey: "receptionist", actorUserId: null }, { audit: false });
     const accountant = await createRoleFromTemplate({ organizationId: ORG_A, name: `${MARK} Contabilidad`, templateKey: "accountant", actorUserId: null }, { audit: false });
+    // Tanda 8a: «Propiedad» (owner) no longer prepares payrolls nor posts; RRHH (payroll_hr) prepares the contracts of A and A2.
+    const hr = await createRoleFromTemplate({ organizationId: ORG_A, name: `${MARK} RRHH`, templateKey: "payroll_hr", actorUserId: null }, { audit: false });
     await prisma.userPropertyRole.createMany({
       data: [
         { userId: USERS.ownerA.id, propertyId: PROP_A, roleId: owner.id },
         { userId: USERS.ownerA.id, propertyId: PROP_A2, roleId: owner.id },
         { userId: USERS.receptionA.id, propertyId: PROP_A, roleId: reception.id },
-        { userId: USERS.accountantA.id, propertyId: PROP_A, roleId: accountant.id }
+        { userId: USERS.accountantA.id, propertyId: PROP_A, roleId: accountant.id },
+        { userId: USERS.hrA.id, propertyId: PROP_A, roleId: hr.id },
+        { userId: USERS.hrA.id, propertyId: PROP_A2, roleId: hr.id }
       ]
     });
 
@@ -196,10 +202,11 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
     const sessions = await Promise.all([
       login(USERS.ownerA.email, PASSWORD, "t6fix-owner-a"),
       login(USERS.receptionA.email, PASSWORD, "t6fix-reception-a"),
-      login(USERS.accountantA.email, PASSWORD, "t6fix-accountant-a")
+      login(USERS.accountantA.email, PASSWORD, "t6fix-accountant-a"),
+      login(USERS.hrA.email, PASSWORD, "t6fix-hr-a")
     ]);
-    assert.ok(sessions[0] && sessions[1] && sessions[2], "the three test sessions must log in");
-    [ownerA, receptionA, accountantA] = sessions as [Session, Session, Session];
+    assert.ok(sessions[0] && sessions[1] && sessions[2] && sessions[3], "the four test sessions must log in");
+    [ownerA, receptionA, accountantA, hrA] = sessions as [Session, Session, Session, Session];
     platformAdmin = await login(process.env.INTEGRATION_LOGIN_EMAIL ?? "reception@example.com", process.env.INTEGRATION_LOGIN_PASSWORD ?? "hotelos-demo", "t6fix-platform-admin");
   });
 
@@ -281,7 +288,9 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
         for (const url of AMOUNT_READS) {
           const res = await getJson(url, receptionA);
           assert.equal(res.status, 403, `${url}: ${res.status} ${res.text.slice(0, 200)}`);
-          assert.match(res.text, /accounting\.reports\.read/, `${url} names the missing key`);
+          // Tanda 8a (design §4.3): the journal export is the gestoría export (analytics.export); the supplier bills are payables.read.
+          const key = url === "/accounting/journal/export" ? /analytics\.export/ : url.endsWith("/payables/supplier-bills") ? /payables\.read/ : /accounting\.reports\.read/;
+          assert.match(res.text, key, `${url} names the missing key`);
         }
       });
     });
@@ -338,19 +347,20 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
 
   // ── t6#11 ───────────────────────────────────────────────────────────────────
 
+  // Tanda 8a: contracts are prepared by RRHH (payroll.manage lives in payroll_hr only); commission rules are posted by contabilidad (accounting.journal.post).
   describe("t6#11 · POST /payroll/contracts", () => {
     const VALID = { staffProfileId: STAFF_PROFILE_A, propertyId: PROP_A, contractType: "indefinido", startDate: "2026-01-01", grossSalary: "1800,50", irpfRatePct: 15 };
 
     it("garbage money and unknown keys are a 400 in Spanish (never 500) and store nothing", async () => {
       await strict(async () => {
-        const garbage = await postJson("/payroll/contracts", ownerA, { grossSalary: "abc" });
+        const garbage = await postJson("/payroll/contracts", hrA, { grossSalary: "abc" });
         assert.equal(garbage.status, 400, garbage.text.slice(0, 200));
         assert.match((garbage.body as ErrorBody).message ?? "", /grossSalary debe ser un número con hasta dos decimales/);
-        const probe = await postJson("/payroll/contracts", ownerA, { staffProfileId: "nope", contractType: "x", startDate: "2026-01-01", grossSalary: 1, foo: 1 });
+        const probe = await postJson("/payroll/contracts", hrA, { staffProfileId: "nope", contractType: "x", startDate: "2026-01-01", grossSalary: 1, foo: 1 });
         assert.equal(probe.status, 400, probe.text.slice(0, 200));
         assert.match((probe.body as ErrorBody).message ?? "", /Campo no admitido en el cuerpo de la petición/);
         assert.match((probe.body as ErrorBody).message ?? "", /contractType debe ser uno de/);
-        const notObject = await postJson("/payroll/contracts", ownerA, []);
+        const notObject = await postJson("/payroll/contracts", hrA, []);
         assert.equal(notObject.status, 400, notObject.text.slice(0, 200));
         assert.equal(await prisma.employmentContract.count({ where: { staffProfileId: "nope" } }), 0, "no orphan contract");
         assert.equal(await prisma.employmentContract.count({ where: { organizationId: ORG_A } }), 0);
@@ -359,17 +369,17 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
 
     it("a missing, foreign or unassigned staff profile is the same opaque 404; a propertyId that is not the profile's is a typed 400", async () => {
       await strict(async () => {
-        const missing = await postJson("/payroll/contracts", ownerA, { ...VALID, staffProfileId: "sp_no_existe", propertyId: undefined });
+        const missing = await postJson("/payroll/contracts", hrA, { ...VALID, staffProfileId: "sp_no_existe", propertyId: undefined });
         assert.equal(missing.status, 404, missing.text.slice(0, 200));
         assert.equal((missing.body as ErrorBody).message, "Perfil de empleado no encontrado.");
-        const foreign = await postJson("/payroll/contracts", ownerA, { ...VALID, staffProfileId: STAFF_PROFILE_B, propertyId: undefined });
+        const foreign = await postJson("/payroll/contracts", hrA, { ...VALID, staffProfileId: STAFF_PROFILE_B, propertyId: undefined });
         assert.equal(foreign.status, 404, foreign.text.slice(0, 200));
         assert.equal((foreign.body as ErrorBody).message, "Perfil de empleado no encontrado.");
         assert.ok(!foreign.text.includes(PROP_B) && !foreign.text.includes(ORG_B), "no id of B in the body");
-        const foreignProperty = await postJson("/payroll/contracts", ownerA, { ...VALID, propertyId: PROP_B });
+        const foreignProperty = await postJson("/payroll/contracts", hrA, { ...VALID, propertyId: PROP_B });
         assert.equal(foreignProperty.status, 404, foreignProperty.text.slice(0, 200));
         assert.equal((foreignProperty.body as ErrorBody).message, "Propiedad no encontrada.");
-        const mismatch = await postJson("/payroll/contracts", ownerA, { ...VALID, propertyId: PROP_A2 });
+        const mismatch = await postJson("/payroll/contracts", hrA, { ...VALID, propertyId: PROP_A2 });
         assert.equal(mismatch.status, 400, mismatch.text.slice(0, 200));
         assert.equal((mismatch.body as ErrorBody).details?.code, "STAFF_PROFILE_PROPERTY_MISMATCH");
         assert.equal(await prisma.employmentContract.count({ where: { organizationId: ORG_A } }), 0, "nothing stored by the refused bodies");
@@ -378,7 +388,7 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
 
     it("a valid body is stored in the caller's organization and listed afterwards (\"1800,50\" → 1800.5)", async () => {
       await strict(async () => {
-        const created = await postJson("/payroll/contracts", ownerA, VALID);
+        const created = await postJson("/payroll/contracts", hrA, VALID);
         assert.equal(created.status, 200, created.text.slice(0, 300));
         const row = created.body as { id: string; organizationId: string; propertyId: string; staffProfileId: string; grossSalary: number; irpfRatePct?: number; contractType: string };
         assert.equal(row.organizationId, ORG_A);
@@ -387,7 +397,7 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
         assert.equal(row.grossSalary, 1800.5);
         assert.equal(row.irpfRatePct, 15);
         assert.equal(row.contractType, "indefinido");
-        const list = await getJson("/payroll/contracts", ownerA);
+        const list = await getJson("/payroll/contracts", hrA);
         assert.equal(list.status, 200);
         assert.ok((list.body as Array<{ id: string }>).some((contract) => contract.id === row.id));
         const stored = await prisma.employmentContract.findUnique({ where: { id: row.id }, select: { grossSalary: true, organizationId: true } });
@@ -400,18 +410,18 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
   describe("t6#11 · POST /commissions/rules", () => {
     it("garbage ratePct is a 400 in Spanish (never decimal.js in a 500); a foreign channel or property is an opaque 404", async () => {
       await strict(async () => {
-        const garbage = await postJson("/commissions/rules", ownerA, { propertyId: PROP_A, ratePct: "abc" });
+        const garbage = await postJson("/commissions/rules", accountantA, { propertyId: PROP_A, ratePct: "abc" });
         assert.equal(garbage.status, 400, garbage.text.slice(0, 200));
         assert.match((garbage.body as ErrorBody).message ?? "", /ratePct debe ser un número con hasta dos decimales/);
-        const noChannel = await postJson("/commissions/rules", ownerA, { propertyId: PROP_A, ratePct: 10 });
+        const noChannel = await postJson("/commissions/rules", accountantA, { propertyId: PROP_A, ratePct: 10 });
         assert.equal(noChannel.status, 400, noChannel.text.slice(0, 200));
         assert.match((noChannel.body as ErrorBody).message ?? "", /Indica channelId o channelCode/);
-        const unknownKey = await postJson("/commissions/rules", ownerA, { propertyId: PROP_A, channelCode: "booking", ratePct: 10, foo: 1 });
+        const unknownKey = await postJson("/commissions/rules", accountantA, { propertyId: PROP_A, channelCode: "booking", ratePct: 10, foo: 1 });
         assert.equal(unknownKey.status, 400, unknownKey.text.slice(0, 200));
-        const foreignChannel = await postJson("/commissions/rules", ownerA, { propertyId: PROP_A, channelId: "ch_no_existe", ratePct: 12 });
+        const foreignChannel = await postJson("/commissions/rules", accountantA, { propertyId: PROP_A, channelId: "ch_no_existe", ratePct: 12 });
         assert.equal(foreignChannel.status, 404, foreignChannel.text.slice(0, 200));
         assert.equal((foreignChannel.body as ErrorBody).message, "Canal no encontrado.");
-        const foreignProperty = await postJson("/commissions/rules", ownerA, { propertyId: PROP_B, channelCode: "booking", ratePct: 12 });
+        const foreignProperty = await postJson("/commissions/rules", accountantA, { propertyId: PROP_B, channelCode: "booking", ratePct: 12 });
         assert.equal(foreignProperty.status, 404, foreignProperty.text.slice(0, 200));
         assert.equal((foreignProperty.body as ErrorBody).message, "Propiedad no encontrada.");
         assert.equal(await prisma.commissionRule.count({ where: { propertyId: { in: PROPS } } }), 0, "nothing stored by the refused bodies");
@@ -420,7 +430,7 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
 
     it("a valid body is stored: channelCode lower-cased, \"15,5\" → 15.50, appliesTo kept", async () => {
       await strict(async () => {
-        const created = await postJson("/commissions/rules", ownerA, { propertyId: PROP_A, channelCode: "Booking", ratePct: "15,5", appliesTo: "net_revenue" });
+        const created = await postJson("/commissions/rules", accountantA, { propertyId: PROP_A, channelCode: "Booking", ratePct: "15,5", appliesTo: "net_revenue" });
         assert.equal(created.status, 200, created.text.slice(0, 300));
         const row = created.body as { id: string; propertyId: string; channelCode: string | null; ratePct: string; appliesTo: string; active: boolean };
         assert.equal(row.propertyId, PROP_A);
@@ -428,6 +438,7 @@ describe("fix:integrador · t6#6 / t6#9 / t6#10 / t6#11 over real sessions", () 
         assert.equal(row.ratePct, "15.5");
         assert.equal(row.appliesTo, "net_revenue");
         assert.equal(row.active, true);
+        // Tanda 8a: commissions.read left the accountant template (design §6.5); Propiedad (owner) reads the rules it never writes.
         const list = await getJson(`/commissions/rules?propertyId=${PROP_A}`, ownerA);
         assert.equal(list.status, 200, list.text.slice(0, 200));
         assert.ok((list.body as Array<{ id: string }>).some((rule) => rule.id === row.id));

@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "backfill:pii": "tsx src/jobs/pii-backfill.ts",
     "rbac:sync": "node --env-file-if-exists=../../.env --import tsx src/scripts/rbac-sync.ts",
+    "rbac:migrate-assignments": "node --env-file-if-exists=../../.env --import tsx src/scripts/rbac-migrate-assignments.ts",
     "backfill:snapshots": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-snapshots.ts",
     "backfill:payment-hash": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-payment-lookup-hash.ts",
     "backfill:taxes": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-taxes.ts",

@@ -22,47 +22,72 @@ import {
 } from "../role-tokens.ts";
 
 describe("role-tokens · derivation from template keys", () => {
-  it("maps every RBAC template to the CSV token (§8)", () => {
+  it("maps the 24 RBAC templates to the 16 CSV tokens (Tanda 8a design §4.2)", () => {
     assert.deepEqual(ROLE_TEMPLATE_TO_TOKEN, {
-      owner: "direccion",
-      admin: "admin",
-      manager: "direccion",
       receptionist: "recepcion",
+      night_auditor: "recepcion",
+      front_office_manager: "recepcion",
       housekeeper: "pisos",
+      housekeeping_manager: "pisos",
       maintenance: "mantenimiento",
-      accountant: "finanzas",
-      compliance: "finanzas",
-      revenue: "revenue",
+      maintenance_manager: "mantenimiento",
+      fnb: "fnb",
+      fnb_manager: "fnb",
       sales: "comercial",
-      fnb: "fnb"
+      admin_clerk: "administracion",
+      manager: "direccion",
+      operations_director: "direccion",
+      general_manager: "direccion",
+      break_glass: "direccion",
+      revenue: "revenue",
+      accountant: "finanzas",
+      controller: "finanzas",
+      compliance: "finanzas",
+      payroll_hr: "rrhh",
+      asset_manager: "activos",
+      owner: "propiedad",
+      auditor: "auditoria",
+      admin: "sistemas"
     });
-    assert.equal(ROLE_TEMPLATE_KEYS_MAPPED.length, 11);
+    assert.equal(ROLE_TEMPLATE_KEYS_MAPPED.length, 24);
     for (const key of ROLE_TEMPLATE_KEYS_MAPPED) assert.ok(isRoleTemplateKey(key));
+    // The `admin` token is the platform administrator's only (H11): no template yields it.
+    assert.ok(!Object.values(ROLE_TEMPLATE_TO_TOKEN).includes("admin"));
   });
 
   it("returns null for custom roles and is case/space tolerant", () => {
-    assert.equal(roleTokenFromTemplate("Owner "), "direccion");
-    assert.equal(roleTokenFromTemplate("night_auditor"), null);
+    assert.equal(roleTokenFromTemplate("Owner "), "propiedad");
+    assert.equal(roleTokenFromTemplate("night_auditor"), "recepcion");
+    assert.equal(roleTokenFromTemplate("local_super_admin"), null);
     assert.equal(roleTokenFromTemplate(null), null);
     assert.equal(roleTokenFromTemplate(undefined), null);
     assert.equal(roleTokenFromTemplate(""), null);
   });
 
   it("unions several templates, deduplicated and in priority order", () => {
-    assert.deepEqual(roleTokensFromTemplates(["accountant", "compliance", "owner"]), ["direccion", "finanzas"]);
+    assert.deepEqual(roleTokensFromTemplates(["accountant", "compliance", "owner"]), ["propiedad", "finanzas"]);
     assert.deepEqual(roleTokensFromTemplates(["housekeeper", "custom", null]), ["pisos"]);
+    assert.deepEqual(roleTokensFromTemplates(["admin", "auditor", "admin_clerk"]), ["sistemas", "auditoria", "administracion"]);
     assert.deepEqual(roleTokensFromTemplates([]), []);
     assert.equal(primaryRoleToken(["pisos", "recepcion"]), "recepcion");
+    assert.equal(primaryRoleToken(["rrhh", "activos"]), "rrhh");
     assert.equal(primaryRoleToken([]), null);
   });
 
-  it("exposes the ten tokens with Spanish labels and a total priority order", () => {
-    assert.equal(ROLE_TOKENS.length, 10);
+  it("exposes the sixteen tokens with Spanish labels and a total priority order (admin, sistemas, direccion, propiedad, auditoria, finanzas, rrhh, activos, revenue, comercial, administracion, recepcion, fnb, mantenimiento, pisos, publico)", () => {
+    assert.equal(ROLE_TOKENS.length, 16);
     for (const token of ROLE_TOKENS) {
       assert.ok(isRoleToken(token));
       assert.ok(ROLE_TOKEN_LABELS[token].length > 0);
       assert.ok(ROLE_TOKEN_PRIORITY.includes(token), `${token} missing from priority`);
     }
+    assert.deepEqual(ROLE_TOKEN_PRIORITY, ["admin", "sistemas", "direccion", "propiedad", "auditoria", "finanzas", "rrhh", "activos", "revenue", "comercial", "administracion", "recepcion", "fnb", "mantenimiento", "pisos", "publico"]);
+    assert.equal(ROLE_TOKEN_LABELS.administracion, "Administración de hotel");
+    assert.equal(ROLE_TOKEN_LABELS.rrhh, "RRHH y nóminas");
+    assert.equal(ROLE_TOKEN_LABELS.propiedad, "Propiedad");
+    assert.equal(ROLE_TOKEN_LABELS.activos, "Gestión del activo");
+    assert.equal(ROLE_TOKEN_LABELS.auditoria, "Auditoría interna");
+    assert.equal(ROLE_TOKEN_LABELS.sistemas, "Administración de sistema");
     assert.equal(isRoleToken("all"), false);
     assert.equal(isRoleToken("reception"), false);
   });
@@ -80,6 +105,17 @@ describe("role-tokens · roleHome (§3)", () => {
     assert.equal(roleHome("admin"), "/hoy/direccion");
     assert.equal(roleHome("fnb"), "/hoy/operaciones");
     assert.equal(roleHome("publico"), "/acceso");
+  });
+
+  it("lands the six Tanda 8a tokens on their own screen (design §4.9 / §10.2)", () => {
+    assert.equal(roleHome("administracion"), "/finanzas/facturacion");
+    assert.equal(roleHome("rrhh"), "/finanzas/nominas");
+    assert.equal(roleHome("propiedad"), "/hoy/propietario");
+    assert.equal(roleHome("activos"), "/cumplimiento/centro");
+    assert.equal(roleHome("auditoria"), "/configuracion/sistema");
+    assert.equal(roleHome("sistemas"), "/configuracion/usuarios");
+    assert.equal(roleHomeForTokens(["recepcion", "sistemas"]), "/configuracion/usuarios", "sistemas outranks recepcion");
+    assert.equal(roleHomeForTokens(["propiedad", "auditoria"]), "/hoy/propietario");
   });
 
   it("uses the mobile tab for housekeeping and maintenance below 700 px", () => {

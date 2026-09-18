@@ -268,6 +268,40 @@ export type PermissionKey =
   // hold the read key).
   | "accounting.entity.read"
   | "organization.structure.manage"
+  // Tanda 8a (L0 · RBAC por departamento y nivel, 2026-09-18): the 27 keys of
+  // docs/design/RBAC-DEPARTAMENTOS.md §4.6 — maker/checker of discounts,
+  // folio adjustments, invoice cancellation, refunds; night audit run/review/
+  // reopen; supplier bills register ≠ approve ≠ pay; period close; payroll
+  // approval; out-of-band rate changes; the real-estate module (4); read keys
+  // for the read-only templates (housekeeping, maintenance, compliance);
+  // role assignment within scope; the audited break-glass session.
+  | "pms.reservation.discount"
+  | "pms.reservation.override"
+  | "folio.adjust"
+  | "folio.adjust_approve"
+  | "invoice.cancel_request"
+  | "invoice.cancel_approve"
+  | "night_audit.run"
+  | "night_audit.review"
+  | "night_audit.reopen"
+  | "housekeeping.read"
+  | "maintenance.read"
+  | "maintenance.workorder.create"
+  | "pos.order.void"
+  | "payables.read"
+  | "payables.create"
+  | "payables.approve"
+  | "payables.pay"
+  | "accounting.period.close"
+  | "payroll.approve"
+  | "revenue.rates.approve"
+  | "real_estate.read"
+  | "real_estate.manage"
+  | "real_estate.documents.manage"
+  | "property_tax.manage"
+  | "users.assign"
+  | "compliance.read"
+  | "security.break_glass"
   // Platform scope (HotelOS staff). Listed in PLATFORM_PERMISSION_KEYS and
   // excluded from every organization role template.
   | "admin.tenants.manage";
@@ -285,7 +319,26 @@ export type RoleKey =
   // They back the `comercial` and `fnb` tokens of the navigation tree.
   | "sales"
   | "fnb"
-  | "admin";
+  | "admin"
+  // Tanda 8a (L0 · RBAC por departamento y nivel): the 13 templates of
+  // docs/design/RBAC-DEPARTAMENTOS.md §4.2 — supervisors (N2) of reception,
+  // housekeeping, maintenance and F&B; night auditor and hotel administrative
+  // clerk (N1); operations director (N4); controller and general manager (N5);
+  // payroll/HR, asset manager and internal auditor (N7); and the break-glass
+  // emergency template (§4.8, never listed in ORGANIZATION_TEMPLATE_ROLE_KEYS).
+  | "night_auditor"
+  | "front_office_manager"
+  | "housekeeping_manager"
+  | "maintenance_manager"
+  | "fnb_manager"
+  | "admin_clerk"
+  | "operations_director"
+  | "controller"
+  | "payroll_hr"
+  | "asset_manager"
+  | "general_manager"
+  | "auditor"
+  | "break_glass";
 
 export type ToolContext = {
   organizationId: ID;

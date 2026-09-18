@@ -15,13 +15,33 @@
 // FixedAsset per investment-good line. Legacy domain events
 // (`SupplierBillCreated` / `SupplierBillUpdated`) are NOT emitted: the legacy
 // projection would post a second, unnumbered entry.
+//
+// Tanda 8a (RBAC · L2, design §4.7 «registrar ≠ aprobar (por importe) ≠
+// pagar», H6): registering needs `payables.create` and stamps
+// SupplierBill.createdByUserId; approving needs `payables.approve`, another
+// person than the registrar and a tier (TEMPLATE_MAX_TIER of the approver's
+// assignments in the property) that reaches the total — above it the
+// supplier_bill approval of the L1 engine (double approval above
+// secondApprovalAmount with an ownership second approver) or 403
+// RBAC_LEVEL_EXCEEDED; paying needs `payables.pay` and a third person
+// (creator ≠ payer, approver ≠ payer — the controller template may pay what
+// someone else approved, design §4.7 «salvo controller»). Posting and
+// cancelling keep accounting.journal.post at the route. A bill written
+// before the migration (createdByUserId null) is «autor desconocido»: never
+// blocks, annotated in the audit.
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { UserContext } from "../../lib/demo-store.js";
-import { HttpError, NotFoundError } from "../../lib/http-error.js";
+import { HttpError, NotFoundError, RbacForbiddenError } from "../../lib/http-error.js";
+import { assignmentsFor } from "../../lib/rbac-scope.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
+import { requirePermissions } from "../auth/auth.service.js";
+import { assertApprovedOrAuthorized, type AuthorizationOutcome } from "../rbac/approvals.service.js";
+import { defaultRbacDeps, scopeOfContext, type RbacDeps } from "../rbac/assignments.service.js";
+import { getThresholds, maxTierFor, tierFor, tierWithin } from "../rbac/thresholds.service.js";
+import { assertSeparationOfDuties, sodAuditFields, type SodCheckOutcome } from "../treasury/permissions.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { registerFixedAssetFromBillLine } from "../fixed-assets/fixed-assets.service.js";
 import { getLedgerPort, type LedgerEntryResult, type LedgerLineInput } from "./ledger-port.js";
@@ -93,7 +113,8 @@ const paySchema = z
 
 const cancelSchema = z.object({ reason: z.string().trim().min(3).max(300) }).strict();
 
-const approveSchema = z.object({}).strict().optional();
+/** Tanda 8a: the only field of the approval body is the optional supervisor PIN authorisation (payables.approve). */
+const approveSchema = z.object({ supervisorAuthorizationId: z.string().trim().min(1).max(64).optional() }).strict().optional();
 
 export type BillLineInput = z.input<typeof lineSchema>;
 export type BillInput = z.input<typeof billSchema>;
@@ -584,9 +605,86 @@ export async function getPayablesAging(input: { propertyId: string; asOf?: strin
 // Commands
 // ---------------------------------------------------------------------------
 
-type CommandInput = { context: UserContext; propertyId: string; correlationId: string };
+type CommandInput = { context: UserContext; propertyId: string; correlationId: string; /** Injectable rbac collaborators (tests). */ rbac?: RbacDeps };
+
+// ---------------------------------------------------------------------------
+// Tanda 8a · separation-of-duties gates (unit-testable with a fake context)
+// ---------------------------------------------------------------------------
+
+export type SupplierBillApprovalGate = {
+  sod: SodCheckOutcome;
+  tier: ReturnType<typeof tierFor>;
+  maxTier: ReturnType<typeof tierFor>;
+  /** null when the approver's own tier reaches the total (implicit approval). */
+  authorization: AuthorizationOutcome | null;
+};
+
+/**
+ * Approve gate: `payables.approve` on the actor; registrar ≠ approver (409
+ * RBAC_SOD_CONFLICT creator_ne_approver); tier(total) within the approver's
+ * tier → implicit; otherwise the engine (kind supplier_bill: an approved
+ * request of another person, double approval above secondApprovalAmount,
+ * supervisor PIN, privileged session) and, when nothing authorises it, 403
+ * RBAC_LEVEL_EXCEEDED { tier, maxTier } instead of the engine's 409.
+ */
+export async function assertSupplierBillApprovalAuthorized(
+  input: { context: UserContext; bill: { id: string; propertyId: string; createdByUserId: string | null; total: Decimal | number | string }; supervisorAuthorizationId?: string | null },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<SupplierBillApprovalGate> {
+  requirePermissions(input.context, ["payables.approve"]);
+  const sod = assertSeparationOfDuties(input.context, input.bill.createdByUserId, "creator_ne_approver", { billId: input.bill.id });
+  const total = dec(input.bill.total).abs();
+  const thresholds = await getThresholds(input.context.organizationId, deps);
+  const tier = tierFor(total.toNumber(), thresholds, "supplier_bill");
+  const maxTier = await maxTierFor(input.context, input.bill.propertyId, deps);
+  if (tierWithin(tier, maxTier) && tier !== "ABOVE_T4") return { sod, tier, maxTier, authorization: null };
+  try {
+    const authorization = await assertApprovedOrAuthorized(
+      {
+        context: input.context,
+        kind: "supplier_bill",
+        entityType: "supplier_bill",
+        entityId: input.bill.id,
+        propertyId: input.bill.propertyId,
+        amount: total.toFixed(2),
+        baseAuthorUserId: input.bill.createdByUserId,
+        supervisorAuthorizationId: input.supervisorAuthorizationId ?? null
+      },
+      deps
+    );
+    return { sod, tier, maxTier, authorization };
+  } catch (error) {
+    const code = (error as { details?: { code?: string; requestId?: string } }).details?.code;
+    if (code !== "APPROVAL_REQUIRED") throw error;
+    const pendingRequestId = (error as { details?: { requestId?: string } }).details?.requestId ?? null;
+    throw new RbacForbiddenError("El importe supera el tramo que puedes aprobar.", "RBAC_LEVEL_EXCEEDED", { tier, maxTier, kind: "supplier_bill", ...(pendingRequestId ? { requestId: pendingRequestId } : {}) });
+  }
+}
+
+/** True when some live assignment of the actor covering the property is the `controller` template (pays what someone else approved). */
+async function isControllerIn(context: UserContext, propertyId: string, deps: RbacDeps): Promise<boolean> {
+  const scope = await scopeOfContext(context, deps);
+  return assignmentsFor(scope, propertyId).assignments.some((assignment) => assignment.templateKey === "controller");
+}
+
+/**
+ * Pay gate: `payables.pay` on the actor; registrar ≠ payer (409
+ * creator_ne_payer); approver ≠ payer (409 approver_ne_payer) unless the actor
+ * is a controller in the property (audited `controllerException`).
+ */
+export async function assertSupplierBillPaymentAuthorized(
+  input: { context: UserContext; bill: { id: string; propertyId: string; createdByUserId: string | null; approvedBy: string | null } },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<{ creator: SodCheckOutcome; approver: SodCheckOutcome | null; controllerException: boolean }> {
+  requirePermissions(input.context, ["payables.pay"]);
+  const creator = assertSeparationOfDuties(input.context, input.bill.createdByUserId, "creator_ne_payer", { billId: input.bill.id });
+  const controllerException = input.bill.approvedBy === input.context.userId && (await isControllerIn(input.context, input.bill.propertyId, deps));
+  const approver = controllerException ? null : assertSeparationOfDuties(input.context, input.bill.approvedBy, "approver_ne_payer", { billId: input.bill.id });
+  return { creator, approver, controllerException };
+}
 
 export async function createSupplierBill(input: CommandInput & { body: unknown }): Promise<SupplierBillDto> {
+  requirePermissions(input.context, ["payables.create"]);
   const data = parseOr400(billSchema, input.body ?? {}, "Factura recibida");
   const organizationId = await organizationOfProperty(prisma, input.propertyId);
   const row = await prisma.$transaction(async (tx) => {
@@ -615,6 +713,8 @@ export async function createSupplierBill(input: CommandInput & { body: unknown }
         roomId: data.roomId ?? null,
         status: "draft",
         documentObjectKey,
+        // Tanda 8a (SoD): the registrar never approves nor pays its own bill.
+        createdByUserId: input.context.userId,
         lines: {
           create: totals.lines.map((l) => ({
             lineNo: l.lineNo,
@@ -648,6 +748,7 @@ export async function createSupplierBill(input: CommandInput & { body: unknown }
 }
 
 export async function updateSupplierBill(input: CommandInput & { billId: string; body: unknown }): Promise<SupplierBillDto> {
+  requirePermissions(input.context, ["payables.create"]);
   const data = parseOr400(billSchema, input.body ?? {}, "Factura recibida");
   const row = await prisma.$transaction(async (tx) => {
     const before = await requireBill(tx, input.propertyId, input.billId);
@@ -711,7 +812,15 @@ export async function updateSupplierBill(input: CommandInput & { billId: string;
 }
 
 export async function approveSupplierBill(input: CommandInput & { billId: string; body?: unknown }): Promise<SupplierBillDto> {
-  parseOr400(approveSchema, input.body ?? {}, "Aprobación");
+  const body = parseOr400(approveSchema, input.body ?? {}, "Aprobación");
+  // Tanda 8a: the gate runs on the loaded bill BEFORE the transaction (the
+  // engine consumes an approved request; nothing is written if it refuses).
+  const loaded = await requireBill(prisma, input.propertyId, input.billId);
+  assertStatus(loaded, ["draft"], "aprobar");
+  const gate = await assertSupplierBillApprovalAuthorized(
+    { context: input.context, bill: { id: loaded.id, propertyId: loaded.propertyId, createdByUserId: loaded.createdByUserId ?? null, total: loaded.total }, supervisorAuthorizationId: body?.supervisorAuthorizationId ?? null },
+    input.rbac ?? defaultRbacDeps
+  );
   const row = await prisma.$transaction(async (tx) => {
     const before = await requireBill(tx, input.propertyId, input.billId);
     assertStatus(before, ["draft"], "aprobar");
@@ -726,7 +835,17 @@ export async function approveSupplierBill(input: CommandInput & { billId: string
     action: "SUPPLIER_BILL_APPROVED",
     entityType: "supplier_bill",
     entityId: dto.id,
-    afterJson: { status: dto.status, total: dto.total },
+    afterJson: {
+      status: dto.status,
+      total: dto.total,
+      approvedBy: input.context.userId,
+      tier: gate.tier,
+      maxTier: gate.maxTier,
+      ...sodAuditFields(gate.sod),
+      authorization: gate.authorization
+        ? { mode: gate.authorization.mode, tier: gate.authorization.tier, requestId: gate.authorization.requestId ?? null, supervisorAuthorizationId: gate.authorization.supervisorAuthorizationId ?? null }
+        : { mode: "implicit", tier: gate.tier, requestId: null, supervisorAuthorizationId: null }
+    },
     correlationId: input.correlationId
   });
   return dto;
@@ -873,6 +992,17 @@ export async function paySupplierBill(input: CommandInput & { billId: string; bo
   if (!/^57[02](\.\d+|\d)?$/.test(counterAccountCode)) {
     throw typed(400, "COUNTER_ACCOUNT_INVALID", `La cuenta de pago debe ser 570 (caja) o 572 (bancos) o una subcuenta: ${counterAccountCode}.`, { accountCode: counterAccountCode });
   }
+  // Tanda 8a: payables.pay + a third person (creator ≠ payer, approver ≠
+  // payer unless controller). An already paid bill is returned as-is only
+  // after the key check (never an oracle for a user without the pay key).
+  requirePermissions(input.context, ["payables.pay"]);
+  const loaded = await requireBill(prisma, input.propertyId, input.billId);
+  const payGate = loaded.status === "paid"
+    ? null
+    : await assertSupplierBillPaymentAuthorized(
+        { context: input.context, bill: { id: loaded.id, propertyId: loaded.propertyId, createdByUserId: loaded.createdByUserId ?? null, approvedBy: loaded.approvedBy ?? null } },
+        input.rbac ?? defaultRbacDeps
+      );
   const result = await prisma.$transaction(async (tx) => {
     const before = await requireBill(tx, input.propertyId, input.billId);
     if (before.status === "paid") return { row: before, entry: null as LedgerEntryResult | null };
@@ -915,7 +1045,17 @@ export async function paySupplierBill(input: CommandInput & { billId: string; bo
       action: "SUPPLIER_BILL_PAID",
       entityType: "supplier_bill",
       entityId: dto.id,
-      afterJson: { status: dto.status, paymentDate: dto.paymentDate, paidJournalEntryId: dto.paidJournalEntryId, total: dto.total, counterAccountCode },
+      afterJson: {
+        status: dto.status,
+        paymentDate: dto.paymentDate,
+        paidJournalEntryId: dto.paidJournalEntryId,
+        total: dto.total,
+        counterAccountCode,
+        paidByUserId: input.context.userId,
+        sod: payGate
+          ? { creator: { rule: payGate.creator.rule, authorUserId: payGate.creator.authorUserId, authorUnknown: payGate.creator.authorUnknown, privileged: payGate.creator.privileged }, approver: payGate.approver ? { rule: payGate.approver.rule, authorUserId: payGate.approver.authorUserId, authorUnknown: payGate.approver.authorUnknown, privileged: payGate.approver.privileged } : null, controllerException: payGate.controllerException }
+          : null
+      },
       correlationId: input.correlationId
     });
     recordDomainEvent({

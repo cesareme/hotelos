@@ -268,6 +268,15 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     productionExample: "true",
     doc: "RBAC estricto: un GET sin entrada en el manifiesto de permisos devuelve 403. Vacía = estricto en producción y fail-open con aviso en desarrollo. false está prohibido en producción."
   },
+  HOTELOS_DEMO_PERMISSION_UNION: {
+    section: "Auth/demo flags",
+    ...BOOL,
+    default: "false",
+    example: "false",
+    productionForbidden: "true",
+    doc:
+      "Unión demo de permisos (Tanda 8a · RBAC): con true toda sesión REAL recibe además las claves de organización del super-usuario demo (nunca la clave de plataforma). Ya no depende de NODE_ENV ni de HOTELOS_ALLOW_DEMO_AUTH. false en el demo local para ver el RBAC real por usuario; true está prohibido en producción."
+  },
   TENANT_BOOTSTRAP_SKIP: {
     section: "Auth/demo flags",
     ...BOOL,
@@ -807,6 +816,12 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     format: "string",
     tags: ["dev-only", "dangerous"],
     doc: "Guard DATA-05: id exacto (o lista separada por comas) de la organización/propiedad NO demo que confirmas como objetivo del seed; solo se honra con SEED_ALLOW_REAL=1."
+  },
+  RBAC_DEMO_PASSWORD: {
+    section: "Seeds",
+    format: "string",
+    tags: ["dev-only"],
+    doc: "Seed de usuarios ficticios de la Tanda 8a (db:seed:rbac-demo, packages/database/prisma/seed-rbac-demo.ts): contraseña de un solo uso de los 19 usuarios @faranda.test (mustChangePassword). Vacía = la contraseña de demo del seed (se imprime al final); nunca en un .env persistente."
   },
 
   // ----------------------------------------------------------------- Tests

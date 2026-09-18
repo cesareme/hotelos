@@ -1,12 +1,19 @@
 // Unit tests for the staff-invitation core (Tanda 3 · invitaciones).
 // Pure-core only: no database, no live email provider. Run from apps/api with
 //   node --import tsx --test src/modules/auth/__tests__/invitations.test.mts
+// Tanda 8a (L3): acceptInvitation runs against the fake Prisma of the rbac
+// module (injected deps) and must write the grant in BOTH tables —
+// user_property_roles (scope property) and user_role_assignments (real scope).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
+import { INVITATION_MAX_DAYS, ROLE_PERMISSION_MAP } from "@hotelos/shared";
 import {
+  INVITATION_INVALID_CODE,
+  INVITATION_MAX_TTL_HOURS,
   INVITATION_TTL_HOURS,
   REDACTED_TOKEN,
+  acceptInvitation,
   appBaseUrl,
   buildInviteUrl,
   buildPasswordResetUrl,
@@ -15,8 +22,13 @@ import {
   generateInvitationToken,
   hashInvitationToken,
   invitationExpiresAt,
-  invitationState
+  invitationGrantScope,
+  invitationRequiresMfa,
+  invitationState,
+  type AcceptInvitationDeps
 } from "../invitations.service.js";
+import type { LoginResult } from "../auth.service.js";
+import { audits, fakePrisma, matchWhere, nextId, seedRoles, type Row, type Tables } from "../../rbac/__tests__/fake-prisma.mts";
 import { deriveMustChangePassword } from "../auth.service.js";
 import {
   PASSWORD_CHANGE_ALLOWLIST,
@@ -92,6 +104,228 @@ describe("invitation token — generation, hashing, URL", () => {
   it("expires 72 h after issue", () => {
     assert.equal(INVITATION_TTL_HOURS, 72);
     assert.equal(invitationExpiresAt(NOW).getTime() - NOW.getTime(), 72 * 60 * 60 * 1000);
+  });
+
+  it("Tanda 8a: never lives longer than INVITATION_MAX_DAYS (7 days), whatever TTL a caller asks for; a bogus TTL falls back to the default", () => {
+    assert.equal(INVITATION_MAX_TTL_HOURS, INVITATION_MAX_DAYS * 24);
+    assert.equal(invitationExpiresAt(NOW, 24 * 30).getTime() - NOW.getTime(), INVITATION_MAX_DAYS * 24 * 60 * 60 * 1000);
+    assert.equal(invitationExpiresAt(NOW, 24).getTime() - NOW.getTime(), 24 * 60 * 60 * 1000);
+    assert.equal(invitationExpiresAt(NOW, 0).getTime() - NOW.getTime(), 72 * 60 * 60 * 1000);
+    assert.equal(invitationExpiresAt(NOW, Number.NaN).getTime() - NOW.getTime(), 72 * 60 * 60 * 1000);
+    assert.ok(INVITATION_TTL_HOURS <= INVITATION_MAX_TTL_HOURS);
+  });
+
+  it("Tanda 8a (D8): templates of level N2+ require 2FA enrolment; N1, custom and unknown templates do not", () => {
+    assert.equal(invitationRequiresMfa("front_office_manager"), true);
+    assert.equal(invitationRequiresMfa("manager"), true);
+    assert.equal(invitationRequiresMfa("general_manager"), true);
+    assert.equal(invitationRequiresMfa("receptionist"), false);
+    assert.equal(invitationRequiresMfa("housekeeper"), false);
+    assert.equal(invitationRequiresMfa(null), false);
+    assert.equal(invitationRequiresMfa("no-such-template"), false);
+  });
+
+  it("Tanda 8a: the grant scope of a row — explicit scope wins; a pre-Tanda-8a row (propertyId only) is scope property; no role → no grant", () => {
+    assert.deepEqual(invitationGrantScope({ propertyId: "prop_1", roleId: "role_1" }), { roleId: "role_1", scopeType: "property", scopeRef: "prop_1" });
+    assert.deepEqual(invitationGrantScope({ propertyId: "prop_1", roleId: "role_1", scopeType: "organization", scopeRef: "org_1" }), { roleId: "role_1", scopeType: "organization", scopeRef: "org_1" });
+    assert.deepEqual(invitationGrantScope({ propertyId: null, roleId: "role_1", scopeType: "legal_entity", scopeRef: "le_1" }), { roleId: "role_1", scopeType: "legal_entity", scopeRef: "le_1" });
+    assert.equal(invitationGrantScope({ propertyId: "prop_1", roleId: null }), null);
+    assert.equal(invitationGrantScope({ propertyId: null, roleId: "role_1" }), null);
+    assert.equal(invitationGrantScope({ propertyId: null, roleId: "role_1", scopeType: "property_group", scopeRef: null }), null);
+  });
+});
+
+// ───────────────────────────────────────────── acceptInvitation · dual-write (fake Prisma)
+
+/** Minimal delegate for the models the rbac fake does not ship (user_invitations, password_reset_tokens). */
+function plainDelegate(tables: Tables, model: string) {
+  const rows = (): Row[] => (tables[model] ??= []);
+  const query = (where?: Record<string, unknown>): Row[] => rows().filter((row) => matchWhere(row, where));
+  return {
+    findUnique: async (args: { where?: Record<string, unknown> }) => {
+      const hit = query(args.where)[0];
+      return hit ? { ...hit } : null;
+    },
+    findFirst: async (args: { where?: Record<string, unknown> } = {}) => {
+      const hit = query(args.where)[0];
+      return hit ? { ...hit } : null;
+    },
+    findMany: async (args: { where?: Record<string, unknown> } = {}) => query(args.where).map((row) => ({ ...row })),
+    create: async (args: { data: Record<string, unknown> }) => {
+      const row: Row = { id: nextId(model), createdAt: new Date(), ...args.data };
+      rows().push(row);
+      return { ...row };
+    },
+    update: async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      const index = rows().findIndex((row) => matchWhere(row, args.where));
+      if (index < 0) throw new Error(`fake ${model}: row not found`);
+      rows()[index] = { ...rows()[index], ...args.data };
+      return { ...rows()[index] };
+    },
+    updateMany: async (args: { where?: Record<string, unknown>; data: Record<string, unknown> }) => {
+      let count = 0;
+      const all = rows();
+      for (let index = 0; index < all.length; index += 1) {
+        if (!matchWhere(all[index], args.where)) continue;
+        all[index] = { ...all[index], ...args.data };
+        count += 1;
+      }
+      return { count };
+    }
+  };
+}
+
+const ACCEPT_ORG = "org_inv";
+const ACCEPT_PROPERTY = "prop_lt";
+const INVITEE = "u_invitee";
+const INVITER = "u_inviter";
+const ACCEPT_NOW = new Date("2026-09-18T12:00:00.000Z");
+const STRONG_PASSWORD = "Recepcion-2026!";
+
+type SeededRoleIds = Record<string, { id: string }>;
+
+function acceptSetup(invitation: Partial<Row> | ((roles: SeededRoleIds) => Partial<Row>)) {
+  const token = generateInvitationToken();
+  const tables: Partial<Tables> = {
+    organization: [{ id: ACCEPT_ORG, name: "Faranda", rbacVersion: 0 }],
+    property: [
+      { id: ACCEPT_PROPERTY, organizationId: ACCEPT_ORG, name: "Los Tilos", legalEntityId: "le_1", createdAt: new Date(2026, 0, 1) },
+      { id: "prop_ra", organizationId: ACCEPT_ORG, name: "Rías Altas", legalEntityId: "le_1", createdAt: new Date(2026, 0, 2) }
+    ],
+    user: [
+      { id: INVITEE, organizationId: ACCEPT_ORG, email: "nueva@faranda.test", fullName: "Nueva", status: "invited", mfaEnabled: false, passwordHash: null, mustChangePassword: true, failedLoginAttempts: 0, lockedUntil: null },
+      { id: INVITER, organizationId: ACCEPT_ORG, email: "direccion@faranda.test", fullName: "Dirección", status: "active", mfaEnabled: true, passwordHash: "x", mustChangePassword: false }
+    ],
+    session: [{ id: "sess_old", userId: INVITEE, deviceId: "dev_old", status: "active", revokedAt: null }],
+    userPropertyRole: [],
+    userRoleAssignment: []
+  };
+  const roles = seedRoles(tables, ACCEPT_ORG, { receptionist: ROLE_PERMISSION_MAP.receptionist, owner: ROLE_PERMISSION_MAP.owner, break_glass: ROLE_PERMISSION_MAP.break_glass });
+  const overrides = typeof invitation === "function" ? invitation(roles) : invitation;
+  const base = fakePrisma(tables);
+  const extra = { userInvitation: plainDelegate(base.$tables, "userInvitation"), passwordResetToken: plainDelegate(base.$tables, "passwordResetToken") };
+  base.$tables.userInvitation = [
+    {
+      id: "inv_1",
+      userId: INVITEE,
+      organizationId: ACCEPT_ORG,
+      propertyId: ACCEPT_PROPERTY,
+      roleId: roles.receptionist.id,
+      scopeType: "property",
+      scopeRef: ACCEPT_PROPERTY,
+      invitedByUserId: INVITER,
+      createdByUserId: INVITER,
+      tokenHash: hashInvitationToken(token),
+      expiresAt: new Date(ACCEPT_NOW.getTime() + 60 * 60 * 1000),
+      usedAt: null,
+      revokedAt: null,
+      createdAt: ACCEPT_NOW,
+      ...overrides
+    },
+    { id: "inv_other", userId: INVITEE, organizationId: ACCEPT_ORG, propertyId: null, roleId: null, tokenHash: "other", expiresAt: new Date(ACCEPT_NOW.getTime() + 60 * 60 * 1000), usedAt: null, revokedAt: null, createdAt: ACCEPT_NOW }
+  ];
+  base.$tables.passwordResetToken = [{ id: "prt_1", userId: INVITEE, usedAt: null }];
+  const db = Object.assign(base, extra, { $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db) });
+  const trail = audits();
+  const sessions: Array<{ userId: string; deviceId: string }> = [];
+  const logins: string[] = [];
+  const deps: AcceptInvitationDeps = {
+    db: db as unknown as AcceptInvitationDeps["db"],
+    now: () => ACCEPT_NOW,
+    audit: trail.audit as unknown as AcceptInvitationDeps["audit"],
+    recordLogin: async (userId: string) => {
+      logins.push(userId);
+    },
+    openSession: (async (input: { user: { id: string }; deviceId: string }) => {
+      sessions.push({ userId: input.user.id, deviceId: input.deviceId });
+      return { token: "jwt", sessionId: "sess_new", user: { userId: input.user.id } } as unknown as LoginResult;
+    }) as unknown as AcceptInvitationDeps["openSession"]
+  };
+  return { token, db, roles, trail, sessions, logins, deps };
+}
+
+describe("acceptInvitation — Tanda 8a dual-write (fake Prisma)", () => {
+  it("a property invitation activates the user and creates the grant in BOTH tables: user_property_roles + user_role_assignments (scope property, granted by the inviter), audited as ROLE_ASSIGNED", async () => {
+    const { token, db, roles, trail, sessions, logins, deps } = acceptSetup({});
+    const result = await acceptInvitation({ token, password: STRONG_PASSWORD, deviceId: "dev_new" }, deps);
+    assert.equal(result.sessionId, "sess_new");
+    assert.deepEqual(sessions, [{ userId: INVITEE, deviceId: "dev_new" }]);
+    assert.deepEqual(logins, [INVITEE]);
+
+    const user = db.$tables.user.find((row) => row.id === INVITEE)!;
+    assert.equal(user.status, "active");
+    assert.equal(user.mustChangePassword, false);
+    assert.ok(typeof user.passwordHash === "string" && (user.passwordHash as string).length > 20, "scrypt hash stored");
+    assert.equal((user.passwordChangedAt as Date).getTime(), ACCEPT_NOW.getTime());
+
+    const legacy = db.$tables.userPropertyRole;
+    assert.equal(legacy.length, 1, "one user_property_roles row (dual-read until L6)");
+    assert.deepEqual([legacy[0]!.userId, legacy[0]!.propertyId, legacy[0]!.roleId], [INVITEE, ACCEPT_PROPERTY, roles.receptionist.id]);
+
+    const assignments = db.$tables.userRoleAssignment;
+    assert.equal(assignments.length, 1, "one user_role_assignments row");
+    const assignment = assignments[0]!;
+    assert.equal(assignment.userId, INVITEE);
+    assert.equal(assignment.roleId, roles.receptionist.id);
+    assert.equal(assignment.scopeType, "property");
+    assert.equal(assignment.propertyId, ACCEPT_PROPERTY);
+    assert.equal(assignment.organizationId, ACCEPT_ORG);
+    assert.equal(assignment.grantedByUserId, INVITER);
+    assert.equal(assignment.reason, "invitación aceptada");
+    assert.equal(assignment.revokedAt ?? null, null, "live (Prisma defaults revokedAt to NULL; the fake omits the column)");
+    assert.equal((assignment.validFrom as Date).getTime(), ACCEPT_NOW.getTime());
+    assert.equal(db.$tables.organization[0]!.rbacVersion, 1, "live sessions re-read their scope");
+
+    const invitation = db.$tables.userInvitation.find((row) => row.id === "inv_1")!;
+    assert.equal((invitation.usedAt as Date).getTime(), ACCEPT_NOW.getTime(), "single use");
+    assert.equal((db.$tables.userInvitation.find((row) => row.id === "inv_other")!.revokedAt as Date).getTime(), ACCEPT_NOW.getTime(), "other pending links die");
+    assert.equal((db.$tables.passwordResetToken[0]!.usedAt as Date).getTime(), ACCEPT_NOW.getTime());
+    assert.equal(db.$tables.session.find((row) => row.id === "sess_old")!.status, "revoked");
+
+    const actions = trail.events.map((event) => event.action);
+    assert.deepEqual(actions, ["USER_INVITATION_ACCEPTED", "ROLE_ASSIGNED"]);
+    const granted = trail.events.find((event) => event.action === "ROLE_ASSIGNED")!;
+    assert.equal(granted.actorUserId, INVITER, "the grant was decided by the inviter, never by the invitee");
+    assert.equal(granted.actorType, "user");
+    assert.equal(granted.entityId, assignment.id);
+    assert.deepEqual((granted.afterJson as { scopeType: string; propertyId: string; acceptedByUserId: string }).scopeType, "property");
+    assert.equal((granted.afterJson as { acceptedByUserId: string }).acceptedByUserId, INVITEE);
+    assert.equal((trail.events[0]!.afterJson as { assignmentId: string }).assignmentId, assignment.id);
+  });
+
+  it("an organisation-scope invitation creates the organization assignment and NO legacy row; accepting twice is a 404 and writes nothing more", async () => {
+    const { token, db, roles, deps } = acceptSetup((seeded) => ({ propertyId: null, roleId: seeded.owner!.id, scopeType: "organization", scopeRef: ACCEPT_ORG }));
+    await acceptInvitation({ token, password: STRONG_PASSWORD }, deps);
+    assert.equal(db.$tables.userPropertyRole.length, 0, "organization scope has no per-property legacy row");
+    assert.equal(db.$tables.userRoleAssignment.length, 1);
+    assert.deepEqual([db.$tables.userRoleAssignment[0]!.scopeType, db.$tables.userRoleAssignment[0]!.propertyId, db.$tables.userRoleAssignment[0]!.roleId], ["organization", null, roles.owner.id]);
+    await assert.rejects(acceptInvitation({ token, password: STRONG_PASSWORD }, deps), (error: unknown) => (error as { statusCode: number }).statusCode === 404 && (error as { details: { code: string } }).details.code === INVITATION_INVALID_CODE);
+    assert.equal(db.$tables.userRoleAssignment.length, 1);
+  });
+
+  it("a pre-Tanda-8a row (propertyId + roleId, no scope columns) still grants scope property in both tables", async () => {
+    const { token, db, deps } = acceptSetup({ scopeType: null, scopeRef: null, invitedByUserId: null });
+    await acceptInvitation({ token, password: STRONG_PASSWORD }, deps);
+    assert.equal(db.$tables.userPropertyRole.length, 1);
+    assert.equal(db.$tables.userRoleAssignment.length, 1);
+    assert.equal(db.$tables.userRoleAssignment[0]!.scopeType, "property");
+    assert.equal(db.$tables.userRoleAssignment[0]!.grantedByUserId, INVITER, "falls back to createdByUserId");
+  });
+
+  it("an invitation whose role became the emergency template (or vanished) is an opaque 404 and activates nobody", async () => {
+    const { token, db, roles, deps } = acceptSetup({});
+    db.$tables.userInvitation[0]!.roleId = roles.break_glass.id;
+    await assert.rejects(acceptInvitation({ token, password: STRONG_PASSWORD }, deps), (error: unknown) => (error as { statusCode: number }).statusCode === 404);
+    assert.equal(db.$tables.userRoleAssignment.length, 0);
+    assert.equal(db.$tables.userPropertyRole.length, 0);
+    // The fake $transaction does not roll back: the honest check is that no grant exists and the session never opened.
+  });
+
+  it("a weak password is a 400 before any read; a short or unknown token is the generic 404", async () => {
+    const { token, deps } = acceptSetup({});
+    await assert.rejects(acceptInvitation({ token, password: "short" }, deps), (error: unknown) => (error as { statusCode: number }).statusCode === 400);
+    await assert.rejects(acceptInvitation({ token: "abc", password: STRONG_PASSWORD }, deps), (error: unknown) => (error as { statusCode: number }).statusCode === 404);
+    await assert.rejects(acceptInvitation({ token: `${token}x`, password: STRONG_PASSWORD }, deps), (error: unknown) => (error as { statusCode: number }).statusCode === 404);
   });
 });
 

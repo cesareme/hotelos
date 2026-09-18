@@ -30,11 +30,12 @@ describe("assertTreasuryEntityScope · `?scope=entity` answers like every other 
     );
   });
 
-  it("passes for a holder of accounting.entity.read, a platform admin and a context without property assignments (owners without UPR)", () => {
+  it("passes for a holder of accounting.entity.read, a platform admin and an EXPLICIT organisation-wide context; an empty assignment list is refused (Tanda 8a)", () => {
     assert.doesNotThrow(() => assertTreasuryEntityScope(ctx(["accounting.entity.read"], { assignedPropertyIds: ["prop_hs"] })));
     assert.doesNotThrow(() => assertTreasuryEntityScope(ctx(["banking.read"], { assignedPropertyIds: ["prop_hs"], isPlatformAdmin: true })));
-    assert.doesNotThrow(() => assertTreasuryEntityScope(ctx(["banking.read", "accounting.read"])), "no assignments = organisation-wide by construction");
-    assert.doesNotThrow(() => assertTreasuryEntityScope(ctx(["banking.read"], { assignedPropertyIds: [] })));
+    assert.doesNotThrow(() => assertTreasuryEntityScope(ctx(["banking.read", "accounting.read"])), "a context assembled without a list keeps the organisation");
+    assert.doesNotThrow(() => assertTreasuryEntityScope(ctx(["banking.read"], { assignedPropertyIds: [], orgScope: true })), "a live organisation / sociedad assignment");
+    assert.throws(() => assertTreasuryEntityScope(ctx(["banking.read"], { assignedPropertyIds: [] })), (error: unknown) => error instanceof HttpError && error.statusCode === 404, "no assignments = nothing (H1/H2 closed)");
   });
 
   it("is the SAME predicate as the ledger / fiscal / statements reads (no treasury-only semantics)", () => {

@@ -16,12 +16,20 @@ import { prisma, hashPassword } from "@hotelos/database";
 import { HOTEL_MODULES } from "@hotelos/product";
 import type { PermissionKey } from "@hotelos/shared";
 import { requirePermissions } from "../auth/auth.service.js";
+import { recordRoleAssigned, writeRoleAssignment, type RoleAssignmentWritten } from "../auth/auth-pilot.service.js";
 import { createInvitation, reissueInvitation } from "../auth/invitations.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
-import { applyRoleTemplate, provisionDefaultTemplateRoles, type ProvisionedTemplateRole } from "../../lib/rbac-catalog.js";
+import type { ScopeType } from "@hotelos/shared";
+// Tanda 8a (RBAC · L3, design §6.5): a tenant is born with the 22 organisation
+// templates (provisionDefaultTemplateRoles), its «Emergencia» role
+// (ensureBreakGlassRole, §4.8: never assigned here) and its first user as
+// Propiedad + Dirección general of the whole organisation (decision D1),
+// written in BOTH assignment tables (writeRoleAssignment) and audited as
+// ROLE_ASSIGNED once the transaction committed.
+import { applyRoleTemplate, ensureBreakGlassRole, provisionDefaultTemplateRoles, type ProvisionedTemplateRole } from "../../lib/rbac-catalog.js";
 import { ensurePropertySettings, ensurePropertyTaxes, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
 import { findDefaultLegalEntity, resolveLegalIdentity } from "../../lib/finance-scope.js";
 import { listPropertyModules } from "../product-modules/product-modules.service.js";
@@ -206,8 +214,12 @@ export type CreateTenantResult = TenantInvitationResult & {
   ownerUserId: string;
   /** role_permissions rows granted to the Owner role from the shared "owner" template. */
   ownerPermissionsGranted: number;
-  /** Tanda 4: template roles provisioned besides Owner (Manager / Recepción / Housekeeping), no users attached. */
+  /** Tanda 4 → 8a: the 22 organisation template roles provisioned besides Owner, no users attached. */
   templateRoles: ProvisionedTemplateRole[];
+  /** Tanda 8a (§4.8): the «Emergencia» role of the organisation (break_glass template; no account attached here). */
+  breakGlassRole: { id: string; name: string; permissionsCount: number; created: boolean };
+  /** Tanda 8a (D1): organisation-scope assignments of the first user — owner and, when the template role exists, general_manager. */
+  roleAssignments: Array<{ assignmentId: string; roleId: string; templateKey: string | null; scopeType: ScopeType }>;
   /** Only when ADMIN_EXPOSE_TEMP_PASSWORD=true (never by default: the owner sets the password on accept-invite). */
   tempPassword?: string;
   /** Statutory tax catalogue provisioned for the property's region (contract C). */
@@ -270,6 +282,9 @@ async function mintInvitation(input: {
   organizationId: string;
   propertyId: string | null;
   roleId: string | null;
+  /** Tanda 8a: scope of the assignment the acceptance (re)creates; defaults to property/propertyId inside createInvitation. */
+  scopeType?: ScopeType | null;
+  scopeRef?: string | null;
   actorUserId: string | null;
   correlationId?: string;
 }): Promise<TenantInvitationResult> {
@@ -279,6 +294,9 @@ async function mintInvitation(input: {
       organizationId: input.organizationId,
       propertyId: input.propertyId,
       roleId: input.roleId,
+      scopeType: input.scopeType ?? null,
+      scopeRef: input.scopeRef ?? null,
+      invitedByUserId: input.actorUserId,
       actorUserId: input.actorUserId,
       correlationId: input.correlationId
     });
@@ -677,6 +695,10 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     // transaction: a failure rolls the whole tenant back rather than leaving a
     // half-provisioned org.
     const templateRoles = await provisionDefaultTemplateRoles(organization.id, { db: tx });
+    // Tanda 8a (§4.8): the emergency role exists from day one so the break-glass
+    // service can open a session when needed; it is never handed to anybody here
+    // (the template is excluded from the invite selector and from writeRoleAssignment).
+    const breakGlassRole = await ensureBreakGlassRole(organization.id, { db: tx });
 
     const user = await tx.user.create({
       data: {
@@ -693,6 +715,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       }
     });
 
+    // Legacy per-property row of the first centre (dual-read until the cut of L6)…
     await tx.userPropertyRole.create({
       data: {
         userId: user.id,
@@ -700,6 +723,33 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
         roleId: ownerRole.id
       }
     });
+    // …and the REAL scope (Tanda 8a · D1): the first user is Propiedad and
+    // Dirección general of the whole organisation, in user_role_assignments.
+    // Same transaction: a tenant is never born with a roleless owner.
+    const roleAssignments: RoleAssignmentWritten[] = [];
+    roleAssignments.push(
+      await writeRoleAssignment(tx, {
+        userId: user.id,
+        organizationId: organization.id,
+        roleId: ownerRole.id,
+        scopeType: "organization",
+        grantedByUserId: input.context.userId ?? null,
+        reason: "alta de tenant (propiedad)"
+      })
+    );
+    const generalManagerRole = templateRoles.find((role) => role.templateKey === "general_manager" && !role.conflict);
+    if (generalManagerRole) {
+      roleAssignments.push(
+        await writeRoleAssignment(tx, {
+          userId: user.id,
+          organizationId: organization.id,
+          roleId: generalManagerRole.id,
+          scopeType: "organization",
+          grantedByUserId: input.context.userId ?? null,
+          reason: "alta de tenant (dirección general, D1)"
+        })
+      );
+    }
 
     // Default department + assignment so the owner is on the org chart.
     const department = await tx.department.upsert({
@@ -713,8 +763,14 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       create: { userId: user.id, departmentId: department.id, roleLabel: "owner", active: true }
     });
 
-    return { organization, legalEntity, property, user, ownerRole, ownerPermissionsGranted: ownerTemplate.granted, templateRoles };
+    return { organization, legalEntity, property, user, ownerRole, ownerPermissionsGranted: ownerTemplate.granted, templateRoles, breakGlassRole, roleAssignments };
   });
+
+  // ROLE_ASSIGNED for each organisation-scope grant, after the commit (never
+  // an audit row for a rolled-back tenant).
+  for (const assignment of persisted.roleAssignments) {
+    recordRoleAssigned(assignment, { actorUserId: input.context.userId ?? null, correlationId: "tenant_create", deviceId: input.context.deviceId });
+  }
 
   // Seed module entitlements (best-effort: any unknown moduleCode is skipped
   // rather than failing the entire creation flow).
@@ -793,11 +849,15 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
   meta.lastActivityAt = new Date().toISOString();
 
   // Persisted single-use invitation (72 h TTL) + best-effort email (contract G).
+  // Tanda 8a: the invitation carries the organisation scope of the owner grant,
+  // so a reissue / acceptance converges on the same assignment (idempotent).
   const invitation = await mintInvitation({
     userId: persisted.user.id,
     organizationId: persisted.organization.id,
     propertyId: persisted.property.id,
     roleId: persisted.ownerRole.id,
+    scopeType: "organization",
+    scopeRef: persisted.organization.id,
     actorUserId: input.context.userId ?? null
   });
 
@@ -824,6 +884,8 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       property: { id: persisted.property.id, kind: persisted.property.kind, code: persisted.property.code },
       ownerPermissionsGranted: persisted.ownerPermissionsGranted,
       templateRoles: persisted.templateRoles.map((role) => ({ name: role.name, templateKey: role.templateKey, permissionsCount: role.permissionsCount })),
+      breakGlassRole: { id: persisted.breakGlassRole.id, name: persisted.breakGlassRole.name, permissionsCount: persisted.breakGlassRole.permissionsCount },
+      roleAssignments: persisted.roleAssignments.map((assignment) => ({ assignmentId: assignment.assignmentId, roleId: assignment.roleId, templateKey: assignment.templateKey, scopeType: assignment.scopeType })),
       fiscal: {
         taxRegion: fiscal.taxRegion,
         taxRegionSource: fiscal.taxRegionSource,
@@ -846,6 +908,8 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     ownerUserId: persisted.user.id,
     ownerPermissionsGranted: persisted.ownerPermissionsGranted,
     templateRoles: persisted.templateRoles,
+    breakGlassRole: persisted.breakGlassRole,
+    roleAssignments: persisted.roleAssignments.map((assignment) => ({ assignmentId: assignment.assignmentId, roleId: assignment.roleId, templateKey: assignment.templateKey, scopeType: assignment.scopeType })),
     ...(tempPassword ? { tempPassword } : {}),
     inviteLink: invitation.inviteLink,
     invitation: invitation.invitation,

@@ -585,8 +585,7 @@
       "productionForbidden": "true",
       "doc": "true SOLO en dev/demo: toda petición sin token recibe el super-usuario demo. Con NODE_ENV=production el API se niega a arrancar (AUTH-04) salvo HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true. El demo local lo pone a true en su .env.",
       "readBy": [
-        "apps/api/src/lib/auth-context.ts",
-        "apps/api/src/modules/auth/auth.service.ts"
+        "apps/api/src/lib/auth-context.ts"
       ]
     },
     "HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE": {
@@ -599,6 +598,17 @@
       "doc": "Escape PELIGROSO del guard anterior: permite HOTELOS_ALLOW_DEMO_AUTH=true en producción (demo pública sin datos reales). Nunca en un despliegue de cliente.",
       "readBy": [
         "apps/api/src/lib/auth-context.ts"
+      ]
+    },
+    "HOTELOS_DEMO_PERMISSION_UNION": {
+      "section": "Auth/demo flags",
+      "format": "bool",
+      "default": "false",
+      "example": "false",
+      "productionForbidden": "true",
+      "doc": "Unión demo de permisos (Tanda 8a · RBAC): con true toda sesión REAL recibe además las claves de organización del super-usuario demo (nunca la clave de plataforma). Ya no depende de NODE_ENV ni de HOTELOS_ALLOW_DEMO_AUTH. false en el demo local para ver el RBAC real por usuario; true está prohibido en producción.",
+      "readBy": [
+        "apps/api/src/modules/auth/auth.service.ts"
       ]
     },
     "HOTELOS_FIELD_KEY": {
@@ -897,6 +907,17 @@
       "doc": "Peticiones por minuto y por usuario+IP antes de responder 429.",
       "readBy": [
         "apps/api/src/server.ts"
+      ]
+    },
+    "RBAC_DEMO_PASSWORD": {
+      "section": "Seeds",
+      "format": "string",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Seed de usuarios ficticios de la Tanda 8a (db:seed:rbac-demo, packages/database/prisma/seed-rbac-demo.ts): contraseña de un solo uso de los 19 usuarios @faranda.test (mustChangePassword). Vacía = la contraseña de demo del seed (se imprime al final); nunca en un .env persistente.",
+      "readBy": [
+        "packages/database/prisma/seed-rbac-demo.ts"
       ]
     },
     "RBAC_STRICT": {

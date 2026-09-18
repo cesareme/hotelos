@@ -103,7 +103,8 @@ describe("Estructura societaria · L9 · manifiesto de permisos de las rutas nue
   it("server.ts registra las rutas y security/route-permissions.ts funde el partial; el switcher sigue sin clave (fila del manifiesto principal)", () => {
     assert.match(server, /registerStructureRoutes\(app\)/);
     assert.match(manifest, /\.\.\.structureRoutePermissions,/);
-    assert.match(manifest, /\{ method: "GET", path: "\/users\/me\/properties", permissions: \[\], riskLevel: "low" \}/, "GET /users/me/properties (kind, code, legalEntityId, legalEntityName) is open to every session");
+    // Tanda 8a (§6.4): the session-only routes carry riskLevel "authenticated" (permissions: [] stays).
+    assert.match(manifest, /\{ method: "GET", path: "\/users\/me\/properties", permissions: \[\], riskLevel: "authenticated" \}/, "GET /users/me/properties (kind, code, legalEntityId, legalEntityName) is open to every session");
     const calendar = manifest.slice(manifest.indexOf("export const ACCOUNTING_CALENDAR_GET_PATHS"), manifest.indexOf("];", manifest.indexOf("export const ACCOUNTING_CALENDAR_GET_PATHS")));
     assert.ok(calendar.includes('"/organizations/me/structure"'), "the structure read is configuration (calendar key), redacted in the service");
     assert.ok(!calendar.includes('"/legal-entities/:legalEntityId"'));
@@ -131,17 +132,20 @@ describe("Estructura societaria · L9 · las dos claves nuevas: catálogo, tipos
     assert.match(permissionTypes, /\|\s*"organization\.structure\.manage"/);
   });
 
-  it("plantillas: Owner y Admin por catálogo completo; Dirección (manager) y Contabilidad (accountant) leen toda la sociedad; recepción y los roles operativos no llevan ninguna; nadie más gestiona la estructura", () => {
-    assert.match(permissions, /\n  owner: \[\.\.\.ORG_PERMISSION_KEYS\],/);
-    assert.match(permissions, /\n  admin: \[\.\.\.ORG_PERMISSION_KEYS\]/);
-    for (const key of ["manager", "accountant"]) assert.match(templateBlock(permissions, key), /"accounting\.entity\.read"/, `${key} holds accounting.entity.read`);
-    for (const key of ["receptionist", "housekeeper", "maintenance", "compliance", "revenue", "sales", "fnb"]) {
+  it("plantillas (Tanda 8a · §4.5): la emergencia lleva el catálogo completo; contabilidad, dirección financiera y general leen toda la sociedad; dirección de hotel y los roles operativos no; la estructura la gestionan DG, DirFin y administración de sistema", () => {
+    // Tanda 8a (design §6.5): `owner` is «Propiedad» (64 keys) and `admin` «Administración de sistema» (no money keys);
+    // only the break-glass template spreads the whole organisation catalogue. The sociedad scope moved to the ASSIGNMENT
+    // (`manager` lost accounting.entity.read: a hotel director reads its centre; a legal_entity assignment reads the sociedad).
+    assert.match(permissions, /\n  break_glass: \[\.\.\.ORG_PERMISSION_KEYS\]/);
+    assert.doesNotMatch(permissions, /\n  owner: \[\.\.\.ORG_PERMISSION_KEYS\]/, "Propiedad is narrowed");
+    assert.doesNotMatch(permissions, /\n  admin: \[\.\.\.ORG_PERMISSION_KEYS\]/, "Administración de sistema is narrowed");
+    for (const key of ["accountant", "controller", "general_manager", "auditor", "compliance"]) assert.match(templateBlock(permissions, key), /"accounting\.entity\.read"/, `${key} holds accounting.entity.read`);
+    for (const key of ["manager", "receptionist", "housekeeper", "maintenance", "revenue", "sales", "fnb"]) {
       const block = templateBlock(permissions, key);
-      assert.doesNotMatch(block, /"accounting\.entity\.read"/, `${key} never reads the whole sociedad`);
+      assert.doesNotMatch(block, /"accounting\.entity\.read"/, `${key} never reads the whole sociedad by template`);
       assert.doesNotMatch(block, /"organization\.structure\.manage"/, `${key} never manages the structure`);
     }
-    const templates = permissions.slice(permissions.indexOf("export const ROLE_PERMISSION_MAP"));
-    assert.doesNotMatch(templates, /"organization\.structure\.manage"/, "organization.structure.manage reaches a role only through the full catalogue (owner / admin)");
+    for (const key of ["general_manager", "controller", "admin"]) assert.match(templateBlock(permissions, key), /"organization\.structure\.manage"/, `${key} manages the structure (§4.5 M20 · E)`);
   });
 
   it("la unión demo de desarrollo (demo-store baseline) concede ambas claves a toda sesión real: por eso los casos de permisos de integración apagan HOTELOS_ALLOW_DEMO_AUTH", () => {

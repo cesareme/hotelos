@@ -135,7 +135,7 @@ describe("tabs-c · Configuración · tabs from the tree", () => {
     assert.ok(tab, "PmsShadowScreen tab");
     assert.equal(tab.label, "Modo sombra OPERA");
     assert.equal(tab.url, "/configuracion/modulos/modo-sombra");
-    assert.deepEqual(tab.roles, ["direccion", "admin"]);
+    assert.deepEqual(tab.roles, ["direccion", "admin", "auditoria"]); // Tanda 8a: auditoría interna ve Modo sombra (accounting.read); sistemas no
     assert.equal(item.tabs.indexOf(tab), item.tabs.length - 1, "Modo sombra OPERA is the last tab (orden 3)");
     assert.equal(urlForScreen("PmsShadowScreen"), "/configuracion/modulos/modo-sombra");
     const tabs = buildItemTabs(item, loadersFor(item), { pathname: "/configuracion/modulos/modo-sombra" });

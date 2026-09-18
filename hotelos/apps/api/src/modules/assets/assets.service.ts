@@ -27,6 +27,19 @@ import { createId } from "../../lib/ids.js";
 import { NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { assertApprovedOrAuthorized, type AuthorizationOutcome } from "../rbac/approvals.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
+import { assertSeparationOfDuties, sodAuditFields, type SodCheckOutcome } from "../treasury/permissions.js";
+
+// Tanda 8a (RBAC · L2, design §4.7 «CAPEX», H8): proposing a project or an
+// item needs `capex.create` (CapexProject.createdByUserId is stamped; the
+// CapexItem table has no author column — the audit event carries it);
+// approving keeps `asset.capex.approve` (pinned by
+// tests/assets-owner-contract.test.mjs) plus proposer ≠ approver (409
+// RBAC_SOD_CONFLICT proposer_ne_approver) and the capex authorisation of the
+// L1 engine over the budget (above T4 the engine's double approval with an
+// ownership second approver). ownerApprovedBy and the CapexProjectApproved
+// event are unchanged.
 
 export type RoomProfitability = {
   roomId: string;
@@ -366,6 +379,7 @@ export async function createCapexProject(input: {
   targetEndDate?: string;
   correlationId: string;
 }): Promise<CapexProjectRecord> {
+  requirePermissions(input.context, ["capex.create"]);
   const project: CapexProjectRecord = {
     id: createId("capex"),
     propertyId: input.propertyId,
@@ -377,7 +391,8 @@ export async function createCapexProject(input: {
     targetEndDate: input.targetEndDate
   };
 
-  await prisma.capexProject.create({ data: capexProjectToDbRow(project) });
+  // Tanda 8a (SoD): the proposer never approves its own project.
+  await prisma.capexProject.create({ data: { ...capexProjectToDbRow(project), createdByUserId: input.context.userId } });
   upsertMirror(demoStore.capexProjects, project);
 
   recordAuditEvent({
@@ -388,23 +403,66 @@ export async function createCapexProject(input: {
     action: "CAPEX_PROJECT_CREATED",
     entityType: "capex_project",
     entityId: project.id,
-    afterJson: project,
+    afterJson: { ...project, createdByUserId: input.context.userId },
     correlationId: input.correlationId
   });
 
   return project;
 }
 
+export type CapexApprovalGate = { sod: SodCheckOutcome; authorization: AuthorizationOutcome };
+
+/**
+ * Tanda 8a · the approval gate, separated for the unit tests:
+ * `asset.capex.approve` on the actor, proposer ≠ approver over
+ * CapexProject.createdByUserId (null = pre-migration row, «autor
+ * desconocido», never blocks), then the capex authorisation of the engine
+ * over the budget (an approved request of another person, the actor's own
+ * key within its tier, a supervisor PIN or a privileged session; above T4
+ * the engine's double approval with an ownership second approver).
+ */
+export async function assertCapexApprovalAuthorized(
+  input: { context: UserContext; project: { id: string; propertyId: string; budget: number; createdByUserId: string | null }; supervisorAuthorizationId?: string | null },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<CapexApprovalGate> {
+  requirePermissions(input.context, ["asset.capex.approve"]);
+  const sod = assertSeparationOfDuties(input.context, input.project.createdByUserId, "proposer_ne_approver", { capexProjectId: input.project.id });
+  const authorization = await assertApprovedOrAuthorized(
+    {
+      context: input.context,
+      kind: "capex",
+      entityType: "capex_project",
+      entityId: input.project.id,
+      propertyId: input.project.propertyId,
+      amount: Math.max(0, Number(input.project.budget) || 0).toFixed(2),
+      baseAuthorUserId: input.project.createdByUserId,
+      supervisorAuthorizationId: input.supervisorAuthorizationId ?? null
+    },
+    deps
+  );
+  return { sod, authorization };
+}
+
 export async function updateCapexProject(input: {
   context: UserContext;
   capexProjectId: string;
   patch: Partial<Pick<CapexProjectRecord, "name" | "description" | "budget" | "status" | "startDate" | "targetEndDate">>;
+  /** Tanda 8a: single-use supervisor PIN authorisation for asset.capex.approve; injectable rbac deps (tests). */
+  supervisorAuthorizationId?: string | null;
+  rbac?: RbacDeps;
   correlationId: string;
 }): Promise<CapexProjectRecord> {
   const before = await findCapexProject(input.capexProjectId);
 
+  let approvalGate: CapexApprovalGate | null = null;
   if (input.patch.status === "approved") {
+    // Owner-gated approval (asset.capex.approve) + Tanda 8a separation of duties over the proposer.
     requirePermissions(input.context, ["asset.capex.approve"]);
+    const row = await prisma.capexProject.findUnique({ where: { id: before.id }, select: { createdByUserId: true } });
+    approvalGate = await assertCapexApprovalAuthorized(
+      { context: input.context, project: { id: before.id, propertyId: before.propertyId, budget: input.patch.budget ?? before.budget, createdByUserId: row?.createdByUserId ?? null }, supervisorAuthorizationId: input.supervisorAuthorizationId ?? null },
+      input.rbac ?? defaultRbacDeps
+    );
   }
 
   const data: Prisma.CapexProjectUncheckedUpdateInput = {};
@@ -430,7 +488,13 @@ export async function updateCapexProject(input: {
     entityType: "capex_project",
     entityId: project.id,
     beforeJson: before,
-    afterJson: project,
+    afterJson: approvalGate
+      ? {
+          ...project,
+          ...sodAuditFields(approvalGate.sod),
+          authorization: { mode: approvalGate.authorization.mode, tier: approvalGate.authorization.tier, requestId: approvalGate.authorization.requestId ?? null, supervisorAuthorizationId: approvalGate.authorization.supervisorAuthorizationId ?? null }
+        }
+      : project,
     correlationId: input.correlationId
   });
 
@@ -461,6 +525,7 @@ export async function createCapexItem(input: {
   actualCost?: number;
   correlationId: string;
 }): Promise<CapexItemRecord> {
+  requirePermissions(input.context, ["capex.create"]);
   const project = await findCapexProject(input.capexProjectId);
   const item: CapexItemRecord = {
     id: createId("capex_item"),
@@ -484,7 +549,8 @@ export async function createCapexItem(input: {
     action: "CAPEX_ITEM_CREATED",
     entityType: "capex_item",
     entityId: item.id,
-    afterJson: item,
+    // The CapexItem table has no author column: the audit event keeps the proposer.
+    afterJson: { ...item, createdByUserId: input.context.userId },
     correlationId: input.correlationId
   });
 

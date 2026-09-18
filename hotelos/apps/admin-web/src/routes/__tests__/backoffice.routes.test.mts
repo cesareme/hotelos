@@ -36,9 +36,9 @@ const items = NAV_TREE.categories.flatMap((category) => category.items);
 const tabs = items.flatMap((item) => item.tabs);
 
 describe("BACKOFFICE_ROUTES · one URL per screen of the tree", () => {
-  it("registers the 191 URLs of the tree in tree order, the base URL of every container before its tabs", () => {
-    // Tanda 5: 167 · Tanda 6 (Finanzas: Contabilidad, Proveedores y gastos, estados, 347/libros/liquidación, Cierre de caja): 183 · Tanda 6b (Estructura societaria + 4 pestañas): 188 · Tanda 7 (Reservas › Importar): 189 · Tanda 7b (Modo sombra OPERA): 190 · Tanda 7c (Contabilidad › Importar desde Sage 200): 191.
-    assert.equal(BACKOFFICE_ROUTES.length, 191);
+  it("registers the 192 URLs of the tree in tree order, the base URL of every container before its tabs", () => {
+    // Tanda 5: 167 · Tanda 6 (Finanzas: Contabilidad, Proveedores y gastos, estados, 347/libros/liquidación, Cierre de caja): 183 · Tanda 6b (Estructura societaria + 4 pestañas): 188 · Tanda 7 (Reservas › Importar): 189 · Tanda 7b (Modo sombra OPERA): 190 · Tanda 7c (Contabilidad › Importar desde Sage 200): 191 · Tanda 8a (Hoy › Pendientes de aprobación): 192.
+    assert.equal(BACKOFFICE_ROUTES.length, 192);
     assert.deepEqual(BACKOFFICE_ROUTES.map((route) => route.path), allUrls());
     for (const item of items) {
       const base = BACKOFFICE_ROUTES.findIndex((route) => route.path === item.url);
@@ -259,5 +259,19 @@ describe("resolveLocation · what the shell renders", () => {
       assert.equal(login.route.public, true);
     }
     assert.ok(matchPath("/acceso/recuperar-contrasena", "/acceso/recuperar-contrasena/"));
+  });
+
+  // Tanda 8a (RBAC · L4): the guard may carry the session tokens; then the router applies the menu decision.
+  it("refuses a URL the menu hides for the tokens (forbidden · role) and keeps the rest untouched", () => {
+    const guard = { tokens: ["recepcion" as const], modules: [], modulesKnown: true };
+    assert.deepEqual(resolveLocation({ pathname: "/finanzas/nominas" }, guard), { kind: "forbidden", pathname: "/finanzas/nominas", reason: "role" });
+    assert.equal(resolveLocation({ pathname: "/hoy" }, guard).kind, "screen");
+    assert.deepEqual(resolveLocation({ pathname: "/" }, guard), { kind: "home" });
+    assert.deepEqual(resolveLocation({ pathname: "/no/existe" }, guard), { kind: "not-found", pathname: "/no/existe" });
+    assert.deepEqual(resolveLocation({ pathname: "/desarrollo/migracion" }, guard), { kind: "dev-locked", pathname: "/desarrollo/migracion" });
+    const login = resolveLocation({ pathname: "/acceso" }, guard);
+    assert.equal(login.kind, "screen");
+    // The legacy 308 is gated on the new URL.
+    assert.deepEqual(resolveLocation({ pathname: "/backoffice/finance/payroll" }, guard), { kind: "forbidden", pathname: "/finanzas/nominas", reason: "role" });
   });
 });

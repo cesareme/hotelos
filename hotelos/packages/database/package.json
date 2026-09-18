@@ -20,6 +20,7 @@
     "db:seed:allotments": "node --env-file=../../.env --import tsx prisma/seed-allotments.ts",
     "db:seed:fnb": "node --env-file=../../.env --import tsx prisma/seed-fnb-inventory.ts",
     "db:seed:enrich": "node --env-file=../../.env --import tsx seeds/demo-pre-demo-enrichment.mjs",
+    "db:seed:rbac-demo": "node --env-file=../../.env --import tsx prisma/seed-rbac-demo.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

@@ -1,7 +1,18 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
+import { bumpRbacVersion } from "../../lib/rbac-scope.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
+import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
 import { PAYROLL_WRITE_KEYS, requireAnyPermission } from "../treasury/permissions.js";
+
+// Tanda 8a (RBAC · L2, design §6.6 «baja inmediata»): deactivating a contract
+// (payroll.manage) is the HR hook that ends the person's access — every live
+// role assignment of the linked user (StaffProfile.userId) gets
+// `validTo = now` through the rbac deps of L1 (assignments.service), one
+// ROLE_REVOKED audit event per assignment with reason "baja", and the
+// organisation's rbacVersion is bumped so live sessions re-read their scope.
+// The caller-rank rule of revokeAssignment does not apply: the baja is an HR
+// event, not a role decision, and it is fully audited.
 
 // ---- Sprint 23 / Track 5 — Payroll bridge a gestoría ----
 //
@@ -165,10 +176,46 @@ export async function createContract(input: {
   return record;
 }
 
+/**
+ * Ends every live role assignment of `userId` (validTo = now, reason "baja"),
+ * one ROLE_REVOKED event each; returns the ids revoked. Idempotent: rows
+ * already ended or revoked are untouched. Exported for the unit tests.
+ */
+export async function revokeAssignmentsOnLeave(
+  input: { context: UserContext; organizationId: string; userId: string; contractId: string; correlationId: string },
+  deps: RbacDeps = defaultRbacDeps
+): Promise<string[]> {
+  const now = deps.now();
+  const live = (await deps.db.userRoleAssignment.findMany({
+    where: { userId: input.userId, organizationId: input.organizationId, revokedAt: null, OR: [{ validTo: null }, { validTo: { gt: now } }] },
+    select: { id: true, roleId: true, scopeType: true, propertyId: true }
+  })) as Array<{ id: string; roleId: string; scopeType: string; propertyId: string | null }>;
+  if (live.length === 0) return [];
+  await deps.db.userRoleAssignment.updateMany({ where: { id: { in: live.map((row) => row.id) } }, data: { validTo: now, reason: "baja" } });
+  for (const row of live) {
+    deps.audit({
+      organizationId: input.organizationId,
+      propertyId: row.propertyId ?? undefined,
+      actorUserId: input.context.userId,
+      actorType: "user",
+      action: "ROLE_REVOKED",
+      entityType: "user_role_assignment",
+      entityId: row.id,
+      beforeJson: { userId: input.userId, roleId: row.roleId, scopeType: row.scopeType, validTo: null },
+      afterJson: { reason: "baja", validTo: now.toISOString(), contractId: input.contractId },
+      deviceId: input.context.deviceId,
+      correlationId: input.correlationId
+    });
+  }
+  await bumpRbacVersion(input.organizationId, deps.db);
+  return live.map((row) => row.id);
+}
+
 export async function deactivateContract(input: {
   context: UserContext;
   contractId: string;
   correlationId: string;
+  rbac?: RbacDeps;
 }): Promise<EmploymentContractRecord> {
   requireAnyPermission(input.context, PAYROLL_WRITE_KEYS);
 
@@ -183,6 +230,12 @@ export async function deactivateContract(input: {
   });
   const after = mapContract(updated);
 
+  // Tanda 8a: the baja ends the person's access (see the module header).
+  const profile = await prisma.staffProfile.findUnique({ where: { id: existing.staffProfileId }, select: { userId: true } });
+  const revokedAssignmentIds = profile?.userId
+    ? await revokeAssignmentsOnLeave({ context: input.context, organizationId: existing.organizationId, userId: profile.userId, contractId: existing.id, correlationId: input.correlationId }, input.rbac ?? defaultRbacDeps)
+    : [];
+
   recordAuditEvent({
     organizationId: existing.organizationId,
     propertyId: existing.propertyId ?? undefined,
@@ -192,7 +245,7 @@ export async function deactivateContract(input: {
     entityType: "employment_contract",
     entityId: existing.id,
     beforeJson: before,
-    afterJson: after,
+    afterJson: { ...after, linkedUserId: profile?.userId ?? null, revokedAssignmentIds },
     correlationId: input.correlationId
   });
 

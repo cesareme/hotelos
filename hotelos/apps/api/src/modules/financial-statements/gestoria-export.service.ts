@@ -42,7 +42,16 @@ import { HttpError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { accountDigits } from "../accounting/chart-of-accounts.service.js";
+import { fiscalPeriodsOfRange } from "../accounting/ledger.routes.js";
 import { assertFinanceReadScope } from "../../lib/finance-scope.js";
+
+// Tanda 8a (brief §3 «Exportación contable»): every export is audited with
+// the actor, the range, the format, the fiscal periods of the range still
+// open and `provisional` (true when some period of the range is not closed
+// or nothing of it was ever closed); the DTO returns the same flag so the
+// gestoría sees a working copy for what it is. The export is never blocked:
+// the hard rule «solo periodos cerrados» is the integrator's decision
+// (ThresholdAction accounting_export reserved in role_thresholds).
 import type { GestoriaExportFormatInfo, GestoriaExportFormatKey, GestoriaExportRow } from "../../../../../packages/shared/src/financial-statements-types.js";
 import { csvDocument, type CsvCell } from "./csv.js";
 import { decimalComma, money, spanishDate } from "./money.js";
@@ -311,7 +320,7 @@ export async function createGestoriaExport(input: {
   subaccountLength?: number;
   correlationId: string;
   source?: FinancialStatementsSource;
-}): Promise<GestoriaExportRow & { unnumbered: number }> {
+}): Promise<GestoriaExportRow & { unnumbered: number; provisional: boolean; periodsOpen: string[] }> {
   requirePermissions(input.context, ["analytics.export"]);
   assertGestoriaExportScope(input.context, input.propertyId);
   const source = input.source ?? prismaFinancialStatementsSource;
@@ -355,6 +364,7 @@ export async function createGestoriaExport(input: {
       createdBy: input.context.userId
     }
   });
+  const periods = await fiscalPeriodsOfRange({ organizationId, propertyId: input.propertyId ?? null, from: input.from, to: input.to });
   recordAuditEvent({
     organizationId,
     propertyId: input.context.propertyId,
@@ -363,10 +373,23 @@ export async function createGestoriaExport(input: {
     action: "GESTORIA_EXPORT_CREATED",
     entityType: "gestoria_export",
     entityId: row.id,
-    afterJson: { format: input.format, periodFrom: input.from, periodTo: input.to, rowCount: build.rowCount, sizeBytes: size, propertyId: input.propertyId ?? null },
+    afterJson: {
+      format: input.format,
+      periodFrom: input.from,
+      periodTo: input.to,
+      rowCount: build.rowCount,
+      sizeBytes: size,
+      propertyId: input.propertyId ?? null,
+      // Tanda 8a: same fields as ACCOUNTING_EXPORTED (ledger.routes.ts).
+      actorUserId: input.context.userId,
+      periodsOpen: periods.periodsOpen,
+      periodsClosed: periods.periodsClosed,
+      provisional: periods.provisional
+    },
+    deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });
-  return { ...toWire(row), unnumbered: build.unnumbered };
+  return { ...toWire(row), unnumbered: build.unnumbered, provisional: periods.provisional, periodsOpen: periods.periodsOpen };
 }
 
 export async function listGestoriaExports(input: { context: UserContext; format?: GestoriaExportFormatKey | null; limit?: number }): Promise<GestoriaExportRow[]> {
