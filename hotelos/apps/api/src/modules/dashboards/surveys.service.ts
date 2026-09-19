@@ -128,6 +128,71 @@ function collectThemes(record: Record<string, unknown> | null): string[] {
   return themes;
 }
 
+// ---------------------------------------------------------------------------
+// Regla NPS (Tanda T8 · lote T8-E): una sola implementación para el dashboard de
+// encuestas y para el director (general-manager.service.ts · reputationIndex).
+// ---------------------------------------------------------------------------
+
+/** Claves de responsesJson que valen como puntuación cuando la columna `score` está vacía. */
+export const SURVEY_SCORE_JSON_KEYS: readonly string[] = Object.freeze(["score", "nps", "npsScore", "rating"]);
+
+export type NpsBucket = "promoter" | "passive" | "detractor";
+
+/** Puntuación 0-10 de una respuesta: columna `score` o, si falta, responsesJson.score|nps|npsScore|rating. */
+export function scoreOfSurveyResponse(response: { score: unknown; responsesJson: unknown }): number | null {
+  const columnScore = toNumber(response.score);
+  if (columnScore !== null) return columnScore;
+  return pickNumber(asRecord(response.responsesJson), [...SURVEY_SCORE_JSON_KEYS]);
+}
+
+/** Tramo NPS de una puntuación redondeada a 0-10: ≥ 9 promotor · ≤ 6 detractor · resto pasivo. */
+export function npsBucketFor(score: number): NpsBucket {
+  const bucket = Math.max(0, Math.min(10, Math.round(score)));
+  if (bucket >= 9) return "promoter";
+  if (bucket <= 6) return "detractor";
+  return "passive";
+}
+
+export type NpsTally = { promoters: number; passives: number; detractors: number; scored: number; nps: number | null };
+
+/** NPS = (promotores − detractores) / puntuadas × 100, a 1 decimal; `null` sin respuestas puntuadas. */
+export function tallyNps(scores: ReadonlyArray<number | null>): NpsTally {
+  let promoters = 0;
+  let passives = 0;
+  let detractors = 0;
+  let scored = 0;
+  for (const score of scores) {
+    if (score === null) continue;
+    scored += 1;
+    const bucket = npsBucketFor(score);
+    if (bucket === "promoter") promoters += 1;
+    else if (bucket === "detractor") detractors += 1;
+    else passives += 1;
+  }
+  const nps = scored > 0 ? round1(((promoters - detractors) / scored) * 100) : null;
+  return { promoters, passives, detractors, scored, nps };
+}
+
+/**
+ * NPS de las respuestas de los últimos `days` días de las encuestas de la
+ * propiedad (misma regla que el dashboard). `null` cuando no hay encuestas ni
+ * respuestas puntuadas: el director lo pinta como «sin dato», nunca como 0.
+ * Nunca lanza por un tenant vacío; un fallo de lectura sí se propaga para que
+ * el llamador lo registre en `degraded[]`.
+ */
+export async function npsFromSurveys(propertyId: string, days: number, now: Date = new Date()): Promise<number | null> {
+  if (!propertyId) return null;
+  const windowDays = Number.isFinite(days) && days > 0 ? Math.floor(days) : DEFAULT_DAYS;
+  const since = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+  const surveys = await prisma.survey.findMany({ where: { propertyId }, select: { id: true } });
+  if (surveys.length === 0) return null;
+  const responses = await prisma.surveyResponse.findMany({
+    where: { surveyId: { in: surveys.map((survey) => survey.id) }, createdAt: { gte: since } },
+    select: { score: true, responsesJson: true }
+  });
+  return tallyNps(responses.map((response) => scoreOfSurveyResponse(response))).nps;
+}
+
 export async function buildSurveysDashboard(
   input: BuildSurveysDashboardInput
 ): Promise<SurveysDashboard> {
@@ -159,27 +224,18 @@ export async function buildSurveysDashboard(
   const distributionCounts = new Map<number, number>();
   for (let i = 0; i <= 10; i += 1) distributionCounts.set(i, 0);
 
-  let promoters = 0;
-  let passives = 0;
-  let detractors = 0;
-  let scoredCount = 0;
   const themeCounts = new Map<string, number>();
+  const scores: Array<number | null> = [];
 
   for (const response of responses) {
     const metadata = asRecord(response.responsesJson as unknown);
-    // Prefer column score; fall back to nested score-like keys in JSON.
-    let score = toNumber(response.score);
-    if (score === null) {
-      score = pickNumber(metadata, ["score", "nps", "npsScore", "rating"]);
-    }
+    // Columna `score` o claves de puntuación del JSON (regla compartida con npsFromSurveys).
+    const score = scoreOfSurveyResponse(response);
+    scores.push(score);
 
     if (score !== null) {
       const bucket = Math.max(0, Math.min(10, Math.round(score)));
       distributionCounts.set(bucket, (distributionCounts.get(bucket) ?? 0) + 1);
-      scoredCount += 1;
-      if (bucket >= 9) promoters += 1;
-      else if (bucket <= 6) detractors += 1;
-      else passives += 1;
     }
 
     for (const theme of collectThemes(metadata)) {
@@ -188,9 +244,8 @@ export async function buildSurveysDashboard(
     }
   }
 
-  const nps90d = scoredCount > 0
-    ? round1(((promoters - detractors) / scoredCount) * 100)
-    : 0;
+  const { promoters, passives, detractors, nps } = tallyNps(scores);
+  const nps90d = nps ?? 0;
 
   // Response rate: responses / checked-out reservations within the same window.
   // Falls back to 0 when there are no eligible reservations. Tanda L2 (L2-06):
@@ -216,10 +271,7 @@ export async function buildSurveysDashboard(
 
   const recentResponses = responses.slice(0, RECENT_LIMIT).map((response) => {
     const metadata = asRecord(response.responsesJson as unknown);
-    const columnScore = toNumber(response.score);
-    const score = columnScore !== null
-      ? columnScore
-      : pickNumber(metadata, ["score", "nps", "npsScore", "rating"]);
+    const score = scoreOfSurveyResponse(response);
     const sentiment = pickString(metadata, ["sentiment", "sentimentLabel", "mood"]);
     const comment = pickString(metadata, ["comment", "comments", "feedback", "message", "verbatim"]);
     return {

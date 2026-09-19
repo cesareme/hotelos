@@ -34,7 +34,7 @@ export function MoreScreen(props: { onNavigate?: (route: string) => void }) {
         ["Guest Journey", "Booked to post-stay journey with blocked steps and next actions.", "GuestJourney"],
         ["Guest Portal", "Self-service check-in, folio, payment, upsells and requests.", "guestPortal"],
         ["Concierge", "Guest inbox and AI disclosed conversations.", "concierge"],
-        ["Reputation", "Reviews, surveys and quality cases.", "reputation"]
+        ["Reputación", "Reseñas, encuestas y casos de calidad.", "reputation"]
       ]
     },
     {

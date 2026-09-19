@@ -3,6 +3,8 @@ import { createId } from "../../lib/ids.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+// Reputación (Tanda T8 · corrección ronda 1, HP-04): topicsJson guarda autor, fragmentos literales, resumen y borrador.
+import { scrubReviewMetaForErasure } from "../reputation/review-meta.store.js";
 
 export type GdprRequestType = "dsar" | "erasure" | "rectification" | "portability";
 
@@ -516,19 +518,27 @@ export async function executeErasure(
     tables.push({ name: "SurveyResponse", rowsAffected: surveysPseudonymized, action: "pseudonymized" });
   }
 
-  // --- GuestReview: pseudonymize title and body ---
+  // --- GuestReview: pseudonymize title and body, and scrub topicsJson (author name/country,
+  // literal snippets, analysis summary, draft reply) — the Tanda T8 metadata lives there.
   let reviewsPseudonymized = 0;
   if (guestIds.length || reservationIds.length) {
-    const result = await prisma.guestReview.updateMany({
+    const reviewRows = await prisma.guestReview.findMany({
       where: {
         OR: [
           guestIds.length ? { guestId: { in: guestIds } } : undefined,
           reservationIds.length ? { reservationId: { in: reservationIds } } : undefined
         ].filter(Boolean) as never
       },
-      data: { title: "[erased]", body: "[erased per GDPR Art. 17]" }
+      select: { id: true, topicsJson: true }
     });
-    reviewsPseudonymized = result.count;
+    const erasedAt = new Date();
+    for (const row of reviewRows) {
+      await prisma.guestReview.update({
+        where: { id: row.id },
+        data: { title: "[erased]", body: "[erased per GDPR Art. 17]", topicsJson: scrubReviewMetaForErasure(row.topicsJson, erasedAt) }
+      });
+      reviewsPseudonymized += 1;
+    }
   }
   if (reviewsPseudonymized) {
     tables.push({ name: "GuestReview", rowsAffected: reviewsPseudonymized, action: "pseudonymized" });

@@ -9,7 +9,11 @@
 //   2. Forward pace (CocoaChart.Line) + Pickup 7d (Bars) + Cancellation risk (Gauge)
 //   3. Segments + RevPAR-vs-compset + Channel mix (Donut) + BAR recommendations
 //   4. Operations health mini-cards (HK / Maintenance / Workforce / Safety / POS)
-//   5. NPS · Reviews score · Service requests · VIPs in-house
+//   5. NPS · Índice de reputación (30 d) · Peticiones de servicio · VIP alojados
+//      (Tanda T8 · lote T8-G: el índice 0-100 llega en `reputationIndex` con un
+//      estado honesto — ok · insufficient · no_reviews · no_sources · module_off —
+//      y se pinta con ReputationFigure (CocoaStat + CocoaBadge, sin estilos en
+//      línea) dentro de DegradedCard; la antigua media sobre 10 se retira)
 //   6. Compliance widgets (VeriFactu · SES · TBAI · GDPR)
 //   7. AI insights — anomalies list + top 3 recommended actions + demand spikes
 //
@@ -24,7 +28,10 @@
 import type { CSSProperties, ReactNode } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { useNavGate } from "../../navigation/useEnabledModules";
 import { navigateTo } from "../../lib/navigate";
+import type { GmReputationIndex } from "../../services/reputation-contracts";
+import { canRespond, reputationFigureActionLabel, reputationFigureModel, trendTone } from "./reputation/reputation-helpers";
 import {
   CocoaBadge,
   CocoaButton,
@@ -36,6 +43,7 @@ import {
   CocoaSection,
   CocoaSkeleton,
   CocoaSpan,
+  CocoaStat,
   CocoaState,
   DegradedBanner,
   DegradedCard,
@@ -123,6 +131,8 @@ type Data = {
   };
   cash: { capturedTodayEur: number; refundedTodayEur: number; netTodayEur: number; openBalanceEur: number };
   reputation?: { avgScore?: number; reviewsLast30: number; npsLast30?: number };
+  // Tanda T8 (T8-E): índice de reputación a 30 días con estado honesto (siempre presente en la API de T8; opcional aquí por compatibilidad).
+  reputationIndex?: GmReputationIndex;
   // QC-06: `safe()` labels whose query failed and fell back to 0/null/[].
   degraded: string[];
 };
@@ -154,6 +164,9 @@ const DEGRADED_LABEL = {
   ses: "compliance.sesPending",
   tbai: ["compliance.tbaiPending", "compliance.tbaiErrors"],
   anomalies: "anomalies.lastYearSnapshot",
+  // Tanda T8: the reputation index (snapshot + connected sources) and the 30-day NPS of the surveys.
+  reputation: ["reputation.index30", "reputation.sources"],
+  nps: "reputation.nps30",
   // Pace endpoint (`/general-manager/pace`).
   pace: ["pace.forecastSnapshots", "pace.lastYearSnapshots"],
   paceLastYear: "pace.lastYearSnapshots"
@@ -460,20 +473,20 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
     .slice(0, 5);
 
   // ---------------------------------------------------------------------------
-  // Reputation row data.
+  // Reputation row data (Tanda T8: `reputationIndex` first, legacy `reputation` as fallback).
   // ---------------------------------------------------------------------------
-  const reviewsLast30 = k.reputation?.reviewsLast30 ?? 0;
-  const avgScore = k.reputation?.avgScore;
-  const nps = k.reputation?.npsLast30;
+  const reputationIndex = k.reputationIndex;
+  const reviewsLast30 = reputationIndex?.reviewCount30 ?? k.reputation?.reviewsLast30 ?? 0;
+  const nps = reputationIndex?.npsLast30 ?? k.reputation?.npsLast30;
 
-  // VIPs in-house — backend exposes count only; we surface a single synthetic
+  // VIP alojados — backend exposes count only; we surface a single synthetic
   // entry showing the count for now until a per-guest list endpoint exists.
   const vipsList: DirectorVipListItem[] =
     k.vipsInHouse > 0
       ? [
           {
             guestId: "summary",
-            name: `${k.vipsInHouse} VIPs in-house`,
+            name: `${k.vipsInHouse} VIP alojados`,
             vipTier: "VIP",
             status: "in-house"
           }
@@ -608,21 +621,32 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
         <DirectorOpsHealthMini module="pos" title="POS" primaryCount={Math.round(k.revenue.today.value)} primaryLabel="ingresos hoy €" status="ok" onDrillDown={() => navigateTo("PosDashboard")} />
       </CocoaKpiStrip>
 
-      {/* Row 5 — Guest experience: NPS, Reviews, Service requests, VIPs */}
+      {/* Row 5 — Guest experience: NPS, reputation index, service requests, VIPs */}
       <CocoaGrid aria-label="Experiencia del huésped">
         <CocoaSpan cols={3} min={240}>
-          <CocoaSection title="NPS 30d" meta={`${reviewsLast30} reviews`}>
-            <NpsFigure value={nps} />
-          </CocoaSection>
+          <DegradedCard label={DEGRADED_LABEL.nps} degraded={degraded} title="NPS 30d">
+            <CocoaSection title="NPS 30d" meta={plural(reviewsLast30, "reseña", "reseñas")}>
+              <NpsFigure value={nps} />
+            </CocoaSection>
+          </DegradedCard>
         </CocoaSpan>
         <CocoaSpan cols={3} min={240}>
-          <CocoaSection title="Reviews score" meta="30 días">
-            <ReviewsScore avgScore={avgScore} count={reviewsLast30} />
-          </CocoaSection>
+          <DegradedCard label={DEGRADED_LABEL.reputation} degraded={degraded} title="Índice de reputación (30 d)">
+            <CocoaSection title="Índice de reputación (30 d)" meta={reputationIndex ? "sobre 100" : "sin datos"}>
+              <ReputationFigure
+                status={reputationIndex?.status ?? (k.reputation ? "insufficient" : "no_sources")}
+                index30={reputationIndex?.index30}
+                trendDelta={reputationIndex?.trendDelta}
+                reviewCount30={reviewsLast30}
+                sourcesConnected={reputationIndex?.sourcesConnected ?? 0}
+                staleDays={reputationIndex?.staleDays}
+              />
+            </CocoaSection>
+          </DegradedCard>
         </CocoaSpan>
         <CocoaSpan cols={3} min={240}>
           <CocoaSection
-            title="Service requests"
+            title="Peticiones de servicio"
             action={
               <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("HousekeepingDashboard")}>
                 Ver detalle
@@ -764,17 +788,47 @@ function NpsFigure({ value }: NpsFigureProps) {
   );
 }
 
-interface ReviewsScoreProps {
-  avgScore?: number;
-  count: number;
-}
+type ReputationFigureProps = {
+  status: GmReputationIndex["status"];
+  index30?: number;
+  trendDelta?: number;
+  reviewCount30: number;
+  sourcesConnected: number;
+  staleDays?: number;
+};
 
-function ReviewsScore({ avgScore, count }: ReviewsScoreProps) {
-  const tone: CocoaTone = avgScore === undefined ? "neutral" : avgScore >= 8.5 ? "success" : avgScore >= 7 ? "warning" : "danger";
+// Tanda T8 · lote T8-G: the 0-100 reputation index with its honest state. The
+// figure is a CocoaStat (tone ink ≥ 85 success · ≥ 70 warning · danger), the
+// trend a CocoaBadge; without a figure the copy says why (no sources → «Configurar»
+// only for users who can write sources (reputation.respond, what ReputationDashboard
+// requires for «Configurar fuentes»); module off → «Activar módulo» only for users
+// who may enable modules; N reseñas · insuficiente (mínimo 10)). No local styles.
+function ReputationFigure({ status, index30, trendDelta, reviewCount30, sourcesConnected, staleDays }: ReputationFigureProps) {
+  const gate = useNavGate();
+  const model = reputationFigureModel({ status, index30, trendDelta, reviewCount30, sourcesConnected, staleDays });
+  const actionLabel = reputationFigureActionLabel(model.action, { canConfigure: canRespond(gate.grantedPermissions), canEnableModules: gate.canEnableModules });
+  const onAction = model.action === "configure_sources" ? () => navigateTo("ReputationDashboard") : model.action === "enable_module" ? () => navigateTo("ModuleManager", "modulo=reputation_quality") : undefined;
   return (
-    <div className="cocoa-stack" data-gap="1">
-      <span style={figureStyle(tone)}>{avgScore !== undefined ? avgScore.toFixed(2) : "—"}</span>
-      <span style={mutedStyle}>{plural(count, "review agregada", "reviews agregadas")}</span>
+    <div className="cocoa-stack" data-gap="2">
+      <div className="cocoa-row" data-gap="3" data-align="end" data-wrap="true">
+        <CocoaStat label="Índice" value={model.value} tone={model.tone === "neutral" ? undefined : model.tone} size="large" hint={model.hint} />
+        {model.trend ? (
+          <CocoaBadge tone={trendTone(trendDelta) === "neutral" ? "neutral" : trendTone(trendDelta)} variant="tinted" size="small" uppercase={false}>
+            {model.trend}
+          </CocoaBadge>
+        ) : (
+          <CocoaBadge tone={model.action ? "warning" : "neutral"} variant="tinted" size="small" uppercase={false}>
+            {model.statusLabel}
+          </CocoaBadge>
+        )}
+      </div>
+      {actionLabel && onAction ? (
+        <span className="cocoa-cluster">
+          <CocoaButton variant="tinted" tone="accent" size="small" onClick={onAction}>
+            {actionLabel}
+          </CocoaButton>
+        </span>
+      ) : null}
     </div>
   );
 }
