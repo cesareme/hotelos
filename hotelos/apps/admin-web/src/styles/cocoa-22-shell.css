@@ -119,7 +119,7 @@
    hijo directo de .cocoa-shell, fuera de pantalla hasta `.open`; el velo
    cubre el contenido y lo cierra. Capas: --cocoa-z-sidebar y una menos.
    ------------------------------------------------------------ */
-.c22-scrim { display: none; position: fixed; inset: 0; animation: c22-fade-in var(--cocoa-duration-base) var(--cocoa-ease-out); }
+.cocoa-shell > .c22-scrim { display: none; position: fixed; inset: 0; animation: c22-fade-in var(--cocoa-duration-base) var(--cocoa-ease-out); }
 .cocoa-shell > .c22-sidebar { z-index: var(--cocoa-z-sidebar); width: min(86vw, var(--cocoa-drawer-width)); box-shadow: var(--cocoa-shadow-modal); }
 .cocoa-shell > .c22-scrim { z-index: calc(var(--cocoa-z-sidebar) - 1); background: var(--cocoa-scrim); -webkit-backdrop-filter: var(--cocoa-scrim-blur); backdrop-filter: var(--cocoa-scrim-blur); }
 @keyframes c22-fade-in {
