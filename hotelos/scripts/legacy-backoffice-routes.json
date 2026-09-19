@@ -188,7 +188,7 @@
     },
     {
       "path": "/backoffice/timeline",
-      "screen": "LiveTimelineWorkspace"
+      "screen": "LiveTimeline"
     },
     {
       "path": "/backoffice/reservations",

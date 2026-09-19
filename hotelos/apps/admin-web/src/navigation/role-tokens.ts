@@ -425,8 +425,12 @@ export function resolveRoleTokens(source: RoleTokenSource): ResolvedRoleTokens {
 /**
  * The fifteen authenticated tokens (every token but `publico`). An entry whose
  * `roles` cover all of them is visible even without a role (§8); since Tanda
- * 8a no menu entry lists the fifteen (`rrhh`, `activos` and `sistemas` do not
- * see Mi día), so a custom role without template sees the no-role notice only.
+ * 8a no menu entry listed the fifteen (`rrhh`, `activos` and `sistemas` do not
+ * see Mi día), so a custom role without template saw the no-role notice only.
+ * Fusión TL (2026-09-19): Hoy › Live Timeline lists the fifteen on purpose
+ * ("todos los perfiles"), so a custom role without template sees that single
+ * entry; the screen itself degrades honestly when `pms.reservation.read` is
+ * missing (the tree carries tokens, never permission keys).
  */
 export const AUTHENTICATED_ROLE_TOKENS: readonly RoleToken[] = ROLE_TOKENS.filter((token) => token !== "publico");
 

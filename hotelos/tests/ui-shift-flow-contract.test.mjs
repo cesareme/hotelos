@@ -38,7 +38,7 @@ describe("ehotelOS Flow UI/UX shift", () => {
       "../apps/mobile/src/screens/channelManager/ChannelManagerHomeScreen.tsx",
       "../apps/mobile/src/screens/marketplace/IntegrationMarketplaceHome.tsx",
       "../apps/mobile/src/screens/settings/SetupCenterPreviewScreen.tsx",
-      "../apps/admin-web/src/screens/timeline/LiveTimelineWorkspace.tsx",
+      "../apps/admin-web/src/screens/timeline/LiveTimeline.tsx",
       "../apps/admin-web/src/screens/guestJourney/GuestJourneyWorkspace.tsx",
       // ChannelManagerDashboard.tsx was renamed to ChannelAggregatorHub.tsx
       // when the OTA aggregator surface was unified. The screen key
@@ -92,7 +92,7 @@ describe("ehotelOS Flow UI/UX shift", () => {
     for (const [from, to] of [
       ["/backoffice", "/hoy"],
       ["/backoffice/setup", "/configuracion/puesta-en-marcha"],
-      ["/backoffice/timeline", "/recepcion/reservas/cronograma"],
+      ["/backoffice/timeline", "/hoy/live-timeline"],
       ["/backoffice/revenue", "/revenue"],
       ["/backoffice/revenue/history-forecast", "/revenue/historico-prevision"],
       ["/backoffice/channel-manager", "/comercial/canales"],

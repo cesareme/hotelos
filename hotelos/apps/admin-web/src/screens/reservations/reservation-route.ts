@@ -1,7 +1,7 @@
 // Reservation id of the detail sub-URL (Tanda 5 · L1c). Pure: no DOM, no API,
 // so the rule is unit-testable and ReservationWorkspaceScreen only consumes it.
 
-import { allUrls, hasRouteParams, matchPath, urlForScreen } from "../../navigation/nav-tree";
+import { MOVED_URLS, allUrls, hasRouteParams, matchPath, urlForScreen } from "../../navigation/nav-tree";
 
 // Detail sub-URL of the reservation item (Tanda 5): /recepcion/reservas/:id. The
 // legacy standalone route is normally rewritten by the client-side 308 before
@@ -9,11 +9,12 @@ import { allUrls, hasRouteParams, matchPath, urlForScreen } from "../../navigati
 const DETAIL_PATTERN = urlForScreen("ReservationDetailWorkspace") ?? "/recepcion/reservas/:id";
 const LEGACY_DETAIL_PATTERN = "/backoffice/reservations/:id";
 
-// Static sibling URLs under the same prefix (lista, cronograma, tablero, nueva…)
-// are tabs or items of the tree, never a reservation id. Derived from the tree so
-// a new tab cannot be mistaken for an id.
+// Static sibling URLs under the same prefix (lista, tablero, nueva…) are tabs
+// or items of the tree, never a reservation id. Derived from the tree so a new
+// tab cannot be mistaken for an id; the moved URLs (`cronograma`, now a redirect
+// to Hoy › Live Timeline) stay reserved for the same reason.
 const RESERVED_SEGMENTS = new Set(
-  allUrls()
+  [...allUrls(), ...MOVED_URLS.map((route) => route.from)]
     .filter((url) => !hasRouteParams(url) && matchPath(DETAIL_PATTERN, url) !== null)
     .map((url) => url.split("/").filter(Boolean).at(-1) ?? "")
     .filter(Boolean)

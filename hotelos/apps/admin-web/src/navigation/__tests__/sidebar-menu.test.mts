@@ -31,21 +31,21 @@ const EXPECTED: Record<Exclude<RoleToken, "publico">, { items: number; categorie
   // Tanda 6b: Estructura societaria adds 1 item for direccion, finanzas and admin.
   // Tanda 8a (RBAC): Hoy › Pendientes de aprobación and the six department tokens (design §5.1);
   // counts computed over nav-tree.generated.json (node scripts/check-route-access.mjs prints them).
-  direccion: { items: 68, categories: 9 },
-  recepcion: { items: 23, categories: 9 },
-  pisos: { items: 6, categories: 3 },
-  mantenimiento: { items: 9, categories: 3 },
-  revenue: { items: 21, categories: 5 },
-  finanzas: { items: 32, categories: 6 },
-  comercial: { items: 14, categories: 5 },
-  fnb: { items: 6, categories: 2 },
-  administracion: { items: 12, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
-  rrhh: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
-  propiedad: { items: 5, categories: 3 },
-  activos: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
-  auditoria: { items: 65, categories: 9 },
-  sistemas: { items: 4, categories: 1 },
-  admin: { items: 68, categories: 9 }
+  direccion: { items: 69, categories: 9 },
+  recepcion: { items: 24, categories: 9 },
+  pisos: { items: 7, categories: 3 },
+  mantenimiento: { items: 10, categories: 3 },
+  revenue: { items: 22, categories: 5 },
+  finanzas: { items: 33, categories: 6 },
+  comercial: { items: 15, categories: 5 },
+  fnb: { items: 7, categories: 2 },
+  administracion: { items: 13, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
+  rrhh: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
+  propiedad: { items: 6, categories: 3 },
+  activos: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
+  auditoria: { items: 66, categories: 9 },
+  sistemas: { items: 5, categories: 2 },
+  admin: { items: 69, categories: 9 }
 };
 
 function screenKeys(categories: readonly MenuCategory[]): string[] {
@@ -89,15 +89,16 @@ describe("Sidebar menu · visibility per role (§3 of the tree)", () => {
     for (const key of screenKeys(menuCategories(["recepcion"], ALL_MODULES))) assert.ok(union.has(key), key);
   });
 
-  it("tabs of a visible item are filtered by role too (Reservas: pisos sees Cronograma, not Detalle)", () => {
+  it("tabs of a visible item are filtered by role too (Reservas: pisos sees Tablero, not Detalle)", () => {
     const recepcion = menuCategories(["recepcion"], ALL_MODULES).find((category) => category.key === "recepcion");
     const reservas = recepcion?.items.find((item) => item.screenKey === "ReservationWorkspace");
     assert.ok(reservas);
-    assert.ok(reservas.tabs.some((tab) => tab.label === "Cronograma"));
+    assert.ok(reservas.tabs.some((tab) => tab.label === "Tablero de habitaciones"));
     const pisos = menuCategories(["pisos"], ALL_MODULES).find((category) => category.key === "recepcion");
     const reservasPisos = pisos?.items.find((item) => item.screenKey === "ReservationWorkspace");
     assert.ok(reservasPisos);
-    assert.ok(reservasPisos.tabs.some((tab) => tab.label === "Cronograma"));
+    assert.ok(reservasPisos.tabs.some((tab) => tab.label === "Tablero de habitaciones"));
+    assert.ok(!reservasPisos.tabs.some((tab) => tab.label === "Cronograma"), "fusión TL: Cronograma ya no es pestaña (Hoy › Live Timeline)");
     assert.ok(!reservasPisos.tabs.some((tab) => tab.label === "Detalle"));
   });
 });
@@ -106,8 +107,8 @@ describe("Sidebar menu · module gates (§6)", () => {
   it("Faranda's six modules hide the six module-gated items for dirección (61 visible)", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES);
     const counts = countMenu(categories);
-    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another.
-    assert.equal(counts.items, 62);
+    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another; fusión TL: Live Timeline (core) another.
+    assert.equal(counts.items, 63);
     assert.equal(counts.locked, 0);
     const keys = new Set(screenKeys(categories));
     for (const hidden of ["WorkforceDashboard", "SafetyDashboard", "ProcurementDashboard", "CrmDashboard", "ReputationDashboard", "AnalyticsCenterDashboard"]) {
@@ -120,7 +121,7 @@ describe("Sidebar menu · module gates (§6)", () => {
   it("with modules.enable the same six items are painted locked with «Activar módulo»", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES, { canEnableModules: true });
     const counts = countMenu(categories);
-    assert.equal(counts.items, 68);
+    assert.equal(counts.items, 69);
     assert.equal(counts.locked, 6);
     const crm = categories.flatMap((category) => category.items).find((item) => item.screenKey === "CrmDashboard");
     assert.ok(crm);
@@ -155,21 +156,23 @@ describe("Sidebar menu · module gates (§6)", () => {
 });
 
 describe("Sidebar menu · no role, dev group, active item and landing", () => {
-  it("no token → only the entries every authenticated token can open: none since Tanda 8a (rrhh, activos and sistemas do not see Mi día), so the shell shows UI_STATES.noRole", () => {
+  it("no token → only the entries every authenticated token can open: since the fusión TL that is Hoy › Live Timeline alone (rrhh, activos and sistemas still do not see Mi día)", () => {
     const categories = menuCategories([], ALL_MODULES);
-    assert.deepEqual(categories, []);
-    for (const category of NAV_TREE.categories) for (const item of category.items) assert.ok(!roleAllowsEveryone(item), `${item.screenKey} is not open to every token`);
-    // «Activar módulo» is never offered without a token either.
-    assert.deepEqual(menuCategories([], [], { canEnableModules: true }), []);
+    assert.deepEqual(categories.map((category) => category.key), ["hoy"]);
+    assert.deepEqual(screenKeys(categories), ["LiveTimeline"]);
+    for (const category of NAV_TREE.categories) for (const item of category.items) assert.equal(roleAllowsEveryone(item), item.screenKey === "LiveTimeline", `${item.screenKey}: only Live Timeline is open to every token`);
+    // «Activar módulo» is never offered without a token either: the core Live Timeline alone.
+    assert.deepEqual(screenKeys(menuCategories([], [], { canEnableModules: true })), ["LiveTimeline"]);
   });
 
   it("the six Tanda 8a tokens see exactly the rows of design §5.1", () => {
     const keysOf = (token: RoleToken) => screenKeys(menuCategories([token], ALL_MODULES)).sort();
     // Corrector 8a (FX-06): the makers of RRHH (payroll), gestión del activo (CAPEX) and administración de hotel see the state of their own requests in the inbox.
-    assert.deepEqual(keysOf("rrhh"), ["ApprovalsInbox", "PayrollScreen", "WorkforceDashboard"]);
-    assert.deepEqual(keysOf("activos"), ["ApprovalsInbox", "ComplianceCenter", "StructureScreen"]);
-    assert.deepEqual(keysOf("sistemas"), ["AuditLogViewer", "ModuleManager", "NotificationsScreen", "UserRoleManager"]);
-    assert.deepEqual(keysOf("propiedad"), ["FrontDeskDashboard", "PortfolioDashboard", "ReportingCenter", "TrialBalanceScreen"].concat(["ApprovalsInbox"]).sort());
+    // Fusión TL (2026-09-19): Hoy › Live Timeline (LiveTimeline) is the first entry for every token.
+    assert.deepEqual(keysOf("rrhh"), ["ApprovalsInbox", "LiveTimeline", "PayrollScreen", "WorkforceDashboard"]);
+    assert.deepEqual(keysOf("activos"), ["ApprovalsInbox", "ComplianceCenter", "LiveTimeline", "StructureScreen"]);
+    assert.deepEqual(keysOf("sistemas"), ["AuditLogViewer", "LiveTimeline", "ModuleManager", "NotificationsScreen", "UserRoleManager"]);
+    assert.deepEqual(keysOf("propiedad"), ["FrontDeskDashboard", "PortfolioDashboard", "ReportingCenter", "TrialBalanceScreen"].concat(["ApprovalsInbox", "LiveTimeline"]).sort());
     assert.deepEqual(keysOf("administracion"), [
       "ApprovalsInbox",
       "AssistantChat",
@@ -179,6 +182,7 @@ describe("Sidebar menu · no role, dev group, active item and landing", () => {
       "FinancePositionDashboard",
       "FrontDeskDashboard",
       "GuestRegisterSettings",
+      "LiveTimeline",
       "NightAuditScreen",
       "ProcurementDashboard",
       "ReportingCenter",
@@ -233,18 +237,18 @@ describe("Sidebar menu · no role, dev group, active item and landing", () => {
   it("flatMenuEntries lists items and paintable tabs (never detail sub-URLs) for ⌘K", () => {
     const categories = menuCategories(["recepcion"], ALL_MODULES);
     const items = flatMenuEntries(categories);
-    assert.equal(items.length, 23);
+    assert.equal(items.length, 24);
     assert.ok(items.every((entry) => entry.tab === null));
     const withTabs = flatMenuEntries(categories, { includeTabs: true });
     assert.ok(withTabs.length > items.length);
-    assert.ok(withTabs.some((entry) => entry.tab === "Cronograma" && entry.itemScreenKey === "ReservationWorkspace"));
+    assert.ok(withTabs.some((entry) => entry.tab === "Tablero de habitaciones" && entry.itemScreenKey === "ReservationWorkspace"));
     assert.ok(!withTabs.some((entry) => entry.url.includes(":")), "detail sub-URLs are not entries");
   });
 
   it("the menu search is accent-insensitive and matches tab labels", () => {
     const reservas = menuCategories(["recepcion"], ALL_MODULES).flatMap((category) => category.items).find((item) => item.screenKey === "ReservationWorkspace");
     assert.ok(reservas);
-    assert.ok(menuItemMatches(reservas, "cronograma"));
+    assert.ok(menuItemMatches(reservas, "tablero"));
     assert.ok(menuItemMatches(reservas, "RESERVAS"));
     assert.ok(!menuItemMatches(reservas, "nóminas"));
     assert.ok(menuItemMatches({ label: "Huéspedes", tabs: [] }, "huespedes"));

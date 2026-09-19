@@ -16,7 +16,8 @@ const source = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf
 const billingCentre = source("../BillingCenterScreen.tsx");
 const reservation = source("../../reservations/ReservationWorkspaceScreen.tsx");
 const reservationCreate = source("../../reservations/ReservationCreateScreen.tsx");
-const timeline = source("../../timeline/LiveTimelineWorkspace.tsx");
+const timeline = source("../../timeline/LiveTimeline.tsx");
+const timelineDialog = source("../../../components/timeline/TimelineActionDialog.tsx");
 const client = source("../../../services/pmsCommerceApi.ts");
 
 describe("Centro de facturación · cableado (BillingCenterScreen.tsx)", () => {
@@ -75,11 +76,24 @@ describe("Ficha de reserva · cableado (ReservationWorkspaceScreen.tsx)", () => 
   });
 });
 
-describe("Cronograma · cableado (LiveTimelineWorkspace.tsx)", () => {
+describe("Live Timeline · cableado (LiveTimeline.tsx + components/timeline/TimelineActionDialog.tsx; fusión TL: sustituye a LiveTimelineWorkspace.tsx)", () => {
   it("exige el motivo para cancelar / no-show, como la ficha (FUX-05)", () => {
-    assert.match(timeline, /\(pending\.type === "cancel" \|\| pending\.type === "noshow"\) && !reason\.trim\(\)/);
-    assert.match(timeline, /<CocoaField label="Motivo" required/);
-    assert.doesNotMatch(timeline, /STATUS_LABELS\.optional/);
+    assert.match(timelineDialog, /\(type === "cancel" \|\| type === "noshow"\) && reason\.trim\(\)\.length < MIN_REASON_LENGTH/);
+    assert.match(timelineDialog, /<CocoaField label="Motivo" required/);
+    assert.doesNotMatch(timelineDialog, /STATUS_LABELS\.optional/);
+  });
+
+  it("cancelar y no-show envían applyPolicy, leen la vista previa con el modo y el diálogo la pinta (L3-F1 traspasado)", () => {
+    assert.match(timeline, /previewCancellationCharge\(lifecycleId, lifecycleMode\)/);
+    assert.match(timeline, /cancelReservation\(res\.id, input\.reason, \{ applyPolicy: true \}\)/);
+    assert.match(timeline, /noShowReservation\(res\.id, input\.reason, \{ applyPolicy: true \}\)/);
+    assert.match(timeline, /lifecycleOutcomeSummary\(mode, result\.cancellation \?\? null/);
+    assert.match(timelineDialog, /penaltyPreview\?: TimelinePenaltyPreview \| null;/);
+    assert.match(timelineDialog, /\{penaltyPreview \? \(\s*<CocoaCallout tone=\{penaltyPreview\.tone\} title=\{penaltyPreview\.title \?\? undefined\} role="status">/);
+    // Misma voz que la ficha de reserva: aviso cuando la política cobra, plazo gratuito y título con la política.
+    assert.match(timeline, /tone: chargeable \? "warning" : "info"/);
+    assert.match(timeline, /Plazo gratuito hasta \$\{dateTime\(penalty\.cutoffAt, \{ style: "medium" \}\)\}/);
+    assert.match(timeline, /`Política «\$\{penalty\.policyName\}»` : "Sin política de cancelación"/);
   });
 });
 

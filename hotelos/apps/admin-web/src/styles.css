@@ -11,8 +11,9 @@
      5. cocoa-22.css           KPI · badge · estado · skeleton · tabla · formularios · overlays · gráficas
      6. cocoa-22-shell.css     sidebar, drawer y velo del shell (navigation/Sidebar.tsx, layouts/BackOfficeLayout.tsx)
      7. cocoa-22-guide.css     guía intrínseca (tour, centro de ayuda, bienvenida) y paleta ⌘K
-     8. mobile.css             capa táctil / teléfono, siempre la última
-     9. :root de abajo         tokens Aurora (--canvas/--surface/--accent…/--ai*) que
+     8. cocoa-22-timeline.css  clases tl-* del Live Timeline (Hoy › Live Timeline, Tanda TL)
+     9. mobile.css             capa táctil / teléfono, siempre la última
+    10. :root de abajo         tokens Aurora (--canvas/--surface/--accent…/--ai*) que
                                cocoa-tokens.css, cocoa-22.css y mobile.css consumen por referencia
    La hoja legacy Aurora (los prefijos de clase de la interfaz anterior) y el
    puente de migración se retiraron en Cocoa 22 · ola 11: no añadas reglas aquí. */
@@ -23,6 +24,7 @@
 @import './styles/cocoa-22.css';
 @import './styles/cocoa-22-shell.css';
 @import './styles/cocoa-22-guide.css';
+@import './styles/cocoa-22-timeline.css';
 @import './styles/mobile.css';
 
 :root {

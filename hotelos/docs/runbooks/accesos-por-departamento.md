@@ -66,7 +66,7 @@ la plataforma.
 Un ámbito más ancho cubre a los más estrechos. Quien asigna solo puede dar
 ámbitos **contenidos en el suyo** (403 `RBAC_SCOPE_EXCEEDED`).
 
-### 1.3 Las 24 plantillas (`ROLE_TEMPLATE_KEYS`, versión 2)
+### 1.3 Las 24 plantillas (`ROLE_TEMPLATE_KEYS`, versión 3)
 
 Etiqueta = `ROLE_TEMPLATE_LABELS_ES` (nombre del rol que se crea en cada
 organización); nivel = `ROLE_TEMPLATE_LEVEL`; ámbito por defecto =
@@ -94,13 +94,13 @@ del 2026-09-18).
 | `revenue` | Revenue corporativo | N4 operations_director | organization | T4 | revenue | 53 |
 | `accountant` | Contabilidad | N7 central_admin | legal_entity | T1 | finanzas | 57 |
 | `controller` | Dirección financiera | N5 general_management | legal_entity | T4 | finanzas | 80 |
-| `payroll_hr` | RRHH y nóminas | N7 central_admin | legal_entity | T1 | rrhh | 11 |
+| `payroll_hr` | RRHH y nóminas | N7 central_admin | legal_entity | T1 | rrhh | 13 |
 | `compliance` | Cumplimiento | N7 central_admin | legal_entity | T1 | finanzas | 58 |
-| `asset_manager` | Gestión del activo | N7 central_admin | legal_entity | T1 | activos | 27 |
+| `asset_manager` | Gestión del activo | N7 central_admin | legal_entity | T1 | activos | 29 |
 | `general_manager` | Dirección general | N5 general_management | organization | > T4 | direccion | 117 |
 | `owner` | Propiedad | N6 ownership | organization | > T4 | propiedad | 65 |
 | `auditor` | Auditoría interna | N7 central_admin | organization | T1 (solo lectura) | auditoria | 68 |
-| `admin` | Administración de sistema | N7 central_admin | organization | T1 (sin dinero) | sistemas | 70 |
+| `admin` | Administración de sistema | N7 central_admin | organization | T1 (sin dinero) | sistemas | 72 |
 | `break_glass` | Emergencia | N5 general_management | organization | > T4 | direccion | 249 (todo lo org) |
 
 - **22 se materializan por organización** (`ORGANIZATION_TEMPLATE_ROLE_KEYS`):
@@ -128,7 +128,17 @@ Letras: **V** ver · **C** crear/ejecutar · **E** editar/configurar · **S**
 solicitar · **A** aprobar · **X** anular/reembolsar/reabrir · **P** exportar.
 El diccionario módulo → claves está en el diseño §4.3; las celdas de aquí,
 expandidas con ese diccionario, son exactamente `ROLE_PERMISSION_MAP` (versión
-2, `tests/rbac-sod-contract.test.mjs` lo fija).
+3, `tests/rbac-sod-contract.test.mjs` lo fija).
+
+Nota de la versión 3 (fusión TL · Live Timeline, 2026-09-19): cambio **aditivo**.
+`payroll_hr`, `asset_manager` y `admin` ganan `pms.reservation.read` +
+`guests.read` (solo lectura: habitaciones, tipos, reservas y nombre del huésped)
+para que Hoy › Live Timeline (`/hoy/live-timeline`, primera entrada del menú
+para todos los perfiles) pinte con nombres en vez de «Huésped no visible»; las
+dos claves salen de `ROLE_TEMPLATE_REVOCATIONS.admin`. Ninguna plantilla pierde
+claves; `rbac:sync -- --upgrade-templates` sella la versión 3 y entrega las dos
+claves en una pasada auditada (`ROLE_TEMPLATE_UPGRADED`, revoked = []).
+Administración de sistema pasa de 70 a 72 claves y sigue sin dinero ni folio.
 
 Notas de la versión 2 respecto a las plantillas anteriores:
 
@@ -189,11 +199,11 @@ Rec = receptionist · AudN = night_auditor · JRec = front_office_manager · Cam
 
 ### 2.2 Central (sociedad / grupo)
 
-DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = controller · RRHH = payroll_hr · Cumpl = compliance · Act = asset_manager · DG = general_manager · Prop = owner · Aud = auditor · Adm = admin.
+DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = controller · RRHH = payroll_hr · Cumpl = compliance · Act = asset_manager · DG = general_manager · Prop = owner · Aud = auditor · Adm = admin. ³ Versión 3 (fusión TL): solo `pms.reservation.read` + `guests.read` para el Live Timeline de Hoy.
 
 | Módulo | DirOps | Rev | Cont | DirFin | RRHH | Cumpl | Act | DG | Prop | Aud | Adm |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| M1 Reservas | V | V | V | V | – | V | – | V | V | V | – |
+| M1 Reservas | V | V | V | V | V³ | V | V³ | V | V | V | V³ |
 | M2 Folios y cobros | V | – | V | V A X | – | V | – | V A | V | V | – |
 | M3 Facturación | V | – | V C E S | V A X | – | V | – | V | V | V | – |
 | M4 Cierre del día | V | – | V A | V A X | – | – | – | V | – | V | – |
@@ -323,11 +333,11 @@ con autor y motivo (retención de §7).
 | `direccion` | manager, operations_director, general_manager, break_glass | `/hoy/direccion` | sí |
 | `revenue` | revenue | `/hoy/direccion` | sí |
 | `finanzas` | accountant, controller, compliance | `/hoy/direccion` | sí |
-| `rrhh` | payroll_hr | `/finanzas/nominas` | no (`/hoy` exige `pms.reservation.read`) |
-| `activos` | asset_manager | `/finanzas/proveedores/inmovilizado` hasta que exista Finanzas › Activo inmobiliario (documento hermano) | no |
+| `rrhh` | payroll_hr | `/finanzas/nominas` | no (Mi día no lista `rrhh`; desde la fusión TL sí ve Hoy › Live Timeline) |
+| `activos` | asset_manager | `/finanzas/proveedores/inmovilizado` hasta que exista Finanzas › Activo inmobiliario (documento hermano) | no (sí ve Hoy › Live Timeline) |
 | `propiedad` | owner | `/hoy/propietario` | sí |
 | `auditoria` | auditor | `/configuracion/sistema` (Auditoría) | sí |
-| `sistemas` | admin (organización) | `/configuracion/usuarios` | no |
+| `sistemas` | admin (organización) | `/configuracion/usuarios` | no (sí ve Hoy › Live Timeline) |
 | `admin` | plataforma (`admin.tenants.manage`) | `/hoy/direccion` + `/desarrollo/*` | sí |
 
 Con varios tokens decide la prioridad `ROLE_TOKEN_PRIORITY`: admin, sistemas,

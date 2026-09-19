@@ -13,6 +13,7 @@ import {
   findByUrl,
   landingTabFor,
   normalizePathname,
+  resolveMovedPath,
   type NavCategory,
   type NavItem,
   type NavTab
@@ -71,10 +72,11 @@ export function baseKeyFor(item: Pick<NavItem, "url">): string {
  * Params of the detail sub-URL of the item that serves the pathname; null on
  * static URLs. Resolved through the tree (`findByUrl`: static wins over
  * `:param`), so `/recepcion/reservas/lista` is the Lista tab and
- * `/recepcion/reservas/nueva` the sibling item, never a reservation id.
+ * `/recepcion/reservas/nueva` the sibling item, never a reservation id. A moved
+ * URL (`/recepcion/reservas/cronograma`, fusión TL) is a redirect, not an id.
  */
 export function detailParamsFor(item: Pick<NavItem, "screenKey">, pathname: string | null | undefined): Record<string, string> | null {
-  if (!pathname) return null;
+  if (!pathname || resolveMovedPath(pathname)) return null;
   const match = findByUrl(pathname);
   if (!match || match.kind !== "tab" || match.item.screenKey !== item.screenKey || !match.tab.detail) return null;
   return match.params;
@@ -230,7 +232,7 @@ function fallbackKey(item: NavItem, tabs: readonly CocoaRouteTab[]): string {
  * the role home when it is a tab of the item, the base tab when the tree names
  * one, else the first paintable tab). Null from `landingTabFor` means "stay on
  * the base screen": that is the base tab when present, else the first painted
- * tab (Reservas has no base tab: recepción lands on Lista, pisos on Cronograma).
+ * tab (Reservas has no base tab: recepción lands on Lista, pisos on Tablero since the fusión TL moved Cronograma to Hoy › Live Timeline).
  */
 export function landingKeysFor(
   item: NavItem,

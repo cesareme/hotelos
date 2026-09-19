@@ -279,6 +279,25 @@ export function resolveLegacyPath(pathname: string, tree: NavTree = NAV_TREE): s
   return null;
 }
 
+// ----------------------------------------------------------------- moved URLs
+
+/**
+ * Tree URLs that moved WITHOUT going through /backoffice (fusión TL,
+ * 2026-09-19): the Cronograma tab of Recepción › Reservas became Hoy › Live
+ * Timeline, and the old URL is kept only as a client-side 308 for bookmarks,
+ * saved links and the guide texts that still name it. The `from` segment stays
+ * reserved (never a reservation id) and is not a route of its own, so the
+ * generator, `legacyRoutes` (205, /backoffice/* only) and `allUrls()` do not
+ * change; `resolveLocation` redirects and `detailParamsFor` ignores it.
+ */
+export const MOVED_URLS: readonly NavLegacyRoute[] = [{ from: "/recepcion/reservas/cronograma", to: "/hoy/live-timeline" }];
+
+/** New URL of a moved static path (`/recepcion/reservas/cronograma` → `/hoy/live-timeline`), or null. */
+export function resolveMovedPath(pathname: string): string | null {
+  const normalized = normalizePathname(pathname);
+  return MOVED_URLS.find((route) => route.from === normalized)?.to ?? null;
+}
+
 // ----------------------------------------------------------------- visibility
 
 export type VisibleNavItem = Omit<NavItem, "tabs"> & { tabs: readonly NavTab[] };

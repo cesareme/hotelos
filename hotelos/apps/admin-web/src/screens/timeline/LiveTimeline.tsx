@@ -23,8 +23,10 @@
 // en un contenedor de pestañas, el contenedor pinta el título (useTabHost).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import "../../styles/cocoa-22-timeline.css"; // Tanda TL: gancho temporal; el orquestador la mueve a src/styles.css (nueva línea 26, tras cocoa-22-guide.css y antes de mobile.css)
 import { getActivePropertyId } from "../../services/activeProperty";
+import { previewCancellationCharge, type ChargeBreakdown } from "../../services/cancellationApi";
+import { financeErrorMessage } from "../../services/finance-contracts";
+import { lifecycleOutcomeSummary, penaltyPreviewSummary, type LifecycleOutcomeLike, type PenaltyMode } from "../../components/billing/charge-types";
 import {
   assignReservationRoom,
   balanceDueConflict,
@@ -51,7 +53,7 @@ import { useTabHost } from "../tabs/TabHost";
 import { useToast } from "../../components/Toast";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { navigateTo } from "../../lib/navigate";
-import { channelLabel, date, dateRange, plural, time } from "../../lib/format";
+import { channelLabel, date, dateRange, dateTime, money, plural, time } from "../../lib/format";
 import { ACTIONS, TIME_LABELS } from "../../content/actions";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
 import { LIVE_TIMELINE_INSTRUCTIONS } from "../../content/screen-instructions/timeline";
@@ -86,7 +88,8 @@ import {
   type TimelineFilterOption,
   type TimelineGridHandle,
   type TimelineInspectorAction,
-  type TimelineOpenVia
+  type TimelineOpenVia,
+  type TimelinePenaltyPreview
 } from "../../components/timeline";
 import {
   DEFAULT_FILTERS,
@@ -152,6 +155,12 @@ export const NO_MATCH_MESSAGE = "Ninguna reserva del periodo pasa los filtros o 
 export const NO_RESERVATIONS_TITLE = "Sin reservas en este periodo";
 export const NO_RESERVATIONS_MESSAGE = "No hay reservas que toquen estas fechas. Cambia el periodo o crea una reserva seleccionando celdas.";
 export const NEW_RESERVATION_FALLBACK_URL = "/recepcion/reservas/nueva";
+/** Tanda L3 · F1: estado de la previsualización de la penalización (diálogo de cancelación / no-show). */
+type PenaltyPreviewState = { loading: boolean; data: ChargeBreakdown | null; error: string | null };
+const NO_PENALTY_PREVIEW: PenaltyPreviewState = { loading: false, data: null, error: null };
+const PENALTY_PREVIEW_LOADING = "Calculando la penalización prevista…";
+const PENALTY_PREVIEW_ERROR = "No se pudo calcular la penalización.";
+const PENALTY_PREVIEW_UNKNOWN_TITLE = "Penalización no calculada";
 
 /** Páginas del sobre del API que se encadenan como máximo por rango (500 ítems cada una). */
 export const MAX_RANGE_PAGES = 10;
@@ -236,6 +245,48 @@ export function LiveTimeline() {
   const [conflict, setConflict] = useState<TimelineConflict | null>(null);
   const [undo, setUndo] = useState<UndoEntry | null>(null);
   const [cellSel, setCellSel] = useState<TimelineCreateSelection | null>(null);
+  // Tanda L3 · F1 (traspasado de LiveTimelineWorkspace en la fusión TL): la
+  // previsualización de la penalización se lee al abrir el diálogo de cancelar /
+  // no-show (GET /reservations/:id/cancellation-charge?mode=). Solo lectura: la
+  // política la aplica el API al confirmar con `applyPolicy: true`.
+  const [penaltyPreview, setPenaltyPreview] = useState<PenaltyPreviewState>(NO_PENALTY_PREVIEW);
+  const lifecycleId = pending && (pending.type === "cancel" || pending.type === "noshow") ? pending.res.id : null;
+  const lifecycleMode: PenaltyMode | null = pending?.type === "noshow" ? "no_show" : pending?.type === "cancel" ? "cancellation" : null;
+  useEffect(() => {
+    if (!lifecycleId || !lifecycleMode) {
+      setPenaltyPreview(NO_PENALTY_PREVIEW);
+      return;
+    }
+    setPenaltyPreview({ loading: true, data: null, error: null });
+    let stale = false;
+    previewCancellationCharge(lifecycleId, lifecycleMode)
+      .then((data) => {
+        if (!stale) setPenaltyPreview({ loading: false, data, error: null });
+      })
+      .catch((err: unknown) => {
+        if (!stale) setPenaltyPreview({ loading: false, data: null, error: financeErrorMessage(err, PENALTY_PREVIEW_ERROR) });
+      });
+    return () => {
+      stale = true;
+    };
+  }, [lifecycleId, lifecycleMode]);
+  // Misma voz que la ficha de reserva (ReservationWorkspaceScreen · lifecycleFields): título con la
+  // política, plazo gratuito y tono de aviso cuando la política cobra (aquí siempre se confirma con applyPolicy: true).
+  const penaltyPreviewView = useMemo<TimelinePenaltyPreview | null>(() => {
+    if (!pending || !lifecycleMode) return null;
+    if (penaltyPreview.loading) return { text: PENALTY_PREVIEW_LOADING, tone: "info", title: null };
+    if (penaltyPreview.error) return { text: penaltyPreview.error, tone: "warning", title: PENALTY_PREVIEW_UNKNOWN_TITLE };
+    const penalty = penaltyPreview.data;
+    const summary = penaltyPreviewSummary(lifecycleMode, penalty, (amount) => money(amount, pending.res.currency));
+    const label = penalty?.label ? ` ${penalty.label}` : "";
+    const cutoff = penalty?.cutoffAt ? ` Plazo gratuito hasta ${dateTime(penalty.cutoffAt, { style: "medium" })}.` : "";
+    const chargeable = Boolean(penalty && penalty.amount > 0 && !penalty.withinFreeWindow);
+    return {
+      text: `${summary}${label}${cutoff}`,
+      tone: chargeable ? "warning" : "info",
+      title: penalty ? (penalty.policyName ? `Política «${penalty.policyName}»` : "Sin política de cancelación") : PENALTY_PREVIEW_UNKNOWN_TITLE
+    };
+  }, [pending, lifecycleMode, penaltyPreview]);
 
   // ---- detalle de la reserva abierta ---------------------------------------
   const [folio, setFolio] = useState<FolioBalance | null>(null);
@@ -659,6 +710,7 @@ export function LiveTimeline() {
     async (input: TimelineConfirmInput) => {
       if (!pending || !copy) return;
       const { res } = pending;
+      let done = copy.done;
       setBusy(true);
       setActionError(null);
       setConflict(null);
@@ -675,10 +727,15 @@ export function LiveTimeline() {
           await checkInReservation(res.id, { roomId: res.assignedRoomId });
         } else if (pending.type === "checkout") {
           await checkOutReservation(res.id, { acknowledgeBalance: input.acknowledgeBalance });
-        } else if (pending.type === "cancel") {
-          await cancelReservation(res.id, input.reason);
-        } else if (pending.type === "noshow") {
-          await noShowReservation(res.id, input.reason);
+        } else if (pending.type === "cancel" || pending.type === "noshow") {
+          // Tanda L3 (lote B, traspasado de LiveTimelineWorkspace): `applyPolicy`
+          // carga la penalización al folio y lo cierra a saldo 0; la respuesta trae
+          // `cancellation` (no declarado por el tipo compartido del cliente) y el
+          // toast nombra la penalización cargada y el estado del folio.
+          const mode: PenaltyMode = pending.type === "noshow" ? "no_show" : "cancellation";
+          const request = pending.type === "cancel" ? cancelReservation(res.id, input.reason, { applyPolicy: true }) : noShowReservation(res.id, input.reason, { applyPolicy: true });
+          const result = (await request) as AdminReservation & { cancellation?: LifecycleOutcomeLike };
+          done = lifecycleOutcomeSummary(mode, result.cancellation ?? null, (amount) => money(amount, res.currency));
         } else {
           if (!input.roomId) throw new Error(ASSIGN_NEEDS_ROOM);
           await assignReservationRoom(res.id, { roomId: input.roomId });
@@ -689,7 +746,7 @@ export function LiveTimeline() {
         // (role=status); el resto, el toast. La live region no lo repite.
         const entry = undoEntryFor(pending);
         if (entry) setUndo(entry);
-        else showToast(copy.done, { variant: "success" });
+        else showToast(done, { variant: "success" });
         setPending(null);
       } catch (err) {
         if (!mounted.current) return;
@@ -981,6 +1038,7 @@ export function LiveTimeline() {
         busy={busy}
         error={actionError}
         conflict={conflict}
+        penaltyPreview={penaltyPreviewView}
         onConfirm={applyPending}
         onCancel={cancelPending}
       />

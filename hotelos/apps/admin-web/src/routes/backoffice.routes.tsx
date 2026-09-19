@@ -17,7 +17,7 @@
 //                          position, cut before params the old URL did not
 //                          carry) and App.tsx writes the new URL with
 //                          replaceState — an old link never stays in history.
-//   - LEGACY_SCREEN_KEYS = the 24 key aliases (NAV_TREE.aliases): still valid
+//   - LEGACY_SCREEN_KEYS = the 25 key aliases (NAV_TREE.aliases): still valid
 //                          SCREEN_COMPONENTS keys, resolved to their canonical
 //                          screen URL.
 //   - /desarrollo/*      = the 21 dev-only screens behind ONE guard
@@ -46,6 +46,7 @@ import {
   matchPath,
   normalizePathname,
   resolveLegacyPath,
+  resolveMovedPath,
   screenKeyForUrl,
   urlForScreen,
   type NavAlias,
@@ -97,7 +98,7 @@ export const BACKOFFICE_ROUTES: readonly BackofficeRoute[] = buildRoutes();
 /** The 205 old /backoffice/* paths and the tree URL each one lands on (§5 of the plan). */
 export const LEGACY_ROUTES: readonly NavLegacyRoute[] = NAV_TREE.legacyRoutes;
 
-/** The 24 key aliases (old SCREEN_COMPONENTS keys that keep resolving to their canonical screen). */
+/** The 25 key aliases (old SCREEN_COMPONENTS keys that keep resolving to their canonical screen). */
 export const LEGACY_SCREEN_KEYS: readonly NavAlias[] = NAV_TREE.aliases;
 
 /** The 72 retired keys: no component; `url` says where an orphan hotelos-nav is redirected. */
@@ -487,6 +488,18 @@ export function resolveLocation(location: LocationLike, guard: RouteGuardInput =
     const refused = route.devOnly || route.public ? null : forbiddenReasonOf(routeAccessDecision(legacy.pathname, guard), guard);
     if (refused) return { kind: "forbidden", pathname: legacy.pathname, reason: refused };
     return { kind: "screen", screen: legacy.screen, route, redirect: legacy.pathname, consumed: legacy.consumed };
+  }
+  // Fusión TL: a tree URL that moved outside /backoffice (MOVED_URLS) is a
+  // client-side 308 too, gated on its destination like a legacy path — checked
+  // BEFORE the tree so `/recepcion/reservas/cronograma` never matches `:id`.
+  const moved = resolveMovedPath(pathname);
+  if (moved) {
+    const route = routeForPathname(moved);
+    if (!route) return { kind: "not-found", pathname };
+    if (route.devOnly && !isDevRouteAllowed(guard)) return { kind: "dev-locked", pathname: moved };
+    const refused = route.devOnly || route.public ? null : forbiddenReasonOf(routeAccessDecision(moved, guard), guard);
+    if (refused) return { kind: "forbidden", pathname: moved, reason: refused };
+    return { kind: "screen", screen: route.screen, route, redirect: moved, consumed: null };
   }
   const route = routeForPathname(pathname);
   if (!route) return { kind: "not-found", pathname };

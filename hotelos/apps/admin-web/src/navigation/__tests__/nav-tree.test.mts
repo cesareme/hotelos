@@ -48,8 +48,9 @@ describe("nav-tree · generated tree shape", () => {
     // Tanda 6b (Estructura societaria): +1 item (Configuración) · +4 tabs. Tanda 7 (Reservas › Importar): +1 tab.
     // Tanda 7b (Módulos e integraciones › Modo sombra OPERA): +1 tab. Tanda 7c (Contabilidad › Importar desde Sage 200): +1 tab.
     // Tanda 8a (RBAC): +1 item (Hoy › Pendientes de aprobación).
-    assert.equal(NAV_TREE.meta.counts.items, 68);
-    assert.equal(NAV_TREE.meta.counts.tabs, 101);
+    // Fusión TL (2026-09-19): +1 item (Hoy › Live Timeline, todos los perfiles) · −1 tab (Reservas › Cronograma pasa a alias de LiveTimeline).
+    assert.equal(NAV_TREE.meta.counts.items, 69);
+    assert.equal(NAV_TREE.meta.counts.tabs, 100);
     assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
   });
@@ -173,21 +174,21 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
     // Tanda 8a (RBAC): Hoy › Pendientes de aprobación (+1 for direccion, recepcion, pisos, mantenimiento,
     // fnb, revenue, finanzas, propiedad and admin) and the six department tokens of design §5.1
     // (computed over nav-tree.generated.json, see scripts/check-route-access.mjs).
-    direccion: { items: 68, categories: 9 },
-    recepcion: { items: 23, categories: 9 },
-    pisos: { items: 6, categories: 3 },
-    mantenimiento: { items: 9, categories: 3 },
-    revenue: { items: 21, categories: 5 },
-    finanzas: { items: 32, categories: 6 },
-    comercial: { items: 14, categories: 5 },
-    fnb: { items: 6, categories: 2 },
-    administracion: { items: 12, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
-    rrhh: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
-    propiedad: { items: 5, categories: 3 },
-    activos: { items: 3, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
-    auditoria: { items: 65, categories: 9 },
-    sistemas: { items: 4, categories: 1 },
-    admin: { items: 68, categories: 9 }
+    direccion: { items: 69, categories: 9 },
+    recepcion: { items: 24, categories: 9 },
+    pisos: { items: 7, categories: 3 },
+    mantenimiento: { items: 10, categories: 3 },
+    revenue: { items: 22, categories: 5 },
+    finanzas: { items: 33, categories: 6 },
+    comercial: { items: 15, categories: 5 },
+    fnb: { items: 7, categories: 2 },
+    administracion: { items: 13, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
+    rrhh: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
+    propiedad: { items: 6, categories: 3 },
+    activos: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
+    auditoria: { items: 66, categories: 9 },
+    sistemas: { items: 5, categories: 2 },
+    admin: { items: 69, categories: 9 }
   };
 
   for (const [token, counts] of Object.entries(expected) as Array<[RoleToken, { items: number; categories: number }]>) {
@@ -200,8 +201,8 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
 
   it("hides the 14 entries that would open 403 in Faranda (§6) and nothing else", () => {
     const visible = countVisible(["direccion"], FARANDA_MODULES);
-    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another.
-    assert.equal(visible.items, 62);
+    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another; fusión TL: Live Timeline (core) another.
+    assert.equal(visible.items, 63);
     const upsells = visibleCategories(["direccion"], FARANDA_MODULES)
       .find((category) => category.key === "comercial")
       ?.items.find((entry) => entry.label === "Ventas adicionales");
@@ -224,8 +225,8 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
         for (const tab of entry.tabs) assert.deepEqual(tab.modulesAny, [], `${tab.label} is gated`);
       }
     }
-    // Tanda 6b: Estructura societaria is core → 51; Tanda 8a: Pendientes de aprobación is core → 52.
-    assert.equal(countVisible(["admin"], []).items, 52);
+    // Tanda 6b: Estructura societaria is core → 51; Tanda 8a: Pendientes de aprobación is core → 52; fusión TL: Live Timeline is core → 53.
+    assert.equal(countVisible(["admin"], []).items, 53);
   });
 
   it("filters tabs by role inside a visible item", () => {
@@ -233,7 +234,7 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
       .find((category) => category.key === "recepcion")
       ?.items.find((entry) => entry.label === "Grupos y eventos");
     assert.deepEqual(groups?.tabs.map((tab) => tab.label), ["Calendario"]);
-    assert.deepEqual(paintableTabs(item("Reservas"), ["pisos"], []).map((tab) => tab.label), ["Cronograma", "Tablero de habitaciones"]);
+    assert.deepEqual(paintableTabs(item("Reservas"), ["pisos"], []).map((tab) => tab.label), ["Tablero de habitaciones"]); // fusión TL: Cronograma pasó a Hoy › Live Timeline
   });
 
   it("every ROLE_TOKENS entry is used by the CSV", () => {
@@ -269,7 +270,7 @@ describe("nav-tree · landing tab (§1/§3)", () => {
 
   it("lands on the first paintable tab elsewhere, never on a detail sub-URL", () => {
     assert.equal(landingTabFor(reservations, ["recepcion"], [])?.label, "Lista");
-    assert.equal(landingTabFor(reservations, ["pisos"], [])?.label, "Cronograma");
+    assert.equal(landingTabFor(reservations, ["pisos"], [])?.label, "Tablero de habitaciones");
     assert.equal(landingTabFor(item("Modelos AEAT"), ["finanzas"], []), null);
     assert.equal(landingTabFor(item("Turno"), ["recepcion"], []), null);
   });

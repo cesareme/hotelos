@@ -8,6 +8,11 @@
 // un CocoaSwitch; el resto se pinta como alerta). Estado local: habitación
 // elegida, motivo y reconocimiento del saldo, reiniciados cuando cambia
 // `pending`. Sin estilos en línea: la rejilla Antes/Después es `.tl-facts` (TL-2).
+// Tanda L3 · F1 (traspasado de LiveTimelineWorkspace en la fusión TL): la
+// previsualización de la penalización de cancelación / no-show llega por props
+// ya formateada (`penaltyPreview`: texto, tono y título con la misma voz que la
+// ficha de reserva —aviso cuando la política cobra, plazo gratuito y política—)
+// y se pinta bajo el motivo.
 
 import { useEffect, useMemo, useState } from "react";
 import type { AdminRoom, AdminRoomType } from "../../services/pmsCommerceApi";
@@ -19,6 +24,8 @@ import type { DialogCopy } from "./timeline-dialog-copy";
 
 export type TimelineConflict = { code: string; message: string; balanceDue?: number | null };
 export type TimelineConfirmInput = { roomId?: string; reason?: string; acknowledgeBalance?: boolean };
+/** L3-F1: penalización prevista de cancelación / no-show, calculada por la pantalla (texto + tono + título de la política). */
+export type TimelinePenaltyPreview = { text: string; tone: "info" | "warning"; title: string | null };
 
 export interface TimelineActionDialogProps {
   pending: PendingChange | null;
@@ -29,6 +36,8 @@ export interface TimelineActionDialogProps {
   busy: boolean;
   error: string | null;
   conflict: TimelineConflict | null;
+  /** L3-F1: penalización prevista de cancelación / no-show (null = sin previsualización); tono y título como en la ficha de reserva. */
+  penaltyPreview?: TimelinePenaltyPreview | null;
   onConfirm(input: TimelineConfirmInput): Promise<void>;
   onCancel(): void;
 }
@@ -61,7 +70,7 @@ export function stayChangeFacts(pending: StayChange, roomLabel: (id: string | nu
 }
 
 export function TimelineActionDialog(props: TimelineActionDialogProps) {
-  const { pending, copy, rooms, roomTypeById, roomLabel, busy, error, conflict, onConfirm, onCancel } = props;
+  const { pending, copy, rooms, roomTypeById, roomLabel, busy, error, conflict, penaltyPreview = null, onConfirm, onCancel } = props;
   const type = pending?.type ?? null;
   const res = pending?.res ?? null;
 
@@ -150,9 +159,11 @@ export function TimelineActionDialog(props: TimelineActionDialogProps) {
               <CocoaField label="Motivo" required htmlFor="tl-reason" help={`Al menos ${MIN_REASON_LENGTH} caracteres`}>
                 <CocoaInput id="tl-reason" multiline rows={3} value={reason} onChange={setReason} maxLength={500} required />
               </CocoaField>
-              {/* gancho L3-F1: aquí irá la previsualización de penalización (previewCancellationCharge de
-                  services/cancellationApi.ts:36 y penaltyPreviewSummary de components/billing/charge-types
-                  cuando L3 lo integre). */}
+              {penaltyPreview ? (
+                <CocoaCallout tone={penaltyPreview.tone} title={penaltyPreview.title ?? undefined} role="status">
+                  {penaltyPreview.text}
+                </CocoaCallout>
+              ) : null}
             </>
           ) : null}
 

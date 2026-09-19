@@ -127,10 +127,10 @@ git 78edb35:routes/backoffice.routes.tsx (205 rutas antiguas → legacyRoutes) �
 
    const LOADERS: TabLoaders = {                        // a nivel de módulo: el loader debe ser estable
      ReservationsListScreen: () => import("../../reservations/ReservationsListScreen").then((m) => ({ default: m.ReservationsListScreen })),
-     LiveTimelineWorkspace: () => import("../../timeline/LiveTimelineWorkspace").then((m) => ({ default: m.LiveTimelineWorkspace })),
+     RoomRackScreen: () => import("../../operations/RoomRackScreen").then((m) => ({ default: m.RoomRackScreen })),
      ReservationDetailWorkspace: () =>
        import("../../reservations/ReservationWorkspaceScreen").then((m) => ({ default: m.ReservationDetailWorkspaceScreen }))
-     // … una clave por pestaña del ítem (RoomRackScreen, GuestJourneyWorkspace)
+     // … una clave por pestaña del ítem (ReservationImportScreen, GuestJourneyWorkspace); la antigua pestaña Cronograma es hoy Hoy › Live Timeline (fusión TL)
    };
    export default function ReservasTabs() {
      return <NavItemTabs screenKey="ReservationWorkspace" loaders={LOADERS} subtitle="…" />;

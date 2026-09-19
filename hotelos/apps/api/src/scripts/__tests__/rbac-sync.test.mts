@@ -103,7 +103,7 @@ describe("rbac:sync · formatHuman", () => {
       })
     );
     assert.match(text, /^\[rbac:sync\] DRY-RUN \(no writes\) \+ upgrade-templates · 12 ms/);
-    assert.match(text, /template version: 2 · 20 role\(s\) behind \[dry-run: nothing written\] · 2 role\(s\) hold key\(s\) the version revokes/);
+    assert.match(text, /template version: 3 · 20 role\(s\) behind \[dry-run: nothing written\] · 2 role\(s\) hold key\(s\) the version revokes/);
     assert.match(text, /would upgrade: Dirección \(cmrhw9jy30002fyvb6tsdiugt\) ← manager v0→v2: \+110 −16 \[dry-run\]/);
     assert.match(text, /would revoke: Dirección/);
     assert.doesNotMatch(text, /kept — the boot top-up never revokes/);
@@ -118,14 +118,14 @@ describe("rbac:sync · formatHuman", () => {
       })
     );
     assert.match(text, /^\[rbac:sync\] APPLIED \+ upgrade-templates/);
-    assert.match(text, /template version: 2 · 0 role\(s\) behind after the upgrade · 2 role\(s\) lost key\(s\) the version revoked/);
+    assert.match(text, /template version: 3 · 0 role\(s\) behind after the upgrade · 2 role\(s\) lost key\(s\) the version revoked/);
     assert.match(text, /    revoked: Dirección \(cmrhw9jy30002fyvb6tsdiugt\) ← manager: −16 · /);
     assert.match(text, /upgraded: Dirección \(cmrhw9jy30002fyvb6tsdiugt\) ← manager v0→v2: \+110 −16$/m);
   });
 
   it("a converged catalogue reports 0 behind and no revocation lines; the --prune block is unchanged", () => {
     const converged = formatHuman(summary({ revocations: [], revokedKeysTotal: 0, backfill: { ...summary().backfill, revocationsByRole: {}, templateRolesBehindVersion: 0 } }));
-    assert.match(converged, /template version: 2 · 0 role\(s\) behind · 0 role\(s\) hold key\(s\) the version revokes \(0 key\(s\) in total\)/);
+    assert.match(converged, /template version: 3 · 0 role\(s\) behind · 0 role\(s\) hold key\(s\) the version revokes \(0 key\(s\) in total\)/);
     assert.doesNotMatch(converged, /would revoke/);
     assert.doesNotMatch(converged, /kept —/);
     const pruned = formatHuman(summary({ prune: true, sync: { created: 0, updated: 0, stale: ["capex.approve"], staleGrants: 1, staleGrantRoles: 1, pruned: 1, prunedGrants: 1 } }));
@@ -142,6 +142,6 @@ describe("rbac:sync · formatHuman", () => {
     delete legacy.upgradeTemplates;
     const text = formatHuman(legacy);
     assert.match(text, /would revoke: role_dir \(\?\) ← sin plantilla: −16 · /);
-    assert.match(text, /template version: 2 · 20 role\(s\) behind · 2 role\(s\) hold key\(s\)/);
+    assert.match(text, /template version: 3 · 20 role\(s\) behind · 2 role\(s\) hold key\(s\)/);
   });
 });

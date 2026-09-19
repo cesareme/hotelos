@@ -57,9 +57,6 @@ import {
   listOperationalProperties,
   resolveOrganizationScope
 } from "./lib/tenancy.js";
-import { isLlmConfigured, llmComplete, llmExtractDocument } from "./lib/llm.js";
-import { recordToolCall } from "./modules/ai-operations/pipeline.service.js";
-import { MAPPING_CATALOGS } from "@hotelos/ai-tools";
 // Rate grid v2 (2026-09-14): ONE canonical backend (modules/rate-manager) whose
 // routes live in rate-grid.routes.ts; the old /revenue/…/rate-grid family and the
 // flat v1 routes were retired. Publishing goes through the channel-manager
@@ -358,6 +355,10 @@ import { accessDecision } from "./security/access-decision.js";
 import { registerRbacRoutes } from "./modules/rbac/rbac.routes.js";
 import { PermissionDeniedError } from "@hotelos/shared";
 import { createCheckInFromScanConfirmation, executeConfirmation } from "./modules/ai/check-in.command.js";
+import { describeAiHealthCheck } from "./lib/ai-config.js";
+import { confirmToolCall } from "./modules/ai-operations/tool-runner.service.js";
+import { scanIdDocumentCommand } from "./modules/ai/scan-id-document.command.js";
+import { suggestMappingCommand } from "./modules/onboarding/suggest-mapping.command.js";
 import {
   annulAuthorityCommunication,
   createSpainGuestRegisterRecord,
@@ -1691,6 +1692,9 @@ export async function buildApiServer() {
       ok: true,
       message: `mode=${process.env.SES_HOSPEDAJES_MODE ?? "sandbox"}`
     };
+
+    // Tanda L6a: proveedor de IA, modelos, presupuesto por defecto y rate limit (nunca la clave).
+    checks.ai = describeAiHealthCheck();
 
     // P7: whether THIS instance runs the in-process schedulers (RUN_SCHEDULERS,
     // lib/scheduler-leader). Lets ops verify at runtime that exactly one
@@ -5816,12 +5820,12 @@ export async function buildApiServer() {
     return exportInspectionFolder({ propertyId: params.propertyId, preparedBy: query.preparedBy });
   });
   app.get("/compliance/properties/:propertyId/assistant", async (request) => {
-    return getComplianceAssistant((request.params as { propertyId: string }).propertyId);
+    return getComplianceAssistant((request.params as { propertyId: string }).propertyId, { context: request.userContext, correlationId: createId("corr") });
   });
   app.post("/compliance/ocr/extract-dates", async (request) => {
     const body = request.body as { imageDataUrl?: string };
     if (!body.imageDataUrl) throw new BadRequestError("Falta la imagen del documento.");
-    return extractComplianceDocumentDates(body.imageDataUrl);
+    return extractComplianceDocumentDates(body.imageDataUrl, { context: request.userContext, correlationId: createId("corr") });
   });
 
   // --- Cancellation policies + auto-charge engine ---
@@ -6582,45 +6586,7 @@ export async function buildApiServer() {
   app.post("/ai/commands/scan-id-document", async (request) => {
     const body = (request.body ?? {}) as { imageDataUrl?: string };
     if (!body.imageDataUrl) throw new BadRequestError("imageDataUrl is required.");
-    const ctx = request.userContext;
-    const startedAt = Date.now();
-    let docResult: Awaited<ReturnType<typeof llmExtractDocument>>;
-    let errorMessage: string | undefined;
-    try {
-      docResult = await llmExtractDocument(body.imageDataUrl);
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
-      docResult = { configured: false, reason: errorMessage };
-    }
-    await recordToolCall({
-      organizationId: ctx.organizationId,
-      propertyId: ctx.propertyId,
-      userId: ctx.userId,
-      toolName: "scan_id_document",
-      status: errorMessage ? "failed" : docResult.configured ? "completed" : "skipped",
-      inputJson: { hasImage: true },
-      outputJson: docResult.configured ? { fields: docResult.fields } : { configured: false },
-      model: docResult.configured ? docResult.model : undefined,
-      latencyMs: Date.now() - startedAt,
-      tokensInput: docResult.configured ? docResult.tokensInput : undefined,
-      tokensOutput: docResult.configured ? docResult.tokensOutput : undefined,
-      errorMessage,
-      automationLevel: "suggest_and_confirm",
-      requiredConfirmation: true
-      // Best-effort telemetry: never fails the scan, but logged (QC-06).
-    }).catch((err: unknown) => app.log.warn({ err, toolName: "id_document_scan" }, "[ai.telemetry] insert failed"));
-
-    if (!docResult.configured) {
-      return {
-        configured: false,
-        fields: {},
-        source: "manual",
-        message: errorMessage
-          ? "El escaneo con IA no está disponible ahora; introduzca los datos manualmente."
-          : "OCR no configurado. Introduzca los datos manualmente o configure un proveedor de IA."
-      };
-    }
-    return { configured: true, fields: docResult.fields, source: "ai" };
+    return scanIdDocumentCommand({ context: request.userContext, imageDataUrl: body.imageDataUrl, correlationId: createId("corr") });
   });
 
   // LLM-assisted mapping suggestion for the onboarding mapping review (P2). The
@@ -6629,84 +6595,8 @@ export async function buildApiServer() {
   // still approve. When no AI provider is configured it returns configured:false.
   app.post("/onboarding/ai/suggest-mapping", async (request) => {
     const body = (request.body ?? {}) as { sourceValue?: string; targetType?: string };
-    if (!body.sourceValue || !body.targetType) {
-      throw new BadRequestError("sourceValue and targetType are required.");
-    }
-    const catalogByType: Record<string, Array<{ target: string; aliases: string[] }>> = {
-      room_type: MAPPING_CATALOGS.ROOM_TYPE_CATALOG,
-      rate_plan: MAPPING_CATALOGS.RATE_CODE_CATALOG,
-      channel: MAPPING_CATALOGS.CHANNEL_CATALOG
-    };
-    const catalog = catalogByType[body.targetType];
-    if (!catalog) {
-      return { configured: false, message: `No hay catálogo de destinos para "${body.targetType}".` };
-    }
-    if (!isLlmConfigured()) {
-      return { configured: false, message: "IA no configurada. Edita el destino a mano o configura un proveedor de IA." };
-    }
-    const candidates = catalog.map((c) => c.target);
-    const ctx = request.userContext;
-    const startedAt = Date.now();
-    let suggestion: { target: string; confidence: number; rationale: string } | undefined;
-    let errorMessage: string | undefined;
-    let model: string | undefined;
-    let tokensInput: number | undefined;
-    let tokensOutput: number | undefined;
-    try {
-      const r = await llmComplete({
-        system:
-          "Eres un experto en mapeo de datos para un PMS hotelero. Dado un VALOR DE ORIGEN y una lista de DESTINOS " +
-          "canónicos, elige el destino que mejor corresponde. Devuelve EXCLUSIVAMENTE un JSON " +
-          '{"target": string, "confidence": number entre 0 y 1, "rationale": string breve en español}. ' +
-          "El target DEBE ser exactamente uno de los destinos de la lista; si ninguno encaja, devuelve target vacío.",
-        prompt: `VALOR DE ORIGEN: ${body.sourceValue}\nDESTINOS DISPONIBLES: ${candidates.join(", ")}`,
-        maxTokens: 150
-      });
-      if (r.configured) {
-        model = r.model;
-        tokensInput = r.tokensInput;
-        tokensOutput = r.tokensOutput;
-        const start = r.text.indexOf("{");
-        const end = r.text.lastIndexOf("}");
-        if (start !== -1 && end > start) {
-          const obj = JSON.parse(r.text.slice(start, end + 1)) as {
-            target?: unknown;
-            confidence?: unknown;
-            rationale?: unknown;
-          };
-          const target = typeof obj.target === "string" ? obj.target.trim() : "";
-          const valid = candidates.find((c) => c.toLowerCase() === target.toLowerCase()) ?? "";
-          const confidence = typeof obj.confidence === "number" ? Math.max(0, Math.min(1, obj.confidence)) : 0;
-          const rationale = typeof obj.rationale === "string" ? obj.rationale : "";
-          suggestion = { target: valid, confidence: valid ? confidence : 0, rationale };
-        }
-      }
-    } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error);
-    }
-    await recordToolCall({
-      organizationId: ctx.organizationId,
-      propertyId: ctx.propertyId,
-      userId: ctx.userId,
-      toolName: "onboarding_mapping_suggest",
-      status: errorMessage ? "failed" : suggestion ? "completed" : "skipped",
-      inputJson: { sourceValue: body.sourceValue, targetType: body.targetType },
-      outputJson: suggestion ? { suggestion } : { suggestion: null },
-      confidence: suggestion?.confidence,
-      model,
-      latencyMs: Date.now() - startedAt,
-      tokensInput,
-      tokensOutput,
-      errorMessage,
-      automationLevel: "suggest_and_confirm",
-      requiredConfirmation: true
-      // Best-effort telemetry: never fails the suggestion, but logged (QC-06).
-    }).catch((err: unknown) => app.log.warn({ err, toolName: "navigation_suggest" }, "[ai.telemetry] insert failed"));
-
-    if (!suggestion || !suggestion.target) {
-      return { configured: true, suggestion: null, message: errorMessage ?? "La IA no encontró un destino claro." };
-    }
-    return { configured: true, suggestion };
+    if (!body.sourceValue || !body.targetType) throw new BadRequestError("sourceValue and targetType are required.");
+    return suggestMappingCommand({ context: request.userContext, sourceValue: body.sourceValue, targetType: body.targetType, correlationId: createId("corr") });
   });
 
   app.post("/ai/confirmations/:confirmationId/execute", async (request) => {
@@ -8458,6 +8348,15 @@ export async function buildApiServer() {
     const result = buildPage(rows, page.limit, total, (row) => row.createdAt.toISOString());
     reply.headers(pageHeaders(result));
     return pageBody(result, page);
+  });
+
+  // Tanda L6a: decisión humana sobre una llamada de herramienta awaiting_confirmation (tool runner).
+  app.post("/ai/tool-calls/:id/confirm", async (request) => {
+    const { id } = request.params as { id: string };
+    await assertEntityAccess(request, { entity: "aiToolCallConfirmation", id });
+    const body = (request.body ?? {}) as { decision?: "approve" | "reject"; notes?: string };
+    if (body.decision !== "approve" && body.decision !== "reject") throw new BadRequestError("decision debe ser approve | reject.");
+    return confirmToolCall({ context: request.userContext, toolCallId: id, decision: body.decision, ...(body.notes !== undefined ? { notes: body.notes } : {}), correlationId: createId("corr") });
   });
 
   // Tanda L2 (L2-02): durable worker runs (worker_job_runs · L2-01 / L2-07) as

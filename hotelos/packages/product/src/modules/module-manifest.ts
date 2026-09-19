@@ -188,7 +188,7 @@ const CORE_HOTEL_MODULE_INPUTS: HotelModuleManifestInput[] = [
       "NightAuditScreen",
       "ReservationWorkspace",
       "ReservationsListScreen",
-      "LiveTimelineWorkspace",
+      "LiveTimeline",
       "RoomRackScreen",
       "ReservationDetailWorkspace",
       "ReservationCreate",

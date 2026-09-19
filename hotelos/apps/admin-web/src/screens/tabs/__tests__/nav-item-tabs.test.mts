@@ -70,9 +70,9 @@ describe("nav-item-tabs · buildItemTabs", () => {
 
   it("Reservas: no base tab; detail sub-URLs stay hidden with their pattern until the URL carries the id", () => {
     const { item } = itemForScreen("ReservationWorkspace");
-    const loaders = loadersFor("ReservationsListScreen", "LiveTimelineWorkspace", "RoomRackScreen", "ReservationDetailWorkspace", "GuestJourneyWorkspace");
+    const loaders = loadersFor("ReservationsListScreen", "RoomRackScreen", "ReservationDetailWorkspace", "GuestJourneyWorkspace");
     const onList = buildItemTabs(item, loaders, { pathname: "/recepcion/reservas/lista" });
-    assert.deepEqual(onList.map((tab) => tab.key), ["lista", "cronograma", "tablero", "detalle", "recorrido"]);
+    assert.deepEqual(onList.map((tab) => tab.key), ["lista", "tablero", "detalle", "recorrido"]); // fusión TL: sin pestaña Cronograma
     assert.equal(onList.find((tab) => tab.key === "detalle")?.hidden, true);
     assert.equal(onList.find((tab) => tab.key === "detalle")?.path, "/recepcion/reservas/:id");
     assert.equal(onList.find((tab) => tab.key === "lista")?.hidden, undefined);
@@ -83,7 +83,8 @@ describe("nav-item-tabs · buildItemTabs", () => {
     assert.deepEqual([detalle?.path, detalle?.hidden], ["/recepcion/reservas/res_42", false]);
     assert.deepEqual([recorrido?.path, recorrido?.hidden], ["/recepcion/reservas/res_42/recorrido", false]);
     assert.deepEqual(detailParamsFor(item, "/recepcion/reservas/res_42/recorrido"), { id: "res_42" });
-    assert.equal(detailParamsFor(item, "/recepcion/reservas/cronograma"), null);
+    assert.equal(detailParamsFor(item, "/recepcion/reservas/tablero"), null);
+    assert.equal(detailParamsFor(item, "/recepcion/reservas/cronograma"), null); // fusión TL: ya no es pestaña, es una redirección a Hoy › Live Timeline (MOVED_URLS), nunca un id
     assert.equal(detailParamsFor(item, "/recepcion/reservas/nueva"), null);
     assert.equal(detailParamsFor(item, "/recepcion/reservas/nueva/dictar"), null);
     assert.equal(detailParamsFor(itemForScreen("GuestsList").item, "/recepcion/reservas/res_42"), null);
@@ -148,11 +149,11 @@ describe("nav-item-tabs · landing per role (§1/§3)", () => {
     assert.equal(landingKeysFor(miDia, miDiaTabs, [], []).defaultTab, "hoy");
   });
 
-  it("Reservas lands on the first visible tab (Lista; Cronograma for pisos)", () => {
+  it("Reservas lands on the first visible tab (Lista; Tablero for pisos since the fusión TL)", () => {
     const { item } = itemForScreen("ReservationWorkspace");
-    const tabs = buildItemTabs(item, loadersFor("ReservationsListScreen", "LiveTimelineWorkspace", "RoomRackScreen", "ReservationDetailWorkspace", "GuestJourneyWorkspace"));
+    const tabs = buildItemTabs(item, loadersFor("ReservationsListScreen", "RoomRackScreen", "ReservationDetailWorkspace", "GuestJourneyWorkspace"));
     assert.equal(landingKeysFor(item, tabs, ["recepcion"], []).defaultTab, "lista");
-    assert.equal(landingKeysFor(item, tabs, ["pisos"], []).defaultTab, "cronograma");
+    assert.equal(landingKeysFor(item, tabs, ["pisos"], []).defaultTab, "tablero");
     assert.equal(landingKeysFor(item, tabs, [], []).defaultTab, "lista");
   });
 

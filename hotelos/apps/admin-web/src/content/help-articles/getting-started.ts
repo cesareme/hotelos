@@ -50,7 +50,7 @@ Una llamada, un correo o un cliente sin reserva: la alta manual se hace desde Re
 3. **Selecciona el tipo de habitación y el plan de tarifa** (pública, no reembolsable, con desayuno…). El desglose se muestra noche a noche.
 4. **Introduce los datos del titular**: nombre, correo y teléfono; el documento puede completarse en el check-in.
 5. **Elige la garantía** (tarjeta, transferencia o crédito de empresa).
-6. **Revisa el resumen** con el total y la política de cancelación y pulsa «Guardar». La reserva aparece al instante en Recepción › Reservas › Cronograma.
+6. **Revisa el resumen** con el total y la política de cancelación y pulsa «Guardar». La reserva aparece al instante en Hoy › Live Timeline y en Recepción › Reservas › Lista.
 
 ## Buenas prácticas
 

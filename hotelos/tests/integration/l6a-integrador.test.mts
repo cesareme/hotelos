@@ -181,6 +181,18 @@ before(async () => {
   app = await buildApiServer();
   A = await createIsolatedTenant(RUN);
   await enableModules(A.propertyA, ["reputation_quality", "ai_concierge"]);
+  // Fusión L5×L6a (mismo arreglo que l2-persistencia-plataforma, corrector L5): desde L5-B2 el
+  // pipeline SES responde 409 SES_DISABLED con el interruptor apagado (CS-01: OR de
+  // properties.ses_hospedajes_enabled y property_compliance_settings.ses_hospedajes_enabled), código
+  // que executeConfirmation (modules/ai, L6a) no tolera todavía; el tenant aislado nace apagado, así
+  // que se enciende aquí y el parte lleva teléfono y residencia (el validador va antes que el
+  // establecimiento) para que el flujo llegue al 409 SES_ESTABLISHMENT_INCOMPLETE tolerado (aviso).
+  await prisma.property.update({ where: { id: A.propertyA }, data: { sesHospedajesEnabled: true } });
+  await prisma.propertyComplianceSetting.upsert({
+    where: { propertyId: A.propertyA },
+    create: { propertyId: A.propertyA, country: "ES", sesHospedajesEnabled: true },
+    update: { sesHospedajesEnabled: true }
+  });
   const managerUser = await addTemplateUser("manager", "manager", A.propertyA);
   const maintenanceUser = await addTemplateUser("maintenance", "maintenance", A.propertyA);
   await withEnv(STRICT_ENV, async () => {
@@ -275,7 +287,7 @@ describe("1 · Sin clave, por HTTP, como usuarios de las plantillas T8a: etiquet
       propertyId: A.propertyA,
       transcript: "check-in en la 101",
       roomNumber: "101",
-      documentExtractedFields: { firstName: r.firstName, surname1: r.surname1, documentType: "DNI", documentNumber: r.documentNumber, documentSupportNumber: "ABC123456", nationality: "ESP", dateOfBirth: "1985-04-12", sex: "F" },
+      documentExtractedFields: { firstName: r.firstName, surname1: r.surname1, documentType: "DNI", documentNumber: r.documentNumber, documentSupportNumber: "ABC123456", nationality: "ESP", dateOfBirth: "1985-04-12", sex: "F", mobilePhone: "+34600000001", residenceAddress: "Calle Real 1", residenceLocality: "A Coruña", residenceCountry: "ESP" },
       documentImageStored: false,
       idImageDiscarded: true
     });
@@ -291,6 +303,7 @@ describe("1 · Sin clave, por HTTP, como usuarios de las plantillas T8a: etiquet
     const executed = await call("POST", `/ai/confirmations/${confirmationId}/execute`, receptionist, { propertyId: A.propertyA, payload: { signatureObjectKey: `sig_${RUN}` } });
     assert.equal(executed.status, 200, executed.raw.slice(0, 300));
     assert.equal(executed.body.status, "executed");
+    assert.ok((executed.body.warnings ?? []).some((line: string) => /Parte SES no enviado: faltan datos del establecimiento/.test(line)), `aviso SES esperado (establecimiento aislado sin perfil): ${executed.raw.slice(0, 300)}`);
     assert.equal((await prisma.reservation.findUniqueOrThrow({ where: { id: res1.reservationId } })).status, "checked_in");
     const doneRow = await prisma.aiToolCall.findUniqueOrThrow({ where: { id: pendingRow.id } });
     assert.equal(doneRow.status, "completed");
@@ -360,7 +373,7 @@ describe("1 · Sin clave, por HTTP, como usuarios de las plantillas T8a: etiquet
 });
 
 // ---------------------------------------------------------------------------
-describe("2 · Tool runner por servicio (la ruta POST /ai/tool-calls/:id/confirm la aplica el orquestador)", () => {
+describe("2 · Tool runner por servicio y por HTTP (POST /ai/tool-calls/:id/confirm, cableada en la fusión)", () => {
   let receptionCtx: UserContext;
   let maintenanceCtx: UserContext;
   let managerCtx: UserContext;
@@ -492,6 +505,42 @@ describe("2 · Tool runner por servicio (la ruta POST /ai/tool-calls/:id/confirm
     const names = new Set((listed.body.items as Array<{ toolName: string; status: string }>).map((row) => `${row.toolName}:${row.status}`));
     for (const expected of ["getHousekeepingBoard:succeeded", "createWorkOrder:succeeded", "blockRoomForMaintenance:succeeded", "checkInReservation:completed", "scan_id_document:skipped"]) assert.ok(names.has(expected), `${expected} no aparece en ${[...names].join(", ")}`);
     note(`GET /ai/tool-calls: ${listed.body.total} filas de la organización (${[...names].join(", ")})`);
+  });
+
+  it("POST /ai/tool-calls/:id/confirm (ai.tool.execute, riesgo high): decisión inválida → 400 sin tocar la fila; approve por recepción → 200 succeeded y work_orders +1; la misma fila otra vez → 404 opaco; reject → 200 rejected sin escribir; id ajeno → 404", async () => {
+    const before = await prisma.workOrder.count({ where: { propertyId: A.propertyA } });
+    const proposed = await runAiTool({ context: maintenanceCtx, toolName: "createWorkOrder", input: { title: `Confirmación por HTTP ${RUN}`, roomNumber: "101", priority: "normal", blocksRoom: false }, correlationId: `corr_${RUN}_wo_http` });
+    assert.equal(proposed.status, "awaiting_confirmation", JSON.stringify(proposed));
+    if (proposed.status !== "awaiting_confirmation") return;
+    const path = `/ai/tool-calls/${proposed.toolCallId}/confirm`;
+
+    const invalid = await call("POST", path, receptionist, { propertyId: A.propertyA, payload: { decision: "maybe" } });
+    assert.equal(invalid.status, 400, invalid.raw.slice(0, 200));
+    assert.equal((await prisma.aiToolCall.findUniqueOrThrow({ where: { id: proposed.toolCallId } })).status, "awaiting_confirmation");
+
+    const approved = await call("POST", path, receptionist, { propertyId: A.propertyA, payload: { decision: "approve", notes: "Aprobado por HTTP" } });
+    assert.equal(approved.status, 200, approved.raw.slice(0, 300));
+    assert.equal(approved.body.status, "succeeded");
+    assert.equal(approved.body.toolCallId, proposed.toolCallId);
+    assert.equal(await prisma.workOrder.count({ where: { propertyId: A.propertyA } }), before + 1);
+    const done = await prisma.aiToolCall.findUniqueOrThrow({ where: { id: proposed.toolCallId } });
+    assert.equal(done.status, "succeeded");
+    assert.equal(done.confirmedBy, receptionist.userId);
+
+    const replay = await call("POST", path, receptionist, { propertyId: A.propertyA, payload: { decision: "approve" } });
+    assert.equal(replay.status, 404, replay.raw.slice(0, 200));
+    const unknown = await call("POST", `/ai/tool-calls/atc_no_existe_${RUN}/confirm`, receptionist, { propertyId: A.propertyA, payload: { decision: "approve" } });
+    assert.equal(unknown.status, 404, unknown.raw.slice(0, 200));
+
+    const declined = await runAiTool({ context: maintenanceCtx, toolName: "createWorkOrder", input: { title: `Rechazo por HTTP ${RUN}`, roomNumber: "101", priority: "normal", blocksRoom: false }, correlationId: `corr_${RUN}_wo_http_no` });
+    assert.equal(declined.status, "awaiting_confirmation", JSON.stringify(declined));
+    if (declined.status !== "awaiting_confirmation") return;
+    const rejected = await call("POST", `/ai/tool-calls/${declined.toolCallId}/confirm`, receptionist, { propertyId: A.propertyA, payload: { decision: "reject", notes: "No procede" } });
+    assert.equal(rejected.status, 200, rejected.raw.slice(0, 300));
+    assert.equal(rejected.body.status, "rejected");
+    assert.equal((await prisma.aiToolCall.findUniqueOrThrow({ where: { id: declined.toolCallId } })).status, "rejected");
+    assert.equal(await prisma.workOrder.count({ where: { propertyId: A.propertyA } }), before + 1, "rechazar no escribe");
+    note(`POST /ai/tool-calls/:id/confirm: decision inválida → ${invalid.status}; approve → ${approved.status} ${approved.body.status} (work_orders ${before} → ${before + 1}); repetición → ${replay.status}; id inexistente → ${unknown.status}; reject → ${rejected.status} ${rejected.body.status}`);
   });
 
   it("presupuesto agotado (monthlyBudgetEur 0,01 + gasto 0,02) → 403 AI_BUDGET_EXCEEDED sin ejecutar y con fila rejected", async () => {

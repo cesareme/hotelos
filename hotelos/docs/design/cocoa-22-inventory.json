@@ -11,31 +11,31 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 227,
-    "lines": 95990,
+    "files": 226,
+    "lines": 94704,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1106,
-    "rawTables": 2,
+    "cocoaButtons": 1090,
+    "rawTables": 1,
     "cocoaTables": 309,
     "rawInputs": 0,
-    "cocoaInputs": 1106,
-    "inlineStyles": 679,
+    "cocoaInputs": 1103,
+    "inlineStyles": 655,
     "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 202,
-    "withTabHost": 90,
-    "debtPoints": 193
+    "withPageHeader": 201,
+    "withTabHost": 89,
+    "debtPoints": 184
   },
   "bySize": {
     "S": 95,
     "M": 104,
-    "L": 23,
+    "L": 22,
     "XL": 5
   },
   "byArchetype": {
@@ -45,7 +45,7 @@
     "formulario": 19,
     "asistente": 11,
     "workspace": 5,
-    "calendario": 7,
+    "calendario": 6,
     "chat": 1,
     "dialogo": 14,
     "contenedor": 41,
@@ -71,13 +71,13 @@
     },
     "compartido": {
       "label": "Compartido / sin entrada de menú",
-      "files": 12,
-      "lines": 3420,
+      "files": 11,
+      "lines": 2426,
       "debtPoints": 0,
       "sizes": {
         "S": 7,
         "M": 4,
-        "L": 1,
+        "L": 0,
         "XL": 0
       },
       "archetypes": {
@@ -85,7 +85,6 @@
         "dialogo": 4,
         "otro": 1,
         "contenedor": 3,
-        "calendario": 1,
         "lista": 1
       }
     },
@@ -169,20 +168,20 @@
     },
     "hoy": {
       "label": "Hoy",
-      "files": 11,
-      "lines": 5424,
+      "files": 12,
+      "lines": 6476,
       "debtPoints": 17,
       "sizes": {
         "S": 3,
         "M": 6,
-        "L": 2,
+        "L": 3,
         "XL": 0
       },
       "archetypes": {
         "dashboard": 7,
         "lista": 1,
         "chat": 1,
-        "calendario": 1,
+        "calendario": 2,
         "contenedor": 1
       }
     },
@@ -240,20 +239,20 @@
     },
     "recepcion": {
       "label": "Recepción",
-      "files": 19,
-      "lines": 10455,
-      "debtPoints": 26,
+      "files": 18,
+      "lines": 9111,
+      "debtPoints": 17,
       "sizes": {
         "S": 6,
         "M": 8,
-        "L": 5,
+        "L": 4,
         "XL": 0
       },
       "archetypes": {
         "dashboard": 5,
         "workspace": 3,
         "lista": 1,
-        "calendario": 3,
+        "calendario": 2,
         "asistente": 3,
         "contenedor": 4
       }
@@ -8400,13 +8399,18 @@
     {
       "path": "apps/admin-web/src/screens/timeline/LiveTimeline.tsx",
       "name": "LiveTimeline",
-      "screenKeys": [],
-      "category": "compartido",
-      "categories": [],
+      "screenKeys": [
+        "LiveTimeline",
+        "LiveTimelineWorkspace"
+      ],
+      "category": "hoy",
+      "categories": [
+        "hoy"
+      ],
       "archetype": "calendario",
-      "lines": 994,
+      "lines": 1052,
       "metrics": {
-        "lines": 994,
+        "lines": 1052,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -8429,44 +8433,6 @@
       },
       "headerExempt": false,
       "debtPoints": 0,
-      "size": "L"
-    },
-    {
-      "path": "apps/admin-web/src/screens/timeline/LiveTimelineWorkspace.tsx",
-      "name": "LiveTimelineWorkspace",
-      "screenKeys": [
-        "LiveTimelineWorkspace"
-      ],
-      "category": "recepcion",
-      "categories": [
-        "recepcion"
-      ],
-      "archetype": "calendario",
-      "lines": 1344,
-      "metrics": {
-        "lines": 1344,
-        "boClasses": 0,
-        "boCard": 0,
-        "boPageTitle": 0,
-        "rawButtons": 0,
-        "cocoaButtons": 16,
-        "rawTables": 1,
-        "cocoaTables": 0,
-        "rawInputs": 0,
-        "cocoaInputs": 3,
-        "inlineStyles": 24,
-        "cocoaCards": 0,
-        "colourLiterals": 0,
-        "colourFallbacks": 0,
-        "rawH1": 0,
-        "hasCocoaPageHeader": true,
-        "usesTabHost": true,
-        "usesSplitView": false,
-        "usesStepper": false,
-        "emoji": 0
-      },
-      "headerExempt": false,
-      "debtPoints": 9,
       "size": "L"
     },
     {

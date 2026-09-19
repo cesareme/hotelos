@@ -149,6 +149,7 @@ Pre-commit hook activo en `.husky/pre-commit`:
 
 Gates fuera del hook (CI raíz `/.github/workflows/ci.yml`, `working-directory: hotelos`):
 `pnpm test` (contratos, sin BD) · `pnpm test:unit` (unitarios de apps/api, 500+) ·
+`pnpm test:ai-core` (unitarios de packages/ai-core, Node strip-types, sin BD ni red) ·
 `pnpm test:integration` (app.inject sobre Postgres) · `pnpm validate:env` ·
 `node scripts/env-census.mjs` (alias `pnpm env:census`; `pnpm env:census:write` =
 `--write`, regenera `.env.example` y el contrato) · `pnpm db:migrations:check` ·
@@ -251,6 +252,35 @@ tree sin commit; :3000 sirve el backend de la tanda, :5173 sin reiniciar):
 - Faranda solo lectura: idéntica antes y después de las dos pasadas (25 facturas ·
   61 asientos / 150 líneas / Σ 2.595,00 · 33 envíos · 2 centros · 4 series · 1
   instalación); org_123 en el dataset de referencia; 2 organizaciones (0 residuales)
+
+Estado verificado (Tanda L6a · Núcleo de IA, 2026-09-18; fusionada en main
+`ca24ed6` el 2026-09-19; `:3000` sin reiniciar; informe
+`docs/audits/TANDA-L6A-AI-CORE-2026-09-18.md`):
+- `packages/ai-core` nuevo (39 ficheros · 5.712 líneas; alias `@hotelos/ai-core` y `@hotelos/ai-core/runner`);
+  `apps/ai-gateway` retirado (16 workspaces: uno sale, otro entra); `lib/llm.ts` = shim de 147 líneas;
+  registro 146 definiciones / 146 nombres / 0 huérfanas; 25 herramientas con `execute` real
+  (14 lecturas/borradores · 11 escrituras siempre `awaiting_confirmation`); modelos
+  claude-sonnet-5 / claude-haiku-4-5-20251001 / claude-opus-5, familia Fable/Mythos vetada;
+  ronda de corrección 1 (27 hallazgos: confirmación atómica por propiedad con caducidad y
+  re-evaluación de puertas, PII redactada en ai_tool_calls, thinking/effort por modelo,
+  budget_unavailable sin tipo de cambio, evaluaciones con puertas y filas, llm.ts sin cubo
+  «unscoped»; informe §10)
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · 22,3 s
+- unitarios api 2.313 (2.312 pass · 1 skipped · 0 fail) · ai-core 119/119 (`corepack pnpm test:ai-core`)
+  · contratos raíz 537/537 (medidos con `pilots/*.csv` presentes; sin ellos 529 con 2 skipped)
+  · worker 20/20 · front 1.219/1.219 · integración `l6a-*` 41/41 (3 ficheros; el integrador
+  añadió `l6a-integrador.test.mts`, 21 casos) · integración completa (referencia L6a-4, no
+  repetida después) 651 tests · 642 pass · 1 fail ajeno (`ledger-import-routes`, BD compartida
+  con la carga Sage) · 8 skips · censo env 146/146 · validate-env OK
+- integrador (2026-09-19): sin clave, por app.inject y con instancia propia `:3904`
+  (RBAC_STRICT, sin auth de demo; 26/26 sondas, usuarios T8a de Faranda solo en lectura):
+  asistente `deterministic`, copiloto por reglas, scan `skipped`, check-in pending→completed
+  y `rejected` «IA desactivada en esta propiedad» con aiEnabled=false, evaluación `skipped`,
+  readiness provider `warn`, coste sin coste real; runner: lectura succeeded cost_eur 0 actor
+  ai, escritura awaiting → confirm; aprobar en Pendientes IA NO ejecuta (solo confirmToolCall);
+  403 AI_BUDGET_EXCEEDED · 429 AI_RATE_LIMITED · PII `[NOMBRE_1]/[DOC_1]/[TEL_1]/[EMAIL_1]/
+  [TARJETA_1]` · system prompt leído de ai_prompt_versions v2; BD limpia (46 ai_tool_calls)
+- humo con clave documentado y NO ejecutado (`docs/runbooks/ai-core.md` §4)
 
 Estado verificado (Tanda L2 · Persistencia y API + ronda de corrección 1,
 2026-09-18 18:20; working tree sin commit; :3000 sin reiniciar — sirve el código
@@ -1032,6 +1062,10 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     solo son fiables con la BD en reposo (las suites hermanas escriben org_123 en
     paralelo): la primera se salta con diagnóstico, la segunda puede fallar una vez y
     pasa sola.
+16. **Tanda L6a · tipos sin consumidor:** `AiIntent`/`AiIntentName` en
+    `packages/shared/src/types.ts:23-37, 354-363` sin consumidor desde la retirada
+    del gateway (Tanda L6a); decisión pendiente: retirarlos o conservarlos para el
+    asistente unificado de L6b (informe L6a §5.7).
 
 ## Docs prioritarios
 

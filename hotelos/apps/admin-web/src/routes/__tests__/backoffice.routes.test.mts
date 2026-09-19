@@ -92,7 +92,7 @@ describe("pathForScreen · screen key → URL", () => {
   });
 
   it("resolves every alias to its canonical key and URL", () => {
-    assert.equal(LEGACY_SCREEN_KEYS.length, 24);
+    assert.equal(LEGACY_SCREEN_KEYS.length, 25);
     for (const alias of LEGACY_SCREEN_KEYS) {
       assert.equal(canonicalScreenKey(alias.screenKey), alias.canonical);
       if (alias.url && !hasRouteParams(alias.url)) assert.equal(pathForScreen(alias.screenKey), alias.url);
@@ -224,8 +224,16 @@ describe("resolveLocation · what the shell renders", () => {
     const legacy = resolveLocation({ pathname: "/backoffice/timeline?from=2026-09-15" });
     assert.equal(legacy.kind, "screen");
     if (legacy.kind === "screen") {
-      assert.equal(legacy.screen, "LiveTimelineWorkspace");
-      assert.equal(legacy.redirect, "/recepcion/reservas/cronograma");
+      assert.equal(legacy.screen, "LiveTimeline");
+      assert.equal(legacy.redirect, "/hoy/live-timeline");
+    }
+    // Fusión TL: the old Cronograma tab URL is a moved URL (MOVED_URLS), redirected like a legacy path and never read as a reservation id.
+    const moved = resolveLocation({ pathname: "/recepcion/reservas/cronograma/" });
+    assert.equal(moved.kind, "screen");
+    if (moved.kind === "screen") {
+      assert.equal(moved.screen, "LiveTimeline");
+      assert.equal(moved.redirect, "/hoy/live-timeline");
+      assert.equal(moved.route.path, "/hoy/live-timeline");
     }
     assert.deepEqual(resolveLocation({ pathname: "/no/existe" }), { kind: "not-found", pathname: "/no/existe" });
     assert.deepEqual(resolveLocation({ pathname: "/backoffice/no-existe" }), { kind: "not-found", pathname: "/backoffice/no-existe" });

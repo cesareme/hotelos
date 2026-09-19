@@ -576,6 +576,7 @@ export const ACTION_LABELS: Record<string, string> = {
   apply: "Aplicar",
   approve: "Aprobar",
   cancel: "Cancelar",
+  confirm: "Confirmar", // Tanda L6a: POST /ai/tool-calls/:id/confirm
   reject: "Rechazar",
   // RBAC por departamento (Tanda 8a · corrector): anulación de tique, solicitudes maker/checker.
   void: "Anular",

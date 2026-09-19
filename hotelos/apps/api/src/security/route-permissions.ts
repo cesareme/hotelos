@@ -962,6 +962,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/events", permissions: ["audit.read"], riskLevel: "high" },
   { method: "GET", path: "/events/integrity", permissions: ["audit.read"], riskLevel: "high" },
   { method: "GET", path: "/ai/tool-calls", permissions: ["audit.read"], riskLevel: "high" },
+  { method: "POST", path: "/ai/tool-calls/:id/confirm", permissions: ["ai.tool.execute"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods/:id/close", permissions: ["accounting.period.close"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods/:id/reopen", permissions: ["accounting.journal.post", "ai.high_risk.confirm"], riskLevel: "high" },

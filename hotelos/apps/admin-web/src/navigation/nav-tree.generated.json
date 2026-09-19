@@ -5,13 +5,13 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 288,
+      "csvRows": 289,
       "categories": 9,
-      "items": 68,
-      "tabs": 101,
+      "items": 69,
+      "tabs": 100,
       "devOnly": 21,
       "retired": 72,
-      "aliases": 24,
+      "aliases": 25,
       "publicScreens": 2,
       "legacyRoutes": 205
     }
@@ -21,6 +21,31 @@
       "key": "hoy",
       "label": "Hoy",
       "items": [
+        {
+          "screenKey": "LiveTimeline",
+          "label": "Live Timeline",
+          "url": "/hoy/live-timeline",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "pisos",
+            "mantenimiento",
+            "fnb",
+            "direccion",
+            "comercial",
+            "revenue",
+            "finanzas",
+            "administracion",
+            "rrhh",
+            "propiedad",
+            "activos",
+            "auditoria",
+            "sistemas",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
         {
           "screenKey": "FrontDeskDashboard",
           "label": "Mi día",
@@ -218,19 +243,6 @@
                 "direccion",
                 "comercial",
                 "revenue",
-                "admin",
-                "auditoria"
-              ],
-              "modulesAny": []
-            },
-            {
-              "screenKey": "LiveTimelineWorkspace",
-              "label": "Cronograma",
-              "url": "/recepcion/reservas/cronograma",
-              "roles": [
-                "recepcion",
-                "pisos",
-                "direccion",
                 "admin",
                 "auditoria"
               ],
@@ -3237,7 +3249,7 @@
     },
     {
       "from": "/backoffice/timeline",
-      "to": "/recepcion/reservas/cronograma"
+      "to": "/hoy/live-timeline"
     },
     {
       "from": "/backoffice/upsells/settings",
@@ -3863,6 +3875,11 @@
     }
   ],
   "aliases": [
+    {
+      "screenKey": "LiveTimelineWorkspace",
+      "canonical": "LiveTimeline",
+      "url": "/hoy/live-timeline"
+    },
     {
       "screenKey": "ChannelManagerDashboard",
       "canonical": "ChannelAggregatorHub",

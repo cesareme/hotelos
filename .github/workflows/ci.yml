@@ -72,6 +72,8 @@ jobs:
         run: pnpm --filter @hotelos/database db:generate
       - name: API unit tests (apps/api/src/**/__tests__/*.test.mts)
         run: pnpm test:unit
+      - name: AI core unit tests (packages/ai-core, Node strip-types, sin red)
+        run: pnpm test:ai-core
       - name: Migrations vs schema (no DB)
         run: pnpm db:migrations:check
       - name: Smoke the demo preview

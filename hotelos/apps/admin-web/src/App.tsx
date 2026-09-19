@@ -104,6 +104,7 @@ const ShiftManagerScreen = lazyNamed(() => import("./screens/operations/ShiftMan
 const NightAuditScreen = lazyNamed(() => import("./screens/operations/NightAuditScreen"), "NightAuditScreen");
 const AiOwnerSummaryScreen = lazyNamed(() => import("./screens/aiOperations/AiOwnerSummaryScreen"), "AiOwnerSummaryScreen");
 const AiHumanReviewQueueScreen = lazyNamed(() => import("./screens/aiOperations/AiHumanReviewQueueScreen"), "AiHumanReviewQueueScreen");
+const LiveTimeline = lazyNamed(() => import("./screens/timeline/LiveTimeline"), "LiveTimeline");
 const ConciergeInboxDashboard = lazyNamed(() => import("./screens/operations/ConciergeInboxDashboard"), "ConciergeInboxDashboard");
 const WorkforceDashboard = lazyNamed(() => import("./screens/operations/WorkforceDashboard"), "WorkforceDashboard");
 const SafetyDashboard = lazyNamed(() => import("./screens/operations/SafetyDashboard"), "SafetyDashboard");
@@ -169,7 +170,7 @@ const ComplianceInboxWired = () => <ComplianceInbox onNavigate={(s) => window.di
 
 // Screen registry (Tanda 5 · L1b). One entry per screen key of
 // navigation/nav-tree.generated.json — 66 items, 94 tabs, 20 dev-only and 2
-// public — plus the 24 aliases (LEGACY_SCREEN_KEYS). A tab key maps to the
+// public — plus the 25 aliases (LEGACY_SCREEN_KEYS). A tab key maps to the
 // container of its item; the 72 retired keys are gone (an orphan `hotelos-nav`
 // to one of them is redirected by `resolveScreenTarget`). Every key has a URL
 // (routes/backoffice.routes.tsx) and scripts/check-route-validity.mjs keeps the
@@ -179,6 +180,7 @@ const SCREEN_COMPONENTS = {
   LoginScreen,
   ForgotPasswordScreen,
   // --- Hoy ---
+  LiveTimeline,
   FrontDeskDashboard: MiDiaTabs,
   OperationsDirectorScreen: MiDiaTabs,
   GeneralManagerScreen: MiDiaTabs,
@@ -192,7 +194,6 @@ const SCREEN_COMPONENTS = {
   // --- Recepción ---
   ReservationWorkspace: ReservasTabs,
   ReservationsListScreen: ReservasTabs,
-  LiveTimelineWorkspace: ReservasTabs,
   RoomRackScreen: ReservasTabs,
   ReservationDetailWorkspace: ReservasTabs,
   GuestJourneyWorkspace: ReservasTabs,
@@ -382,12 +383,13 @@ const SCREEN_COMPONENTS = {
   ScheduledReports: ScheduledReportsModule,
   StyleGuideScreen,
   // ---------------------------------------------------------------------------
-  // LEGACY_SCREEN_KEYS · the 24 aliases of NAV_TREE.aliases: old keys that deep
+  // LEGACY_SCREEN_KEYS · the 25 aliases of NAV_TREE.aliases: old keys that deep
   // links, first-run chips and guide tours still emit, resolved to the SAME
   // component as their canonical key (routes/backoffice.routes.tsx maps them to
   // the canonical URL). tests/nav-tree-contract.test.mjs checks this block
   // against the tree.
   ChannelManagerDashboard: CanalesTabs,
+  LiveTimelineWorkspace: LiveTimeline,
   AutomationRules: RevenueAutomationRulesModule,
   RevenueRecommendationRules: RevenueRulesScreen,
   ImportReview: AIExtractionReviewScreen,

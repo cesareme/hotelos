@@ -582,8 +582,8 @@ export function FrontDeskDashboard() {
       <CocoaButton variant="plain" tone="neutral" size="small" onClick={openSearch}>
         Buscar (⌘K)
       </CocoaButton>
-      <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("LiveTimelineWorkspace")}>
-        Cronograma
+      <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("LiveTimeline")}>
+        Live Timeline
       </CocoaButton>
       <CocoaButton variant="filled" tone="accent" size="small" onClick={() => navigateTo("ReservationCreate")}>
         Crear reserva
@@ -610,7 +610,7 @@ export function FrontDeskDashboard() {
       commands={[
         { id: "front-desk-refresh", label: "Actualizar recepción", run: refresh },
         { id: "front-desk-new-reservation", label: "Crear reserva", run: () => navigateTo("ReservationCreate") },
-        { id: "front-desk-timeline", label: "Abrir cronograma", run: () => navigateTo("LiveTimelineWorkspace") }
+        { id: "front-desk-timeline", label: "Abrir Live Timeline", run: () => navigateTo("LiveTimeline") }
       ]}
     >
       <CocoaScreenInstructionsCard {...FRONTDESK_COCKPIT_INSTRUCTIONS} dismissible persistKey="frontdesk-cockpit" />

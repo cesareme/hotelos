@@ -101,11 +101,12 @@ describe("accessDecision · equivalence with canSee / navVisibility for every en
     });
   }
 
-  it("without token the decision follows roleAllowsEveryone (the no-role branch of menuCategories): nothing since Tanda 8a", () => {
+  it("without token the decision follows roleAllowsEveryone (the no-role branch of menuCategories): only Hoy › Live Timeline since the fusión TL", () => {
     for (const entry of entries) {
       assert.equal(accessDecision(entry, scope({ tokens: [] })) === "visible", roleAllowsEveryone(entry), entry.screenKey);
     }
-    assert.deepEqual(menuCategories([], ALL_MODULES), [], "a custom role without template sees the no-role notice only");
+    const noRole = menuCategories([], ALL_MODULES);
+    assert.deepEqual(noRole.flatMap((category) => category.items.map((item) => item.screenKey)), ["LiveTimeline"], "a custom role without template sees only the Live Timeline (open to every token)");
   });
 
   it("menuCategories paints exactly the entries the decision opens, for every token", () => {

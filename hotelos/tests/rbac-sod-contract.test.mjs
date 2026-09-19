@@ -302,14 +302,16 @@ describe("RBAC · SoD · 24 plantillas (§4.2)", () => {
       assert.equal(templates.owner.has(key), false, `owner (Propiedad) must not hold ${key}`);
     }
     for (const key of ["roles.manage", "permissions.manage", "users.assign", "security.break_glass", "organization.structure.manage"]) assert.ok(templates.admin.has(key), `admin holds ${key}`);
-    for (const key of catalog.filter((permission) => /^(payables|payment|payments)\./.test(permission) || permission === "accounting.journal.post" || permission === "folio.read" || permission === "pms.reservation.read")) {
+    // Versión 3 (fusión TL): admin conserva solo lectura de reservas y huéspedes (Hoy › Live Timeline); sigue sin dinero ni folio.
+    for (const key of catalog.filter((permission) => /^(payables|payment|payments)\./.test(permission) || permission === "accounting.journal.post" || permission === "folio.read")) {
       assert.equal(templates.admin.has(key), false, `admin (Administración de sistema) must not hold ${key}`);
     }
+    for (const key of ["pms.reservation.read", "guests.read"]) assert.ok(templates.admin.has(key), `admin holds ${key} (v3, Live Timeline)`);
     assert.ok(templates.general_manager.has("security.break_glass") && templates.general_manager.has("payments.refund_approve"));
   });
 
-  it("revocaciones v2: ROLE_TEMPLATE_REVOCATIONS[k] ∩ ROLE_PERMISSION_MAP[k] = ∅ y ⊆ PERMISSIONS; cifras de §6.5", () => {
-    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 2;/);
+  it("revocaciones v2 (v3 es aditiva): ROLE_TEMPLATE_REVOCATIONS[k] ∩ ROLE_PERMISSION_MAP[k] = ∅ y ⊆ PERMISSIONS; cifras de §6.5", () => {
+    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 3;/);
     for (const key of TEMPLATES_24) {
       const revoked = revocations[key];
       assert.ok(revoked instanceof Set, `${key} missing from ROLE_TEMPLATE_REVOCATIONS`);
@@ -426,11 +428,11 @@ describe("RBAC · SoD · pares estáticos (§4.7)", () => {
     not("admin_clerk", ["payables.approve", "payables.pay", "accounting.journal.post", "night_audit.run"]);
     must("controller", ["payables.approve", "payables.pay", "accounting.period.close", "night_audit.reopen", "invoice.cancel_approve", "payments.refund_approve"]);
     not("controller", ["payables.create", "accounting.journal.post", "banking.reconcile"]);
-    must("payroll_hr", ["payroll.manage", "workforce.payroll_export"]);
-    not("payroll_hr", ["payroll.approve", "pms.reservation.read"]);
+    must("payroll_hr", ["payroll.manage", "workforce.payroll_export", "pms.reservation.read", "guests.read"]); // v3: lectura del Live Timeline
+    not("payroll_hr", ["payroll.approve", "pms.reservation.create", "guests.manage"]);
     must("operations_director", ["payables.approve", "purchase_orders.approve", "revenue.rates.approve", "payroll.approve", "users.assign", "compliance.read", "housekeeping.read", "maintenance.read"]);
     must("general_manager", ["security.break_glass", "payables.approve", "payroll.approve", "asset.capex.approve", "users.assign"]);
-    must("asset_manager", ["real_estate.read", "real_estate.manage", "real_estate.documents.manage", "property_tax.manage", "capex.create"]);
+    must("asset_manager", ["real_estate.read", "real_estate.manage", "real_estate.documents.manage", "property_tax.manage", "capex.create", "pms.reservation.read", "guests.read"]); // v3: lectura del Live Timeline
     must("auditor", ["audit.read", "compliance.read", "maintenance.read", "accounting.reports.read", "real_estate.read"]);
     for (const key of ["auditor"]) {
       for (const permission of templates[key]) {

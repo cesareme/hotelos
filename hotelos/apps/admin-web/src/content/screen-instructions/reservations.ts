@@ -12,7 +12,7 @@ export const RESERVATIONS_INSTRUCTIONS = {
     'Arrastra y suelta reservas directamente al rack de habitaciones para reasignar la unidad sin abrir el modal de edicion.',
         'Usa ⌘K para encontrar huéspedes o localizadores desde cualquier pantalla.',
     'En vista calendario, manten Shift al hacer clic para seleccionar un rango de fechas y crear walk-in.',
-    'Los colores de las reservas reflejan el estado: verde confirmada, amarillo pendiente, rojo cancelada, gris no-show.',
+    'El color de cada reserva indica su estado: llega hoy, en casa, sale hoy, confirmada, borrador, no-show o cancelada (la leyenda del Live Timeline de Hoy es la referencia; las canceladas solo se ven con su filtro).',
   ],
   shortcuts: [{ keys: '⌘K', description: 'Buscar reservas, huéspedes y pantallas' }, { keys: 'Esc', description: 'Cerrar el panel o diálogo abierto' }],
   relatedScreens: [

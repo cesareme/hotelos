@@ -2,16 +2,17 @@
 //
 // Item `ReservationWorkspace` of the tree. The workspace IS the container: the
 // tree names no base tab, so the item URL lands on the first tab visible for
-// the role (Lista for recepción/dirección/comercial/revenue, Cronograma for
-// pisos). Tabs: Lista (ReservationsListScreen), Cronograma (LiveTimelineWorkspace),
-// Tablero de habitaciones (RoomRackScreen), Importar (ReservationImportScreen,
+// the role (Lista for recepción/dirección/comercial/revenue, Tablero for
+// pisos). Tabs: Lista (ReservationsListScreen), Tablero de habitaciones (RoomRackScreen), Importar (ReservationImportScreen,
 // Tanda 7: importación masiva desde CSV o XLSX) and the detail sub-URLs Detalle
 // (/recepcion/reservas/:id → ReservationDetailWorkspace) and Recorrido
 // (/recepcion/reservas/:id/recorrido → GuestJourneyWorkspace), painted only
 // while the URL carries a reservation.
 //
 // L1b registers: screenKey ReservationWorkspace · url /recepcion/reservas · tabs
-// /recepcion/reservas/lista, /cronograma, /tablero, /importar, /:id, /:id/recorrido.
+// /recepcion/reservas/lista, /tablero, /importar, /:id, /:id/recorrido. Tanda TL: la
+// pestaña Cronograma pasó a Hoy › Live Timeline (/hoy/live-timeline, LiveTimeline.tsx);
+// la clave LiveTimelineWorkspace queda como alias en App.tsx.
 
 import { CocoaButton } from "../../../components/cocoa/CocoaButton";
 import { openTabPath } from "../../../components/cocoa/CocoaRouteTabs";
@@ -24,7 +25,6 @@ import type { TabLoaders } from "../nav-item-tabs";
 
 const LOADERS: TabLoaders = {
   ReservationsListScreen: () => import("../../reservations/ReservationsListScreen").then((m) => ({ default: m.ReservationsListScreen })),
-  LiveTimelineWorkspace: () => import("../../timeline/LiveTimelineWorkspace").then((m) => ({ default: m.LiveTimelineWorkspace })),
   RoomRackScreen: () => import("../../operations/RoomRackScreen").then((m) => ({ default: m.RoomRackScreen })),
   ReservationImportScreen: () => import("../../reservations/ReservationImportScreen").then((m) => ({ default: m.ReservationImportScreen })),
   ReservationDetailWorkspace: () =>
@@ -43,14 +43,14 @@ function openNewReservation() {
 
 export default function ReservasTabs() {
   // FUX-09: the header action only for the roles that see the Importar tab; pisos
-  // (no tab) lands on Cronograma and must not get a button that leads nowhere.
+  // (no tab) lands on Tablero and must not get a button that leads nowhere.
   const gate = useNavGate();
   const canSeeImport = IMPORT_TAB?.kind === "tab" && gate.isVisible(IMPORT_TAB.tab);
   return (
     <NavItemTabs
       screenKey="ReservationWorkspace"
       loaders={LOADERS}
-      subtitle="Lista, cronograma, tablero de habitaciones e importación masiva; cada reserva abre su detalle y su recorrido."
+      subtitle="Lista, tablero de habitaciones e importación masiva; cada reserva abre su detalle y su recorrido (el cronograma vive en Hoy › Live Timeline)."
       actions={
         <>
           {canSeeImport ? (

@@ -7,14 +7,15 @@ import { LIVE_TIMELINE_INSTRUCTIONS } from "../../../content/screen-instructions
 // (la pantalla importa api-client vía los servicios y no carga bajo node
 // --test, como payroll-cost-screen-contract.test.mts). Pinchos: Cocoa 22
 // estricto en la pantalla, la hoja, los 15 componentes y el motor; CERO
-// `style={` y cero `<table` en la pantalla (el techo global 679 / 2 manda
-// mientras coexista con LiveTimelineWorkspace.tsx); presupuesto de estilos de
+// `style={` y cero `<table` en la pantalla (techo global 655 / 1 tras retirar
+// LiveTimelineWorkspace.tsx en la fusión TL); presupuesto de estilos de
 // los componentes (≤ 12, esperados 7, sin `style={{`); cabecera Cocoa,
 // fecha de negocio, paginación por `nextCursor`, degradación honesta del 403,
 // nombres de huésped por lotes, los nueve componentes compuestos, la única
 // live region, deshacer, creación por celdas, y que TODA escritura pasa por
 // el diálogo (las seis funciones de escritura solo dentro de applyPending /
-// onUndo); copy en español sin Intl; gancho temporal de la hoja; barrel.
+// onUndo); copy en español sin Intl; hoja por una sola vía; barrel; L3-F1
+// traspasado (previsualización de penalización + applyPolicy + toast de resultado).
 
 const source = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const count = (src: string, re: RegExp) => (src.match(re) ?? []).length;
@@ -132,7 +133,7 @@ describe("Live Timeline · Cocoa 22 estricto (pantalla, instrucciones, component
     for (const [name, src] of componentFiles) assertCocoaRules(`components/timeline/${name}`, src);
   });
 
-  it("2 · la pantalla nace con 0 style={ y sin <table (techo global 679 / 2 mientras coexista con LiveTimelineWorkspace)", () => {
+  it("2 · la pantalla nace con 0 style={ y sin <table (techo global 655 / 1 tras retirar LiveTimelineWorkspace)", () => {
     assert.equal(count(screen, /\bstyle=\{/g), 0, `${SCREEN}: style={ ×${count(screen, /\bstyle=\{/g)}`);
     assert.doesNotMatch(screen, /<table/, `${SCREEN}: sin <table`);
     assert.doesNotMatch(screen, /<h1\b/, `${SCREEN}: sin <h1 crudo`);
@@ -321,10 +322,16 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /checkInReservation\(res\.id, \{ roomId: res\.assignedRoomId \}\)/);
     assert.match(screen, /throw new Error\(CHECKIN_NEEDS_ROOM\)/);
     assert.match(screen, /checkOutReservation\(res\.id, \{ acknowledgeBalance: input\.acknowledgeBalance \}\)/);
-    assert.match(screen, /cancelReservation\(res\.id, input\.reason\)/);
-    assert.match(screen, /noShowReservation\(res\.id, input\.reason\)/);
+    // L3-F1 (traspasado de LiveTimelineWorkspace): applyPolicy en cancel / no-show, previsualización al abrir y toast con el resultado del folio.
+    assert.match(screen, /cancelReservation\(res\.id, input\.reason, \{ applyPolicy: true \}\)/);
+    assert.match(screen, /noShowReservation\(res\.id, input\.reason, \{ applyPolicy: true \}\)/);
+    assert.match(screen, /previewCancellationCharge\(lifecycleId, lifecycleMode\)/);
+    assert.match(screen, /lifecycleOutcomeSummary\(mode, result\.cancellation \?\? null, \(amount\) => money\(amount, res\.currency\)\)/);
+    assert.match(screen, /penaltyPreview=\{penaltyPreviewView\}/);
+    assert.match(screen, /const chargeable = Boolean\(penalty && penalty\.amount > 0 && !penalty\.withinFreeWindow\);/);
+    assert.match(screen, /"Calculando la penalización prevista…"/);
     // Una sola voz por resultado: deshacible → barra de deshacer (role=status); el resto → toast; nunca los tres a la vez.
-    assert.match(screen, /const entry = undoEntryFor\(pending\);\s*if \(entry\) setUndo\(entry\);\s*else showToast\(copy\.done, \{ variant: "success" \}\);/);
+    assert.match(screen, /const entry = undoEntryFor\(pending\);\s*if \(entry\) setUndo\(entry\);\s*else showToast\(done, \{ variant: "success" \}\);/);
     assert.doesNotMatch(screen, /setLiveMessage\(copy\.done\)/, "la live region no repite el toast ni la barra de deshacer");
     assert.doesNotMatch(screen, /setLiveMessage\(UNDO_DONE_MESSAGE\)/);
     assert.equal(count(code, /setLiveMessage\(/g), 1, "la live region solo anuncia la selección");

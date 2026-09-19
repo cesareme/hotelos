@@ -1677,6 +1677,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
   ],
   // RRHH y nóminas (N7 · legal_entity · token rrhh)
   payroll_hr: [
+    // M1 Reservas y recepción · V (solo lectura; fusión TL 2026-09-19 · versión 3: Hoy › Live Timeline para todos los perfiles)
+    "pms.reservation.read",
+    "guests.read",
     // M12 Nóminas y personal · V E P
     "payroll.read",
     "workforce.read",
@@ -1770,6 +1773,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
   ],
   // Gestión del activo (N7 · legal_entity / organization · token activos)
   asset_manager: [
+    // M1 Reservas y recepción · V (solo lectura; fusión TL 2026-09-19 · versión 3: Hoy › Live Timeline para todos los perfiles)
+    "pms.reservation.read",
+    "guests.read",
     // M6 Mantenimiento, energía y seguridad · V
     "maintenance.read",
     "incidents.read",
@@ -2148,6 +2154,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
   ],
   // Administración de sistema (N7 · organization · token sistemas · sin claves financieras ni operativas)
   admin: [
+    // M1 Reservas y recepción · V (solo lectura; fusión TL 2026-09-19 · versión 3: Hoy › Live Timeline para todos los perfiles)
+    "pms.reservation.read",
+    "guests.read",
     // M18 Informes y analítica · V
     "analytics.read",
     // M19 Configuración de la propiedad · V E
@@ -2368,8 +2377,11 @@ export const ORGANIZATION_TEMPLATE_ROLE_KEYS: readonly RoleKey[] = [
  * LOSES a key; Role.templateVersion records the version a managed role was
  * last converged to, and `rbac:sync --upgrade-templates` applies
  * ROLE_TEMPLATE_REVOCATIONS to roles behind it (the boot top-up never does).
+ * Version 3 (fusión TL, 2026-09-19): additive only — payroll_hr, asset_manager
+ * and admin gain `pms.reservation.read` + `guests.read` (see the note above
+ * ROLE_TEMPLATE_REVOCATIONS); no template loses a key.
  */
-export const ROLE_TEMPLATE_VERSION = 2;
+export const ROLE_TEMPLATE_VERSION = 3;
 
 /**
  * Keys that version 2 REMOVES from each template with respect to version 1
@@ -2385,6 +2397,14 @@ export const ROLE_TEMPLATE_VERSION = 2;
  * system administration remains). The other templates lose nothing; the 13
  * new ones have no previous version. Every entry is disjoint from
  * ROLE_PERMISSION_MAP[template] (tests/rbac-sod-contract.test.mjs).
+ *
+ * Version 3 (fusión TL · Live Timeline, 2026-09-19) removes nothing: it ADDS
+ * `pms.reservation.read` + `guests.read` (read-only) to payroll_hr, asset_manager
+ * and admin so Hoy › Live Timeline paints reservations and guest names for every
+ * profile, and takes those two keys out of ROLE_TEMPLATE_REVOCATIONS.admin (a
+ * revocation is never also in the template). The bump lets
+ * `rbac:sync --upgrade-templates` stamp v3 and deliver the two keys in one
+ * audited run (ROLE_TEMPLATE_UPGRADED with revoked = []).
  */
 export const ROLE_TEMPLATE_REVOCATIONS: Record<RoleKey, PermissionKey[]> = {
   receptionist: [],
@@ -2606,7 +2626,6 @@ export const ROLE_TEMPLATE_REVOCATIONS: Record<RoleKey, PermissionKey[]> = {
   ],
   auditor: [],
   admin: [
-    "pms.reservation.read",
     "pms.reservation.create",
     "pms.reservation.modify",
     "pms.checkin.execute",
@@ -2696,7 +2715,6 @@ export const ROLE_TEMPLATE_REVOCATIONS: Record<RoleKey, PermissionKey[]> = {
     "channel_manager.sync",
     "channel_manager.mappings.manage",
     "channel_manager.parity.read",
-    "guests.read",
     "guests.manage",
     "crm.read",
     "crm.manage_profiles",

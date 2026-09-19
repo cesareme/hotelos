@@ -317,7 +317,7 @@ describe("role templates", () => {
       }
       assert.deepEqual([...templateRevocationKeys(key)].sort(), [...new Set(ROLE_TEMPLATE_REVOCATIONS[key])].sort());
     }
-    assert.equal(ROLE_TEMPLATE_VERSION, 2);
+    assert.equal(ROLE_TEMPLATE_VERSION, 3); // v3 (fusión TL): aditiva, ver packages/shared/src/permissions.ts
   });
 
   it("rejects unknown template keys", () => {
@@ -962,8 +962,8 @@ describe("upgradeRoleTemplate (fake store)", () => {
     const dry = createFakeDb(seed);
     const plan = await backfillTemplateRoles({ db: dry.db, dryRun: true, upgrade: true, audit: false });
     assert.equal(plan.upgraded?.length, 2, "Dirección and the adopted Owner would be upgraded");
-    assert.ok(plan.upgraded?.some((line) => line.startsWith("Dirección (org_a) ← manager v0→v2: +") && line.endsWith("−16 [dry-run]")));
-    assert.ok(plan.upgraded?.some((line) => line.startsWith("Owner (org_a) ← owner v0→v2:")));
+    assert.ok(plan.upgraded?.some((line) => line.startsWith("Dirección (org_a) ← manager v0→v3: +") && line.endsWith("−16 [dry-run]")));
+    assert.ok(plan.upgraded?.some((line) => line.startsWith("Owner (org_a) ← owner v0→v3:")));
     assert.deepEqual(plan.revocationsByRole?.mgr, managerRevoked);
     assert.deepEqual(plan.revocationsByRole?.own, [...templateRevocationKeys("owner")].sort());
     assert.equal(plan.revocationsByRole?.custom, undefined, "managed=false: never listed");

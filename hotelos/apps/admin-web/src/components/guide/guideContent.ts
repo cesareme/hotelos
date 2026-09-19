@@ -87,6 +87,8 @@ const WELCOME_TOUR: Tour = {
 /** Plain-Spanish narration of every menu item, keyed by screen key (CSV keep rows). */
 const ITEM_NARRATION: Record<string, string> = {
   // Hoy
+  LiveTimeline:
+    "Reservas en casa y proyectadas por habitación en un calendario: pasa el ratón para ver la ficha rápida, haz clic para abrir el detalle con folio y actividad, y arrastra para mover o alargar la estancia. Toda acción crítica pide confirmación y se puede deshacer.",
   FrontDeskDashboard:
     "Tu punto de partida. Llegadas y salidas de hoy, huéspedes alojados y la cola de acciones del turno. Según tu puesto aterrizas en la pestaña Recepción, Operaciones, Dirección o Propietario.",
   AssistantChat:
@@ -100,7 +102,7 @@ const ITEM_NARRATION: Record<string, string> = {
   AiHumanReviewQueueScreen: "Las propuestas de la IA que una persona debe aprobar o rechazar antes de aplicarse (correo → reserva, confirmaciones, acciones de riesgo).",
   // Recepción
   ReservationWorkspace:
-    "Todas las reservas del hotel. Pestañas Lista, Cronograma (planificación por días) y Tablero de habitaciones (estado y asignación). Cada reserva abre su detalle y su recorrido.",
+    "Todas las reservas del hotel. Pestañas Lista y Tablero de habitaciones (estado y asignación); la planificación por días vive en Hoy › Live Timeline (/hoy/live-timeline). Cada reserva abre su detalle y su recorrido.",
   ReservationCreate: "Alta manual de una reserva: fechas, tipo de habitación, tarifa, titular y garantía. En la pestaña «Dictar (IA)» puedes dictarla y revisar el borrador.",
   GuestsList: "El directorio de huéspedes: datos de contacto, documento de identidad, preferencias y la cronología de sus estancias.",
   ConciergeInboxDashboard: "Las conversaciones con los huéspedes por todos los canales en una sola bandeja. La IA propone un borrador y tú decides si lo envías.",
@@ -310,7 +312,7 @@ export const taskGuides: TaskGuide[] = [
       "Elige las fechas de entrada y salida y el número de huéspedes.",
       "Selecciona un tipo de habitación disponible y su tarifa.",
       "Introduce los datos del huésped (nombre y, si es posible, documento de identidad).",
-      "Revisa el importe y pulsa «Guardar». La reserva aparecerá en Recepción › Reservas › Cronograma."
+      "Revisa el importe y pulsa «Guardar». La reserva aparecerá en Hoy › Live Timeline (/hoy/live-timeline) y en Recepción › Reservas › Lista."
     ]
   },
   {

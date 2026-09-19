@@ -212,7 +212,7 @@ describe("TL-4 · contrato de fuente", () => {
     assert.match(inspector, /<CocoaCallout tone="warning" role="status">/);
   });
 
-  it("TimelineActionDialog: CocoaDialog destructivo cuando toca, confirmDisabled, saldo pendiente con switch, motivo obligatorio y gancho L3-F1", () => {
+  it("TimelineActionDialog: CocoaDialog destructivo cuando toca, confirmDisabled, saldo pendiente con switch, motivo obligatorio y previsualización L3-F1 por props", () => {
     assert.match(actionDialog, /<CocoaDialog/);
     assert.match(actionDialog, /"destructive"/);
     assert.match(actionDialog, /confirmDisabled=/);
@@ -225,7 +225,11 @@ describe("TL-4 · contrato de fuente", () => {
     assert.match(actionDialog, /roomBlocked\(/);
     assert.match(actionDialog, /roomChangeWarnings\(/);
     assert.match(actionDialog, /sortRoomsByNumber\(/);
-    assert.match(actionDialog, /gancho L3-F1/);
+    // L3-F1 integrado en la fusión TL: la previsualización llega por props (texto + tono + título, misma voz que la ficha de reserva) y se pinta bajo el motivo.
+    assert.match(actionDialog, /export type TimelinePenaltyPreview = \{ text: string; tone: "info" \| "warning"; title: string \| null \};/);
+    assert.match(actionDialog, /penaltyPreview\?: TimelinePenaltyPreview \| null;/);
+    assert.match(actionDialog, /\{penaltyPreview \? \(\s*<CocoaCallout tone=\{penaltyPreview\.tone\} title=\{penaltyPreview\.title \?\? undefined\} role="status">\s*\{penaltyPreview\.text\}/);
+    assert.doesNotMatch(actionDialog, /gancho L3-F1/);
     assert.match(actionDialog, /MIN_REASON_LENGTH = 3/);
     assert.match(actionDialog, /reason\.trim\(\)\.length < MIN_REASON_LENGTH/);
     assert.match(actionDialog, /cancelLabel=\{ACTIONS\.cancel\}/);
