@@ -113,6 +113,12 @@ export type GuestRegisterRecord = {
   guestId?: string;
   recordType: string;
   status: GuestRegisterStatus;
+  /** Tanda L5 (L5-B1): ReservationGuest.isPrimary of the link the parte was created from. */
+  isPrimaryGuest?: boolean;
+  /** Tanda L5 (L5-B1): under 14 at check-in (no signature; declared through the adult). */
+  isMinor?: boolean;
+  providedByAdultGuestId?: string;
+  kinshipRelationIfMinor?: string;
   firstName?: string;
   surname1?: string;
   surname2?: string;
@@ -124,10 +130,47 @@ export type GuestRegisterRecord = {
   contractReference?: string;
   signatureRequired?: boolean;
   signedAt?: string;
+  identityVerified?: boolean;
+  identityVerifiedAt?: string;
+  identityVerificationMethod?: string;
   validationErrorsJson?: GuestRegisterValidationIssue[];
   retentionUntil?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Spanish label of a parte status (same wording as the guest-register queue screen). */
+export const GUEST_REGISTER_STATUS_LABELS: Record<GuestRegisterStatus, string> = {
+  draft: "Borrador",
+  missing_data: "Datos incompletos",
+  ready_to_sign: "Listo para firmar",
+  signed: "Firmado",
+  ready_to_submit: "Listo para enviar",
+  queued: "En cola",
+  exported: "Exportado",
+  submitted: "Enviado",
+  accepted: "Aceptado",
+  rejected: "Rechazado",
+  failed: "Fallido",
+  annulled: "Anulado",
+  corrected: "Corregido",
+  expired: "Caducado"
+};
+
+export function guestRegisterStatusLabel(status: string | null | undefined): string {
+  return (status && GUEST_REGISTER_STATUS_LABELS[status as GuestRegisterStatus]) || status || "Desconocido";
+}
+
+/**
+ * POST /compliance/spain/guest-register/:recordId/validate (Tanda L5 · L5-B1):
+ * `status` is the PERSISTED status of the parte (pipeline terminals preserved,
+ * signature-only rule applied), `valid` / `issues` the validator verdict.
+ */
+export type GuestRegisterValidationResult = {
+  valid: boolean;
+  status: GuestRegisterStatus;
+  issues: GuestRegisterValidationIssue[];
+  payload?: Record<string, unknown>;
 };
 
 export type AuthoritySubmissionResult = {
@@ -231,6 +274,24 @@ export async function createSpainGuestRegisterRecord(args: {
       ),
     args.retry
   );
+}
+
+/** POST …/validate — re-validates the persisted columns; `status` is the row's status (Tanda L5 · L5-B1). */
+export async function validateSpainGuestRegisterRecord(recordId: string, opts: RetryOptions = {}): Promise<GuestRegisterValidationResult> {
+  return withRetry(
+    () => apiRequest<GuestRegisterValidationResult>(`/compliance/spain/guest-register/${recordId}/validate`, { method: "POST", body: {} }),
+    opts
+  );
+}
+
+/**
+ * POST …/mark-identity-verified (guest_register.edit): the receptionist checked
+ * the traveller's document at the desk. Never retried: a 403 is a real answer
+ * (the caller decides whether it blocks; the check-in drawer treats it as
+ * non-blocking).
+ */
+export async function markGuestRegisterIdentityVerified(recordId: string, method = "visual_document_check"): Promise<GuestRegisterRecord> {
+  return apiRequest<GuestRegisterRecord>(`/compliance/spain/guest-register/${recordId}/mark-identity-verified`, { method: "POST", body: { method } });
 }
 
 export async function queueSpainGuestRegisterSubmission(

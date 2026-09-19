@@ -457,6 +457,8 @@ model Property {
   /// Rate grid v2 · ISO 4217 currency of every rate of the property.
   currency              String   @default("EUR")
   status                String   @default("open")
+  /// Tanda L5 (lote C): fecha de la aprobación del go-live (approveGoLive). NULL = sin aprobar.
+  goLiveAt              DateTime? @map("go_live_at")
   sesHospedajesEnabled  Boolean  @default(false) @map("ses_hospedajes_enabled")
   verifactuEnabled      Boolean  @default(false) @map("verifactu_enabled")
   // Invoice branding: the hotel's logo (URL or data: URI) and a free-text legal
@@ -3074,9 +3076,17 @@ model Room {
   viewType             String?    @map("view_type")
   orientation          String?
   squareMeters         Decimal?   @map("square_meters") @db.Decimal(10, 2)
+  /// Tanda L5 (lote A) · estado unificado. `status` = ocupación / disponibilidad
+  /// (occupied | out_of_order | out_of_service) y, cuando la habitación está libre,
+  /// ESPEJO de la limpieza (clean | dirty | inspected) para que los `groupBy status`
+  /// sigan valiendo. Solo escribe `applyRoomTransition` (modules/housekeeping/room-state.service.ts).
   status               RoomStatus @default(clean)
-  housekeepingStatus   String?    @map("housekeeping_status")
-  maintenanceStatus    String?    @map("maintenance_status")
+  /// Limpieza con vocabulario cerrado: dirty | clean | inspected (NOT NULL, default clean).
+  /// Los alias de entrada (ready, stayover, cleaning, in_progress) se normalizan y NUNCA se almacenan.
+  housekeepingStatus   String     @default("clean") @map("housekeeping_status")
+  /// Mantenimiento con vocabulario cerrado: ok | blocked | needs_attention (NOT NULL, default ok).
+  /// `blocked` va siempre acompañado de `status = out_of_order` y `sellable = false`.
+  maintenanceStatus    String     @default("ok") @map("maintenance_status")
   sellable             Boolean    @default(true)
   active               Boolean    @default(true)
   sortOrder            Int        @default(0) @map("sort_order")

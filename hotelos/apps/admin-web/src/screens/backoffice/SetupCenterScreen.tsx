@@ -5,11 +5,18 @@
 // readiness per area and guided tools on the 12-column grid → the manual index
 // as one section per area with a card per setup item (inline save form and
 // completion checks on demand). Data, save calls and navigation are untouched.
+//
+// Tanda L5 (lote C): the hub shows the REAL state of the launch — the 15 setup
+// steps (GET …/setup, materialised in property_setup_steps) and the go-live
+// readiness (GET …/readiness, computed live by the API) with the blocking checks,
+// the status and the go-live date — and links to the GoLiveChecklist tab.
 import { useEffect, useState } from "react";
 import { MANUAL_SETUP_OPTIONS, type ManualSetupOption } from "@hotelos/product";
 import { getActivePropertyId } from "../../services/activeProperty";
-import { fetchManualSetupOptions, saveManualSetupOption, type ManualSetupSummary } from "../../services/backofficeApi";
-import { date, percent, plural } from "../../lib/format";
+import { fetchManualSetupOptions, fetchSetupProgress, saveManualSetupOption, type ManualSetupSummary, type PropertySetupProgress } from "../../services/backofficeApi";
+import { fetchPropertyReadiness } from "../../services/billingApi";
+import { LAUNCH_STATE_LOADING, SETUP_STEP_STATUS_LABELS, launchSectionView, launchStateFromResults, setupStepLabel, setupStepTone, type LaunchState } from "./launch-readiness";
+import { date, dateTime, percent, plural, readinessMessage } from "../../lib/format";
 import { A11Y_LABELS, ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { useTabHost } from "../tabs/TabHost";
 import { shellNavigate } from "../tabs/tab-helpers";
@@ -102,6 +109,95 @@ const GUIDED_TOOLS: Array<{ label: string; screen: string; hint: string }> = [
   { label: "Importar desde documentos", screen: "PropertyMapper", hint: "Extracción con IA de la estructura de la propiedad a partir de documentos" },
   { label: "Salida en vivo", screen: "GoLiveChecklist", hint: "Lista de comprobación y estado de preparación para salir en vivo" }
 ];
+
+const LAUNCH_BLOCKERS_SHOWN = 5;
+
+// Readiness + setup steps of the launch (Tanda L5 · lote C): what is really
+// missing to go live, read from the API, with the way to the checklist tab.
+// Corrector L5: the figures come from the pure launchSectionView (L5F-02); a
+// readiness that could not be read shows «—» and a warning, never «Bloqueantes 0»
+// (L5F-05); the step labels come from the API (L5F-06).
+function LaunchReadinessSection({ launch, onOpenChecklist }: { launch: LaunchState; onOpenChecklist: () => void }) {
+  const view = launchSectionView(launch);
+  const { readiness } = launch;
+
+  return (
+    <CocoaSection
+      title="Preparación y salida en vivo"
+      meta={<CocoaBadge tone={view.badge.tone}>{view.badge.label}</CocoaBadge>}
+      action={
+        <CocoaButton variant="plain" tone="accent" size="small" onClick={onOpenChecklist}>
+          Abrir la lista de comprobación
+        </CocoaButton>
+      }
+    >
+      {view.kind === "loading" ? (
+        <p className="cocoa-note" role="status">
+          Leyendo el estado de la puesta en marcha…
+        </p>
+      ) : view.kind === "unavailable" ? (
+        <CocoaCallout tone="warning" role="status">
+          {view.warning}
+        </CocoaCallout>
+      ) : (
+        <div className="cocoa-stack" data-gap="3">
+          {view.warning ? (
+            <CocoaCallout tone="warning" role="status">
+              {view.warning}
+            </CocoaCallout>
+          ) : null}
+          <CocoaKpiStrip min={200} aria-label="Preparación para salir en vivo">
+            <CocoaKpi label="Pasos completados" value={view.progressUnavailable ? "—" : view.stepsDone} unit={view.stepsTotal > 0 ? `de ${view.stepsTotal}` : undefined} polarity="neutral" status={view.progressUnavailable ? "warning" : view.stepsTotal > 0 && view.stepsDone >= view.stepsTotal ? "ok" : "warning"} degraded={view.progressUnavailable} />
+            <CocoaKpi label="Comprobaciones superadas" value={view.readinessUnavailable ? "—" : view.checksPassed} unit={view.checksTotal > 0 ? `de ${view.checksTotal}` : undefined} polarity="neutral" status={view.readinessUnavailable ? "warning" : view.checksTotal > 0 && view.checksPassed >= view.checksTotal ? "ok" : "warning"} degraded={view.readinessUnavailable} />
+            <CocoaKpi label="Bloqueantes" value={view.blockingCount === null ? "—" : view.blockingCount} polarity="neutral" status={view.blockingCount === null ? "warning" : view.blockingCount > 0 ? "critical" : "ok"} degraded={view.blockingCount === null} />
+            <CocoaKpi label="Última comprobación" value={view.lastComputed} polarity="neutral" status={view.readinessUnavailable ? "warning" : "ok"} size="compact" degraded={view.readinessUnavailable} />
+          </CocoaKpiStrip>
+          {view.stepsTotal > 0 ? (
+            <CocoaChart.Progress
+              value={view.stepsPct}
+              tone={view.stepsPct >= 100 ? "success" : "accent"}
+              label="Pasos de puesta en marcha"
+              valueLabel={`${view.stepsDone} de ${view.stepsTotal}`}
+              aria-label={`${view.stepsDone} de ${view.stepsTotal} pasos de puesta en marcha completados`}
+            />
+          ) : null}
+          {view.goLiveAt ? (
+            <CocoaCallout tone="success" role="status">
+              Salida en vivo aprobada el {dateTime(view.goLiveAt)}. La propiedad está en marcha.
+            </CocoaCallout>
+          ) : view.blockers.length > 0 ? (
+            <ul className="c22-section__list" aria-label="Comprobaciones bloqueantes">
+              {view.blockers.slice(0, LAUNCH_BLOCKERS_SHOWN).map((check) => (
+                <li key={check.id ?? check.checkCode} title={check.checkCode}>
+                  <CocoaBadge tone="danger" variant="dot" size="small">
+                    Bloqueante
+                  </CocoaBadge>
+                  <span className="cocoa-note">{readinessMessage(check.message)}</span>
+                </li>
+              ))}
+              {view.blockers.length > LAUNCH_BLOCKERS_SHOWN ? (
+                <li>
+                  <span className="cocoa-note">{plural(view.blockers.length - LAUNCH_BLOCKERS_SHOWN, "comprobación bloqueante más", "comprobaciones bloqueantes más")} en la lista de comprobación.</span>
+                </li>
+              ) : null}
+            </ul>
+          ) : readiness ? (
+            <p className="cocoa-note">Ninguna comprobación bloqueante: la salida en vivo se aprueba desde la lista de comprobación (permiso de aprobación de salida en vivo).</p>
+          ) : null}
+          {view.pendingSteps.length > 0 && !view.goLiveAt ? (
+            <div className="cocoa-cluster" aria-label="Pasos de puesta en marcha pendientes">
+              {view.pendingSteps.map((step) => (
+                <CocoaBadge key={step.stepCode} tone={setupStepTone(step.status)} uppercase={false} title={`${setupStepLabel(step)}: ${SETUP_STEP_STATUS_LABELS[step.status]}`}>
+                  {setupStepLabel(step)}
+                </CocoaBadge>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </CocoaSection>
+  );
+}
 
 function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSaved: (optionCode: string) => void }) {
   const [values, setValues] = useState<Record<string, string>>({});
@@ -214,7 +310,20 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: SetupVie
   const [summary, setSummary] = useState<ManualSetupSummary>(() => buildSetupSummary(MANUAL_SETUP_OPTIONS));
   const [source, setSource] = useState<"static" | "api">("static");
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(MANUAL_SETUP_OPTIONS.slice(0, 1).map((option) => option.group)));
+  const [launch, setLaunch] = useState<LaunchState>(LAUNCH_STATE_LOADING);
   const groups = groupManualSetupOptions(options);
+
+  // Real launch state (Tanda L5 · lote C): readiness computed live + the 15 setup steps.
+  useEffect(() => {
+    let mounted = true;
+    const propertyId = getActivePropertyId();
+    Promise.allSettled([fetchPropertyReadiness(propertyId), fetchSetupProgress(propertyId)]).then(([readinessResult, progressResult]) => {
+      if (!mounted) return;
+      // Corrector L5 (L5F-05): each GET keeps its own error (readiness vs steps).
+      setLaunch(launchStateFromResults(readinessResult, progressResult));
+    });
+    return () => { mounted = false; };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -306,6 +415,9 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: SetupVie
               <CocoaKpi label="Requieren atención" value={summary.failedOptions} polarity="neutral" status={summary.failedOptions > 0 ? "critical" : "ok"} />
             </CocoaKpiStrip>
           </CocoaSection>
+
+          {/* Real launch state: readiness (computed live) + setup steps, with the way to the GoLiveChecklist tab */}
+          <LaunchReadinessSection launch={launch} onOpenChecklist={() => shellNavigate("GoLiveChecklist")} />
 
           {/* Readiness by area (live, derived from manual-setup progress) */}
           <CocoaSection title="Preparación por área" meta={plural(groups.length, "área", "áreas", { withCount: true })}>

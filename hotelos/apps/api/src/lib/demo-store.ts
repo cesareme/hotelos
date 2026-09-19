@@ -11,6 +11,8 @@ import type {
   UserScopeDto
 } from "@hotelos/shared";
 import { HOTEL_MODULES, type HotelModuleCode } from "@hotelos/product";
+// Tanda L5 (lote A): vocabulario cerrado del estado de habitación (import solo de tipos: sin ciclo).
+import type { HousekeepingStatus, MaintenanceStatus, RoomStatusValue } from "../modules/housekeeping/room-state.service.js";
 
 export type OrganizationRecord = {
   id: string;
@@ -533,9 +535,11 @@ export type RoomRecord = {
   viewType?: string;
   orientation?: string;
   squareMeters?: number;
-  status: "clean" | "dirty" | "inspected" | "occupied" | "out_of_order" | "out_of_service";
-  housekeepingStatus: "dirty" | "clean" | "inspected";
-  maintenanceStatus: "ok" | "blocked" | "needs_attention";
+  // Tanda L5 (lote A): vocabulario cerrado del estado unificado, tipado desde el
+  // helper único (modules/housekeeping/room-state.service.ts, import solo de tipos).
+  status: RoomStatusValue;
+  housekeepingStatus: HousekeepingStatus;
+  maintenanceStatus: MaintenanceStatus;
   sellable: boolean;
   active?: boolean;
   sortOrder?: number;

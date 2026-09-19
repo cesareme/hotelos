@@ -15,6 +15,8 @@
 
 import { prisma } from "@hotelos/database";
 import { createDegradedCollector } from "../../lib/degraded.js";
+// Tanda L5 (lote A): cifras de habitaciones por el helper único del estado unificado.
+import { foldRoomStateCounts } from "../housekeeping/room-state.service.js";
 
 export type OpsDirectorKpi = {
   label: string;
@@ -192,10 +194,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
     inHouseNow,
     unassignedArrivals,
     overdueDepartures,
-    cleanRooms,
-    dirtyRooms,
-    inspectedRooms,
-    oooRooms,
+    roomStateGroups,
     pendingHkTasks,
     overdueHkTasks,
     openIncidents,
@@ -224,10 +223,9 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
     prisma.reservation.count({ where: { propertyId, status: "checked_in" } }),
     prisma.reservation.count({ where: { propertyId, arrivalDate: { gte: today, lt: tomorrow }, status: "confirmed", assignedRoomId: null } }),
     prisma.reservation.count({ where: { propertyId, status: "checked_in", departureDate: { lt: today } } }),
-    prisma.room.count({ where: { propertyId, active: true, status: "clean" } }),
-    prisma.room.count({ where: { propertyId, active: true, status: "dirty" } }),
-    prisma.room.count({ where: { propertyId, active: true, housekeepingStatus: "inspected" } }),
-    prisma.room.count({ where: { propertyId, active: true, status: { in: ["out_of_order", "out_of_service"] } } }),
+    // Un solo groupBy (status × limpieza) plegado más abajo: limpias / sucias /
+    // inspeccionadas por housekeepingStatus en todas las ocupaciones, OOO por status.
+    prisma.room.groupBy({ by: ["status", "housekeepingStatus"], where: { propertyId, active: true }, _count: { _all: true } }),
     prisma.housekeepingTask.count({ where: { propertyId, status: { in: ["pending", "assigned", "in_progress"] } } }),
     prisma.housekeepingTask.count({
       where: {
@@ -292,7 +290,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
     // surfaces directional movement rather than an exact diff. If the model
     // gets historized later, swap this for a real snapshot read.
     safe("housekeeping.cleanRoomsYesterdayProxy", prisma.room.count({
-      where: { propertyId, active: true, status: "clean" }
+      where: { propertyId, active: true, housekeepingStatus: "clean" }
     }), 0),
     safe("maintenance.workOrdersActiveYesterdayProxy", prisma.workOrder.count({
       where: {
@@ -304,6 +302,13 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
     }), 0)
   ]);
 
+  const roomCounts = foldRoomStateCounts(
+    roomStateGroups.map((row) => ({ status: String(row.status), housekeepingStatus: row.housekeepingStatus, count: row._count._all }))
+  );
+  const cleanRooms = roomCounts.clean;
+  const dirtyRooms = roomCounts.dirty;
+  const inspectedRooms = roomCounts.inspected;
+  const oooRooms = roomCounts.outOfOrder;
   const cleanPct = totalRooms > 0 ? Math.round((cleanRooms / totalRooms) * 1000) / 10 : 0;
 
   // Build departments

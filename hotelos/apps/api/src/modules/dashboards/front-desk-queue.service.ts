@@ -34,6 +34,8 @@
 // cuántos items mostrar.
 
 import { prisma } from "@hotelos/database";
+// Tanda L5 (lote A): limpieza por el helper único del estado unificado.
+import { roomStateOf } from "../housekeeping/room-state.service.js";
 import { createDegradedCollector } from "../../lib/degraded.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
 
@@ -206,10 +208,10 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
   const cleanByRoomType = new Map<string, typeof allRooms>();
   for (const room of allRooms) {
     if (!room.roomTypeId) continue;
-    if (room.status === "out_of_order" || !room.sellable) continue;
-    const hk = (room.housekeepingStatus ?? "").toLowerCase();
-    const isClean = hk === "clean" || hk === "inspected" || hk === "ready" || room.status === "clean";
-    if (!isClean) continue;
+    // Tanda L5: estado unificado — limpia por housekeepingStatus (helper único).
+    const state = roomStateOf(room);
+    if (state.occupancy === "out_of_order" || state.occupancy === "out_of_service" || state.isBlocked) continue;
+    if (!state.isClean) continue;
     if (occupiedRoomIds.has(room.id)) continue;
     const list = cleanByRoomType.get(room.roomTypeId) ?? [];
     list.push(room);
@@ -384,8 +386,10 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
     // ya no_show_risk (no tiene sentido sugerir "haz check-in" cuando hay riesgo
     // de que el huésped ni siquiera aparezca).
     if (res.status === "confirmed" && room && !noShowFlagged) {
-      const hk = (room.housekeepingStatus ?? "").toLowerCase();
-      const isClean = hk === "clean" || hk === "inspected" || hk === "ready" || room.status === "clean";
+      // Tanda L5: limpia por housekeepingStatus (helper único), sin alias ni fallback a status.
+      const roomState = roomStateOf(room);
+      const hk = roomState.cleanliness;
+      const isClean = roomState.isClean;
       if (!isClean) {
         // Detector 7: housekeeping_late — si la llegada está en <2h.
         const isImminent = Number.isFinite(etaHour) && etaHour - hour <= 2 && etaHour >= hour;

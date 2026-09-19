@@ -114,7 +114,12 @@ export async function computeRealAvailability(propertyId: string, roomTypeIds: s
         roomTypeId: { in: roomTypeIds },
         sellable: true,
         active: true,
-        OR: [{ maintenanceStatus: null }, { maintenanceStatus: { not: "blocked" } }]
+        // Tanda L5 (estado unificado): maintenance_status es NOT NULL (ok | blocked |
+        // needs_attention); la rama `null` desaparece con el mismo resultado.
+        maintenanceStatus: { not: "blocked" },
+        // Corrector L5 (OP-02): una out_of_order / out_of_service (status = disponibilidad)
+        // no es inventario vendible aunque no tenga bloqueo de mantenimiento.
+        status: { notIn: ["out_of_order", "out_of_service"] }
       },
       _count: { _all: true }
     }),

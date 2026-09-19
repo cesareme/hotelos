@@ -26,11 +26,28 @@
 // with a `CocoaBadge` as meta; controls are `CocoaField` + `CocoaSelect` /
 // `CocoaSegmentedControl`; notices are `CocoaCallout`; the finished state is a
 // `CocoaState` with the success illustration. Same endpoints, same props.
+//
+// Tanda L5 (L5-A / L5-B4):
+//   · «limpia» = housekeepingStatus ∈ {clean, inspected} (vocabulario cerrado
+//     de L5-A; sin «ready» ni fallback a `status`);
+//   · paso 4 lista los partes de viajeros reales de la reserva
+//     (GET /compliance/spain/reservations/:id/guest-register) con su estado en
+//     español y los distintivos «Principal» / «Menor», antes y después del
+//     check-in (la ruta de check-in crea uno por huésped);
+//   · casilla opcional «Identidad verificada en mostrador» (solo con
+//     guest_register.edit): al confirmar, POST …/mark-identity-verified por
+//     parte ANTES del envío SES; un 403 no bloquea el check-in;
+//   · el resultado SES distingue SES_DISABLED («SES desactivado…») y
+//     GUEST_REGISTER_INVALID («parte incompleto: faltan …»): el API ya no crea
+//     filas para esos casos.
+// El check-in sigue en ≤ 4 clics con habitación asignada (la casilla es opcional).
 
 import { useCallback, useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useToast } from "../../components/Toast";
-import { apiRequest } from "../../services/api-client";
+import { ApiError, apiRequest } from "../../services/api-client";
+import { getUser } from "../../services/auth-storage";
 import {
+  guestRegisterIssueLabel,
   queueSesSubmissions,
   sesEstablishmentIssueLabel,
   sesFailureMessages,
@@ -38,6 +55,12 @@ import {
   sesQueueOutcomeFromResponse,
   type SesQueueOutcome
 } from "../../services/complianceApi";
+import {
+  guestRegisterStatusLabel,
+  listReservationGuestRegisterRecords,
+  markGuestRegisterIdentityVerified,
+  type GuestRegisterRecord
+} from "../../services/guestRegisterApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 import { navigateTo } from "../../lib/navigate";
 import { housekeepingStatusLabel, reservationStatusLabel, roomOptionLabel } from "./frontdesk-labels";
@@ -54,6 +77,7 @@ import {
   CocoaSegmentedControl,
   CocoaSelect,
   CocoaState,
+  CocoaSwitch,
   type CocoaTone
 } from "../../components/cocoa";
 
@@ -170,9 +194,17 @@ function sesOutcomeToast(outcome: SesQueueOutcome): string {
       return `Parte SES: ${outcome.queued} encolado${outcome.queued === 1 ? "" : "s"}, ${outcome.failed.length} sin encolar${outcome.missing.length > 0 ? ` (faltan: ${missingLabels(outcome.missing)})` : ""}.`;
     case "incomplete":
       return `Parte SES no encolado: faltan datos del establecimiento${outcome.missing.length > 0 ? ` (${missingLabels(outcome.missing)})` : ""}. Complétalos en Ajustes fiscales.`;
+    case "disabled":
+      return "Parte SES no encolado: SES.HOSPEDAJES está desactivado para este establecimiento. Actívalo en Ajustes de cumplimiento.";
+    case "invalid":
+      return `Parte SES no encolado: parte incompleto${outcome.issues.length > 0 ? ` (faltan ${issueLabels(outcome.issues)})` : ""}. Complétalo en el registro de viajeros.`;
     case "error":
       return `Parte SES no encolado${outcome.code ? ` (${outcome.code})` : ""}: ${outcome.message} Revísalo en la bandeja de cumplimiento.`;
   }
+}
+
+function issueLabels(issues: string[]): string {
+  return issues.map(guestRegisterIssueLabel).join(", ");
 }
 
 // Secondary text inside the steps (caption, secondary ink); layout comes from
@@ -218,6 +250,13 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   const [completed, setCompleted] = useState<{ elapsedSeconds: number } | null>(null);
   // Real result of the SES queue call after the check-in (null until then).
   const [sesOutcome, setSesOutcome] = useState<SesQueueOutcome | null>(null);
+  // Partes de viajeros of the reservation (real rows; empty until the check-in
+  // creates one per guest unless a scan / the guest portal prepared them).
+  const [partes, setPartes] = useState<GuestRegisterRecord[]>([]);
+  const [partesError, setPartesError] = useState<string | null>(null);
+  // Optional desk verification of the travellers' documents (guest_register.edit).
+  const [verifyIdentity, setVerifyIdentity] = useState(false);
+  const [identityNotice, setIdentityNotice] = useState<string | null>(null);
 
   // Cronómetro — empieza al abrir, congela al completar.
   const [tick, setTick] = useState(0);
@@ -252,6 +291,21 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     }
   }, [reservationId]);
 
+  // Partes de viajeros: best-effort (GET needs guest_register.read; a failure is
+  // shown in step 4, never as a fake «sin partes»). Returns the fresh list so
+  // the check-in can act on it without waiting for React state.
+  const loadPartes = useCallback(async (): Promise<GuestRegisterRecord[]> => {
+    try {
+      const rows = await listReservationGuestRegisterRecords(reservationId, { retries: 0 });
+      setPartes(rows);
+      setPartesError(null);
+      return rows;
+    } catch (err) {
+      setPartesError(err instanceof Error ? err.message : "No se pudieron cargar los partes de viajeros.");
+      return [];
+    }
+  }, [reservationId]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -276,7 +330,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
         loadFolio(),
         apiRequest<Room[]>(`/properties/${res.propertyId}/rooms`),
         apiRequest<RoomType[]>(`/properties/${res.propertyId}/room-types`),
-        primaryGuest?.id ? apiRequest<GuestTimelineLite>(`/guests/${primaryGuest.id}/timeline`).catch(() => null) : Promise.resolve<GuestTimelineLite | null>(null)
+        primaryGuest?.id ? apiRequest<GuestTimelineLite>(`/guests/${primaryGuest.id}/timeline`).catch(() => null) : Promise.resolve<GuestTimelineLite | null>(null),
+        loadPartes()
       ]);
       setAvailableRooms(roomsData);
       const rt = roomTypesData.find((t) => t.id === res.roomTypeId) ?? null;
@@ -290,7 +345,7 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     } finally {
       setLoading(false);
     }
-  }, [reservationId, loadFolio]);
+  }, [reservationId, loadFolio, loadPartes]);
 
   useEffect(() => {
     void loadAll();
@@ -304,11 +359,10 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   );
   void room;
 
-  const roomIsClean = useMemo(() => {
-    if (!selectedRoom) return false;
-    const hk = (selectedRoom.housekeepingStatus ?? "").toLowerCase();
-    return hk === "clean" || hk === "inspected" || hk === "ready" || selectedRoom.status === "clean";
-  }, [selectedRoom]);
+  // Tanda L5-A: «limpia» is the closed housekeeping vocabulary only (clean |
+  // inspected). `status` is occupancy (occupied / out_of_order…) and «ready»
+  // no longer exists as a persisted value: neither is a cleanliness signal.
+  const roomIsClean = useMemo(() => (selectedRoom ? isRoomClean(selectedRoom) : false), [selectedRoom]);
 
   const candidateRooms = useMemo(() => {
     if (!reservation) return [];
@@ -316,11 +370,17 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     return availableRooms.filter((r) => {
       if (occupiedIds.has(r.id)) return false;
       if (r.roomTypeId !== reservation.roomTypeId) return false;
-      const hk = (r.housekeepingStatus ?? "").toLowerCase();
-      const clean = hk === "clean" || hk === "inspected" || hk === "ready" || r.status === "clean";
-      return clean;
+      return isRoomClean(r);
     });
   }, [availableRooms, reservation]);
+
+  // Identity verification at the desk needs guest_register.edit; a session
+  // without a permission list (demo mode) still offers it, as the layout does
+  // for the readiness banner (BackOfficeLayout · SetupPendingBanner).
+  const canVerifyIdentity = useMemo(() => {
+    const user = getUser();
+    return !user?.permissions || user.permissions.includes("guest_register.edit");
+  }, []);
 
   // Options of the room select: "Sin asignar" is a real choice (the legacy
   // select offered it), then the clean rooms of the same type, then the room
@@ -408,10 +468,32 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
         method: "POST",
         body: { roomId: selectedRoomId, signatureObjectKey: "sig_drawer_checkin" }
       });
+      // 3b) Partes de viajeros: the check-in route created one per guest. If
+      // the operator ticked the desk verification, mark each parte BEFORE the
+      // SES queue (guest_register.edit); a 403 (or any failure) is reported
+      // and never blocks the check-in, which is already done.
+      let partesAfter = await loadPartes();
+      let identityNote: string | null = null;
+      if (verifyIdentity && partesAfter.length > 0) {
+        const results = await Promise.allSettled(
+          partesAfter.map((parte) => (parte.identityVerified ? Promise.resolve(parte) : markGuestRegisterIdentityVerified(parte.id, "visual_document_check")))
+        );
+        const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failures.length > 0) {
+          const forbidden = failures.some((failure) => failure.reason instanceof ApiError && failure.reason.status === 403);
+          identityNote = forbidden
+            ? "Sin permiso para marcar la identidad verificada (guest_register.edit): el check-in y el parte siguen adelante."
+            : `No se pudo marcar la identidad verificada en ${plural(failures.length, "parte", "partes")}; el check-in sigue adelante.`;
+        }
+        partesAfter = await loadPartes();
+        logBreadcrumb("checkin.identity_verified", "mutation", { reservationId: reservation.id, partes: partesAfter.length, failed: failures.length });
+      }
+      setIdentityNotice(identityNote);
       // 4) Parte de viajeros SES.HOSPEDAJES. The check-in is already done; the
       // queue response is read honestly (queued > 0 and no failed record) and
       // a 409 SES_ESTABLISHMENT_INCOMPLETE / failed[] is surfaced with the
-      // missing establishment fields instead of a fake "enviado".
+      // missing establishment fields instead of a fake "enviado". Tanda L5:
+      // SES_DISABLED / GUEST_REGISTER_INVALID are refusals without a row.
       let ses: SesQueueOutcome;
       try {
         ses = sesQueueOutcomeFromResponse(await queueSesSubmissions(reservation.propertyId, reservation.id));
@@ -420,6 +502,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
       }
       setSesOutcome(ses);
       logBreadcrumb("checkin.ses", "mutation", { reservationId: reservation.id, outcome: ses.kind });
+      // The partes mirror the queue outcome (queued / accepted…): refresh the summary list.
+      void loadPartes();
 
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
       setCompleted({ elapsedSeconds: elapsed });
@@ -452,7 +536,17 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   } else if (!reservation) {
     body = <CocoaState kind="error" title="No se encontró la reserva." onRetry={() => void loadAll()} />;
   } else if (completed) {
-    body = <CompletedView elapsed={elapsedLabel} guest={fmtName(guest)} roomNumber={selectedRoom?.number} ses={sesOutcome} />;
+    body = (
+      <CompletedView
+        elapsed={elapsedLabel}
+        guest={fmtName(guest)}
+        roomNumber={selectedRoom?.number}
+        ses={sesOutcome}
+        partes={partes}
+        partesError={partesError}
+        identityNotice={identityNotice}
+      />
+    );
   } else {
     body = (
       <>
@@ -579,13 +673,28 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
           </div>
         </Step>
 
-        {/* STEP 4: compliance */}
-        <Step title="4 · Cumplimiento" badge="Al confirmar" badgeTone="info">
-          <ul style={bulletListStyle}>
-            <li>Al confirmar se encola el parte de viajeros (SES.HOSPEDAJES); aquí verás el resultado real del encolado.</li>
-            <li>Firma digital aplicada con sello "sig_drawer_checkin".</li>
-            <li>Política de cancelación: {reservation.cancellationPolicyCode ?? "estándar"}.</li>
-          </ul>
+        {/* STEP 4: compliance — real partes of the reservation (Tanda L5 · L5-B4) */}
+        <Step
+          title="4 · Cumplimiento"
+          badge={partesError ? "Partes no disponibles" : partes.length > 0 ? plural(partes.length, "parte", "partes") : "Se crean al confirmar"}
+          badgeTone={partesError ? "warning" : "info"}
+        >
+          <div className="cocoa-stack" data-gap="2">
+            <PartesList partes={partes} error={partesError} emptyText="Sin partes de viajeros todavía: el check-in crea uno por huésped vinculado a la reserva." />
+            {canVerifyIdentity ? (
+              <CocoaSwitch
+                checked={verifyIdentity}
+                onChange={setVerifyIdentity}
+                disabled={busy}
+                label="Identidad verificada en mostrador (documento cotejado; se anota en cada parte antes del envío SES)"
+              />
+            ) : null}
+            <ul style={bulletListStyle}>
+              <li>Al confirmar se encola el parte de viajeros (SES.HOSPEDAJES); aquí verás el resultado real del encolado.</li>
+              <li>Firma digital aplicada con sello "sig_drawer_checkin".</li>
+              <li>Política de cancelación: {reservation.cancellationPolicyCode ?? "estándar"}.</li>
+            </ul>
+          </div>
         </Step>
 
         {blockingReason ? (
@@ -678,7 +787,7 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
       </CocoaCallout>
     );
   }
-  const tone: CocoaTone = outcome.kind === "no_records" ? "warning" : "danger";
+  const tone: CocoaTone = outcome.kind === "no_records" || outcome.kind === "disabled" || outcome.kind === "invalid" ? "warning" : "danger";
   const title =
     outcome.kind === "no_records"
       ? "No se ha encolado ningún parte de viajeros"
@@ -686,28 +795,41 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
         ? `Parte SES parcial: ${outcome.queued} encolado${outcome.queued === 1 ? "" : "s"}, ${outcome.failed.length} sin encolar`
         : outcome.kind === "incomplete"
           ? "Parte SES no encolado: faltan datos del establecimiento"
-          : "Parte SES no encolado";
+          : outcome.kind === "disabled"
+            ? "Parte SES no encolado: SES desactivado para este establecimiento"
+            : outcome.kind === "invalid"
+              ? `Parte SES no encolado: parte incompleto${outcome.issues.length > 0 ? `, faltan ${issueLabels(outcome.issues)}` : ""}`
+              : "Parte SES no encolado";
   const missing = outcome.kind === "partial" || outcome.kind === "incomplete" ? outcome.missing : [];
+  const issues = outcome.kind === "invalid" ? outcome.issues : [];
   const detail =
     outcome.kind === "no_records"
       ? "La reserva no tiene registros de viajeros (SES_NO_GUEST_REGISTER_RECORDS). Completa el registro de viajeros y vuelve a encolar el parte desde la bandeja de cumplimiento."
-      : outcome.kind === "error"
-        ? `${outcome.message}${outcome.code ? ` (${outcome.code})` : ""}`
-        : outcome.kind === "incomplete" && missing.length === 0
-          ? outcome.message
-          : null;
+      : outcome.kind === "disabled"
+        ? "El API no ha creado ningún envío (SES_DISABLED): activa SES.HOSPEDAJES en Ajustes de cumplimiento y vuelve a encolar el parte desde la bandeja."
+        : outcome.kind === "invalid"
+          ? "El API no ha creado ningún envío (GUEST_REGISTER_INVALID): completa los datos del parte (y la firma si procede) en el registro de viajeros y vuelve a encolarlo."
+          : outcome.kind === "error"
+            ? `${outcome.message}${outcome.code ? ` (${outcome.code})` : ""}`
+            : outcome.kind === "incomplete" && missing.length === 0
+              ? outcome.message
+              : null;
   // Per-parte server messages (failed[]), verbatim; the one already used as `detail` is not repeated.
-  const failed = outcome.kind === "partial" || outcome.kind === "incomplete" || outcome.kind === "error" ? outcome.failed : [];
-  const headlineMessage = outcome.kind === "incomplete" || outcome.kind === "error" ? outcome.message : null;
+  const failed = outcome.kind === "no_records" ? [] : outcome.failed;
+  const headlineMessage = outcome.kind === "incomplete" || outcome.kind === "error" || outcome.kind === "disabled" || outcome.kind === "invalid" ? outcome.message : null;
   const failureMessages = sesFailureMessages(failed).filter((message) => message !== headlineMessage);
   const failedCount = failed.length;
   return (
     <CocoaCallout tone={tone} variant="banner" title={title} role="alert">
       <div className="cocoa-stack" data-gap="2">
-        {missing.length > 0 ? (
+        {/* Establishment fields (incomplete / partial) or parte fields (invalid): one list, never both at once. */}
+        {missing.length > 0 || issues.length > 0 ? (
           <ul style={bulletListStyle}>
             {missing.map((issue) => (
-              <li key={issue}>{sesEstablishmentIssueLabel(issue)}</li>
+              <li key={`establishment:${issue}`}>{sesEstablishmentIssueLabel(issue)}</li>
+            ))}
+            {issues.map((issue) => (
+              <li key={`parte:${issue}`}>{guestRegisterIssueLabel(issue)}</li>
             ))}
           </ul>
         ) : null}
@@ -728,9 +850,14 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
               Ajustes fiscales
             </CocoaButton>
           ) : null}
-          {outcome.kind === "no_records" ? (
+          {outcome.kind === "no_records" || outcome.kind === "invalid" ? (
             <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("GuestRegisterSettings")}>
               Registro de huéspedes
+            </CocoaButton>
+          ) : null}
+          {outcome.kind === "disabled" ? (
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("SesHospedajesSettings")}>
+              Ajustes de cumplimiento
             </CocoaButton>
           ) : null}
           <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("ComplianceInbox")}>
@@ -743,7 +870,23 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
   );
 }
 
-function CompletedView({ elapsed, guest, roomNumber, ses }: { elapsed: string; guest: string; roomNumber?: string; ses: SesQueueOutcome | null }) {
+function CompletedView({
+  elapsed,
+  guest,
+  roomNumber,
+  ses,
+  partes,
+  partesError,
+  identityNotice
+}: {
+  elapsed: string;
+  guest: string;
+  roomNumber?: string;
+  ses: SesQueueOutcome | null;
+  partes: GuestRegisterRecord[];
+  partesError: string | null;
+  identityNotice: string | null;
+}) {
   return (
     <div className="cocoa-stack" data-gap="3">
       <CocoaState kind="empty" illustration="success" title="Check-in completado" message={`${guest} alojado en ${roomNumber ? `Hab. ${roomNumber}` : "su habitación"}.`} role="status" />
@@ -752,7 +895,77 @@ function CompletedView({ elapsed, guest, roomNumber, ses }: { elapsed: string; g
           {elapsed} · objetivo &lt; 1:30
         </CocoaBadge>
       </div>
+      <CocoaSection title="Partes de viajeros" meta={partes.length > 0 ? plural(partes.length, "parte", "partes") : undefined}>
+        <div className="cocoa-stack" data-gap="2">
+          <PartesList partes={partes} error={partesError} emptyText="El check-in no ha creado partes: la reserva no tiene huéspedes vinculados." />
+          {identityNotice ? (
+            <CocoaCallout tone="warning" role="status">
+              {identityNotice}
+            </CocoaCallout>
+          ) : null}
+        </div>
+      </CocoaSection>
       <SesOutcomeBlock outcome={ses} />
     </div>
+  );
+}
+
+/** «limpia» per the closed vocabulary of Tanda L5-A: housekeepingStatus clean | inspected, nothing else. */
+function isRoomClean(room: Pick<Room, "housekeepingStatus">): boolean {
+  const hk = (room.housekeepingStatus ?? "").trim().toLowerCase();
+  return hk === "clean" || hk === "inspected";
+}
+
+function parteTone(status: string): CocoaTone {
+  if (status === "accepted") return "success";
+  if (status === "rejected" || status === "failed") return "danger";
+  if (status === "missing_data" || status === "annulled" || status === "corrected" || status === "expired") return "warning";
+  return "info";
+}
+
+function parteName(parte: GuestRegisterRecord): string {
+  return [parte.firstName, parte.surname1, parte.surname2].filter(Boolean).join(" ").trim() || "Viajero sin nombre";
+}
+
+/** Real partes of the reservation with their Spanish status and the «Principal» / «Menor» marks (Tanda L5 · L5-B4). */
+function PartesList({ partes, error, emptyText }: { partes: GuestRegisterRecord[]; error: string | null; emptyText: string }) {
+  if (error) {
+    return (
+      <CocoaCallout tone="warning" role="status">
+        No se pudieron cargar los partes de viajeros: {error}
+      </CocoaCallout>
+    );
+  }
+  if (partes.length === 0) {
+    return <p className="cocoa-caption">{emptyText}</p>;
+  }
+  return (
+    <ul className="c22-section__list" aria-label="Partes de viajeros">
+      {partes.map((parte) => (
+        <li key={parte.id}>
+          <span className="cocoa-row" data-gap="2" data-align="center">
+            {parteName(parte)}
+            {parte.isPrimaryGuest ? (
+              <CocoaBadge tone="accent" variant="tinted" size="small" uppercase={false}>
+                Principal
+              </CocoaBadge>
+            ) : null}
+            {parte.isMinor ? (
+              <CocoaBadge tone="info" variant="tinted" size="small" uppercase={false}>
+                Menor
+              </CocoaBadge>
+            ) : null}
+            {parte.identityVerified ? (
+              <CocoaBadge tone="success" variant="tinted" size="small" uppercase={false}>
+                Identidad verificada
+              </CocoaBadge>
+            ) : null}
+          </span>
+          <CocoaBadge tone={parteTone(parte.status)} size="small">
+            {guestRegisterStatusLabel(parte.status)}
+          </CocoaBadge>
+        </li>
+      ))}
+    </ul>
   );
 }

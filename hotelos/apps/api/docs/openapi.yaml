@@ -2709,6 +2709,7 @@ paths:
     post:
       summary: "POST /onboarding/projects/:projectId/go-live"
       operationId: "post-onboarding-projects-by-projectid-go-live"
+      description: "Corrector L5 (L5F-04): un solo go-live — delega en la aprobación real de la propiedad materializada (POST /backoffice/properties/:propertyId/go-live: readiness recalculada, go_live_at, paso go_live, auditoría PropertyGoLiveApproved; exige además property.go_live). Respuesta { projectId, propertyId, approved, blocked, blockingIssues, goLiveAt, payload }."
       tags:
       - onboarding
       x-permissions:
@@ -2726,6 +2727,8 @@ paths:
           description: Forbidden — missing required permission
         404:
           description: Resource not found
+        409:
+          description: "ONBOARDING_NOT_APPLIED — el proyecto aún no se ha aplicado a una propiedad"
         429:
           description: Too many requests
         500:
@@ -8730,6 +8733,7 @@ paths:
   /backoffice/properties/{propertyId}/setup:
     get:
       summary: "GET /backoffice/properties/:propertyId/setup"
+      description: "Pasos de puesta en marcha de la propiedad (property_setup_steps; el primer GET materializa el catálogo como not_started). Respuesta { propertyId, steps[], completed, total, progressPercent, live, goLiveAt } — Tanda L5 (L5-C): live = properties.go_live_at no nulo (lo escribe POST …/go-live), goLiveAt en ISO o null."
       operationId: "get-backoffice-properties-by-propertyid-setup"
       tags:
       - backoffice
@@ -9106,6 +9110,7 @@ paths:
   /backoffice/properties/{propertyId}/readiness:
     get:
       summary: "GET /backoffice/properties/:propertyId/readiness"
+      description: "Preparación REAL de la propiedad calculada en el GET (Tanda L5 · L5-C): si no hay filas en property_readiness_checks o la más reciente supera la ventana de frescura de 10 minutos (READINESS_MAX_AGE_MS) se evalúan y persisten de nuevo, sin auditar (la auditoría PropertyReadinessRecalculated es de POST …/readiness/recalculate y del go-live); dentro de la ventana devuelve lo persistido con el mismo computedAt. Respuesta { propertyId, status: ready | blocked, blockingCount, checks[], computedAt: ISO | null, goLiveAt: ISO | null }; una propiedad sin comprobaciones nunca es ready."
       operationId: "get-backoffice-properties-by-propertyid-readiness"
       tags:
       - backoffice
@@ -9175,6 +9180,7 @@ paths:
   /backoffice/properties/{propertyId}/go-live:
     post:
       summary: "POST /backoffice/properties/:propertyId/go-live"
+      description: "Aprueba la salida en vivo y CAMBIA ESTADO (Tanda L5 · L5-C). Decide sobre comprobaciones recién calculadas (evalúa + persiste + audita PropertyReadinessRecalculated): bloqueada → { status: \"blocked\", propertyId, blockers[], goLiveAt } sin escribir nada; ya en vivo (properties.go_live_at) → { status: \"approved\", alreadyLive: true, goLiveAt, step } sin evento nuevo; lista → en UNA transacción escribe properties.go_live_at (solo si sigue NULL: dos aprobaciones simultáneas no producen dos eventos) y completa el paso `go_live` de property_setup_steps, después audita y emite PropertyGoLiveApproved { goLiveAt } → { status: \"approved\", alreadyLive: false, approvedAt, goLiveAt, step }."
       operationId: "post-backoffice-properties-by-propertyid-go-live"
       tags:
       - backoffice
@@ -11836,6 +11842,7 @@ paths:
   /properties/{propertyId}/dashboard:
     get:
       summary: "GET /properties/:propertyId/dashboard"
+      description: "Panel operativo de la propiedad. Tanda L5 (L5-A): habitaciones plegadas con el helper único del estado unificado desde UN groupBy (status × housekeepingStatus): roomsDirty y roomsCleanInspected por housekeepingStatus en TODAS las ocupaciones (sin fallback), roomsOutOfOrder = status out_of_order + out_of_service (la OOO incluye out_of_service). Mismas cifras que /dashboards/housekeeping, /dashboards/operations-director y /dashboards/room-rack."
       operationId: "get-properties-by-propertyid-dashboard"
       tags:
       - properties
@@ -14291,6 +14298,7 @@ paths:
   /rooms/{id}/mark-clean:
     post:
       summary: "POST /rooms/:id/mark-clean"
+      description: "Estado de habitación UNIFICADO (Tanda L5 · L5-A): `status` = ocupación / disponibilidad (occupied | out_of_order | out_of_service; libre → espejo de la limpieza clean | dirty | inspected), `housekeepingStatus` = limpieza con vocabulario cerrado dirty | clean | inspected (NOT NULL), `maintenanceStatus` = ok | blocked | needs_attention. Toda escritura pasa por la transición única (applyRoomTransition): idempotente (un evento que no cambia nada responde 200 sin escribir ni auditar), escritura condicional sobre el estado actual y auditoría ROOM_STATE_CHANGED (before / after) + evento RoomStateChanged. Marca la habitación limpia: housekeepingStatus clean; nunca libera una ocupada ni una fuera de servicio (status se conserva); repetir sobre una limpia → 200 sin evento nuevo."
       operationId: "post-rooms-by-id-mark-clean"
       tags:
       - rooms
@@ -14329,6 +14337,7 @@ paths:
   /rooms/{id}/mark-inspected:
     post:
       summary: "POST /rooms/:id/mark-inspected"
+      description: "Estado de habitación UNIFICADO (Tanda L5 · L5-A): `status` = ocupación / disponibilidad (occupied | out_of_order | out_of_service; libre → espejo de la limpieza clean | dirty | inspected), `housekeepingStatus` = limpieza con vocabulario cerrado dirty | clean | inspected (NOT NULL), `maintenanceStatus` = ok | blocked | needs_attention. Toda escritura pasa por la transición única (applyRoomTransition): idempotente (un evento que no cambia nada responde 200 sin escribir ni auditar), escritura condicional sobre el estado actual y auditoría ROOM_STATE_CHANGED (before / after) + evento RoomStateChanged. Marca la habitación inspeccionada: exige limpia → 409 ROOM_NOT_CLEAN (details { code, roomId, housekeepingStatus }) sobre una sucia; repetir sobre una inspeccionada → 200 sin evento (idempotente, antes 409); sobre una ocupada limpia → inspected con status occupied."
       operationId: "post-rooms-by-id-mark-inspected"
       tags:
       - rooms
@@ -14367,6 +14376,7 @@ paths:
   /rooms/{id}/housekeeping-status:
     post:
       summary: "POST /rooms/:id/housekeeping-status"
+      description: "Ruta libre de los botones del Room Rack y de la pantalla móvil de pisos. Cuerpo { status } con el vocabulario cerrado clean | dirty | inspected; alias aceptados y normalizados, NUNCA almacenados: ready → clean, stayover | cleaning | in_progress → dirty; cualquier otro texto → 400. Estado de habitación UNIFICADO (Tanda L5 · L5-A): `status` = ocupación / disponibilidad (occupied | out_of_order | out_of_service; libre → espejo de la limpieza clean | dirty | inspected), `housekeepingStatus` = limpieza con vocabulario cerrado dirty | clean | inspected (NOT NULL), `maintenanceStatus` = ok | blocked | needs_attention. Toda escritura pasa por la transición única (applyRoomTransition): idempotente (un evento que no cambia nada responde 200 sin escribir ni auditar), escritura condicional sobre el estado actual y auditoría ROOM_STATE_CHANGED (before / after) + evento RoomStateChanged. No toca la ocupación ni el fuera de servicio (una ocupada marcada limpia sigue ocupada); inspected sobre una sucia → 409 ROOM_NOT_CLEAN. Auditoría con reason «housekeeping-status <valor recibido>»."
       operationId: "post-rooms-by-id-housekeeping-status"
       tags:
       - rooms
@@ -19113,6 +19123,7 @@ paths:
           type: string
     post:
       summary: "POST /properties/:propertyId/ses/submissions"
+      description: "Encola las comunicaciones SES.HOSPEDAJES (alta / modificación) de los partes de la reserva ({ reservationId }). Antes de crear fila: 409 SES_DISABLED cuando la propiedad tiene SES.HOSPEDAJES desactivado (sesHospedajesEnabled = false; nada se escribe), 409 GUEST_REGISTER_INVALID cuando el parte no es válido sobre sus columnas persistidas (details { status, issues[] }; nada se escribe; el pipeline ya no rellena 1900-01-01 / ESP / DNI: un dato obligatorio ausente falla la fila con GUEST_REGISTER_INVALID, no recuperable), 409 SES_ESTABLISHMENT_INCOMPLETE (details.missing) con el establecimiento incompleto. Regla «una fila recuperable por parte» (Tanda L5 · L5-B): una comunicación abierta del mismo tipo (queued | sent | retrying) responde 409 SES_SUBMISSION_IN_FLIGHT y nunca se duplica; una fila `failed` con código recuperable (SES_ESTABLISHMENT_INCOMPLETE | ISSUER_TAX_ID_MISSING) se REUTILIZA al reintentar o al re-encolar (attempts++, requestPayloadJson.requeuedFrom, nextRetryAt), así que un parte nunca acumula filas. Código terminal SES_DISCARDED: una fila descartada por el operador (errorCode SES_DISCARDED, estado failed, nextRetryAt null, responsePayloadJson.discarded { by, at, reason }) no la re-encola el programador y POST /ses/submissions/:id/retry responde 409 SES_DISCARDED; el descarte solo existe como script (corepack pnpm --filter @hotelos/api ses:discard-failed -- --property <id> --reason «…» [--ids] [--dry-run]), sin ruta HTTP; auditoría SES_HOSPEDAJES_SUBMISSION_DISCARDED por fila."
       operationId: "post-properties-by-propertyid-ses-submissions"
       tags:
       - properties
@@ -20033,6 +20044,7 @@ paths:
   /dashboards/housekeeping:
     get:
       summary: GET /dashboards/housekeeping
+      description: "Panel de pisos (?propertyId). Tanda L5 (L5-A): kpis { roomsClean, roomsDirty, roomsInspected } por housekeepingStatus en todas las ocupaciones, roomsOutOfOrder = status out_of_order + out_of_service y la clave ADITIVA roomsOccupied (status occupied); roomsByStatus conserva su forma. Coherente con GET /properties/:propertyId/dashboard, operations-director y room-rack."
       operationId: "get-dashboards-housekeeping"
       tags:
       - dashboards
@@ -23193,6 +23205,168 @@ paths:
                   format: date
               required:
               - period
+  /properties/{propertyId}/night-audit/run:
+    post:
+      summary: "POST /properties/:propertyId/night-audit/run"
+      description: "Ejecuta el cierre del día de la fecha de negocio actual (modules/night-audit; manifiesto modules/night-audit/route-permissions.partial.ts). Orden de las guardas: centro no operativo (oficina) → 409 WORK_CENTER_NOT_OPERATIONAL; fecha ya cerrada → 409 NIGHT_AUDIT_ALREADY_COMPLETED; en curso → 409 NIGHT_AUDIT_IN_PROGRESS; después la PUERTA DE PREFLIGHT (Tanda L5 · L5-D): el servicio construye el mismo preflight de GET …/night-audit/preflight (medido sobre la fecha de negocio) y con algún bloqueo responde 409 NIGHT_AUDIT_PREFLIGHT_BLOCKED { businessDate, blockers[{ id, title, count, detail }] } sin escribir nada. Cuerpo opcional { force?: boolean, reasonText?: string (10..1000) }: force + motivo ejecuta el cierre pese a los bloqueos, audita NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN { businessDate, runId, blockers, reasonText } y el informe lleva report.preflightOverride { reasonText, blockers }; force sin motivo → 400 «Indica el motivo para cerrar con bloqueos.»; un preflight sin bloqueos ignora force. Pasos: validate_open_folios, snapshot_room_status, post_room_charges (integrador L5 · INT-L5-01: solo carga las reservas alojadas ESA noche — min(llegada reservada, día de check-in físico en la zona horaria del hotel) ≤ fecha de negocio; las demás cuentan metrics.notYetInHouse y salen como ítems «Aún no alojada esa noche…»), process_no_shows (L3: no-show con política, penalización y folio cerrado a 0), close_settled_folios (nuevo: cierra cada folio abierto de reserva cancelled | no_show | checked_out con saldo 0 y todos los cargos facturados; los saldados sin factura cuentan pendingInvoice y los que conservan saldo withBalance + importe, ambos avisos del informe; idempotente), revenue_snapshot, payments_summary, cash_closures, advance_business_date. Respuesta NightAuditRunWire (packages/shared/src/pos-types.ts) con report.settledFolios { closed, pendingInvoice, withBalance, totalWithBalance } y reviewedByUserId / reviewedAt / reopenedByUserId / reopenedAt / reopenReasonCode."
+      operationId: "post-properties-by-propertyid-night-audit-run"
+      tags:
+      - properties
+      x-permissions:
+      - night_audit.run
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: Conflict — WORK_CENTER_NOT_OPERATIONAL | NIGHT_AUDIT_ALREADY_COMPLETED | NIGHT_AUDIT_IN_PROGRESS | NIGHT_AUDIT_PREFLIGHT_BLOCKED
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                force:
+                  type: boolean
+                reasonText:
+                  type: string
+                  minLength: 10
+                  maxLength: 1000
+  /properties/{propertyId}/night-audit/runs/{runId}/review:
+    post:
+      summary: "POST /properties/:propertyId/night-audit/runs/:runId/review"
+      description: "Revisión de ingresos de la mañana siguiente (Tanda 8a) sobre un cierre completado, por alguien distinto de quien lo ejecutó: 409 RBAC_SOD_CONFLICT (details.rule runner_ne_reviewer) al propio ejecutor, 409 NIGHT_AUDIT_NOT_COMPLETED si no está completado, 409 NIGHT_AUDIT_ALREADY_REVIEWED si ya está revisado. Cuerpo { note? }. Escribe reviewedByUserId / reviewedAt (en el wire desde Tanda L5 · L5-D) y audita NIGHT_AUDIT_REVIEWED."
+      operationId: "post-properties-by-propertyid-night-audit-runs-by-runid-review"
+      tags:
+      - properties
+      x-permissions:
+      - night_audit.review
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: Conflict — RBAC_SOD_CONFLICT | NIGHT_AUDIT_NOT_COMPLETED | NIGHT_AUDIT_ALREADY_REVIEWED
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note:
+                  type: string
+                  maxLength: 1000
+  /properties/{propertyId}/night-audit/runs/{runId}/reopen:
+    post:
+      summary: "POST /properties/:propertyId/night-audit/runs/:runId/reopen"
+      description: "Reabre un cierre completado con un código de motivo (Tanda 8a): reasonCode ∈ missing_charge | wrong_charge | no_show_error | payment_correction | audit_finding | other (400 fuera del catálogo), reasonText? y supervisorAuthorizationId?. Hasta 7 días desde la fecha de negocio basta la clave; después hace falta la aprobación day_reopen de OTRA persona con rango ≥ dirección general (409 APPROVAL_REQUIRED con details.requestId). No revierte cargos ni asientos (entriesReversed false en NIGHT_AUDIT_REOPENED): status → reopened con reopenedByUserId / reopenedAt / reopenReasonCode (en el wire desde Tanda L5 · L5-D); un cierre ya reabierto responde 409 NIGHT_AUDIT_NOT_COMPLETED."
+      operationId: "post-properties-by-propertyid-night-audit-runs-by-runid-reopen"
+      tags:
+      - properties
+      x-permissions:
+      - night_audit.reopen
+      x-risk-level: critical
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: Conflict — NIGHT_AUDIT_NOT_COMPLETED | APPROVAL_REQUIRED
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - reasonCode
+              properties:
+                reasonCode:
+                  type: string
+                  enum:
+                  - missing_charge
+                  - wrong_charge
+                  - no_show_error
+                  - payment_correction
+                  - audit_finding
+                  - other
+                reasonText:
+                  type: string
+                  maxLength: 1000
+                supervisorAuthorizationId:
+                  type: string
+                  maxLength: 64
   /properties/{propertyId}/pos/outlets:
     get:
       summary: "GET /properties/:propertyId/pos/outlets"

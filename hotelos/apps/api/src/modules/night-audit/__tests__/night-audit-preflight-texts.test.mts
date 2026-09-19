@@ -12,7 +12,10 @@ import {
   expectedArrivalHint,
   expectedDepartureHint,
   formatEur,
-  housekeepingStatusLabel
+  housekeepingStatusLabel,
+  settledFoliosStepDetail,
+  settledFoliosToCloseHint,
+  settledFoliosWarnings
 } from "../night-audit-preflight.texts.js";
 // Tanda L3 (lote B): the sentence the preflight appends for folios of cancelled /
 // no-show reservations lives in the service (pure function, no query).
@@ -33,6 +36,10 @@ function everyText(): string[] {
   out.push(arrivalTimeHint("16:30"), arrivalTimeHint(null), expectedArrivalHint(new Date("2026-09-14T00:00:00Z")), expectedDepartureHint("2026-09-17"));
   out.push(blockingMessage([{ count: 2, title: PREFLIGHT_TEXTS.unresolved_no_shows.title }, { count: 13, title: PREFLIGHT_TEXTS.open_folios_with_balance.title }]));
   out.push(PREFLIGHT_TEXTS.open_folios_with_balance.ok + settledStayFoliosHint(1, 150), PREFLIGHT_TEXTS.open_folios_with_balance.some(2, 300) + settledStayFoliosHint(12, 1126.45));
+  // Tanda L5 (L5-D): folios of closed reservations in the preflight detail and in the run report.
+  out.push(PREFLIGHT_TEXTS.open_folios_with_balance.ok + settledFoliosToCloseHint(1), settledFoliosToCloseHint(42));
+  out.push(settledFoliosStepDetail({ closed: 42, pendingInvoice: 3, withBalance: 9, totalWithBalance: 445 }), settledFoliosStepDetail({ closed: 1, pendingInvoice: 0, withBalance: 1, totalWithBalance: 27928.11 }));
+  out.push(...settledFoliosWarnings({ pendingInvoice: 1, withBalance: 1, totalWithBalance: 764.75 }), ...settledFoliosWarnings({ pendingInvoice: 3, withBalance: 4, totalWithBalance: 379.75 }));
   return out;
 }
 
@@ -62,6 +69,29 @@ describe("preflight texts", () => {
       PREFLIGHT_TEXTS.open_folios_with_balance.ok + settledStayFoliosHint(1, 150),
       "Sin folios con saldo pendiente. Además, 1 folio de reservas canceladas o no presentadas conserva 150,00 € sin cobrar: no bloquea el cierre."
     );
+  });
+
+  it("folios of closed reservations the run will close: «N folios liquidados … se cerrarán en el cierre del día»; empty when none (Tanda L5 · L5-D)", () => {
+    assert.equal(settledFoliosToCloseHint(0), "");
+    assert.equal(settledFoliosToCloseHint(1), " 1 folio liquidado de reservas canceladas, no presentadas o con salida hecha se cerrará en el cierre del día.");
+    assert.equal(settledFoliosToCloseHint(42), " 42 folios liquidados de reservas canceladas, no presentadas o con salida hecha se cerrarán en el cierre del día.");
+    assert.equal(
+      PREFLIGHT_TEXTS.open_folios_with_balance.ok + settledStayFoliosHint(1, 150) + settledFoliosToCloseHint(42),
+      "Sin folios con saldo pendiente. Además, 1 folio de reservas canceladas o no presentadas conserva 150,00 € sin cobrar: no bloquea el cierre. 42 folios liquidados de reservas canceladas, no presentadas o con salida hecha se cerrarán en el cierre del día."
+    );
+  });
+
+  it("close_settled_folios: step detail and report warnings («N folios de reservas cerradas conservan X € sin cobrar») (Tanda L5 · L5-D)", () => {
+    assert.equal(settledFoliosStepDetail({ closed: 42, pendingInvoice: 3, withBalance: 9, totalWithBalance: 445 }), "42 folios liquidados de reservas canceladas, no presentadas o con salida hecha cerrados; 3 con cargos sin facturar; 9 conservan 445,00 € sin cobrar.");
+    assert.equal(settledFoliosStepDetail({ closed: 1, pendingInvoice: 0, withBalance: 0, totalWithBalance: 0 }), "1 folio liquidado de reservas canceladas, no presentadas o con salida hecha cerrado.");
+    assert.equal(settledFoliosStepDetail({ closed: 0, pendingInvoice: 0, withBalance: 1, totalWithBalance: 379.75 }), "0 folios liquidados de reservas canceladas, no presentadas o con salida hecha cerrados; 1 conserva 379,75 € sin cobrar.");
+    assert.deepEqual(settledFoliosWarnings({ pendingInvoice: 0, withBalance: 0, totalWithBalance: 0 }), []);
+    assert.deepEqual(settledFoliosWarnings({ pendingInvoice: 0, withBalance: 4, totalWithBalance: 379.75 }), ["4 folios de reservas cerradas conservan 379,75 € sin cobrar."]);
+    assert.deepEqual(settledFoliosWarnings({ pendingInvoice: 1, withBalance: 1, totalWithBalance: 12.5 }), [
+      "1 folio de reservas cerradas conserva 12,50 € sin cobrar.",
+      "1 folio liquidado de reservas cerradas conserva cargos sin facturar: emite la factura para cerrarlo."
+    ]);
+    assert.deepEqual(settledFoliosWarnings({ pendingInvoice: 3, withBalance: 0, totalWithBalance: 0 }), ["3 folios liquidados de reservas cerradas conservan cargos sin facturar: emite la factura para cerrarlos."]);
   });
 
   it("no-shows: «siguen confirmadas» instead of the raw status, with singular agreement", () => {

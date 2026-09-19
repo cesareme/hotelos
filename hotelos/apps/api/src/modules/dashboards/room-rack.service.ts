@@ -15,6 +15,8 @@
 import { prisma } from "@hotelos/database";
 import { createDegradedCollector } from "../../lib/degraded.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
+// Tanda L5 (lote A): ocupación / limpieza / bloqueo por el helper único del estado unificado.
+import { roomStateOf } from "../housekeeping/room-state.service.js";
 
 export type RoomRackBadge =
   | "vip"
@@ -100,21 +102,6 @@ function fmtName(g: { firstName?: string | null; surname1?: string | null; surna
 }
 
 function isoDate(d: Date): string { return d.toISOString().slice(0, 10); }
-
-function normalizeHk(value?: string | null): string {
-  if (!value) return "";
-  return value.toLowerCase();
-}
-
-function isCleanHk(value?: string | null): boolean {
-  const v = normalizeHk(value);
-  return v === "clean" || v === "inspected" || v === "ready";
-}
-
-function isDirtyHk(value?: string | null): boolean {
-  const v = normalizeHk(value);
-  return v === "dirty" || v === "cleaning" || v === "in_progress" || v === "stayover";
-}
 
 export async function buildRoomRack(input: { propertyId: string; now?: Date }): Promise<RoomRackResult> {
   const propertyId = input.propertyId;
@@ -248,23 +235,29 @@ export async function buildRoomRack(input: { propertyId: string; now?: Date }): 
   const tiles: RoomRackTile[] = rooms.map((room) => {
     const current = currentByRoomId.get(room.id);
     const next = nextArrivalByRoomId.get(room.id);
-    const hk = normalizeHk(room.housekeepingStatus);
-    const isOoo = room.status === "out_of_order" || hk === "out_of_order" || hk === "oo";
-    const isBlocked = !room.sellable;
+    // Tanda L5: estado unificado — OOO/OOS por `status`, bloqueo por mantenimiento
+    // o no vendible, ocupada = reserva alojada O `status = occupied`, limpia por hk.
+    const state = roomStateOf(room);
+    const isOoo = state.occupancy === "out_of_order" || state.occupancy === "out_of_service";
+    const isBlocked = state.isBlocked;
     const workOrders = workOrdersByRoom.get(room.id) ?? [];
     const hasOpenIncident = workOrders.length > 0;
 
     let occupancy: RoomRackOccupancy;
     if (isOoo) occupancy = "out_of_order";
-    else if (isBlocked || hasOpenIncident) occupancy = "blocked_maintenance";
-    else if (current) {
+    else if (current || state.occupancy === "occupied") {
+      // Corrector L5 (OP-01): una habitación ALOJADA con bloqueo de mantenimiento o
+      // un parte abierto sigue siendo ocupada en el rack (la incidencia va en el
+      // badge `incident`); así totals.occupied cuadra con roomsOccupied y con el
+      // recuento de reservas alojadas de operations-director.
       // ¿sale hoy?
-      if (departureRoomIds.has(room.id) && current.status === "checked_in") {
+      if (current && departureRoomIds.has(room.id) && current.status === "checked_in") {
         occupancy = "occupied_departing_today";
       } else {
         occupancy = "occupied_stay";
       }
-    } else if (isCleanHk(room.housekeepingStatus) || room.status === "clean") {
+    } else if (isBlocked || hasOpenIncident) occupancy = "blocked_maintenance";
+    else if (state.isClean) {
       occupancy = "vacant_clean";
     } else {
       occupancy = "vacant_dirty";
@@ -282,7 +275,7 @@ export async function buildRoomRack(input: { propertyId: string; now?: Date }): 
       badges.push("vacant_due_soon");
       // HK urgente si ETA <= 2h y la habitación no está limpia.
       const etaHour = next.eta ? parseInt(next.eta.slice(0, 2), 10) : NaN;
-      if (Number.isFinite(etaHour) && etaHour - hourNow <= 2 && !isCleanHk(room.housekeepingStatus)) {
+      if (Number.isFinite(etaHour) && etaHour - hourNow <= 2 && !state.isClean) {
         badges.push("hk_urgent");
       }
       // Early check-in si ETA < 14:00
@@ -297,7 +290,7 @@ export async function buildRoomRack(input: { propertyId: string; now?: Date }): 
       roomTypeId: room.roomTypeId ?? undefined,
       roomTypeName: roomType?.name ?? undefined,
       status: String(room.status),
-      housekeepingStatus: room.housekeepingStatus ?? undefined,
+      housekeepingStatus: state.cleanliness,
       occupancy,
       badges,
       currentReservation: current,

@@ -7,10 +7,13 @@ import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
 import { PROPERTY_KINDS, type PermissionKey, type PropertyKind } from "@hotelos/shared";
-import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
 import { invalidateTaxCache } from "../accounting/tax-rate.service.js";
-import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
+import { approveGoLive as approvePropertyGoLive, resolveFiscalLocation } from "../backoffice/backoffice.service.js";
+// Tanda L5 (lote A): la importación de habitaciones escribe housekeeping / maintenance
+// explícitos con el vocabulario cerrado del estado unificado.
+import { isHousekeepingStatus, isMaintenanceStatus, normalizeHousekeepingInput } from "../housekeeping/room-state.service.js";
 // Tanda 6b (fix t6b#7): the go-live materialises the implicit sociedad and a
 // coded work centre exactly like bootstrap / createTenant (design §5.1 R10, §5.4).
 import { codeInUse, createImplicitLegalEntity, ensureDefaultLegalEntity, planPropertyCode } from "../structure/legal-entity.service.js";
@@ -1043,6 +1046,9 @@ export async function applyMigration(input: { context: UserContext; projectId: s
 
   const applied = await materialiseOnboardingProject(project.id, input.context, targetProperty, input.payload?.spaces as Array<Record<string, unknown>> | undefined);
   project.status = "applied";
+  // Corrector L5 (L5F-04): el proyecto recuerda la propiedad materializada — el
+  // go-live del onboarding delega en la aprobación real de esa propiedad.
+  project.propertyId = applied.propertyId;
   audit(input.context, "OnboardingMigrationBatchApplied", "onboarding_project", project.id, applied);
   recordDomainEvent({
     organizationId: input.context.organizationId,
@@ -1310,6 +1316,7 @@ async function materialiseOnboardingProject(
   const roomEntities = engineExtractedEntities.filter((e) => e.onboardingProjectId === projectId && e.entityType === "room");
   await prisma.room.deleteMany({ where: { propertyId } });
   let roomsCreated = 0;
+  const importWarnings: string[] = [];
   const validStatuses = new Set(["clean", "dirty", "inspected", "out_of_order", "out_of_service"]);
   for (const entity of roomEntities) {
     const fields = (entity.fields ?? {}) as Record<string, unknown>;
@@ -1319,14 +1326,33 @@ async function materialiseOnboardingProject(
     const roomTypeId = roomTypeIdBySourceCode.get(sourceCode) ?? (await ensureFallbackRoomType());
     const rawStatus = String(fields.status ?? "clean").toLowerCase();
     const status = validStatuses.has(rawStatus) ? rawStatus : "clean";
+    // Tanda L5 (estado unificado): limpieza y mantenimiento del fichero validados
+    // contra el vocabulario cerrado (alias ready/stayover/cleaning/in_progress
+    // normalizados, nunca almacenados). Si `status` es una limpieza, el hk manda y
+    // `status` la refleja; una out_of_order / out_of_service se conserva y el hk
+    // viene del fichero o queda en clean.
+    const rawHk = fields.housekeepingStatus ?? fields.housekeeping_status ?? fields.housekeeping;
+    const hkFromFile = typeof rawHk === "string" ? normalizeHousekeepingInput(rawHk) : null;
+    const housekeepingStatus = hkFromFile ?? (isHousekeepingStatus(status) ? status : "clean");
+    const roomStatus = isHousekeepingStatus(status) ? housekeepingStatus : status;
+    const rawMnt = String(fields.maintenanceStatus ?? fields.maintenance_status ?? "ok").toLowerCase();
+    // Corrector L5 (OP-07): `blocked` solo lo escribe una orden de trabajo (es lo
+    // único que puede liberarlo); del fichero se degrada a needs_attention y se
+    // anota. (OP-02): una out_of_order / out_of_service importada no es vendible —
+    // «Desbloquear habitación» del Room Rack la devuelve al inventario.
+    const maintenanceStatus = rawMnt === "blocked" ? "needs_attention" : isMaintenanceStatus(rawMnt) ? rawMnt : "ok";
+    if (rawMnt === "blocked") importWarnings.push(`Habitación ${number}: maintenanceStatus «blocked» importado como «needs_attention» (el bloqueo lo pone una orden de trabajo).`);
+    const outOfInventory = roomStatus === "out_of_order" || roomStatus === "out_of_service";
     await prisma.room.create({
       data: {
         propertyId,
         roomTypeId,
         number,
         floor: fields.floor != null ? String(fields.floor) : null,
-        status: status as never,
-        sellable: true,
+        status: roomStatus as never,
+        housekeepingStatus,
+        maintenanceStatus,
+        sellable: !outOfInventory,
         active: true
       }
     });
@@ -1391,7 +1417,9 @@ async function materialiseOnboardingProject(
       roomTypes: roomTypeIdBySourceCode.size,
       rooms: roomsCreated,
       spaces: spacesCreated
-    }
+    },
+    /** Corrector L5 (OP-07): valores del fichero degradados al importar (p. ej. maintenanceStatus «blocked»). */
+    warnings: importWarnings
   };
 }
 
@@ -1473,16 +1501,33 @@ export function runCutoverDeltaImportDryRun(input: { context: UserContext; proje
   return plan;
 }
 
-export function approveGoLive(input: { context: UserContext; projectId: string; payload?: Record<string, unknown> }) {
+/**
+ * Corrector L5 (L5F-04): UN solo go-live. POST /onboarding/projects/:id/go-live ya
+ * no «aprueba» nada por su cuenta (antes devolvía approved:true sin cambiar
+ * estado ni paso): delega en la aprobación REAL de la propiedad materializada
+ * (backoffice approveGoLive → readiness recalculada, properties.go_live_at, paso
+ * `go_live` de la puesta en marcha, auditoría PropertyGoLiveApproved; exige
+ * property.go_live además de onboarding.go_live). Un proyecto sin propiedad
+ * aplicada responde 409 ONBOARDING_NOT_APPLIED.
+ */
+export async function approveGoLive(input: { context: UserContext; projectId: string; payload?: Record<string, unknown> }) {
   requirePermissions(input.context, ["onboarding.go_live"]);
-  requireProject(input.projectId);
-  const dataQuality = getDemoDataQuality();
-  const blocked = dataQuality.goLiveBlocked;
+  const project = requireProject(input.projectId);
+  const propertyId = project.propertyId ?? null;
+  const applied = project.status === "applied" || project.status === "completed";
+  if (!propertyId || !applied) {
+    const error = new ConflictError("El proyecto de onboarding aún no se ha aplicado a una propiedad: la salida en vivo se aprueba en Configuración › Puesta en marcha una vez materializada.");
+    error.details = { code: "ONBOARDING_NOT_APPLIED", projectId: project.id, status: project.status, propertyId };
+    throw error;
+  }
+  const approval = await approvePropertyGoLive({ context: input.context, propertyId, correlationId: createId("corr") });
   const result = {
     projectId: input.projectId,
-    approved: !blocked,
-    blocked,
-    blockingIssues: dataQuality.issues.filter((issue) => issue.severity === "blocking"),
+    propertyId,
+    approved: approval.status === "approved",
+    blocked: approval.status === "blocked",
+    blockingIssues: approval.status === "blocked" ? approval.blockers : [],
+    goLiveAt: approval.goLiveAt,
     payload: input.payload ?? {}
   };
   audit(input.context, "OnboardingGoLiveApproved", "onboarding_project", input.projectId, result);

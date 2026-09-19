@@ -160,6 +160,28 @@ export async function computeReservationBalance(
   return reduceBreakdown(folioIds, totals, currency);
 }
 
+/**
+ * Corrector L5 (OP-08): batched balanceDue PER FOLIO (three queries for the whole
+ * batch: folioLine groupBy + payment findMany + paymentRefund groupBy). The
+ * night-audit preflight uses it so «N folios liquidados se cerrarán en el cierre»
+ * counts the same folios close_settled_folios closes (that step measures the
+ * folio, not the reservation). Every requested id is present (0 without lines).
+ */
+export async function computeBalancesForFolios(folioIds: readonly string[]): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  const uniqueIds = Array.from(new Set(folioIds));
+  for (const id of uniqueIds) result.set(id, 0);
+  if (uniqueIds.length === 0) return result;
+  const totals = await loadFolioTotals(uniqueIds);
+  for (const id of uniqueIds) {
+    const charges = totals.chargesByFolio.get(id) ?? 0;
+    const payments = totals.paymentsByFolio.get(id) ?? 0;
+    const refunds = totals.refundsByFolio.get(id) ?? 0;
+    result.set(id, round2(charges - payments + refunds));
+  }
+  return result;
+}
+
 // Batched balanceDue for many reservations at once. Avoids N+1 by issuing a
 // fixed query budget regardless of reservation count:
 //   1 folio query (in clause) + 1 folioLine groupBy + 1 payment findMany

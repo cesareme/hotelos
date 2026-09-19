@@ -15,6 +15,13 @@ import type {
 
 const LIST_TAKE = 200;
 
+/**
+ * Tanda L5 (lote C): las escrituras de pasos aceptan un cliente de transacción
+ * para que el go-live escriba `properties.go_live_at` y complete el paso
+ * `go_live` de forma atómica (backoffice.service.ts approveGoLive).
+ */
+export type SetupStoreDb = Prisma.TransactionClient | typeof prisma;
+
 function asJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value ?? {})) as Prisma.InputJsonValue;
 }
@@ -121,9 +128,9 @@ function toSetupStepRecord(row: SetupStepRow): PropertySetupStepRecord {
 }
 
 /** Estado inicial `not_started` de cada paso del catálogo (idempotente: createMany + skipDuplicates). */
-export async function ensureSetupSteps(propertyId: string, stepCodes: readonly string[]): Promise<void> {
+export async function ensureSetupSteps(propertyId: string, stepCodes: readonly string[], db: SetupStoreDb = prisma): Promise<void> {
   if (stepCodes.length === 0) return;
-  await prisma.propertySetupStep.createMany({
+  await db.propertySetupStep.createMany({
     data: stepCodes.map((stepCode) => ({ propertyId, stepCode, status: "not_started", metadataJson: {} })),
     skipDuplicates: true
   });
@@ -147,10 +154,11 @@ export async function findSetupStep(propertyId: string, stepCode: string): Promi
 export async function upsertSetupStep(
   propertyId: string,
   stepCode: string,
-  data: { status: PropertySetupStepRecord["status"]; completedAt: Date | null; completedBy: string | null; metadataJson: Record<string, unknown> }
+  data: { status: PropertySetupStepRecord["status"]; completedAt: Date | null; completedBy: string | null; metadataJson: Record<string, unknown> },
+  db: SetupStoreDb = prisma
 ): Promise<PropertySetupStepRecord> {
   const payload = { status: data.status, completedAt: data.completedAt, completedBy: data.completedBy, metadataJson: asJson(data.metadataJson) };
-  const row = await prisma.propertySetupStep.upsert({
+  const row = await db.propertySetupStep.upsert({
     where: { propertyId_stepCode: { propertyId, stepCode } },
     create: { propertyId, stepCode, ...payload },
     update: payload

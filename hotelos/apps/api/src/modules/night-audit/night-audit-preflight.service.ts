@@ -29,9 +29,21 @@
 // Every visible text (title, detail, item hint) comes from
 // night-audit-preflight.texts.ts: Spanish without raw enum values or jargon
 // and money in es-ES (qa#4 of the Cocoa 22 walkthrough).
+//
+// Tanda L5 (lote L5-D): the checks are measured against the property's
+// BUSINESS DATE (business_dates.current_date, read once at the start), not
+// against the UTC calendar day: a hotel whose date is still yesterday counts
+// yesterday's arrivals and departures. Reservation dates are stored as UTC
+// midnight, so `today` is the UTC midnight of that date (no time-zone shift);
+// without a row the UTC calendar day is the fallback. The folio check also
+// counts the folios of cancelled / no-show / checked-out reservations that the
+// run's close_settled_folios step will close (balance 0, every charge
+// invoiced) — informational, count and status unchanged. runNightAudit now
+// consumes this preflight as a gate (night-audit-gate.ts).
 
 import { prisma } from "@hotelos/database";
-import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
+import { computeBalancesForFolios, computeBalancesForReservations } from "../folio/folio-balance.service.js";
+import { FISCAL_REFLECTION_LINE_TYPES } from "../invoicing/invoice-snapshot.js";
 import {
   PREFLIGHT_TEXTS as T,
   arrivalTimeHint,
@@ -39,7 +51,8 @@ import {
   countNoun,
   expectedArrivalHint,
   expectedDepartureHint,
-  formatEur
+  formatEur,
+  settledFoliosToCloseHint
 } from "./night-audit-preflight.texts.js";
 
 /**
@@ -50,10 +63,69 @@ import {
  */
 const SETTLED_STAY_STATUSES: ReadonlySet<string> = new Set(["cancelled", "no_show"]);
 
+/**
+ * Tanda L5 (lote L5-D): reservation statuses whose open folios the run's
+ * close_settled_folios step closes when settled (balance 0, every charge
+ * invoiced). Same set as night-audit.service.ts SETTLED_RESERVATION_STATUSES.
+ */
+const SETTLED_FOLIO_RESERVATION_STATUSES: ReadonlySet<string> = new Set(["cancelled", "no_show", "checked_out"]);
+
 /** Sentence appended to the open-folios detail for the non-blocking folios of cancelled / no-show reservations («» when none). Pure. */
 export function settledStayFoliosHint(count: number, owed: number): string {
   if (count <= 0) return "";
   return ` Además, ${countNoun(count, "folio", "folios")} de reservas canceladas o no presentadas ${count === 1 ? "conserva" : "conservan"} ${formatEur(owed)} sin cobrar: no ${count === 1 ? "bloquea" : "bloquean"} el cierre.`;
+}
+
+/**
+ * How many of `folioIds` have every billable charge documented by an issued /
+ * rectified invoice (the closeFolio `requireInvoiced` rule of
+ * folio.service.folioUninvoicedCharges), in TWO queries for the whole batch
+ * instead of two per folio: the preflight budget (l2-robustez MAX_OPS_PREFLIGHT)
+ * must not grow with the number of historical cancellations.
+ */
+async function countFoliosFullyInvoiced(folioIds: readonly string[]): Promise<number> {
+  if (folioIds.length === 0) return 0;
+  const invoices = await prisma.invoice.findMany({
+    where: { folioId: { in: [...folioIds] }, deletedAt: null, status: { in: ["issued", "rectified"] } },
+    select: { folioId: true }
+  });
+  const invoiced = new Set(invoices.map((row) => row.folioId).filter((id): id is string => Boolean(id)));
+  const remaining = folioIds.filter((id) => !invoiced.has(id));
+  if (remaining.length === 0) return folioIds.length;
+  const lines = await prisma.folioLine.findMany({
+    where: { folioId: { in: remaining }, deletedAt: null },
+    select: { folioId: true, type: true, total: true }
+  });
+  const withBillable = new Set<string>();
+  for (const line of lines) {
+    if (FISCAL_REFLECTION_LINE_TYPES.includes(line.type)) continue;
+    if (Math.abs(Number(line.total)) < 0.005) continue;
+    withBillable.add(line.folioId);
+  }
+  return invoiced.size + remaining.filter((id) => !withBillable.has(id)).length;
+}
+
+function dateOnlyUtc(iso: string): Date {
+  return new Date(`${iso}T00:00:00.000Z`);
+}
+
+/**
+ * Business date of the property (`YYYY-MM-DD`), read ONCE at the start of the
+ * preflight. Best effort: the preflight is still useful without it (the checks
+ * fall back to the UTC calendar day), so a failed lookup leaves it undefined —
+ * logged, never silent.
+ */
+async function readBusinessDate(propertyId: string): Promise<string | undefined> {
+  try {
+    const row = await prisma.businessDate.findUnique({ where: { propertyId } });
+    return row ? row.currentDate.toISOString().slice(0, 10) : undefined;
+  } catch (err) {
+    console.warn("[night-audit.preflight] businessDate lookup failed", {
+      propertyId,
+      error: err instanceof Error ? err.message : String(err)
+    });
+    return undefined;
+  }
 }
 
 export type PreflightStatus = "ok" | "warning" | "blocker";
@@ -133,7 +205,11 @@ const nameOf = (names: Map<string, string>, reservationId: string): string => na
 
 export async function buildPreflight(input: { propertyId: string }): Promise<PreflightResult> {
   const propertyId = input.propertyId;
-  const today = startOfDayUtc();
+  // Tanda L5 (L5-D): the day under review is the property's business date
+  // (UTC midnight of current_date, like every reservation date); the UTC
+  // calendar day only when the property has no business_dates row yet.
+  const businessDate = await readBusinessDate(propertyId);
+  const today = businessDate ? dateOnlyUtc(businessDate) : startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
 
   // ---- 1) Llegadas pendientes -----------------------------------------
@@ -192,6 +268,16 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   const settledStayFolios = anyWithBalance.filter((f) => SETTLED_STAY_STATUSES.has(f.reservation.status));
   const totalOwed = foliosWithBalance.reduce((s, f) => s + owedOf(f), 0);
   const settledOwed = settledStayFolios.reduce((s, f) => s + owedOf(f), 0);
+  // Tanda L5 (L5-D): folios of closed reservations (cancelled / no-show /
+  // checked-out) at balance 0 with every charge invoiced — the run's
+  // close_settled_folios step closes them. Informational only: count and
+  // status of the check stay the blocking ones.
+  // Corrector L5 (OP-08): measured PER FOLIO (computeBalancesForFolios), like the
+  // step — the reservation-level balance above can be 0 while one folio of the
+  // reservation still owes and another is in credit.
+  const settledCandidates = openFolios.filter((f) => SETTLED_FOLIO_RESERVATION_STATUSES.has(f.reservation.status));
+  const folioBalances = await computeBalancesForFolios(settledCandidates.map((f) => f.id));
+  const settledToClose = await countFoliosFullyInvoiced(settledCandidates.filter((f) => Math.abs(folioBalances.get(f.id) ?? 0) < 0.005).map((f) => f.id));
   const checkFolios: PreflightCheck = {
     id: "open_folios_with_balance",
     title: T.open_folios_with_balance.title,
@@ -199,7 +285,8 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     count: foliosWithBalance.length,
     detail:
       (foliosWithBalance.length === 0 ? T.open_folios_with_balance.ok : T.open_folios_with_balance.some(foliosWithBalance.length, totalOwed)) +
-      settledStayFoliosHint(settledStayFolios.length, settledOwed),
+      settledStayFoliosHint(settledStayFolios.length, settledOwed) +
+      settledFoliosToCloseHint(settledToClose),
     items: await namesForReservations(foliosWithBalance.slice(0, 5).map((f) => f.reservationId)).then((names) =>
       foliosWithBalance.slice(0, 5).map((f) => ({
         ref: f.reservationId,
@@ -229,7 +316,12 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
           distinct: ["reservationId"]
         });
   const postedTodaySet = new Set(postedToday.map((f) => f.reservationId));
-  const unpostedCount = inHouse.filter((r) => !postedTodaySet.has(r.id)).length;
+  // Tanda L5 · integrador (INT-L5-01): same rule as the room-charge step of the
+  // run — a reservation whose booked arrival is after the business date is not
+  // in house that night, so its missing charge is not «unposted». No stays
+  // query here (the check is a warning; the run also honours an earlier
+  // physical check-in, which can only ADD a charge, never flag one as missing).
+  const unpostedCount = inHouse.filter((r) => !postedTodaySet.has(r.id) && r.arrivalDate.getTime() <= today.getTime()).length;
   const checkUnposted: PreflightCheck = {
     id: "unposted_room_charges",
     title: T.unposted_room_charges.title,
@@ -362,20 +454,7 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   const canClose = blockers.length === 0;
   const blockingMessage = canClose ? undefined : composeBlockingMessage(blockers);
 
-  // Business date (best effort): the preflight is still useful without it, so
-  // a failed lookup leaves it undefined — but logged, never silent.
-  let businessDate: string | undefined;
-  try {
-    const bd = await prisma.businessDate.findUnique({ where: { propertyId } });
-    if (bd) businessDate = bd.currentDate.toISOString().slice(0, 10);
-  } catch (err) {
-    console.warn("[night-audit.preflight] businessDate lookup failed", {
-      propertyId,
-      error: err instanceof Error ? err.message : String(err)
-    });
-    businessDate = undefined;
-  }
-
+  // `businessDate` is the row read at the start (the checks were measured against it).
   return {
     propertyId,
     businessDate,

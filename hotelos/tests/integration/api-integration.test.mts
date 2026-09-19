@@ -107,6 +107,18 @@ async function listPartes(app: ApiApp, reservationId: string, headers: Headers =
   return (await getJson<Array<{ id: string; status: string }>>(app, `/compliance/spain/reservations/${reservationId}/guest-register`, headers)) ?? [];
 }
 
+/**
+ * ses_hospedajes_submissions rows of the given partes (Tanda L5 · L5-B2: a
+ * refusal never creates one, a blocked establishment leaves exactly one that
+ * later calls reuse). Read straight from Prisma: the list route is paginated
+ * per property and has no per-parte filter.
+ */
+async function countSesRows(recordIds: string[]): Promise<number> {
+  if (recordIds.length === 0) return 0;
+  const { prisma } = await import("@hotelos/database");
+  return prisma.sesHospedajesSubmission.count({ where: { guestRegisterRecordId: { in: recordIds } } });
+}
+
 /** First OPEN folio reachable through the API (POST /folios/:id/lines needs one). */
 async function findOpenFolioId(app: ApiApp): Promise<string | null> {
   for (const propertyId of (await listPropertyIds(app)).slice(0, 4)) {
@@ -529,12 +541,17 @@ describe("API integration (app.inject)", () => {
     });
   });
 
-  it("POST /properties/:id/ses/submissions with partes: every parte awaited — cuid ids when queued, 409 SES_ESTABLISHMENT_INCOMPLETE with details.missing otherwise", async (t) => {
-    // This case WRITES through the pipeline: a queued row per parte when the
-    // establishment profile is complete, or ONE blocked `failed` row
-    // (SES_ESTABLISHMENT_INCOMPLETE, re-queued by the scheduler once the profile
-    // is fixed) when it is not — exactly what a check-in does. Opt out on a box
-    // whose SES history must stay untouched with INTEGRATION_SKIP_SES_WRITES=true.
+  it("POST /properties/:id/ses/submissions with partes: every parte awaited — queued ids when valid, typed 409 (GUEST_REGISTER_INVALID without a row · SES_ESTABLISHMENT_INCOMPLETE with ONE reused row · SES_DISABLED) otherwise", async (t) => {
+    // This case WRITES through the pipeline. Tanda L5 (L5-B2) made the queue
+    // honest: an invalid parte (missing_data / ready_to_sign…) is refused with
+    // 409 GUEST_REGISTER_INVALID and NO ses_hospedajes_submissions row (the
+    // demo fixture prop_123 · grr_843b401b is missing_data, so this is the
+    // branch the demo box exercises; before L5 every run left one more failed
+    // row: 126 rows of the same parte); a valid parte with an incomplete
+    // establishment leaves ONE blocked `failed` row that later calls REUSE
+    // (same submissionId); a valid parte with a complete establishment is
+    // queued (cuid ids). Opt out on a box whose SES history must stay
+    // untouched with INTEGRATION_SKIP_SES_WRITES=true.
     if (process.env.INTEGRATION_SKIP_SES_WRITES === "true") {
       t.skip("INTEGRATION_SKIP_SES_WRITES=true");
       return;
@@ -553,14 +570,22 @@ describe("API integration (app.inject)", () => {
       }
       const establishment = await getJson<{ ok: boolean; missing: string[] }>(app, `/properties/${fixture.propertyId}/ses/establishment`, headers);
       assert.ok(establishment, `GET /properties/${fixture.propertyId}/ses/establishment failed`);
+      const partes = await listPartes(app, fixture.reservationId, headers);
+      const SENDABLE = new Set(["ready_to_submit", "signed", "corrected"]);
+      const sendable = partes.filter((parte) => SENDABLE.has(parte.status)).length;
+      const historical = partes.filter((parte) => ["accepted", "annulled", "expired"].includes(parte.status)).length;
+      const rowsBefore = await countSesRows(partes.map((parte) => parte.id));
       const res = await app.inject({
         method: "POST",
         url: `/properties/${fixture.propertyId}/ses/submissions`,
         headers,
         payload: { reservationId: fixture.reservationId }
       });
-      if (establishment.ok) {
-        assert.equal(res.statusCode, 200, `complete establishment → ${res.statusCode}: ${res.body}`);
+      const rowsAfter = await countSesRows(partes.map((parte) => parte.id));
+      if (res.statusCode === 200) {
+        // Only reachable when at least one parte is sendable and the establishment is complete.
+        assert.ok(establishment.ok, `200 with an incomplete establishment (${establishment.missing.join(", ")}): ${res.body}`);
+        assert.ok(sendable > 0, `200 without a sendable parte (statuses ${partes.map((parte) => parte.status).join(", ")}): ${res.body}`);
         const body = JSON.parse(res.body) as {
           status: string;
           queued: number;
@@ -577,20 +602,70 @@ describe("API integration (app.inject)", () => {
           assert.ok(typeof submission.submissionType === "string" && submission.submissionType.length > 0);
           assert.equal(submission.status, "queued");
         }
-      } else {
-        assert.equal(res.statusCode, 409, `incomplete establishment (${establishment.missing.join(", ")}) → ${res.statusCode}: ${res.body}`);
-        const body = JSON.parse(res.body) as {
-          error: string;
-          details?: { code?: string; missing?: string[]; submissionId?: string | null; status?: string; queued?: number; failed?: Array<{ code: string; submissionId: string | null }> };
+        return;
+      }
+      assert.equal(res.statusCode, 409, `establishment ${establishment.ok ? "complete" : `incomplete (${establishment.missing.join(", ")})`}, partes ${partes.map((parte) => parte.status).join(", ")} → ${res.statusCode}: ${res.body}`);
+      const body = JSON.parse(res.body) as {
+        error: string;
+        details?: {
+          code?: string;
+          missing?: string[];
+          submissionId?: string | null;
+          status?: string;
+          queued?: number;
+          failed?: Array<{ guestRegisterRecordId: string; code: string; submissionId: string | null }>;
         };
-        assert.equal(body.error, "Conflict");
-        assert.equal(body.details?.code, "SES_ESTABLISHMENT_INCOMPLETE");
-        assert.deepEqual(body.details?.missing, establishment.missing, "details.missing must be the establishment's own list");
-        assert.match(body.details?.submissionId ?? "", CUID, `blocked submission id is not a persisted cuid: ${String(body.details?.submissionId)}`);
-        assert.equal(body.details?.status, "failed");
-        assert.equal(body.details?.queued, 0);
-        assert.equal(body.details?.failed?.length, fixture.partes, "one failed[] entry per parte");
-        assert.ok(body.details?.failed?.every((entry) => entry.code === "SES_ESTABLISHMENT_INCOMPLETE" && CUID.test(entry.submissionId ?? "")));
+      };
+      assert.equal(body.error, "Conflict");
+      assert.equal(body.details?.status, "failed");
+      assert.equal(body.details?.queued, 0);
+      assert.equal(body.details?.failed?.length, fixture.partes, "one failed[] entry per parte");
+      const codes = new Set((body.details?.failed ?? []).map((entry) => entry.code));
+      if (body.details?.code === "SES_QUEUE_FAILED") {
+        assert.ok(codes.size > 1, `SES_QUEUE_FAILED only with mixed causes: ${res.body}`);
+      } else {
+        assert.equal(codes.size, 1, `a single-cause 409 carries that code: ${res.body}`);
+        assert.ok(codes.has(body.details?.code ?? ""), `details.code must be the per-parte code: ${res.body}`);
+      }
+      for (const entry of body.details?.failed ?? []) {
+        switch (entry.code) {
+          case "GUEST_REGISTER_INVALID":
+          case "GUEST_REGISTER_NOT_QUEUEABLE":
+          case "SES_DISABLED":
+            // Refused honestly: no row was created for this parte.
+            assert.equal(entry.submissionId, null, `${entry.code} must not leave a row: ${res.body}`);
+            break;
+          case "SES_ESTABLISHMENT_INCOMPLETE":
+          case "ISSUER_TAX_ID_MISSING":
+            assert.ok(!establishment.ok, `${entry.code} with a complete establishment: ${res.body}`);
+            assert.deepEqual(body.details?.missing, establishment.missing, "details.missing must be the establishment's own list");
+            assert.match(entry.submissionId ?? "", CUID, `blocked submission id is not a persisted cuid: ${String(entry.submissionId)}`);
+            break;
+          case "SES_SUBMISSION_IN_FLIGHT":
+            assert.match(entry.submissionId ?? "", CUID, `the open row id travels: ${String(entry.submissionId)}`);
+            break;
+          default:
+            assert.fail(`unexpected per-parte code ${entry.code}: ${res.body}`);
+        }
+      }
+      if (codes.has("GUEST_REGISTER_INVALID") || codes.has("GUEST_REGISTER_NOT_QUEUEABLE") || codes.has("SES_DISABLED")) {
+        assert.ok(sendable + historical <= fixture.partes);
+      }
+      // No new rows for refused partes; at most ONE blocked row per parte for
+      // the recoverable cause, and a second identical call reuses it.
+      assert.ok(rowsAfter - rowsBefore <= fixture.partes, `rows grew by ${rowsAfter - rowsBefore} for ${fixture.partes} partes`);
+      const refusedOnly = [...codes].every((code) => ["GUEST_REGISTER_INVALID", "GUEST_REGISTER_NOT_QUEUEABLE", "SES_DISABLED"].includes(code));
+      if (refusedOnly) assert.equal(rowsAfter, rowsBefore, "a refusal never creates a ses_hospedajes_submissions row");
+      if (codes.has("SES_ESTABLISHMENT_INCOMPLETE") || codes.has("ISSUER_TAX_ID_MISSING")) {
+        const again = await app.inject({ method: "POST", url: `/properties/${fixture.propertyId}/ses/submissions`, headers, payload: { reservationId: fixture.reservationId } });
+        assert.equal(again.statusCode, 409, again.body);
+        const againBody = JSON.parse(again.body) as { details?: { failed?: Array<{ guestRegisterRecordId: string; code: string; submissionId: string | null }> } };
+        const blockedIds = new Map((body.details?.failed ?? []).filter((entry) => entry.submissionId).map((entry) => [entry.guestRegisterRecordId, entry.submissionId]));
+        for (const entry of againBody.details?.failed ?? []) {
+          if (!blockedIds.has(entry.guestRegisterRecordId)) continue;
+          assert.equal(entry.submissionId, blockedIds.get(entry.guestRegisterRecordId), "the blocked row is reused, never duplicated");
+        }
+        assert.equal(await countSesRows(partes.map((parte) => parte.id)), rowsAfter, "a repeated blocked call adds no row");
       }
     });
   });

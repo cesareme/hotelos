@@ -395,15 +395,84 @@ export function sesEstablishmentIssueLabel(issue: string): string {
   return SES_ESTABLISHMENT_ISSUE_LABELS[issue] ?? issue;
 }
 
+// Tanda L5 (L5-B2): the pipeline refuses WITHOUT creating a row when the
+// property has SES switched off or the parte does not validate over its
+// persisted columns; both travel as typed 409 codes (details.submissionId null).
+/** 409 code when Property.sesHospedajesEnabled is false: nothing queued, no row. */
+export const SES_DISABLED_CODE = "SES_DISABLED";
+/** 409 code when the parte fails validateSpainGuestRegisterRecord: nothing queued, no row. */
+export const GUEST_REGISTER_INVALID_CODE = "GUEST_REGISTER_INVALID";
+
 export type SesQueueOutcome =
   | { kind: "queued"; queued: number }
   | { kind: "no_records" }
   | { kind: "partial"; queued: number; failed: SesQueueFailure[]; missing: string[] }
   | { kind: "incomplete"; missing: string[]; message: string; failed: SesQueueFailure[] }
+  /** SES.HOSPEDAJES is switched off for the property (SES_DISABLED). */
+  | { kind: "disabled"; message: string; failed: SesQueueFailure[] }
+  /** The parte is incomplete (GUEST_REGISTER_INVALID): `issues` are the validator codes, labelled by guestRegisterIssueLabel. */
+  | { kind: "invalid"; message: string; issues: string[]; failed: SesQueueFailure[] }
   | { kind: "error"; message: string; code: string | null; failed: SesQueueFailure[] };
 
 function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => typeof value === "string" && value.length > 0)));
+}
+
+/** Spanish labels of the validator issue codes (packages/compliance guest-register-validator). */
+const GUEST_REGISTER_ISSUE_LABELS: Record<string, string> = {
+  missing_firstName: "nombre",
+  missing_surname1: "primer apellido",
+  missing_sex: "sexo",
+  missing_nationality: "nacionalidad",
+  missing_dateOfBirth: "fecha de nacimiento",
+  missing_documentType: "tipo de documento",
+  missing_documentNumber: "número de documento",
+  missing_documentSupportNumber: "número de soporte del documento",
+  missing_residenceFullAddress: "dirección de residencia",
+  missing_residenceLocality: "localidad de residencia",
+  missing_residenceCountry: "país de residencia",
+  missing_phone_contact: "teléfono de contacto",
+  missing_travellerCount: "número de viajeros",
+  missing_contractReference: "referencia del contrato",
+  missing_checkinAt: "fecha de entrada",
+  missing_providedByAdultGuestId: "adulto responsable del menor",
+  missing_kinshipRelationIfMinor: "parentesco del menor",
+  signature_required: "firma del viajero",
+  id_image_stored_blocked: "imagen del documento almacenada (no permitida)",
+  id_image_discard_event_missing: "descarte de la imagen del documento",
+  cvv_storage_blocked: "CVV almacenado (no permitido)",
+  pan_storage_blocked: "PAN almacenado (no permitido)"
+};
+
+export function guestRegisterIssueLabel(code: string): string {
+  return GUEST_REGISTER_ISSUE_LABELS[code] ?? code;
+}
+
+/**
+ * Validator codes of a GUEST_REGISTER_INVALID refusal. The route only forwards
+ * the per-parte message («El parte de viajeros no se puede enviar: a, b.»), so
+ * the codes are read back from it; a message without the marker yields [].
+ */
+export function sesInvalidIssuesFromMessages(messages: string[]): string[] {
+  const codes: string[] = [];
+  for (const message of messages) {
+    const match = /no se puede enviar:\s*(.+?)\.?$/.exec(message);
+    if (!match) continue;
+    for (const code of match[1].split(",")) {
+      const trimmed = code.trim();
+      if (/^[a-z_]+$/i.test(trimmed)) codes.push(trimmed);
+    }
+  }
+  return uniqueStrings(codes);
+}
+
+/** "disabled" / "invalid" outcome for the two Tanda L5 refusal codes; null for any other code. */
+function sesRefusalOutcome(code: string | null, message: string, failed: SesQueueFailure[]): SesQueueOutcome | null {
+  if (code === SES_DISABLED_CODE) return { kind: "disabled", message, failed };
+  if (code === GUEST_REGISTER_INVALID_CODE) {
+    return { kind: "invalid", message, issues: sesInvalidIssuesFromMessages([message, ...sesFailureMessages(failed)]), failed };
+  }
+  return null;
 }
 
 /** Establishment fields collected from every failed parte (deduplicated, order kept). */
@@ -444,6 +513,8 @@ export function sesQueueOutcomeFromResponse(response: SesQueueResponse | null | 
   if (isEstablishmentFailure(failed, missing, firstCode)) {
     return { kind: "incomplete", missing, message: message || "El establecimiento no está completo para SES.HOSPEDAJES.", failed };
   }
+  const refusal = sesRefusalOutcome(firstCode, message || "El parte de viajeros no se pudo encolar.", failed);
+  if (refusal) return refusal;
   return { kind: "error", message: message || "El parte de viajeros no se pudo encolar.", code: firstCode, failed };
 }
 
@@ -465,6 +536,9 @@ export function sesQueueOutcomeFromError(error: unknown): SesQueueOutcome {
     if (error.status === 409 && isEstablishmentFailure(failed, missing, code)) {
       return { kind: "incomplete", missing, message: error.message, failed };
     }
+    // Tanda L5: SES switched off / parte incomplete → typed outcomes (no row was created).
+    const refusal = error.status === 409 ? sesRefusalOutcome(code, error.message, failed) : null;
+    if (refusal) return refusal;
     const messages = sesFailureMessages(failed);
     return { kind: "error", message: messages.length > 0 ? messages.join(" · ") : error.message, code, failed };
   }

@@ -3,6 +3,9 @@ import { demoStore, type UserContext, type WorkOrderMediaRecord, type WorkOrderR
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { isPlatformAdmin, requirePermissions } from "../auth/auth.service.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
+// Tanda L5 (lote A): bloqueo / liberación de habitación por la transición unificada
+// (block_maintenance / release_maintenance), idempotente y auditada.
+import { applyRoomTransition, type RoomStateSnapshot } from "../housekeeping/room-state.service.js";
 
 // Maintenance work orders now PERSIST TO PRISMA (work_orders / work_order_media /
 // rooms) so the Prisma-backed maintenance dashboard reflects them. Previously
@@ -50,6 +53,16 @@ function mirrorOrder(order: WorkOrderRecord): void {
 function mirrorRoomStatus(roomId: string, patch: Record<string, unknown>): void {
   const room = demoStore.rooms.find((r) => r.id === roomId);
   if (room) Object.assign(room, patch);
+}
+
+/** Espejo del demo store con el estado resultante de una transición. */
+function mirrorRoomState(roomId: string, state: RoomStateSnapshot): void {
+  mirrorRoomStatus(roomId, {
+    status: state.status,
+    housekeepingStatus: state.housekeepingStatus,
+    maintenanceStatus: state.maintenanceStatus,
+    sellable: state.sellable
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -191,11 +204,14 @@ export async function createWorkOrder(input: {
   mirrorOrder(order);
 
   if (input.blocksRoom && room) {
-    await prisma.room.update({
-      where: { id: room.id },
-      data: { sellable: false, maintenanceStatus: "blocked", status: "out_of_order" }
+    const blocked = await applyRoomTransition({
+      roomId: room.id,
+      event: "block_maintenance",
+      context: input.context,
+      correlationId: input.correlationId,
+      reason: `Parte ${order.id}: ${input.title}`
     });
-    mirrorRoomStatus(room.id, { sellable: false, maintenanceStatus: "blocked", status: "out_of_order" });
+    mirrorRoomState(room.id, blocked.state);
   }
 
   recordAuditEvent({
@@ -350,11 +366,14 @@ export async function blockRoomForMaintenance(input: {
 
   const before = mapOrder(existing);
   const updated = await prisma.workOrder.update({ where: { id: existing.id }, data: { blocksRoom: true } });
-  await prisma.room.update({
-    where: { id: room.id },
-    data: { sellable: false, maintenanceStatus: "blocked", status: "out_of_order" }
+  const blocked = await applyRoomTransition({
+    roomId: room.id,
+    event: "block_maintenance",
+    context: input.context,
+    correlationId: input.correlationId,
+    reason: `Parte ${existing.id}: bloqueo de habitación`
   });
-  mirrorRoomStatus(room.id, { sellable: false, maintenanceStatus: "blocked", status: "out_of_order" });
+  mirrorRoomState(room.id, blocked.state);
   const order = mapOrder(updated);
   mirrorOrder(order);
 
@@ -411,22 +430,16 @@ export async function resolveWorkOrder(input: {
   });
 
   if (input.releaseRoom && room) {
-    const nextStatus = room.status === "out_of_order" ? "dirty" : room.status;
-    await prisma.room.update({
-      where: { id: room.id },
-      data: {
-        sellable: true,
-        maintenanceStatus: "ok",
-        status: nextStatus,
-        ...(room.status === "out_of_order" ? { housekeepingStatus: "dirty" } : {})
-      }
+    // release_maintenance: mnt ok, vendible, SUCIA (tras la intervención se limpia);
+    // ocupada si hay alguien alojado, libre/sucia si no.
+    const released = await applyRoomTransition({
+      roomId: room.id,
+      event: "release_maintenance",
+      context: input.context,
+      correlationId: input.correlationId,
+      reason: `Parte ${existing.id} resuelto: habitación liberada`
     });
-    mirrorRoomStatus(room.id, {
-      sellable: true,
-      maintenanceStatus: "ok",
-      status: nextStatus,
-      ...(room.status === "out_of_order" ? { housekeepingStatus: "dirty" } : {})
-    });
+    mirrorRoomState(room.id, released.state);
   }
   const order = mapOrder(updated);
   mirrorOrder(order);

@@ -236,7 +236,9 @@ async function aggregateProperty(
       where: {
         propertyId,
         // SubmissionStatus enum: queued | sent | accepted | rejected | failed | annulled
-        status: { in: ["queued", "sent", "rejected", "failed"] }
+        status: { in: ["queued", "sent", "rejected", "failed"] },
+        // Corrector L5 (CS-04): las descartadas por el operador (SES_DISCARDED) no están pendientes.
+        OR: [{ errorCode: null }, { errorCode: { not: "SES_DISCARDED" } }]
       }
     }),
     prisma.reservation.count({ where: { propertyId, status: "draft" } }),

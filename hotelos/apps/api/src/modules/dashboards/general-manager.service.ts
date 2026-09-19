@@ -571,7 +571,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
       select: { acknowledgedAt: true }
     }), null),
     safe("compliance.sesPending", prisma.sesHospedajesSubmission.count({
-      where: { propertyId, status: { in: SES_PENDING_STATUSES as unknown as Array<"queued"> } }
+      // Corrector L5 (CS-04, aditivo): las descartadas por el operador (SES_DISCARDED) no están pendientes.
+      where: { propertyId, status: { in: SES_PENDING_STATUSES as unknown as Array<"queued"> }, OR: [{ errorCode: null }, { errorCode: { not: "SES_DISCARDED" } }] }
     }), 0),
     safe("compliance.tbaiPending", prisma.tbaiSubmission.count({
       where: { propertyId, status: { in: FISCAL_PENDING_STATUSES } }

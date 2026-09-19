@@ -133,3 +133,50 @@ export const PREFLIGHT_TEXTS = Object.freeze({
 export function blockingMessage(blockers: ReadonlyArray<{ count: number | null; title: string }>): string {
   return `No puedes cerrar todavía: ${blockers.map((b) => `${b.count ?? "—"} ${b.title.toLowerCase()}`).join(", ")}.`;
 }
+
+// ---------------------------------------------------------------------------
+// Tanda L5 (lote L5-D): folios of cancelled / no-show / checked-out reservations
+// («reservas cerradas»: the stay is over, nothing of it moves tonight).
+// ---------------------------------------------------------------------------
+
+/** What a closed reservation is, in the operator's words (same wording in the preflight and in the run). */
+const CLOSED_RESERVATIONS = "reservas canceladas, no presentadas o con salida hecha";
+
+/**
+ * Sentence appended to the open-folios detail: folios of closed reservations
+ * at balance 0 with every charge invoiced, which the close_settled_folios step
+ * of the run will close («» when none). Pure.
+ */
+export function settledFoliosToCloseHint(count: number): string {
+  if (count <= 0) return "";
+  return ` ${countNoun(count, "folio liquidado", "folios liquidados")} de ${CLOSED_RESERVATIONS} se ${count === 1 ? "cerrará" : "cerrarán"} en el cierre del día.`;
+}
+
+export type SettledFoliosFigures = { closed: number; pendingInvoice: number; withBalance: number; totalWithBalance: number };
+
+/** Detail of the close_settled_folios step («3 folios liquidados de … cerrados; 1 con cargos sin facturar; 2 conservan 445,00 € sin cobrar.»). Pure. */
+export function settledFoliosStepDetail(figures: SettledFoliosFigures): string {
+  const parts: string[] = [];
+  parts.push(`${countNoun(figures.closed, "folio liquidado", "folios liquidados")} de ${CLOSED_RESERVATIONS} ${figures.closed === 1 ? "cerrado" : "cerrados"}`);
+  if (figures.pendingInvoice > 0) parts.push(`${figures.pendingInvoice} con cargos sin facturar`);
+  if (figures.withBalance > 0) parts.push(`${figures.withBalance} ${figures.withBalance === 1 ? "conserva" : "conservan"} ${formatEur(figures.totalWithBalance)} sin cobrar`);
+  return `${parts.join("; ")}.`;
+}
+
+/**
+ * Warnings of the run report for what the step could NOT close: folios of
+ * closed reservations with a balance and folios settled but not invoiced.
+ * Empty when everything closed. Pure.
+ */
+export function settledFoliosWarnings(figures: Pick<SettledFoliosFigures, "pendingInvoice" | "withBalance" | "totalWithBalance">): string[] {
+  const out: string[] = [];
+  if (figures.withBalance > 0) {
+    out.push(`${countNoun(figures.withBalance, "folio", "folios")} de reservas cerradas ${figures.withBalance === 1 ? "conserva" : "conservan"} ${formatEur(figures.totalWithBalance)} sin cobrar.`);
+  }
+  if (figures.pendingInvoice > 0) {
+    out.push(
+      `${countNoun(figures.pendingInvoice, "folio liquidado", "folios liquidados")} de reservas cerradas ${figures.pendingInvoice === 1 ? "conserva" : "conservan"} cargos sin facturar: emite la factura para ${figures.pendingInvoice === 1 ? "cerrarlo" : "cerrarlos"}.`
+    );
+  }
+  return out;
+}

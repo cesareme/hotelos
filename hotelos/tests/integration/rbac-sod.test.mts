@@ -490,10 +490,18 @@ describe("Tanda 8a · L2 · cierre del día: corre ≠ revisa; reapertura con mo
     assert.ok(seeded, seedError ?? "seed failed");
     const byRec = await inject("POST", `/properties/${A}/night-audit/run`, s("rec"), {});
     assert.equal(byRec.status, 403, byRec.text.slice(0, 300));
-    const run = await inject("POST", `/properties/${A}/night-audit/run`, s("na"), {});
+    // Tanda L5 (L5-D): the preflight is a gate. The fixtures of this suite are
+    // in-house stays (2026-09-15 → 2026-09-17) past their departure, so the
+    // plain close is a 409 NIGHT_AUDIT_PREFLIGHT_BLOCKED and the auditor
+    // forces it with a reason (audited NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN).
+    const blocked = await inject("POST", `/properties/${A}/night-audit/run`, s("na"), {});
+    assert.equal(blocked.status, 409, blocked.text.slice(0, 400));
+    assert.equal(blocked.body.details?.code, "NIGHT_AUDIT_PREFLIGHT_BLOCKED");
+    const run = await inject("POST", `/properties/${A}/night-audit/run`, s("na"), { force: true, reasonText: "prueba de integración: estancias de la fixture con salida pasada" });
     assert.equal(run.status, 200, run.text.slice(0, 400));
     assert.equal(run.body.status, "completed");
     assert.equal(run.body.startedBy, USERS.na.id);
+    assert.ok((run.body.report as { preflightOverride?: { reasonText?: string } } | null)?.preflightOverride?.reasonText, "the forced close carries the override in its report");
     runId = String(run.body.id);
   });
 

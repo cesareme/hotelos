@@ -141,9 +141,14 @@ export type ReadinessCheck = {
 
 export type PropertyReadiness = {
   propertyId: string;
+  /** `ready` solo con comprobaciones calculadas y ninguna bloqueante pendiente. */
   status: "ready" | "blocked";
   blockingCount: number;
   checks: ReadinessCheck[];
+  /** Tanda L5 (lote C): instante del último cálculo persistido (el GET recalcula al superar la ventana). */
+  computedAt: string | null;
+  /** Tanda L5 (lote C): fecha de aprobación de la salida en vivo (properties.go_live_at); null sin aprobar. */
+  goLiveAt: string | null;
 };
 
 export function fetchPropertyReadiness(propertyId = getActivePropertyId()) {
@@ -152,4 +157,25 @@ export function fetchPropertyReadiness(propertyId = getActivePropertyId()) {
 
 export function recalculatePropertyReadiness(propertyId = getActivePropertyId()) {
   return apiRequest<PropertyReadiness>(`/backoffice/properties/${propertyId}/readiness/recalculate`, { method: "POST", body: {} });
+}
+
+// --- Go-live (POST /backoffice/properties/:propertyId/go-live · property.go_live) ---
+
+export type GoLiveSetupStep = {
+  id: string;
+  propertyId: string;
+  stepCode: string;
+  status: "not_started" | "in_progress" | "completed" | "blocked" | "needs_review";
+  completedAt?: string;
+  completedBy?: string;
+  metadataJson: Record<string, unknown>;
+};
+
+/** Tanda L5 (lote C): la aprobación recalcula, y si no queda ninguna bloqueante escribe goLiveAt y completa el paso `go_live`. */
+export type GoLiveApproval =
+  | { status: "blocked"; propertyId: string; blockers: ReadinessCheck[]; goLiveAt: string | null }
+  | { status: "approved"; propertyId: string; approvedAt: string; goLiveAt: string; alreadyLive: boolean; step: GoLiveSetupStep | null };
+
+export function approvePropertyGoLive(propertyId = getActivePropertyId()) {
+  return apiRequest<GoLiveApproval>(`/backoffice/properties/${propertyId}/go-live`, { method: "POST", body: {} });
 }

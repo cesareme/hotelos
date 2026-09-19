@@ -1,5 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
+// Tanda L5 (lote A): la lectura del estado de habitación pasa por el helper único.
+import { roomStateOf, type HousekeepingStatus } from "../housekeeping/room-state.service.js";
 
 /** Prisma client or interactive-transaction client (re-validation under a row lock). */
 export type InventoryDb = Prisma.TransactionClient | typeof prisma;
@@ -29,6 +31,12 @@ export type RoomAssignmentValidation = {
    */
   notes?: string[];
   roomStatus: "clean_inspected" | "clean" | "dirty" | "occupied" | "blocked";
+  /**
+   * Tanda L5 (aditivo): limpieza por `housekeepingStatus` (dirty | clean |
+   * inspected) en cualquier ocupación; null cuando la habitación no existe.
+   * Informativo: `allowed` NO depende de ella (una sucia no bloquea).
+   */
+  cleanliness: HousekeepingStatus | null;
   maintenanceBlock: boolean;
   roomId?: string;
 };
@@ -51,16 +59,23 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
       warnings: ["La habitación no existe en esta propiedad."],
       notes: [],
       roomStatus: "blocked",
+      cleanliness: null,
       maintenanceBlock: true
     };
   }
 
   const warnings: string[] = [];
   const notes: string[] = [];
-  const maintenanceBlock = room.maintenanceStatus === "blocked" || !room.sellable;
+  const state = roomStateOf(room);
+  const maintenanceBlock = state.isBlocked;
 
   if (maintenanceBlock) {
     warnings.push("La habitación está bloqueada por mantenimiento o no es vendible.");
+  } else if (state.occupancy === "out_of_order" || state.occupancy === "out_of_service") {
+    // Corrector L5 (OP-02): una fuera de servicio / fuera de orden sin bloqueo de
+    // mantenimiento (importación de onboarding, «Bloquear habitación» del Room Rack)
+    // tampoco se asigna: `status` es la ocupación / disponibilidad.
+    warnings.push(state.occupancy === "out_of_service" ? "La habitación está fuera de servicio." : "La habitación está fuera de orden.");
   }
   if (room.status === "occupied") {
     // REC-03: `occupied` is only a conflict when an in-house reservation OTHER
@@ -115,14 +130,15 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
     warnings.push(`La habitación ya está asignada a la reserva ${conflictingReservation.code}.`);
   }
 
+  // Tanda L5: derivado de roomStateOf (ocupación por `status`, limpieza por hk).
   const roomStatus: RoomAssignmentValidation["roomStatus"] =
-    room.status === "occupied"
+    state.occupancy === "occupied"
       ? "occupied"
       : maintenanceBlock
         ? "blocked"
-        : room.housekeepingStatus === "inspected"
+        : state.cleanliness === "inspected"
           ? "clean_inspected"
-          : room.housekeepingStatus === "clean"
+          : state.cleanliness === "clean"
             ? "clean"
             : "dirty";
 
@@ -131,6 +147,7 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
     warnings,
     notes,
     roomStatus,
+    cleanliness: state.cleanliness,
     maintenanceBlock,
     roomId: room.id
   };

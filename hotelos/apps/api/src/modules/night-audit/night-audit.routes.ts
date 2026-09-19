@@ -12,6 +12,8 @@
 // `runs/:runId/reopen` needs night_audit.reopen with a reason code of
 // REOPEN_REASON_CODES (≤ 7 days with the key, later the day_reopen approval
 // of another person). Bodies are zod-validated here (strict, Spanish).
+// Tanda L5 (L5-D): `run` takes an optional { force, reasonText } body —
+// NightAuditRunSchema — to close over the preflight blockers with a reason.
 
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
@@ -23,6 +25,19 @@ type PropertyParams = { propertyId: string };
 type RunParams = { propertyId: string; runId: string };
 
 const reopenReasonCodes = Object.keys(REOPEN_REASON_CODES) as [keyof typeof REOPEN_REASON_CODES, ...Array<keyof typeof REOPEN_REASON_CODES>];
+
+/**
+ * Tanda L5 (L5-D): body of POST …/night-audit/run. `force: true` closes over
+ * the preflight blockers and needs `reasonText` (10..1000, audited as
+ * NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN); without force a blocker answers 409
+ * NIGHT_AUDIT_PREFLIGHT_BLOCKED. An empty body (or none) is the plain close.
+ */
+export const NightAuditRunSchema = z
+  .object({
+    force: z.boolean().optional(),
+    reasonText: z.string().trim().min(10, "Indica el motivo para cerrar con bloqueos (al menos 10 caracteres).").max(1000).optional()
+  })
+  .strict();
 
 export const NightAuditReviewSchema = z.object({ note: z.string().trim().min(1).max(1000).optional() }).strict();
 
@@ -53,7 +68,8 @@ export function registerNightAuditRoutes(app: FastifyInstance): void {
 
   app.post("/properties/:propertyId/night-audit/run", async (request) => {
     const { propertyId } = request.params as PropertyParams;
-    return runNightAudit({ context: request.userContext, propertyId, correlationId: createId("corr") });
+    const body = parse(NightAuditRunSchema, request.body ?? {});
+    return runNightAudit({ context: request.userContext, propertyId, force: body.force, reasonText: body.reasonText, correlationId: createId("corr") });
   });
 
   app.get("/properties/:propertyId/night-audit/preflight", async (request) => {

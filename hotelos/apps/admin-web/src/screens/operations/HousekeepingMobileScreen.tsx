@@ -115,9 +115,9 @@ const EMPTY_SUMMARY: HkData["summary"] = { urgent: 0, high: 0, normal: 0, low: 0
 // Writes go through apiRequest so they carry the session JWT and are audited
 // as the logged-in housekeeper (Tanda 3 · CF-05). ApiError.message is the
 // Spanish message from the API error envelope.
-async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; message?: string }> {
+async function postAction(path: string, body?: unknown, method: "POST" | "PATCH" = "POST"): Promise<{ ok: boolean; message?: string }> {
   try {
-    await apiRequest<unknown>(path, { method: "POST", body });
+    await apiRequest<unknown>(path, { method, body });
     return { ok: true };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : "Error" };
@@ -178,6 +178,23 @@ export function HousekeepingMobileScreen() {
       refresh();
     } else {
       showToast(result.message || "No se pudo actualizar el estado", { variant: "error" });
+    }
+  }
+
+  // Tanda L5 (estado unificado): «en limpieza» es el estado de la TAREA, no un
+  // valor de limpieza (in_progress ya no se almacena en la habitación). Iniciar
+  // arranca la tarea abierta; sin tarea, deja la habitación como sucia (auditado).
+  async function startCleaning(room: HkRoom) {
+    setBusy(room.roomId);
+    const result = room.taskId
+      ? await postAction(`/housekeeping/tasks/${encodeURIComponent(room.taskId)}`, { status: "in_progress" }, "PATCH")
+      : await postAction(`/rooms/${encodeURIComponent(room.roomId)}/housekeeping-status`, { status: "dirty" });
+    setBusy(null);
+    if (result.ok) {
+      showToast(`Hab. ${room.roomNumber} → ${HK_STATUS_LABEL.in_progress}`, { variant: "success" });
+      refresh();
+    } else {
+      showToast(result.message || "No se pudo iniciar la limpieza", { variant: "error" });
     }
   }
 
@@ -272,7 +289,7 @@ export function HousekeepingMobileScreen() {
               key={room.roomId}
               room={room}
               busy={busy === room.roomId}
-              onStart={() => void setHkStatus(room, "in_progress")}
+              onStart={() => void startCleaning(room)}
               onComplete={() => void setHkStatus(room, "clean")}
               onInspect={() => void setHkStatus(room, "inspected")}
               onReport={() => openReport(room)}
@@ -331,10 +348,13 @@ function RoomCard({
   onInspect: () => void;
   onReport: () => void;
 }) {
+  // Tanda L5 (estado unificado): la limpieza es `housekeepingStatus` (dirty |
+  // clean | inspected, siempre presente); «en limpieza» es el estado de la tarea,
+  // ya no un valor de limpieza; sin «ready» ni fallback a `status`.
   const hk = (room.housekeepingStatus ?? "").toLowerCase();
-  const isInProgress = hk === "in_progress" || room.taskStatus === "in_progress";
-  const isClean = hk === "clean" || hk === "ready" || (!hk && room.status === "clean");
+  const isInProgress = room.taskStatus === "in_progress";
   const isInspected = hk === "inspected";
+  const isClean = hk === "clean" || isInspected;
   const hkLabel = hk ? (HK_STATUS_LABEL[hk] ?? room.housekeepingStatus) : null;
 
   return (
@@ -355,7 +375,7 @@ function RoomCard({
             {plural(room.openIncidents, "incidencia", "incidencias")}
           </CocoaBadge>
         ) : null}
-        {isInProgress && hk !== "in_progress" ? <CocoaBadge tone="info" size="small">En limpieza</CocoaBadge> : null}
+        {isInProgress ? <CocoaBadge tone="info" size="small">En limpieza</CocoaBadge> : null}
       </div>
 
       <div className="cocoa-stack" data-gap="1">

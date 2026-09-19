@@ -93,6 +93,27 @@ import {
   upsertSetupStep,
   type ModuleHealthCheckInput
 } from "./setup.store.js";
+// Tanda L5 (lote C): el readiness se recalcula en el GET cuando las filas faltan
+// o superan la ventana (readiness-freshness.ts, puro); el go-live escribe
+// properties.go_live_at y completa el paso `go_live`.
+import { isReadinessStale, readinessComputedAt } from "./readiness-freshness.js";
+// Tanda L5 (lote A → C, dueño único de este fichero): el estado de habitación
+// del bulk PATCH pasa por la transición unificada (idempotente, auditada como
+// ROOM_STATE_CHANGED, respeta ocupación / OOO) y las filas se tipan desde el
+// vocabulario cerrado del helper único (sin fallback: hk / mnt ya son NOT NULL).
+import {
+  HOUSEKEEPING_STATUSES,
+  MAINTENANCE_STATUSES,
+  applyRoomTransition,
+  emitRoomStateEvents,
+  isHousekeepingStatus,
+  nextRoomState,
+  snapshotOf,
+  type ApplyRoomTransitionResult,
+  type HousekeepingStatus,
+  type MaintenanceStatus,
+  type RoomStateEvent
+} from "../housekeeping/room-state.service.js";
 import {
   describeSesEstablishmentIssue,
   isValidSpanishTaxId,
@@ -159,12 +180,14 @@ function mapRoomRow(row: {
   orientation: string | null;
   squareMeters: { toString(): string } | number | null;
   status: RoomRecord["status"];
-  housekeepingStatus: string | null;
-  maintenanceStatus: string | null;
+  /** NOT NULL desde 20260919090000_operaciones_l5 (Tanda L5 · lote A). */
+  housekeepingStatus: string;
+  maintenanceStatus: string;
   sellable: boolean;
   active: boolean;
   sortOrder: number;
 }): RoomRecord {
+  const state = snapshotOf(row);
   return {
     id: row.id,
     propertyId: row.propertyId,
@@ -185,8 +208,11 @@ function mapRoomRow(row: {
     orientation: row.orientation ?? undefined,
     squareMeters: row.squareMeters === null ? undefined : Number(row.squareMeters),
     status: row.status,
-    housekeepingStatus: (row.housekeepingStatus ?? "clean") as RoomRecord["housekeepingStatus"],
-    maintenanceStatus: (row.maintenanceStatus ?? "ok") as RoomRecord["maintenanceStatus"],
+    // Tanda L5 (lote A): sin fallback a NULL (columnas NOT NULL desde la migración
+    // 20260919090000_operaciones_l5); el tipado sale del helper único, que solo
+    // normaliza restos fuera de vocabulario de espejos o seeds de test.
+    housekeepingStatus: state.housekeepingStatus,
+    maintenanceStatus: state.maintenanceStatus,
     sellable: row.sellable,
     active: row.active,
     sortOrder: row.sortOrder
@@ -829,6 +855,25 @@ type PropertyMapImportRow = {
   viewType?: string;
   accessibility?: string;
 };
+
+/** Corrector L5 (L5F-06): etiqueta en español de cada paso del catálogo — única fuente (el front la lee del GET …/setup). */
+export const SETUP_STEP_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  organization_details: "Datos de la organización",
+  property_legal_details: "Datos legales del establecimiento",
+  property_physical_map: "Mapa físico (edificios, plantas, zonas)",
+  room_types: "Tipos de habitación",
+  rooms: "Habitaciones",
+  departments: "Departamentos",
+  users_and_roles: "Usuarios y roles",
+  modules: "Módulos",
+  tax_and_compliance: "Impuestos y cumplimiento",
+  billing_and_invoice_sequences: "Facturación y series",
+  payments: "Pagos",
+  integrations: "Integraciones",
+  ai_settings: "Ajustes de IA",
+  review: "Revisión final",
+  go_live: "Salida en vivo"
+});
 
 const SETUP_STEPS = [
   "organization_details",
@@ -3289,15 +3334,26 @@ export async function getSetupProgress(propertyId: string) {
   await requireProperty(propertyId);
   // First GET of a property materialises the catalogue as `not_started` rows (idempotent).
   await ensureSetupSteps(propertyId, SETUP_STEPS);
-  const steps = await listSetupSteps(propertyId, SETUP_STEPS);
+  const [rows, goLiveAt] = await Promise.all([listSetupSteps(propertyId, SETUP_STEPS), propertyGoLiveAt(propertyId)]);
+  // Corrector L5 (L5F-06): cada paso viaja con su etiqueta (SETUP_STEP_LABELS); el front no duplica el catálogo.
+  const steps = rows.map((step) => ({ ...step, label: SETUP_STEP_LABELS[step.stepCode] ?? step.stepCode }));
   const completed = steps.filter((step) => step.status === "completed").length;
   return {
     propertyId,
     steps,
     completed,
     total: steps.length,
-    progressPercent: steps.length === 0 ? 0 : Math.round((completed / steps.length) * 100)
+    progressPercent: steps.length === 0 ? 0 : Math.round((completed / steps.length) * 100),
+    // Tanda L5 (lote C): la propiedad está en vivo cuando approveGoLive escribió go_live_at.
+    live: goLiveAt !== null,
+    goLiveAt
   };
+}
+
+/** ISO de properties.go_live_at (Tanda L5 · lote C), null sin aprobar. */
+async function propertyGoLiveAt(propertyId: string): Promise<string | null> {
+  const row = await prisma.property.findUnique({ where: { id: propertyId }, select: { goLiveAt: true } });
+  return row?.goLiveAt ? row.goLiveAt.toISOString() : null;
 }
 
 export async function updateSetupStep(input: BackOfficeMutationInput & {
@@ -3324,29 +3380,71 @@ export async function updateSetupStep(input: BackOfficeMutationInput & {
   return record;
 }
 
-export async function getReadiness(propertyId: string) {
-  await requireProperty(propertyId);
-  // Prisma is the only source (Tanda L2 · L2-04): the seeded in-memory checks are gone.
-  const checks = (
-    await prisma.propertyReadinessCheck.findMany({
-      where: { propertyId },
-      orderBy: [{ createdAt: "asc" }, { checkCode: "asc" }],
-      take: 500
-    })
-  ).map(mapReadinessCheckRow);
+/** Filas persistidas de la propiedad en el orden canónico (createdAt = orden de los upserts). */
+async function loadReadinessRows(propertyId: string): Promise<PropertyReadinessCheckRecord[]> {
+  const rows = await prisma.propertyReadinessCheck.findMany({
+    where: { propertyId },
+    orderBy: [{ createdAt: "asc" }, { checkCode: "asc" }],
+    take: 500
+  });
+  return rows.map(mapReadinessCheckRow);
+}
+
+export type PropertyReadinessResponse = {
+  propertyId: string;
+  /** `ready` solo con comprobaciones calculadas (> 0) y ninguna bloqueante pendiente. */
+  status: "ready" | "blocked";
+  blockingCount: number;
+  checks: PropertyReadinessCheckRecord[];
+  /** Instante del último cálculo persistido (máximo updatedAt), ISO 8601. */
+  computedAt: string | null;
+  /** properties.go_live_at (ISO) cuando la salida en vivo ya está aprobada. */
+  goLiveAt: string | null;
+};
+
+function buildReadinessResponse(propertyId: string, checks: PropertyReadinessCheckRecord[], goLiveAt: string | null): PropertyReadinessResponse {
   const blocking = checks.filter((check) => check.severity === "blocking" && check.status !== "pass");
   return {
     propertyId,
     // A property with no computed checks is not "ready": its readiness is simply unknown.
     status: checks.length === 0 || blocking.length > 0 ? "blocked" : "ready",
     blockingCount: blocking.length,
-    checks
+    checks,
+    computedAt: readinessComputedAt(checks),
+    goLiveAt
   };
 }
 
-export async function recalculateReadiness(input: BackOfficeMutationInput) {
+/**
+ * Tanda L5 (lote C): readiness REAL en el GET. Prisma es la única fuente (Tanda L2 ·
+ * L2-04); si no hay filas o la más reciente supera la ventana de frescura
+ * (READINESS_MAX_AGE_MS) se evalúa y persiste de nuevo — sin auditar, la auditoría
+ * es de la recalculación explícita y del go-live — y se devuelve lo persistido.
+ * Un segundo GET dentro de la ventana no toca la base de datos y repite `computedAt`.
+ */
+export async function getReadiness(propertyId: string): Promise<PropertyReadinessResponse> {
+  await requireProperty(propertyId);
+  let checks = await loadReadinessRows(propertyId);
+  if (isReadinessStale(checks, new Date())) {
+    await persistReadiness(propertyId, await evaluateReadiness(propertyId));
+    checks = await loadReadinessRows(propertyId);
+  }
+  return buildReadinessResponse(propertyId, checks, await propertyGoLiveAt(propertyId));
+}
+
+/** Recalculación explícita (POST …/readiness/recalculate): evalúa, persiste, audita y devuelve el GET. */
+export async function recalculateReadiness(input: BackOfficeMutationInput): Promise<PropertyReadinessResponse> {
   requirePermissions(input.context, ["property.configure"]);
-  return await computeReadiness(input);
+  await requireOrganizationProperty(input.propertyId, input.context);
+  await recalculateAndAudit(input);
+  return await getReadiness(input.propertyId);
+}
+
+/** evaluate + persist + audit PropertyReadinessRecalculated (recalculate y go-live). */
+async function recalculateAndAudit(input: BackOfficeMutationInput): Promise<PropertyReadinessCheckRecord[]> {
+  const records = await persistReadiness(input.propertyId, await evaluateReadiness(input.propertyId));
+  audit({ ...input, action: "PropertyReadinessRecalculated", entityType: "property", entityId: input.propertyId, afterJson: records });
+  return records;
 }
 
 // ── Applicability of SES.HOSPEDAJES / VeriFactu (Tanda 3 closure) ───────────
@@ -3402,32 +3500,41 @@ export function withUsageNote(message: string, applicability: ComplianceApplicab
 }
 
 /**
- * Recomputes and persists every readiness check for the property. Shared by the explicit
- * recalculation endpoint and by go-live approval, which must never decide on stale or missing
- * checks. Permission gating stays in the public entry points.
+ * Tanda L5 (lote C): EVALÚA las 17 comprobaciones de puesta en marcha de la propiedad —
+ * solo lecturas, sin escribir ni auditar. Los códigos y los textos son los de siempre
+ * (apps/admin-web readiness-message.test.mts y compliance-closure.test.mts los fijan).
+ * `persistReadiness` los guarda; el GET (ventana de frescura), la recalculación
+ * explícita y el go-live combinan ambos.
  */
-async function computeReadiness(input: BackOfficeMutationInput) {
-  const property = await requireProperty(input.propertyId);
+async function evaluateReadiness(propertyId: string): Promise<ReadinessCheckInput[]> {
+  const property = await requireProperty(propertyId);
   // Module state: hydrate the mirror from Prisma before reading it (empty for Prisma-only hotels at boot).
-  await listPropertyModules(input.propertyId);
-  const modules = enabledModuleCodes(input.propertyId);
+  await listPropertyModules(propertyId);
+  const modules = enabledModuleCodes(propertyId);
   // Room-type and sellable-room checks read Prisma (source of truth): the demoStore mirrors are
   // hydrated lazily (room types after a /room-types call, rooms never), which made the result
   // depend on the order of previous calls and blocked go-live for Prisma-only hotels.
   const [roomTypeCount, sellableRoomCount] = await Promise.all([
-    prisma.roomType.count({ where: { propertyId: input.propertyId, active: true } }),
+    prisma.roomType.count({ where: { propertyId, active: true } }),
     // Room.roomTypeId is non-nullable in Prisma, so active + sellable already implies a room type.
-    prisma.room.count({ where: { propertyId: input.propertyId, active: true, sellable: true } })
+    prisma.room.count({ where: { propertyId, active: true, sellable: true } })
   ]);
   // Fase 0 (Opción A): el check default_building_exists lee de Prisma (fuente de verdad).
-  const hasActiveBuilding = (await prisma.building.count({ where: { propertyId: input.propertyId, active: true } })) > 0;
+  const hasActiveBuilding = (await prisma.building.count({ where: { propertyId, active: true } })) > 0;
   // Compliance and admin-user checks read Prisma (CFG-P0-1): the demoStore mirrors only
   // hold seed data (or users of whichever property was listed last), which made the SES
   // check pass trivially and the admin check misleading for real hotels.
-  const complianceSettings = (await resolveComplianceSettings(input.propertyId)).settings;
-  const assignedUserIds = (
-    await prisma.userPropertyRole.findMany({ where: { propertyId: input.propertyId }, select: { userId: true } })
-  ).map((assignment) => assignment.userId);
+  const complianceSettings = (await resolveComplianceSettings(propertyId)).settings;
+  // Tanda L5 · integrador (INT-L5-03): the T8a route POST /rbac/assignments writes
+  // user_role_assignments only (the user_property_roles mirror is written by the
+  // invite, tenant-admin and onboarding bootstrap flows), so a hotel whose staff was
+  // assigned through the RBAC screen could never pass this check. Both sources count:
+  // the legacy mirror and the live (non-revoked) property-scoped assignments.
+  const [mirrorRows, liveAssignments] = await Promise.all([
+    prisma.userPropertyRole.findMany({ where: { propertyId }, select: { userId: true } }),
+    prisma.userRoleAssignment.findMany({ where: { propertyId, scopeType: "property", revokedAt: null }, select: { userId: true } })
+  ]);
+  const assignedUserIds = Array.from(new Set([...mirrorRows, ...liveAssignments].map((assignment) => assignment.userId)));
   const hasAdminUser =
     assignedUserIds.length > 0 &&
     (await prisma.user.count({
@@ -3441,22 +3548,22 @@ async function computeReadiness(input: BackOfficeMutationInput) {
     await Promise.all([
       // Tanda 6b (R2): the issuer identity is the legal entity's (single reader), never Property.legalName.
       resolveLegalIdentity(property.organizationId),
-      propertyFiscalColumns(input.propertyId),
+      propertyFiscalColumns(propertyId),
       prisma.propertyComplianceSetting.findUnique({
-        where: { propertyId: input.propertyId },
+        where: { propertyId },
         select: { ipsiOrdinanceConfirmedAt: true, sesRegistryNumber: true }
       }),
       prisma.invoiceSequence.findMany({
-        where: { propertyId: input.propertyId, active: true },
+        where: { propertyId, active: true },
         select: { sequenceCode: true, prefix: true, year: true, invoiceType: true }
       }),
-      prisma.integrationConnection.findMany({ where: { propertyId: input.propertyId, status: "connected" }, select: { providerId: true } }),
+      prisma.integrationConnection.findMany({ where: { propertyId, status: "connected" }, select: { providerId: true } }),
       // Real usage (any status: a queued or rejected parte is still an obligation in flight).
-      prisma.sesHospedajesSubmission.count({ where: { propertyId: input.propertyId, createdAt: { gte: sesUsageSince } } }),
+      prisma.sesHospedajesSubmission.count({ where: { propertyId, createdAt: { gte: sesUsageSince } } }),
       // Issued, cancelled and rectified invoices all exist in the fiscal chain; drafts do not.
-      prisma.invoice.count({ where: { propertyId: input.propertyId, status: { in: ["issued", "cancelled", "rectified"] } } })
+      prisma.invoice.count({ where: { propertyId, status: { in: ["issued", "cancelled", "rectified"] } } })
     ]);
-  const paymentProviderConnected = await paymentProviderConnectedFor(input.propertyId, connectedIntegrations.map((row) => row.providerId));
+  const paymentProviderConnected = await paymentProviderConnectedFor(propertyId, connectedIntegrations.map((row) => row.providerId));
 
   // Applicability = flag OR real usage (resolveComplianceApplicability, unit-tested). When
   // it applies by usage only, every check of that obligation carries the note.
@@ -3529,7 +3636,7 @@ async function computeReadiness(input: BackOfficeMutationInput) {
 
   // Tax region + statutory rates actually provisioned (contract C: never UNKNOWN, but a
   // property is only "configured" when its region is explicit and the rates exist in DB).
-  const taxProfile = await getPropertyTaxProfile(input.propertyId);
+  const taxProfile = await getPropertyTaxProfile(propertyId);
   const requiredCategories: TaxCategory[] = ["accommodation", "food_beverage", "general_services"];
   const provisionedCategories = new Set(taxProfile.rates.filter((rate) => rate.source !== "catalog").map((rate) => rate.category));
   const missingCategories = requiredCategories.filter((category) => !provisionedCategories.has(category));
@@ -3548,7 +3655,7 @@ async function computeReadiness(input: BackOfficeMutationInput) {
   );
 
   // SES establishment profile (contract F) and VeriFactu software declaration (contract E).
-  const sesEstablishment = sesEnabled ? await resolveSesEstablishment(input.propertyId) : null;
+  const sesEstablishment = sesEnabled ? await resolveSesEstablishment(propertyId) : null;
   const software = verifactuEnabled ? resolveVerifactuSoftware() : null;
   const verifactuRealMode = verifactuEnabled && verifactuMode !== "sandbox";
   const sesRealMode = sesEnabled && sesMode !== "sandbox";
@@ -3744,17 +3851,35 @@ async function computeReadiness(input: BackOfficeMutationInput) {
     }
   ];
 
-  // Sequential upserts keep the canonical check order (getReadiness sorts by createdAt);
-  // codes that no longer exist (legal_profile_complete was split into atomic checks) are
-  // removed so a stale "fail" row cannot block go-live forever.
+  return checks;
+}
+
+/**
+ * PERSISTE las comprobaciones evaluadas (Tanda L5 · lote C): upserts secuenciales para
+ * conservar el orden canónico (getReadiness ordena por createdAt) y borrado de los
+ * códigos retirados (legal_profile_complete se dividió en checks atómicos) para que una
+ * fila «fail» antigua no bloquee el go-live para siempre. Sin auditoría: la ponen la
+ * recalculación explícita y el go-live. Dos GET simultáneos (banner + checklist) pueden
+ * crear la misma fila a la vez: la colisión de clave única se reintenta como update.
+ */
+async function persistReadiness(propertyId: string, checks: readonly ReadinessCheckInput[]): Promise<PropertyReadinessCheckRecord[]> {
   const records: PropertyReadinessCheckRecord[] = [];
   for (const check of checks) {
-    records.push(await upsertReadinessCheck(input.propertyId, check));
+    try {
+      records.push(await upsertReadinessCheck(propertyId, check));
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      records.push(await upsertReadinessCheck(propertyId, check));
+    }
   }
   const currentCodes = checks.map((check) => check.checkCode);
-  await prisma.propertyReadinessCheck.deleteMany({ where: { propertyId: input.propertyId, checkCode: { notIn: currentCodes } } });
-  audit({ ...input, action: "PropertyReadinessRecalculated", entityType: "property", entityId: input.propertyId, afterJson: records });
-  return await getReadiness(input.propertyId);
+  await prisma.propertyReadinessCheck.deleteMany({ where: { propertyId, checkCode: { notIn: currentCodes } } });
+  return records;
+}
+
+/** Prisma P2002 (unique constraint) sin depender de la clase de error del cliente. */
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "P2002";
 }
 
 type ReadinessCheckInput = Omit<PropertyReadinessCheckRecord, "id" | "propertyId" | "createdAt" | "updatedAt">;
@@ -3828,21 +3953,85 @@ async function paymentProviderConnectedFor(propertyId: string, connectedProvider
   });
 }
 
-export async function approveGoLive(input: BackOfficeMutationInput) {
+export type GoLiveApprovalResult =
+  | { status: "blocked"; propertyId: string; blockers: PropertyReadinessCheckRecord[]; goLiveAt: string | null }
+  | {
+      status: "approved";
+      propertyId: string;
+      approvedAt: string;
+      goLiveAt: string;
+      /** true cuando la propiedad ya estaba en vivo: no se escribe ni se emite un nuevo evento. */
+      alreadyLive: boolean;
+      /** Paso `go_live` de property_setup_steps (completado en esta llamada o antes). */
+      step: PropertySetupStepRecord | null;
+    };
+
+/**
+ * Tanda L5 (lote C): la aprobación de la salida en vivo CAMBIA ESTADO. Decide sobre
+ * comprobaciones recién calculadas (evaluate + persist + audit PropertyReadinessRecalculated):
+ * una propiedad nueva no tiene filas y unas filas viejas no deben aprobarla ni bloquearla.
+ *   · bloqueada → { status: "blocked", blockers, goLiveAt } sin escribir nada;
+ *   · ya en vivo (properties.go_live_at) → { status: "approved", alreadyLive: true } sin evento nuevo;
+ *   · lista → en UNA transacción escribe go_live_at (solo si sigue NULL: dos aprobaciones
+ *     simultáneas no producen dos eventos) y completa el paso `go_live`; después audita y
+ *     emite PropertyGoLiveApproved con { goLiveAt }.
+ */
+export async function approveGoLive(input: BackOfficeMutationInput): Promise<GoLiveApprovalResult> {
   requirePermissions(input.context, ["property.go_live"]);
-  // Decide on freshly computed checks: a brand-new property has none persisted (which used to
-  // approve go-live with zero checks) and stale checks must not approve or block it either.
-  const readiness = await computeReadiness(input);
-  if (readiness.checks.length === 0 || readiness.blockingCount > 0) {
+  await requireOrganizationProperty(input.propertyId, input.context);
+  const records = await recalculateAndAudit(input);
+  const blockers = records.filter((check) => check.severity === "blocking" && check.status !== "pass");
+  const current = await propertyGoLiveAt(input.propertyId);
+  if (records.length === 0 || blockers.length > 0) {
+    return { status: "blocked", propertyId: input.propertyId, blockers, goLiveAt: current };
+  }
+  if (current !== null) {
     return {
-      status: "blocked" as const,
-      blockers: readiness.checks.filter((check) => check.severity === "blocking" && check.status !== "pass")
+      status: "approved",
+      propertyId: input.propertyId,
+      approvedAt: current,
+      goLiveAt: current,
+      alreadyLive: true,
+      step: await findSetupStep(input.propertyId, "go_live")
     };
   }
 
-  audit({ ...input, action: "PropertyGoLiveApproved", entityType: "property", entityId: input.propertyId });
-  domain({ ...input, eventType: "PropertyGoLiveApproved", entityType: "property", entityId: input.propertyId });
-  return { status: "approved" as const, propertyId: input.propertyId, approvedAt: nowIso() };
+  const approvedAt = new Date();
+  const outcome = await prisma.$transaction(async (tx) => {
+    // Optimistic guard: only the first approval writes; a concurrent one sees count 0.
+    const written = await tx.property.updateMany({ where: { id: input.propertyId, goLiveAt: null }, data: { goLiveAt: approvedAt } });
+    if (written.count !== 1) return null;
+    await ensureSetupSteps(input.propertyId, SETUP_STEPS, tx);
+    const step = await upsertSetupStep(
+      input.propertyId,
+      "go_live",
+      {
+        status: "completed",
+        completedAt: approvedAt,
+        completedBy: input.context.userId,
+        metadataJson: { approvedAt: approvedAt.toISOString(), approvedBy: input.context.userId, correlationId: input.correlationId }
+      },
+      tx
+    );
+    return step;
+  });
+  if (outcome === null) {
+    // Lost the race against another approval: report it as already live, no second event.
+    const goLiveAt = (await propertyGoLiveAt(input.propertyId)) ?? approvedAt.toISOString();
+    return { status: "approved", propertyId: input.propertyId, approvedAt: goLiveAt, goLiveAt, alreadyLive: true, step: await findSetupStep(input.propertyId, "go_live") };
+  }
+
+  const goLiveAt = approvedAt.toISOString();
+  audit({
+    ...input,
+    action: "PropertyGoLiveApproved",
+    entityType: "property",
+    entityId: input.propertyId,
+    beforeJson: { goLiveAt: null },
+    afterJson: { goLiveAt, setupStep: outcome }
+  });
+  domain({ ...input, eventType: "PropertyGoLiveApproved", entityType: "property", entityId: input.propertyId, payload: { goLiveAt } });
+  return { status: "approved", propertyId: input.propertyId, approvedAt: goLiveAt, goLiveAt, alreadyLive: false, step: outcome };
 }
 
 export async function getPropertyMap(propertyId: string) {
@@ -4178,6 +4367,34 @@ export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
     }
   }
 
+  // Tanda L5 (lote A → C): vocabulario cerrado del estado unificado. La limpieza NUNCA se
+  // escribe a mano: pasa por applyRoomTransition (mark_clean / mark_dirty / mark_inspected),
+  // idempotente, auditada como ROOM_STATE_CHANGED y respetuosa con la ocupación / OOO en
+  // `status`. El mantenimiento admite ok | needs_attention; `blocked` (y su liberación)
+  // solo los escribe una orden de trabajo (maintenance.service).
+  const housekeepingEvent = bulkHousekeepingEvent(input.patch.housekeepingStatus);
+  const maintenanceStatus = bulkMaintenanceStatus(input.patch.maintenanceStatus);
+  if (maintenanceStatus !== undefined) {
+    const blocked = existingRows.filter((room) => room.maintenanceStatus === "blocked");
+    if (blocked.length > 0) {
+      throw new ConflictError(
+        `Habitación bloqueada por una orden de trabajo: ${blocked.map((room) => room.number).join(", ")}. Resuelve la orden para liberarla; el estado de mantenimiento no se cambia a mano.`,
+        { code: "ROOM_MAINTENANCE_BLOCKED", roomIds: blocked.map((room) => room.id) }
+      );
+    }
+  }
+  if (housekeepingEvent) {
+    // Pre-check every transition (pure) so a rejected room never leaves the batch half applied.
+    const notClean = existingRows.filter((room) => !nextRoomState(snapshotOf(room), housekeepingEvent).ok);
+    if (notClean.length > 0) {
+      throw new ConflictError("Solo se pueden inspeccionar habitaciones limpias.", {
+        code: "ROOM_NOT_CLEAN",
+        roomIds: notClean.map((room) => room.id),
+        roomNumbers: notClean.map((room) => room.number)
+      });
+    }
+  }
+
   // Solo los campos presentes en el patch (todos columnas de Room). Prisma omite los
   // `undefined`, así que el patch parcial se traduce 1:1. Los JSON van casteados para
   // encajar con InputJsonValue (RoomRecord los tipa como Record<string, unknown>).
@@ -4190,13 +4407,37 @@ export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
     active: input.patch.active,
     featuresJson: input.patch.featuresJson as Prisma.InputJsonValue | undefined,
     bedConfigurationJson: input.patch.bedConfigurationJson as Prisma.InputJsonValue | undefined,
-    housekeepingStatus: input.patch.housekeepingStatus,
-    maintenanceStatus: input.patch.maintenanceStatus
+    maintenanceStatus
   };
+  const hasColumnPatch = Object.values(data).some((value) => value !== undefined);
 
+  // Corrector L5 (OP-09): todo el lote en UNA transacción — un conflicto optimista
+  // (ROOM_STATE_CHANGED_MEANWHILE) a mitad ya no deja el bulk PATCH a medias — y los
+  // eventos de estado se emiten solo tras el commit (OP-03).
+  const { updatedRows, transitions } = await prisma.$transaction(async (tx) => {
+    const updatedRows: typeof existingRows = [];
+    const transitions: ApplyRoomTransitionResult[] = [];
+    for (const id of input.roomIds) {
+      let updatedRow = hasColumnPatch ? await tx.room.update({ where: { id }, data }) : existingRows.find((room) => room.id === id)!;
+      if (housekeepingEvent) {
+        const transition = await applyRoomTransition({
+          db: tx,
+          roomId: id,
+          event: housekeepingEvent,
+          context: input.context,
+          correlationId: input.correlationId,
+          reason: `bulk-rooms ${input.patch.housekeepingStatus}`
+        });
+        transitions.push(transition);
+        updatedRow = transition.room;
+      }
+      updatedRows.push(updatedRow);
+    }
+    return { updatedRows, transitions };
+  });
+  emitRoomStateEvents(...transitions);
   const rooms: RoomRecord[] = [];
-  for (const id of input.roomIds) {
-    const updatedRow = await prisma.room.update({ where: { id }, data });
+  for (const updatedRow of updatedRows) {
     const record = mapRoomRow(updatedRow);
     const idx = demoStore.rooms.findIndex((r) => r.id === record.id);
     if (idx >= 0) demoStore.rooms[idx] = record;
@@ -4212,6 +4453,28 @@ export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
     afterJson: rooms
   });
   return { status: "updated" as const, updatedCount: rooms.length, rooms };
+}
+
+/** Evento de limpieza del bulk PATCH (Tanda L5): clean | dirty | inspected; otro texto → 400 en español. */
+function bulkHousekeepingEvent(raw: unknown): RoomStateEvent | undefined {
+  if (raw === undefined) return undefined;
+  if (!isHousekeepingStatus(raw)) {
+    throw new BadRequestError(`Estado de limpieza no válido: usa ${HOUSEKEEPING_STATUSES.join(", ")}.`);
+  }
+  const events: Record<HousekeepingStatus, RoomStateEvent> = { clean: "mark_clean", dirty: "mark_dirty", inspected: "mark_inspected" };
+  return events[raw];
+}
+
+/** Estado de mantenimiento del bulk PATCH (Tanda L5): ok | needs_attention; `blocked` exige una orden de trabajo. */
+function bulkMaintenanceStatus(raw: unknown): Exclude<MaintenanceStatus, "blocked"> | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "blocked") {
+    throw new BadRequestError("Para bloquear una habitación usa una orden de trabajo (Mantenimiento › Partes); el bloqueo no se escribe a mano.");
+  }
+  if (raw !== "ok" && raw !== "needs_attention") {
+    throw new BadRequestError(`Estado de mantenimiento no válido: usa ${MAINTENANCE_STATUSES.filter((status) => status !== "blocked").join(" o ")}.`);
+  }
+  return raw;
 }
 
 /** @deprecated L2: sin ruta (L2-02 retira GET …/map/export). */

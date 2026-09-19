@@ -15,18 +15,42 @@
 //                               each reservation in its own transaction, with
 //                               the folio engine's side effects (routing,
 //                               FOLIO_CHARGE_POSTED audit, ChargePosted event);
-//   4. process_no_shows       · cancellation-policy service;
-//   5. revenue_snapshot       · folio lines posted inside the property-local
+//   4. process_no_shows       · reservation-lifecycle service (Tanda L3): every
+//                               confirmed / draft reservation with arrival <
+//                               business date → no_show with its policy, the
+//                               penalty on the folio and the folio closed at 0;
+//   5. close_settled_folios   · Tanda L5 (L5-D): every OPEN folio of a
+//                               cancelled / no-show / checked-out reservation
+//                               of the property is closed when its balance is
+//                               0 and every charge is documented by an issued
+//                               invoice (closeFolio requireInvoiced, actor
+//                               nightAuditActor); one settled but not invoiced
+//                               is counted `pendingInvoice`, one with a balance
+//                               `withBalance` (+ amount) — both as warnings of
+//                               the report, never a failure; idempotent (a
+//                               second run finds nothing open);
+//   6. revenue_snapshot       · folio lines posted inside the property-local
 //                               business day, by type;
-//   6. payments_summary       · captured payments of the business day by
+//   7. payments_summary       · captured payments of the business day by
 //                               method (a summary, not a reconciliation: the
 //                               cash closure is the count);
-//   7. advance_business_date  · business_dates → next day.
+//   8. cash_closures          · cash closures of the business date;
+//   9. advance_business_date  · business_dates → next day.
 // The run row keeps `stepResultsJson = { steps, report }`: `report` is the
 // closing report (NightAuditReportWire) the front renders. A completed date
 // answers 409 NIGHT_AUDIT_ALREADY_COMPLETED; an in-progress one 409
 // NIGHT_AUDIT_IN_PROGRESS; a failed run can be re-executed (idempotent steps).
 // Texts are Spanish (they reach the operator and the folio).
+//
+// Tanda L5 (lote L5-D) · preflight gate: before the run row is written the
+// service builds the SAME preflight the screen shows (measured against the
+// business date) and decides through night-audit-gate.ts: a blocker without
+// `force` → 409 NIGHT_AUDIT_PREFLIGHT_BLOCKED { blockers }; `force: true` +
+// `reasonText` (≥ 10) → the run proceeds, NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN is
+// audited { blockers, reasonText, businessDate } and the report carries
+// `preflightOverride`; `force` without a reason → 400. A preflight without
+// blockers ignores `force` (nothing to override). The office 409 and the
+// ALREADY_COMPLETED / IN_PROGRESS 409 come first.
 //
 // Tanda 8a (RBAC · L2, design §4.7 «Cierre del día», H7): running needs
 // `night_audit.run` (auditor nocturno; startedBy is the runner); the income
@@ -51,14 +75,24 @@ import { requirePermissions } from "../auth/auth.service.js";
 // Tanda L3 (lote B): the no-show step lives in reservation-lifecycle.service.ts
 // (transitionReservation + policy + folio close); the pure engine stays in
 // cancellation-policy.service.ts. No cycle: that file imports pms.service dynamically.
-import { processNoShows } from "../cancellation-policy/reservation-lifecycle.service.js";
+import { nightAuditActor, processNoShows } from "../cancellation-policy/reservation-lifecycle.service.js";
+// Tanda L5 (lote L5-D): the settled folios of closed reservations are closed
+// with the folio engine itself (same rule as the cancellation engine: balance
+// 0 + every charge invoiced). folio.service is already in this module's static
+// graph through reservation-lifecycle.service, so no new cycle.
+import { closeFolio, folioUninvoicedCharges, getFolioBalance } from "../folio/folio.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { isOperationalKind } from "../../lib/tenancy.js";
 import { postNightlyRoomChargeTx, quoteNightlyRate, type NightlyPriceSource } from "../pms/room-charge.service.js";
-import { resolvePropertyTimeZone, zonedMidnight } from "../pos/pos.service.js";
+import { formatCalendarDay, resolvePropertyTimeZone, zonedMidnight, zonedParts } from "../pos/pos.service.js";
 import { assertApprovedOrAuthorized, registerApprovalDecisionPolicy, type AuthorizationOutcome } from "../rbac/approvals.service.js";
 import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
 import { assertSeparationOfDuties, sodAuditFields } from "../treasury/permissions.js";
+import { foldRoomStateCounts } from "../housekeeping/room-state.service.js";
+import { decideRunGate, type RunGateBlocker } from "./night-audit-gate.js";
+import { isInHouseOnNight, notYetInHouseDetail, type NightlyPresence } from "./night-audit-in-house.js";
+import { buildPreflight } from "./night-audit-preflight.service.js";
+import { formatEur, settledFoliosStepDetail, settledFoliosWarnings } from "./night-audit-preflight.texts.js";
 
 const Decimal = PrismaRuntime.Decimal;
 
@@ -96,6 +130,21 @@ export type NightAuditRoomChargeItem = {
   detail?: string;
 };
 
+/** Tanda L5 (L5-D): outcome of the close_settled_folios step (folios of cancelled / no-show / checked-out reservations). */
+export type NightAuditSettledFolios = {
+  /** Closed tonight (balance 0, every charge invoiced). */
+  closed: number;
+  /** Settled but with charges no issued invoice documents: left open (warning). */
+  pendingInvoice: number;
+  /** With a balance (owed or credit): left open (warning). */
+  withBalance: number;
+  /** Σ |balance| of `withBalance`, as "445.00". */
+  totalWithBalance: string;
+};
+
+/** Tanda L5 (L5-D): the preflight blockers the runner skipped with `force` + reason (audited NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN). */
+export type NightAuditPreflightOverride = { reasonText: string; blockers: RunGateBlocker[] };
+
 export type NightAuditReport = {
   businessDate: string;
   nextBusinessDate: string;
@@ -103,10 +152,13 @@ export type NightAuditReport = {
   inHouseReservations: number;
   roomCharges: { posted: number; alreadyPosted: number; withoutRate: number; withoutFolio: number; totalPosted: string; items: NightAuditRoomChargeItem[] };
   noShows: { processed: number; totalCharged: string };
+  settledFolios: NightAuditSettledFolios;
   revenue: { total: string; lines: number; byType: Record<string, string> };
   payments: { total: string; count: number; byMethod: Record<string, string> };
   cashClosures: Array<{ outletId: string; status: "open" | "closed" | "approved"; difference: string | null }>;
   warnings: string[];
+  /** Present only when the run was forced over preflight blockers. */
+  preflightOverride?: NightAuditPreflightOverride;
 };
 
 export type NightAuditRunRecord = {
@@ -253,7 +305,11 @@ async function requireRunInProperty(propertyId: string, runId: string) {
 export async function reviewNightAuditRun(input: { context: UserContext; propertyId: string; runId: string; note?: string; correlationId: string }): Promise<NightAuditRunRecord> {
   requirePermissions(input.context, ["night_audit.review"]);
   const row = await requireRunInProperty(input.propertyId, input.runId);
-  if (row.status !== "completed") {
+  // Corrector L5 (OP-04): un día reabierto que ya no es el último cerrado no se
+  // vuelve a ejecutar (la fecha de negocio no retrocede sobre días cerrados
+  // después): sus correcciones se revisan sobre el run `reopened`, que así
+  // tiene camino de salida en vez de quedar reabierto para siempre.
+  if (row.status !== "completed" && row.status !== "reopened") {
     throw new ConflictError("Solo se revisa un cierre del día completado.", { code: "NIGHT_AUDIT_NOT_COMPLETED", status: row.status });
   }
   if (row.reviewedByUserId) {
@@ -323,7 +379,7 @@ export async function reopenNightAuditRun(input: {
   supervisorAuthorizationId?: string | null;
   correlationId: string;
   rbac?: RbacDeps;
-}): Promise<NightAuditRunRecord & { daysSinceBusinessDate: number; authorization: AuthorizationOutcome | null }> {
+}): Promise<NightAuditRunRecord & { daysSinceBusinessDate: number; authorization: AuthorizationOutcome | null; businessDateRewound: boolean; currentBusinessDate: string | null }> {
   requirePermissions(input.context, ["night_audit.reopen"]);
   if (!(input.reasonCode in REOPEN_REASON_CODES)) {
     throw new BadRequestError(`reasonCode no válido: usa uno de ${Object.keys(REOPEN_REASON_CODES).join(", ")}.`);
@@ -358,10 +414,28 @@ export async function reopenNightAuditRun(input: {
     );
   }
   const reopenedAt = new Date();
-  const updated = await prisma.nightAuditRun.update({
-    where: { id: row.id },
-    data: { status: "reopened", reopenedByUserId: input.context.userId, reopenedAt, reopenReasonCode: input.reasonCode }
+  // Corrector L5 (OP-04): si el día reabierto es el ÚLTIMO cerrado (la fecha de
+  // negocio es justo el día siguiente y no hay ningún run posterior), la fecha de
+  // negocio RETROCEDE a ese día: el preflight y POST …/run vuelven a medir y a
+  // cerrar ESE día (un run `reopened` se re-ejecuta y queda `completed`). Un día
+  // anterior no rebobina nada — la fecha nunca salta hacia atrás sobre días ya
+  // cerrados — y sus correcciones se dejan constancia en la revisión.
+  const [businessDateRow, laterRun] = await Promise.all([
+    prisma.businessDate.findUnique({ where: { propertyId: input.propertyId } }),
+    prisma.nightAuditRun.findFirst({ where: { propertyId: input.propertyId, businessDate: { gt: row.businessDate } }, select: { id: true } })
+  ]);
+  const businessDateRewound = Boolean(businessDateRow) && isoDate(businessDateRow!.currentDate) === nextDay(businessDate) && !laterRun;
+  const updated = await prisma.$transaction(async (tx) => {
+    const run = await tx.nightAuditRun.update({
+      where: { id: row.id },
+      data: { status: "reopened", reopenedByUserId: input.context.userId, reopenedAt, reopenReasonCode: input.reasonCode }
+    });
+    if (businessDateRewound) {
+      await tx.businessDate.update({ where: { propertyId: input.propertyId }, data: { currentDate: dateOnly(businessDate), closedAt: null, closedBy: null } });
+    }
+    return run;
   });
+  const currentBusinessDate = businessDateRewound ? businessDate : businessDateRow ? isoDate(businessDateRow.currentDate) : null;
   recordAuditEvent({
     organizationId: input.context.organizationId,
     propertyId: input.propertyId,
@@ -380,12 +454,14 @@ export async function reopenNightAuditRun(input: {
       reopenedByUserId: input.context.userId,
       reopenedAt: reopenedAt.toISOString(),
       entriesReversed: false,
+      businessDateRewound,
+      currentBusinessDate,
       authorization: authorization ? { mode: authorization.mode, tier: authorization.tier, requestId: authorization.requestId ?? null, supervisorAuthorizationId: authorization.supervisorAuthorizationId ?? null } : null
     },
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });
-  return { ...mapRun(updated), daysSinceBusinessDate: days, authorization };
+  return { ...mapRun(updated), daysSinceBusinessDate: days, authorization, businessDateRewound, currentBusinessDate };
 }
 
 type RunContext = { context: UserContext; propertyId: string; correlationId: string; businessDate: string; timeZone: string };
@@ -394,6 +470,9 @@ export async function runNightAudit(input: {
   context: UserContext;
   propertyId: string;
   correlationId: string;
+  /** Tanda L5 (L5-D): close over preflight blockers — needs `reasonText` (≥ 10 characters). */
+  force?: boolean;
+  reasonText?: string;
 }): Promise<NightAuditRunRecord> {
   // Tanda 8a (H7): the night audit has its own key (night_audit.run); startedBy = the runner.
   requirePermissions(input.context, ["night_audit.run"]);
@@ -422,6 +501,18 @@ export async function runNightAudit(input: {
   if (existing && existing.status === "in_progress") {
     throw new ConflictError(`El cierre del día ${formatDayEs(businessDate)} ya está en curso (ejecución ${existing.id}).`, { code: "NIGHT_AUDIT_IN_PROGRESS", runId: existing.id, businessDate });
   }
+  // Corrector L5 (OP-04): un run `reopened` (o `failed`) del día en curso se vuelve a
+  // ejecutar sobre la misma fila: conserva la traza de reapertura y exige una
+  // revisión nueva (reviewedBy se limpia al re-cerrar).
+
+  // Tanda L5 (L5-D): the preflight is a gate, not only a screen. Built AFTER
+  // getCurrentBusinessDate (the row exists, so the checks measure this very
+  // business date) and BEFORE the run row: a blocked close writes nothing.
+  const preflight = await buildPreflight({ propertyId: input.propertyId });
+  const gate = decideRunGate(preflight, { force: input.force, reasonText: input.reasonText });
+  if (gate.kind === "blocked") {
+    throw new ConflictError(gate.blockingMessage, { code: "NIGHT_AUDIT_PREFLIGHT_BLOCKED", businessDate, blockers: gate.blockers });
+  }
 
   const run = await prisma.nightAuditRun.upsert({
     where: { propertyId_businessDate: { propertyId: input.propertyId, businessDate: businessDateOnly } },
@@ -431,7 +522,9 @@ export async function runNightAudit(input: {
       startedBy: input.context.userId,
       errorMessage: null,
       correlationId: input.correlationId,
-      stepResultsJson: {}
+      stepResultsJson: {},
+      reviewedByUserId: null,
+      reviewedAt: null
     },
     create: {
       propertyId: input.propertyId,
@@ -443,6 +536,23 @@ export async function runNightAudit(input: {
     }
   });
 
+  if (gate.kind === "forced") {
+    // The override is its own audit row (before NIGHT_AUDIT_STARTED, same
+    // correlation): who skipped which blockers, why, for which business date.
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: input.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "user",
+      action: "NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN",
+      entityType: "night_audit_run",
+      entityId: run.id,
+      afterJson: { businessDate, runId: run.id, blockers: gate.blockers, reasonText: gate.reasonText },
+      deviceId: input.context.deviceId,
+      correlationId: input.correlationId
+    });
+  }
+
   recordAuditEvent({
     organizationId: input.context.organizationId,
     propertyId: input.propertyId,
@@ -451,12 +561,12 @@ export async function runNightAudit(input: {
     action: "NIGHT_AUDIT_STARTED",
     entityType: "night_audit_run",
     entityId: run.id,
-    afterJson: { businessDate, runId: run.id, timeZone },
+    afterJson: { businessDate, runId: run.id, timeZone, forced: gate.kind === "forced" },
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });
 
-  const ctx: RunContext = { ...input, businessDate, timeZone };
+  const ctx: RunContext = { context: input.context, propertyId: input.propertyId, correlationId: input.correlationId, businessDate, timeZone };
   const steps: NightAuditStepResult[] = [];
   const report: NightAuditReport = {
     businessDate,
@@ -465,10 +575,12 @@ export async function runNightAudit(input: {
     inHouseReservations: 0,
     roomCharges: { posted: 0, alreadyPosted: 0, withoutRate: 0, withoutFolio: 0, totalPosted: "0.00", items: [] },
     noShows: { processed: 0, totalCharged: "0.00" },
+    settledFolios: { closed: 0, pendingInvoice: 0, withBalance: 0, totalWithBalance: "0.00" },
     revenue: { total: "0.00", lines: 0, byType: {} },
     payments: { total: "0.00", count: 0, byMethod: {} },
     cashClosures: [],
-    warnings: []
+    warnings: [],
+    ...(gate.kind === "forced" ? { preflightOverride: { reasonText: gate.reasonText, blockers: gate.blockers } } : {})
   };
 
   try {
@@ -476,6 +588,7 @@ export async function runNightAudit(input: {
     steps.push(await stepSnapshotRoomStatus(ctx));
     steps.push(await stepPostRoomChargesForInHouse(ctx, report));
     steps.push(await stepProcessNoShows(ctx, report));
+    steps.push(await stepCloseSettledFolios(ctx, report));
     steps.push(await stepRevenueSnapshot(ctx, report));
     steps.push(await stepPaymentsSummary(ctx, report));
     steps.push(await stepCashClosures(ctx, report));
@@ -586,19 +699,28 @@ async function stepValidateOpenFolios(ctx: RunContext, report: NightAuditReport)
 }
 
 async function stepSnapshotRoomStatus(ctx: RunContext): Promise<NightAuditStepResult> {
-  const counts = await prisma.room.groupBy({
-    by: ["status"],
-    where: { propertyId: ctx.propertyId },
+  // Corrector L5 (OP-06): misma clasificación que /dashboards/housekeeping y el Room
+  // Rack (foldRoomStateCounts): limpieza por housekeepingStatus en TODAS las
+  // ocupaciones; ocupadas y fuera de orden / servicio por `status`.
+  // Integrador L5 (INT-L5-07): active rooms only, the same set as the dashboards.
+  const rows = await prisma.room.groupBy({
+    by: ["status", "housekeepingStatus"],
+    where: { propertyId: ctx.propertyId, active: true },
     _count: { _all: true }
   });
-  const metrics: Record<string, number> = {};
-  for (const c of counts) {
-    metrics[c.status] = c._count._all;
-  }
+  const counts = foldRoomStateCounts(rows.map((row) => ({ status: String(row.status), housekeepingStatus: row.housekeepingStatus, count: row._count._all })));
+  const metrics: Record<string, number> = {
+    clean: counts.clean,
+    dirty: counts.dirty,
+    inspected: counts.inspected,
+    occupied: counts.occupied,
+    out_of_order: counts.outOfOrder,
+    total: counts.total
+  };
   return {
     step: "snapshot_room_status",
     status: "ok",
-    detail: `Instantánea de ${counts.reduce((sum, c) => sum + c._count._all, 0)} habitaciones por estado.`,
+    detail: `Instantánea de ${counts.total} habitaciones por estado.`,
     metrics
   };
 }
@@ -613,6 +735,28 @@ async function stepPostRoomChargesForInHouse(ctx: RunContext, report: NightAudit
   if (inHouse.length === 0) {
     return { step: "post_room_charges", status: "skipped", detail: "No hay reservas alojadas: sin cargos de alojamiento." };
   }
+  // Tanda L5 · integrador (INT-L5-01): only the reservations in house THAT
+  // night are charged — min(booked arrival, physical check-in day in the
+  // property's time zone) ≤ business date (night-audit-in-house.ts). A lagging
+  // business date (pilot: 13/09 → 19/09 closed in one go) must not bill a
+  // guest for the nights before they arrived.
+  const stays = await prisma.stay.findMany({
+    where: { reservationId: { in: inHouse.map((r) => r.id) }, status: "in_house", checkinAt: { not: null } },
+    select: { reservationId: true, checkinAt: true }
+  });
+  const checkInDayByReservation = new Map<string, string>();
+  for (const stay of stays) {
+    if (!stay.checkinAt) continue;
+    const day = formatCalendarDay(zonedParts(stay.checkinAt, ctx.timeZone));
+    const known = checkInDayByReservation.get(stay.reservationId);
+    if (!known || day < known) checkInDayByReservation.set(stay.reservationId, day);
+  }
+  const presenceOf = (reservation: InHouseReservation): NightlyPresence => ({
+    arrivalDay: isoDate(reservation.arrivalDate),
+    checkInDay: checkInDayByReservation.get(reservation.id) ?? null
+  });
+  const notYetInHouse = inHouse.filter((reservation) => !isInHouseOnNight(presenceOf(reservation), ctx.businessDate));
+  const notYetInHouseIds = new Set(notYetInHouse.map((reservation) => reservation.id));
   const roomTypeIds = Array.from(new Set(inHouse.map((r) => r.roomTypeId).filter((id): id is string => Boolean(id))));
   const roomTypes = roomTypeIds.length ? await prisma.roomType.findMany({ where: { id: { in: roomTypeIds } }, select: { id: true, name: true } }) : [];
   const roomTypeName = new Map(roomTypes.map((rt) => [rt.id, rt.name]));
@@ -635,6 +779,7 @@ async function stepPostRoomChargesForInHouse(ctx: RunContext, report: NightAudit
   }
 
   for (const reservation of inHouse) {
+    if (notYetInHouseIds.has(reservation.id)) continue;
     const folio = folioByReservation.get(reservation.id) ?? null;
     if (!folio) {
       items.push({ reservationId: reservation.id, reservationCode: reservation.code, folioId: null, outcome: "no_open_folio", amount: null, priceSource: "none", detail: "Sin folio abierto: no se ha cargado el alojamiento." });
@@ -769,9 +914,13 @@ async function stepPostRoomChargesForInHouse(ctx: RunContext, report: NightAudit
       `Cargos de alojamiento del ${formatDayEs(ctx.businessDate)}: ${posted} nuevos (${totalPosted.toFixed(2)} €), ${alreadyPosted} ya existentes` +
       (withoutRate > 0 ? `, ${withoutRate} reservas sin tarifa` : "") +
       (withoutFolio > 0 ? `, ${withoutFolio} sin folio abierto` : "") +
+      (notYetInHouse.length > 0 ? `, ${notYetInHouse.length} aún no alojadas esa noche` : "") +
       ".",
-    metrics: { postedCharges: posted, alreadyPosted, withoutRate, withoutFolio, inHouseReservations: inHouse.length, totalPosted: Number(totalPosted.toFixed(2)) },
-    items: items.filter((i) => i.outcome !== "posted").map((i) => ({ ref: i.reservationId, label: i.reservationCode, detail: i.detail }))
+    metrics: { postedCharges: posted, alreadyPosted, withoutRate, withoutFolio, notYetInHouse: notYetInHouse.length, inHouseReservations: inHouse.length, totalPosted: Number(totalPosted.toFixed(2)) },
+    items: [
+      ...items.filter((i) => i.outcome !== "posted").map((i) => ({ ref: i.reservationId, label: i.reservationCode, detail: i.detail })),
+      ...notYetInHouse.map((reservation) => ({ ref: reservation.id, label: reservation.code, detail: notYetInHouseDetail(presenceOf(reservation)) }))
+    ]
   };
 }
 
@@ -795,6 +944,85 @@ async function stepProcessNoShows(ctx: RunContext, report: NightAuditReport): Pr
         ? `${result.processedCount} reserva(s) marcadas como no-show con ${totalCharged.toFixed(2)} € de penalización.`
         : "Sin no-shows pendientes.",
     metrics: { processedCount: result.processedCount, totalChargedEur: Number(totalCharged.toFixed(2)) }
+  };
+}
+
+/**
+ * Tanda L5 (L5-D): reservation statuses whose stay is over. Their open folios
+ * are closed by close_settled_folios when settled; the same set drives the
+ * «se cerrarán en el cierre» hint of the preflight (SETTLED_FOLIO_RESERVATION_STATUSES).
+ */
+export const SETTLED_RESERVATION_STATUSES = ["cancelled", "no_show", "checked_out"] as const;
+
+/** Upper bound of folios one run inspects (a property with more keeps the rest for the next night). */
+const SETTLED_FOLIOS_PER_RUN = 500;
+
+/**
+ * close_settled_folios — every OPEN folio (deletedAt null) of a cancelled /
+ * no-show / checked-out reservation of the property:
+ *   · |balance| < 0,005 (closeFolio tolerance) and every charge invoiced →
+ *     closeFolio (requireInvoiced, actor nightAuditActor: the runner already
+ *     holds night_audit.run; FOLIO_CLOSED audited by the folio engine);
+ *   · settled but with charges no issued invoice documents → `pendingInvoice`
+ *     (the invoice is the only mechanism that accrues them into the ledger);
+ *   · with a balance (owed or credit) → `withBalance` + amount.
+ * The last two are report warnings (settledFoliosWarnings), never a failure:
+ * the four checked-out folios of the pilot with a balance stay a business
+ * decision. A folio the engine refuses unexpectedly is an item + warning and
+ * the step ends «warning». Idempotent: a second run finds nothing open.
+ */
+async function stepCloseSettledFolios(ctx: RunContext, report: NightAuditReport): Promise<NightAuditStepResult> {
+  const folios = await prisma.folio.findMany({
+    where: { status: "open", deletedAt: null, reservation: { propertyId: ctx.propertyId, status: { in: [...SETTLED_RESERVATION_STATUSES] } } },
+    select: { id: true, reservationId: true, reservation: { select: { code: true, status: true } } },
+    orderBy: { id: "asc" },
+    take: SETTLED_FOLIOS_PER_RUN
+  });
+  const actor = nightAuditActor(ctx.context);
+  const items: NonNullable<NightAuditStepResult["items"]> = [];
+  let closed = 0;
+  let pendingInvoice = 0;
+  let withBalance = 0;
+  let failed = 0;
+  let totalWithBalance = new Decimal(0);
+  for (const folio of folios) {
+    const label = folio.reservation.code;
+    try {
+      const balance = await getFolioBalance(folio.id);
+      if (Math.abs(balance.balanceDue) >= 0.005) {
+        withBalance += 1;
+        totalWithBalance = totalWithBalance.plus(new Decimal(Math.abs(balance.balanceDue)).toDecimalPlaces(2, Decimal.ROUND_HALF_UP));
+        items.push({ ref: folio.id, label, detail: `Saldo ${formatEur(balance.balanceDue)}: el folio sigue abierto.` });
+        continue;
+      }
+      const pending = await folioUninvoicedCharges(folio.id);
+      if (pending.lines > 0) {
+        pendingInvoice += 1;
+        items.push({ ref: folio.id, label, detail: `${pending.lines === 1 ? "1 cargo" : `${pending.lines} cargos`} por ${formatEur(pending.total)} sin facturar: emite la factura para cerrarlo.` });
+        continue;
+      }
+      await closeFolio({ context: actor, folioId: folio.id, correlationId: ctx.correlationId, requireInvoiced: true });
+      closed += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failed += 1;
+      console.error(`[night-audit] corr=${ctx.correlationId} close_settled_folios failed for ${label} (folio ${folio.id}): ${message}`);
+      items.push({ ref: folio.id, label, detail: message });
+      report.warnings.push(`Folio de la reserva ${label} (${folio.reservation.status === "checked_out" ? "con salida hecha" : folio.reservation.status === "no_show" ? "no presentada" : "cancelada"}): ${message}`);
+    }
+  }
+  const figures = { closed, pendingInvoice, withBalance, totalWithBalance: Number(totalWithBalance.toFixed(2)) };
+  report.settledFolios = { closed, pendingInvoice, withBalance, totalWithBalance: totalWithBalance.toFixed(2) };
+  report.warnings.push(...settledFoliosWarnings(figures));
+  return {
+    step: "close_settled_folios",
+    status: failed > 0 ? "warning" : "ok",
+    detail:
+      folios.length === 0
+        ? "Sin folios abiertos de reservas canceladas, no presentadas o con salida hecha."
+        : settledFoliosStepDetail(figures) + (failed > 0 ? ` ${failed} no se ${failed === 1 ? "pudo" : "pudieron"} revisar.` : ""),
+    metrics: { candidates: folios.length, closed, pendingInvoice, withBalance, totalWithBalance: figures.totalWithBalance, failed },
+    items
   };
 }
 

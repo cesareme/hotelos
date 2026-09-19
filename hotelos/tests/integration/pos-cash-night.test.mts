@@ -112,7 +112,15 @@ type Run = {
   status: string;
   businessDate: string;
   stepResults: Array<{ step: string; status: string; detail?: string }>;
-  report: { businessDate: string; nextBusinessDate: string; roomCharges: { posted: number; alreadyPosted: number; withoutRate: number; totalPosted: string; items: RunItem[] }; warnings: string[] } | null;
+  report: {
+    businessDate: string;
+    nextBusinessDate: string;
+    roomCharges: { posted: number; alreadyPosted: number; withoutRate: number; totalPosted: string; items: RunItem[] };
+    warnings: string[];
+    // Tanda L5 (L5-D)
+    settledFolios?: { closed: number; pendingInvoice: number; withBalance: number; totalWithBalance: string };
+    preflightOverride?: { reasonText: string; blockers: Array<{ id: string }> };
+  } | null;
   errorMessage?: string;
 };
 
@@ -553,12 +561,32 @@ describe("TPV · arqueo · cierre del día (app.inject, prop_123)", () => {
     assert.equal(businessDate, businessDateBefore ? isoOf(businessDateBefore.currentDate) : businessDate);
     const staleConfirmed = await prisma.reservation.count({ where: { propertyId: PROPERTY_ID, status: { in: ["draft", "confirmed"] }, arrivalDate: { lt: dayUtc(businessDate) } } });
 
-    const first = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers });
+    // Tanda L5 (L5-D): the preflight is a gate. prop_123 carries historical
+    // reservations that block it (an unresolved no-show, a departure not
+    // checked out…), so the runs that must complete are FORCED with a reason;
+    // the override is audited and lands in the report only when the preflight
+    // actually blocked (a clean preflight ignores `force`).
+    const FORCE_BODY = { force: true, reasonText: "prueba de integración: reserva histórica sin resolver en prop_123" };
+    const preflightRes = await app.inject({ method: "GET", url: url(`/properties/${PROPERTY_ID}/night-audit/preflight`), headers });
+    assert.equal(preflightRes.statusCode, 200, preflightRes.body);
+    const preflightBlocked = (JSON.parse(preflightRes.body) as { canClose: boolean }).canClose === false;
+    if (preflightBlocked) {
+      const refused = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers });
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal((JSON.parse(refused.body) as ErrorBody).details?.code, "NIGHT_AUDIT_PREFLIGHT_BLOCKED");
+      assert.equal(await prisma.nightAuditRun.count({ where: { propertyId: PROPERTY_ID, id: { notIn: [...preexistingRunIds] } } }), 0, "a blocked close writes no run row");
+    }
+
+    const first = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers, payload: FORCE_BODY });
     assert.equal(first.statusCode, 200, first.body);
     const run1 = JSON.parse(first.body) as Run;
     assert.equal(run1.status, "completed", `${run1.errorMessage ?? ""} (stale confirmed before run: ${staleConfirmed})`);
     assert.equal(run1.businessDate, businessDate);
     assert.ok(run1.report, "the closing report is part of the run");
+    assert.equal(Boolean(run1.report.preflightOverride), preflightBlocked, `preflightOverride only when the preflight blocked: ${JSON.stringify(run1.report.preflightOverride ?? null)}`);
+    if (preflightBlocked) assert.equal(run1.report.preflightOverride?.reasonText, FORCE_BODY.reasonText);
+    assert.ok(run1.stepResults.some((s) => s.step === "close_settled_folios"), "close_settled_folios runs on every night");
+    assert.ok(run1.report.settledFolios, "settledFolios figures in the report");
     const mine = run1.report.roomCharges.items.find((i) => i.reservationCode === reservationCode);
     assert.ok(mine, JSON.stringify(run1.report.roomCharges));
     assert.equal(mine.outcome, "posted");
@@ -585,19 +613,23 @@ describe("TPV · arqueo · cierre del día (app.inject, prop_123)", () => {
     // Same date twice: rewind the business date and drop the run row (a crashed run re-executed).
     await prisma.businessDate.update({ where: { propertyId: PROPERTY_ID }, data: { currentDate: dayUtc(businessDate) } });
     await prisma.nightAuditRun.deleteMany({ where: { id: run1.id } });
-    const second = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers });
+    const second = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers, payload: FORCE_BODY });
     assert.equal(second.statusCode, 200, second.body);
     const run2 = JSON.parse(second.body) as Run;
     assert.equal(run2.status, "completed", run2.errorMessage);
+    assert.equal(Boolean(run2.report?.preflightOverride), preflightBlocked);
     const mine2 = run2.report?.roomCharges.items.find((i) => i.reservationCode === reservationCode);
     assert.equal(mine2?.outcome, "already_posted");
     assert.equal(await prisma.folioLine.count({ where: { folioId, type: "room" } }), 1, "one room charge per business date, never two");
 
     // A completed date refuses a third run with a typed 409.
     await prisma.businessDate.update({ where: { propertyId: PROPERTY_ID }, data: { currentDate: dayUtc(businessDate) } });
-    const third = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers });
+    // (ALREADY_COMPLETED comes before the preflight gate: with or without force.)
+    const third = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers, payload: FORCE_BODY });
     assert.equal(third.statusCode, 409, third.body);
     assert.equal((JSON.parse(third.body) as ErrorBody).details?.code, "NIGHT_AUDIT_ALREADY_COMPLETED");
+    const thirdPlain = await app.inject({ method: "POST", url: url(`/properties/${PROPERTY_ID}/night-audit/run`), headers });
+    assert.equal((JSON.parse(thirdPlain.body) as ErrorBody).details?.code, "NIGHT_AUDIT_ALREADY_COMPLETED");
 
     const detail = await app.inject({ method: "GET", url: url(`/properties/${PROPERTY_ID}/night-audit/runs/${run2.id}`), headers });
     assert.equal(detail.statusCode, 200, detail.body);

@@ -173,12 +173,17 @@ async function main() {
   }
 
   // Housekeeping: vary room HK status + create tasks ---------------------------
-  const rooms = await prisma.room.findMany({ where: { propertyId: PID, active: true }, select: { id: true, number: true }, orderBy: { number: "asc" } });
-  const hkCycle = ["dirty", "clean", "inspected", "occupied", "dirty", "clean", "inspected", "dirty"];
+  const rooms = await prisma.room.findMany({ where: { propertyId: PID, active: true }, select: { id: true, number: true, status: true }, orderBy: { number: "asc" } });
+  // Tanda L5 (estado unificado): la limpieza solo admite dirty | clean | inspected
+  // («occupied» era un alias que nunca fue limpieza) y, si la habitación está
+  // libre, `status` la refleja; una ocupada / fuera de servicio conserva su status.
+  const hkCycle = ["dirty", "clean", "inspected", "dirty", "clean", "inspected", "dirty", "clean"] as const;
+  const vacantStatuses = new Set(["clean", "dirty", "inspected"]);
   let hkUpdates = 0;
   for (let i = 0; i < rooms.length; i += 1) {
     const status = hkCycle[i % hkCycle.length];
-    await prisma.room.update({ where: { id: rooms[i].id }, data: { housekeepingStatus: status } });
+    const mirror = vacantStatuses.has(String(rooms[i].status)) ? { status } : {};
+    await prisma.room.update({ where: { id: rooms[i].id }, data: { housekeepingStatus: status, maintenanceStatus: "ok", ...mirror } });
     hkUpdates += 1;
   }
   // Tasks on the first several dirty rooms

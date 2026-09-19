@@ -351,6 +351,104 @@ parado toda la tanda; informe `docs/audits/TANDA-L3-DINERO-FISCAL-2026-09-18.md`
   César en el informe §9 (políticas reales por hotel, categorías fiscales de la
   penalización, PSP, plantilla de PDF, rebuild Q3, cierre del día de RA)
 
+Estado verificado (Tanda L5 · Operaciones y puesta en marcha + rondas de corrección 1 y 2,
+2026-09-19; working tree sin commit sobre HEAD e6acd8c (TL fusionada) — los lotes L5-A/B/C/D
+más el corrector; `pnpm-lock.yaml` modificado NO es de L5 (lock por detrás de los
+package.json de HEAD): dejarlo fuera del commit; informe
+`docs/audits/TANDA-L5-OPERACIONES-2026-09-19.md`):
+- migraciones `20260919090000_operaciones_l5` (estado de habitación unificado: hk / mnt
+  NOT NULL con vocabulario cerrado, `properties.go_live_at`, índice de partes) y
+  `20260919120000_operaciones_l5_backfill_parte_titular` (solo datos, corrector CS-05:
+  `is_primary_guest = true` donde el vínculo es titular; 15 filas en local, copia
+  previa de la tabla en el scratchpad) → **17/17 al día, drift 0**
+- estado de habitación: `modules/housekeeping/room-state.service.ts` (máquina pura +
+  `applyRoomTransition` idempotente y auditada `ROOM_STATE_CHANGED`; 9 eventos: los
+  siete de L5-A + `mark_sellable` / `mark_unsellable` de `POST /rooms/:id/sellable`);
+  corrector: bloqueo sobre OCUPADA conserva `occupied` (OP-01), check-out de bloqueada
+  → `out_of_order`, eventos DIFERIDOS al commit dentro de transacciones
+  (`emitRoomStateEvents`, OP-03), `canAssignRoom` y `computeRealAvailability` rechazan
+  OOO/OOS sin bloqueo (OP-02), importación de onboarding no crea `blocked` sin orden
+  (OP-07), bulk PATCH en transacción (OP-09), Room Rack cuenta ocupada la alojada con
+  bloqueo, instantánea del cierre plegada como los dashboards (OP-06)
+- SES honesto (`ses-submission.service.ts`): interruptor = OR de `properties` y
+  `property_compliance_settings` (CS-01, `sesHospedajesEnabledFor`), bajas nunca
+  bloqueadas por `SES_DISABLED` (CS-09), retry / programador / pipeline con las mismas
+  puertas que el encolado (`sesRequeueGate`, CS-02: el programador descarta duplicadas
+  «sustituidas» y partes aceptados, falla definitivamente inválidos; `SES_DISABLED`
+  recuperable), XML con sexo / residencia / bloque de menor (CS-03), descartadas fuera
+  de `sesOverdue`, `sesPending` (GM, portfolio), del KPI de la pantalla SES y de
+  `?status=failed` salvo `includeDiscarded` (CS-04; `property-overview.service.ts` de
+  T8 sigue contándolas: pendiente), negativa auditada con actor usuario (CS-07),
+  descarte con `compliance.ses.configure` (CS-10), retención RGPD desde la salida
+  prevista (CS-06), seed sin forzar interruptores en el re-seed (CS-11); test unitario
+  del validador dentro de la puerta raíz (`tests/compliance-package-tests.test.mjs`)
+- cierre del día: reapertura del ÚLTIMO día cerrado rebobina `business_dates` y el run
+  `reopened` se re-ejecuta (`businessDateRewound`); un día anterior solo se revisa
+  (review admite `reopened`) (OP-04); preflight «folios liquidados» medido por folio
+  (OP-08, `computeBalancesForFolios`)
+- puesta en marcha: `POST /onboarding/projects/:id/go-live` delega en la aprobación real
+  (`approveGoLive` de backoffice; 409 `ONBOARDING_NOT_APPLIED` sin propiedad aplicada)
+  (L5F-04); pasos con `label` desde el API (L5F-06); Setup Center distingue el fallo de
+  readiness (sin «Bloqueantes 0», L5F-05); tests de pantalla del banner, de la cabecera
+  de Salida en vivo y de la sección de lanzamiento (`layouts/setup-banner.ts`,
+  `screens/go-live-state.ts`, `screens/backoffice/launch-readiness.ts`) (L5F-02);
+  `go_live_at` de demo en el seed (prop_123 / prop_canary, 2026-06-01) y en
+  `chain-8-hotels` (2026-09-14) solo si está vacío (L5F-07); Cocoa §6 regenerado
+  (95.990 líneas, inlineStyles 679 = techo, 227 pantallas)
+- puertas del corrector (03:0x): typecheck api + admin-web OK · api unit 2.356
+  (2.355 pass · 1 skipped) · front 1.447/1.447 · contratos raíz 535/535 (tras
+  regenerar el inventario Cocoa) · waves --check OK · admin-web build OK · integración
+  lote 1 (l5-estado-habitacion, l5-parte-viajeros-ses, l5-night-audit-canceladas,
+  l5-readiness-golive, l2-persistencia-plataforma, l2-persistencia-backoffice,
+  rbac-sod, l2-robustez) 88/88 · lote 2 (api-integration, pos-cash-night,
+  l2-modulos-operaciones, l2-rutas-api, l2-modulos-ia, l2-persistencia-ses,
+  structure-l2) 101/106 + 2 skips: los 5 fallos son la invariante «cifras de Faranda»
+  (reservas 5.974 → 6.136 DURANTE el lote: carga real de OPERA en paralelo), no código
+- ronda de corrección 2 (informe §2.3): los 21 arreglos re-verificados en el árbol y por las
+  puertas (api unit 2.356 · front 1.447 · raíz 535 · integración lote 1 88/88); puerta 5:
+  `LiveTimeline` (Tanda TL fusionada sin montar) en `.discoverability-whitelist.json` de forma
+  TEMPORAL hasta aplicar las líneas §6 del informe TL; puerta 9: `structure-l5` 14/14,
+  `structure-e2e` 29/29 y `fiscal-models` 11/11 sin `in: [143k ids]` (JOIN / subconsulta) y con
+  expectativas por regla (origen del 303 según `loadVatBookRows`, 390 según filas Sage de 2026,
+  reversos de nómina excluidos como su original), sin re-fijar cifras del piloto (303 real de
+  Faranda 2026-Q3 hoy 27 = 71 = 70,39 · 38 registros); `go_live_at` por SQL NO aplicado (escritura
+  sobre la BD compartida denegada por el arnés): sigue en §5.4 del informe
+- integrador (2026-09-19 03:38-04:00, informe §7-§9): copia previa
+  `backups/hotelos-pre-l5-integracion-20260919-033833.dump`; flujo real por HTTP en `:3907`
+  (organización aislada `org_l2_*` con las plantillas de T8a + `@faranda.test`): check-in deja
+  `occupied` con la limpieza intacta, mark-clean sobre ocupada no libera, inspección ×2 → un solo
+  `ROOM_STATE_CHANGED`, alias `ready` / 400 `foo`, check-out 409 `BALANCE_DUE` → cobro → `dirty/dirty`
+  + tarea, «Iniciar» = PATCH de la tarea; parte sin firma → 409 `GUEST_REGISTER_INVALID`, firmado →
+  `accepted` (sandbox), reenvío → 409 `GUEST_REGISTER_NOT_QUEUEABLE`; readiness calculada en el GET y
+  go-live real (`approved` → `alreadyLive`); cierre del día con puerta (409 `NIGHT_AUDIT_PREFLIGHT_BLOCKED`
+  → `force` + motivo auditado), revisión SoD, reapertura del último día con `businessDateRewound` y
+  re-cierre sobre la misma fila. **Faranda**: RA cerrada 13/09→19/09 (6 runs, 70 cargos 7.314,63 €,
+  477 folios liquidados cerrados, 14 con saldo 854,75 € forzados, 1 reabierto/re-cerrado/revisado) y
+  LT 14/09→19/09 (5 runs, 83 cargos 8.552,72 €, 343 cerrados, 1 revisado); go-live real de LT, PG,
+  MC, AS, FN y LL (`go_live_at`, paso `go_live`); RA `blocked` (registro SES + sandbox) y OC (oficina).
+  Arreglos del integrador: **INT-L5-01** `night-audit-in-house.ts` (solo se carga la noche a la
+  reserva alojada ESA noche: min(llegada, check-in físico) ≤ fecha de negocio; `metrics.notYetInHouse`;
+  RA 13/09 habría facturado a 20 huéspedes no llegados), **INT-L5-03** `admin_user_exists` cuenta las
+  `user_role_assignments` vivas (la ruta T8a no escribe el espejo), **INT-L5-07** `/dashboards/housekeeping`,
+  `GET /properties/:id/dashboard` e instantánea del cierre solo con habitaciones `active` (RA: 147 vs 102);
+  helper `l2-tenant` con vocabulario cerrado. Abiertos: INT-L5-02 (`guests[]` de la reserva se
+  descarta → 1 parte de 2), INT-L5-04 («Limpia» no cierra la tarea), INT-L5-05 (día anterior reabierto
+  no admite revisión nueva), INT-L5-06 (gating de módulo: `admin` / `owner` 403 en backoffice).
+  Corrección de la ronda 2: `business_dates` se leyó con la FUNCIÓN SQL `current_date` (RA seguía en
+  2026-09-13 y LT en 09-14; hoy ambas 09-19 con 11 runs). Puertas (04:00): typecheck 15/15 + 1 skip ·
+  api unit 2.365 (2.364 pass · 1 skip) · front 1.447/1.447 · raíz 535/535 · integración completa
+  707 (700 pass · 0 fail · 7 skips conocidos) · discoverability / nav-tree / route-access OK ·
+  Cocoa inventario idéntico + waves + 18/18 · build OK · migraciones 17/17 + drift 0 · rbac +0 (46
+  plantillas) · worker 20/20; invariantes 25 · 33 · 13.457 · 250/24/31 · 2 orgs · 0 residuales;
+  `:3907` parado, `:3000` intacto (código anterior a L5: reiniciar antes del cierre de esta noche).
+- pendientes para el integrador / L6a: `modules/ai/check-in.command.ts` debe tolerar
+  409 `SES_DISABLED` (hoy solo `SES_ESTABLISHMENT_INCOMPLETE`; el test de plataforma
+  activa SES en su tenant); `dashboards/property-overview.service.ts` (T8) excluir
+  `SES_DISCARDED`; `go_live_at` de los 8 centros Faranda por SQL o re-seed
+  `chain-8-hotels`; las 15 filas SES aparcadas de RA las clasifica el programador en el
+  primer tick tras reiniciar el API (11 «sustituidas», 3 de partes aceptados
+  descartadas, 1 inválida definitiva)
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).

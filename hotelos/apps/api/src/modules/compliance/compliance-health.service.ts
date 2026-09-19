@@ -353,7 +353,10 @@ export async function getComplianceHealth(organizationId?: string): Promise<Comp
     ),
     safe(
       "sesOverdue",
-      prisma.sesHospedajesSubmission.count({ where: { ...tenantScope, status: { in: ["queued", "sent", "retrying", "failed", "rejected"] }, createdAt: { lt: dayAgo } } }),
+      // Corrector L5 (CS-04): una fila descartada (SES_DISCARDED) es historial cerrado, no una obligación vencida.
+      prisma.sesHospedajesSubmission.count({
+        where: { ...tenantScope, status: { in: ["queued", "sent", "retrying", "failed", "rejected"] }, createdAt: { lt: dayAgo }, OR: [{ errorCode: null }, { errorCode: { not: "SES_DISCARDED" } }] }
+      }),
       nullCount
     ),
     safe(

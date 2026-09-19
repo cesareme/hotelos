@@ -6,7 +6,7 @@
 // `?status=open|closed|all`. Cash closures live in cashClosureApi.ts; the
 // night-audit runs (report of the day's close) are at the end of this file.
 // Contracts: packages/shared/src/pos-types.ts.
-import type { NightAuditRunWire, PosLineWire, PosOutletWire, PosSettlement as PosSettlementWire, PosTicketWire } from "@hotelos/shared";
+import type { NightAuditReopenBody, NightAuditRunBody, NightAuditRunWire, PosLineWire, PosOutletWire, PosSettlement as PosSettlementWire, PosTicketWire } from "@hotelos/shared";
 import { apiRequest } from "./api-client";
 import { getActivePropertyId } from "./activeProperty";
 import { financeErrorMessage, posTicketsQuery, type PosTicketsInput } from "./finance-contracts";
@@ -17,7 +17,17 @@ export type PosSettlement = PosSettlementWire;
 /** Wire ticket (Tanda 6): superset of the pre-Tanda 6 shape, so existing readers keep working. */
 export type PosTicket = PosTicketWire;
 export type { PosTicketsInput } from "./finance-contracts";
-export type { NightAuditRunWire, NightAuditReportWire, NightAuditStepWire } from "@hotelos/shared";
+export type {
+  NightAuditPreflightBlockerWire,
+  NightAuditPreflightOverrideWire,
+  NightAuditReopenBody,
+  NightAuditReopenReasonCode,
+  NightAuditReportWire,
+  NightAuditRunBody,
+  NightAuditRunWire,
+  NightAuditSettledFoliosWire,
+  NightAuditStepWire
+} from "@hotelos/shared";
 
 export function fetchPosOutlets(propertyId = getActivePropertyId()) {
   return apiRequest<PosOutlet[]>(`/properties/${propertyId}/pos/outlets`);
@@ -101,9 +111,16 @@ export function fetchPosCashSummary(
 
 // --- Cierre del día (night audit) ---------------------------------------------
 // GET /properties/:propertyId/night-audit/runs (latest 30) · GET …/runs/:runId
-// (persisted report: room charges from the rate plan, no-shows, revenue,
-// payments summary, cash closures and warnings) · POST …/night-audit/run
-// (idempotent per business date; accounting.journal.post).
+// (persisted report: room charges from the rate plan, no-shows, settled folios
+// of closed reservations, revenue, payments summary, cash closures, warnings
+// and, when forced, the preflight override) · POST …/night-audit/run
+// (night_audit.run; idempotent per business date; Tanda L5 · L5-D: the
+// preflight is a gate — 409 NIGHT_AUDIT_PREFLIGHT_BLOCKED without `force`,
+// `{ force: true, reasonText }` closes over the blockers, audited) ·
+// POST …/runs/:runId/review (night_audit.review; reviewer ≠ runner, 409
+// RBAC_SOD_CONFLICT runner_ne_reviewer) · POST …/runs/:runId/reopen
+// (night_audit.reopen; reason code; > 7 days needs the day_reopen approval →
+// 409 APPROVAL_REQUIRED with details.requestId).
 export function fetchNightAuditRuns(propertyId = getActivePropertyId()) {
   return apiRequest<NightAuditRunWire[]>(`/properties/${propertyId}/night-audit/runs`);
 }
@@ -113,9 +130,24 @@ export function fetchNightAuditRun(runId: string, propertyId = getActiveProperty
 export function fetchNightAuditBusinessDate(propertyId = getActivePropertyId()) {
   return apiRequest<{ propertyId: string; currentDate: string }>(`/properties/${propertyId}/night-audit/business-date`);
 }
-/** 409 NIGHT_AUDIT_ALREADY_COMPLETED when the business date was already closed. */
-export function runNightAudit(propertyId = getActivePropertyId()) {
-  return apiRequest<NightAuditRunWire>(`/properties/${propertyId}/night-audit/run`, { method: "POST" });
+/**
+ * 409 NIGHT_AUDIT_ALREADY_COMPLETED when the business date was already closed;
+ * 409 NIGHT_AUDIT_PREFLIGHT_BLOCKED (details.blockers) when the preflight
+ * blocks and `body.force` is not set; 400 when `force` comes without a reason.
+ */
+export function runNightAudit(propertyId = getActivePropertyId(), body?: NightAuditRunBody) {
+  return apiRequest<NightAuditRunWire>(`/properties/${propertyId}/night-audit/run`, { method: "POST", body: body ?? {} });
+}
+/** Income audit of a completed run by someone other than the runner (409 runner_ne_reviewer otherwise). */
+export function reviewNightAuditRun(runId: string, note?: string, propertyId = getActivePropertyId()) {
+  return apiRequest<NightAuditRunWire>(`/properties/${propertyId}/night-audit/runs/${encodeURIComponent(runId)}/review`, {
+    method: "POST",
+    body: note && note.trim() ? { note: note.trim() } : {}
+  });
+}
+/** Reopens a completed day with a reason code (nothing is reversed); > 7 days → 409 APPROVAL_REQUIRED. */
+export function reopenNightAuditRun(runId: string, body: NightAuditReopenBody, propertyId = getActivePropertyId()) {
+  return apiRequest<NightAuditRunWire>(`/properties/${propertyId}/night-audit/runs/${encodeURIComponent(runId)}/reopen`, { method: "POST", body });
 }
 
 export function posErrorMessage(error: unknown, fallback = "No se pudo completar la operación del punto de venta."): string {

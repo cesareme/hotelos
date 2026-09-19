@@ -185,23 +185,65 @@ async function main() {
     }
   });
 
+  // Tanda L5 (L5-B3): the SES.HOSPEDAJES establishment block (address, INE
+  // municipality code, postal code, province) lives in `create` AND `update` so
+  // a re-seed converges an installation whose demo hotels were created before
+  // this tanda (NULL columns → every parte parked as SES_ESTABLISHMENT_INCOMPLETE).
+  // Madrid: INE 28079 · CP 28013 (Gran Vía); demo address, not a real hotel.
+  const propMadridEstablishment = {
+    address: "Gran Vía 1 (dirección de demo)",
+    municipality: "Madrid",
+    province: "Madrid",
+    postalCode: "28013",
+    ineMunicipalityCode: "28079"
+  };
   await prisma.property.upsert({
     where: { id: "prop_123" },
     // Canonical tax region (Tanda 3): converge the legacy "Madrid" value on re-seed.
-    update: { name: "Hotel Demo Madrid Centro", legalName: "Hotel Demo Madrid Centro SL", taxRegion: "ES_PENINSULA_BALEARES", fiscalTerritory: "common" },
+    update: { name: "Hotel Demo Madrid Centro", legalName: "Hotel Demo Madrid Centro SL", taxRegion: "ES_PENINSULA_BALEARES", fiscalTerritory: "common", ...propMadridEstablishment },
     create: {
       id: "prop_123",
       organizationId: "org_123",
       name: "Hotel Demo Madrid Centro",
       legalName: "Hotel Demo Madrid Centro SL",
       country: "ES",
-      province: "Madrid",
+      ...propMadridEstablishment,
       taxRegion: "ES_PENINSULA_BALEARES",
       fiscalTerritory: "common",
       timezone: "Europe/Madrid",
       sesHospedajesEnabled: true,
       verifactuEnabled: true
     }
+  });
+
+  // SES.HOSPEDAJES registry number of the demo hotel: «valor DEMO, no es un registro real»
+  // (formato validateSesRegistryNumber: 3-64 [A-Za-z0-9-]). The
+  // resolver (resolveSesEstablishment) reads PropertyComplianceSetting.
+  // sesRegistryNumber; without this row every comunicación of the demo is
+  // refused with SES_ESTABLISHMENT_INCOMPLETE. Idempotent: the upsert only
+  // converges the registry number and the flags, never the rest of the row.
+  await prisma.propertyComplianceSetting.upsert({
+    where: { propertyId: "prop_123" },
+    // Corrector L5 (CS-11): el re-seed converge solo el número de registro; los
+    // interruptores SES / VeriFactu son del operador (Ajustes de cumplimiento) y no se fuerzan.
+    update: { sesRegistryNumber: "DEMO-0000123" },
+    create: {
+      propertyId: "prop_123",
+      country: "ES",
+      taxRegion: "ES_PENINSULA_BALEARES",
+      sesHospedajesEnabled: true,
+      verifactuEnabled: true,
+      sesRegistryNumber: "DEMO-0000123"
+    }
+  });
+
+  // Corrector L5 (L5F-07): los hoteles de la demo están en explotación — sin
+  // go_live_at el banner «Faltan N comprobaciones para poner la propiedad en
+  // marcha» sale en un hotel que ya opera. Solo se rellena si está vacío (una
+  // aprobación real posterior no se pisa); fecha del corte de la demo (2026-06-01).
+  await prisma.property.updateMany({
+    where: { id: { in: ["prop_123", "prop_canary"] }, goLiveAt: null },
+    data: { goLiveAt: new Date("2026-06-01T00:00:00.000Z") }
   });
 
   const passwordHash = hashPassword("hotelos-demo");
@@ -298,23 +340,48 @@ async function main() {
     }
   });
 
-  // Demo Canary Islands property for IGIC testing
+  // Demo Canary Islands property for IGIC testing.
+  // Tanda L5 (L5-B3): SES establishment block in `create` AND `update` (see prop_123).
+  // Adeje: INE 38001 · CP 38670 (Costa Adeje); demo address, not a real hotel.
+  const propCanaryEstablishment = {
+    address: "Avenida de Bruselas 1 (dirección de demo)",
+    municipality: "Adeje",
+    province: "Santa Cruz de Tenerife",
+    postalCode: "38670",
+    ineMunicipalityCode: "38001"
+  };
   await prisma.property.upsert({
     where: { id: "prop_canary" },
     // Canonical tax region (Tanda 3): converge the legacy "canary" value on re-seed.
-    update: { name: "Hotel Demo Tenerife Sur", legalName: "Hotel Demo Tenerife Sur SL", taxRegion: "ES_CANARIAS", fiscalTerritory: "common" },
+    update: { name: "Hotel Demo Tenerife Sur", legalName: "Hotel Demo Tenerife Sur SL", taxRegion: "ES_CANARIAS", fiscalTerritory: "common", ...propCanaryEstablishment },
     create: {
       id: "prop_canary",
       organizationId: "org_123",
       name: "Hotel Demo Tenerife Sur",
       legalName: "Hotel Demo Tenerife Sur SL",
       country: "ES",
-      province: "Santa Cruz de Tenerife",
+      ...propCanaryEstablishment,
       taxRegion: "ES_CANARIAS",
       fiscalTerritory: "common",
       timezone: "Atlantic/Canary",
       sesHospedajesEnabled: true,
       verifactuEnabled: true
+    }
+  });
+
+  // SES.HOSPEDAJES registry number of the Canary demo hotel: «valor DEMO, no es un registro real»
+  // (same policy as prop_123 above).
+  await prisma.propertyComplianceSetting.upsert({
+    where: { propertyId: "prop_canary" },
+    // Corrector L5 (CS-11): idem prop_123 — solo el número de registro converge en el re-seed.
+    update: { sesRegistryNumber: "DEMO-0000124" },
+    create: {
+      propertyId: "prop_canary",
+      country: "ES",
+      taxRegion: "ES_CANARIAS",
+      sesHospedajesEnabled: true,
+      verifactuEnabled: true,
+      sesRegistryNumber: "DEMO-0000124"
     }
   });
 

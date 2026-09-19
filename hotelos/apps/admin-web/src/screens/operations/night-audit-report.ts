@@ -4,7 +4,15 @@
 // network: screens/operations/__tests__/night-audit-report.test.mts runs this
 // file under `node --test`.
 
-import type { NightAuditReportWire, NightAuditRoomChargeItem, NightAuditStepStatus, NightAuditStepWire } from "@hotelos/shared";
+import type {
+  NightAuditPreflightBlockerWire,
+  NightAuditReopenReasonCode,
+  NightAuditReportWire,
+  NightAuditRoomChargeItem,
+  NightAuditRunWire,
+  NightAuditStepStatus,
+  NightAuditStepWire
+} from "@hotelos/shared";
 import type { CocoaTone } from "../../components/cocoa/cocoa-tones";
 import { STATUS_LABELS } from "../../content/actions";
 import { paymentMethodLabel } from "../pos/cash-closure-helpers";
@@ -15,6 +23,7 @@ export const NIGHT_AUDIT_STEP_LABELS: Readonly<Record<string, string>> = Object.
   snapshot_room_status: "Estado de las habitaciones",
   post_room_charges: "Cargos de alojamiento",
   process_no_shows: "No-shows",
+  close_settled_folios: "Folios liquidados",
   revenue_snapshot: "Producción del día",
   payments_summary: "Resumen de cobros",
   reconcile_payments: "Resumen de cobros",
@@ -57,7 +66,8 @@ export const RUN_STATUS_LABELS: Readonly<Record<string, string>> = Object.freeze
   in_progress: STATUS_LABELS.inProgress,
   running: STATUS_LABELS.inProgress,
   not_started: STATUS_LABELS.pending,
-  pending: STATUS_LABELS.pending
+  pending: STATUS_LABELS.pending,
+  reopened: "Reabierto"
 });
 
 export function runStatusLabel(status: string): string {
@@ -73,9 +83,102 @@ export function runStatusTone(status: string): CocoaTone {
     case "in_progress":
     case "running":
       return "info";
+    case "reopened":
+      return "warning";
     default:
       return "neutral";
   }
+}
+
+// ── Tanda L5 (L5-D): review / reopening trace and actions ────────────────────
+
+/** Reason codes of POST …/night-audit/runs/:runId/reopen (REOPEN_REASON_CODES of the API) → what the operator picks. */
+export const REOPEN_REASON_LABELS: Readonly<Record<NightAuditReopenReasonCode, string>> = Object.freeze({
+  missing_charge: "Cargo no contabilizado",
+  wrong_charge: "Cargo erróneo",
+  no_show_error: "No-show mal procesado",
+  payment_correction: "Corrección de cobro",
+  audit_finding: "Hallazgo de la revisión",
+  other: "Otro motivo (indicar en el texto)"
+});
+
+export const REOPEN_REASON_CODES: readonly NightAuditReopenReasonCode[] = Object.freeze(Object.keys(REOPEN_REASON_LABELS) as NightAuditReopenReasonCode[]);
+
+export function reopenReasonLabel(code: string | null | undefined): string {
+  if (!code) return "—";
+  return (REOPEN_REASON_LABELS as Record<string, string>)[code] ?? code;
+}
+
+/** Review state of a run as the drawer reads it («Pendiente de revisión», «Revisado», «Reabierto»…). */
+export type RunReviewState = "not_applicable" | "pending_review" | "reviewed" | "reopened";
+
+export function runReviewState(run: Pick<NightAuditRunWire, "status" | "reviewedByUserId" | "reopenedByUserId">): RunReviewState {
+  // Corrector L5 (OP-04): un día reabierto y vuelto a cerrar es `completed` de nuevo
+  // (la traza de reapertura sigue en el cajón): su revisión vuelve a estar pendiente.
+  if (run.status === "reopened") return run.reviewedByUserId ? "reviewed" : "reopened";
+  if (run.status !== "completed") return "not_applicable";
+  return run.reviewedByUserId ? "reviewed" : "pending_review";
+}
+
+export const RUN_REVIEW_LABELS: Readonly<Record<RunReviewState, string>> = Object.freeze({
+  not_applicable: "—",
+  pending_review: "Pendiente de revisión",
+  reviewed: "Revisado",
+  reopened: "Reabierto"
+});
+
+export function runReviewTone(state: RunReviewState): CocoaTone {
+  switch (state) {
+    case "reviewed":
+      return "success";
+    case "pending_review":
+      return "info";
+    case "reopened":
+      return "warning";
+    default:
+      return "neutral";
+  }
+}
+
+/** Which T8a actions a run admits, given the session's permissions (pure: the API re-checks). */
+export function runActionsFor(
+  run: Pick<NightAuditRunWire, "status" | "reviewedByUserId">,
+  can: (permission: "night_audit.review" | "night_audit.reopen") => boolean
+): { review: boolean; reopen: boolean } {
+  const completed = run.status === "completed";
+  // Corrector L5 (OP-04): un día reabierto que ya no es el último cerrado no se re-ejecuta;
+  // sus correcciones se revisan sobre el run reabierto (el último cerrado se vuelve a cerrar).
+  const reviewable = completed || run.status === "reopened";
+  return {
+    review: reviewable && !run.reviewedByUserId && can("night_audit.review"),
+    reopen: completed && can("night_audit.reopen")
+  };
+}
+
+/** Whether a session may close over blockers («Cerrar de todos modos»): the run key, nothing else. */
+export function canForceClose(can: (permission: "night_audit.run") => boolean): boolean {
+  return can("night_audit.run");
+}
+
+/** Figures of the close_settled_folios step for the drawer; null on runs older than the step. */
+export type SettledFoliosSummary = { closed: number; pendingInvoice: number; withBalance: number; totalWithBalance: string; leftOpen: number };
+
+export function settledFoliosSummary(report: Pick<NightAuditReportWire, "settledFolios"> | null | undefined): SettledFoliosSummary | null {
+  const figures = report?.settledFolios;
+  if (!figures) return null;
+  return { ...figures, leftOpen: figures.pendingInvoice + figures.withBalance };
+}
+
+/** The forced close of a run: reason and the blockers the runner skipped; null when the run was not forced. */
+export function preflightOverrideSummary(report: Pick<NightAuditReportWire, "preflightOverride"> | null | undefined): { reasonText: string; blockers: NightAuditPreflightBlockerWire[] } | null {
+  const override = report?.preflightOverride;
+  if (!override) return null;
+  return { reasonText: override.reasonText, blockers: override.blockers ?? [] };
+}
+
+/** «2 · No-shows sin resolver» — one blocker as a list item (a failed count shows «—»). */
+export function blockerLabel(blocker: Pick<NightAuditPreflightBlockerWire, "count" | "title">): string {
+  return `${blocker.count ?? "—"} · ${blocker.title}`;
 }
 
 /** Folio line types of the revenue snapshot → Spanish. Unknown types are painted as they come. */

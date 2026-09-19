@@ -90,8 +90,19 @@ const PRIORITY_OPTIONS: CocoaSelectOption[] = [
   { value: "high", label: "Alta" }
 ];
 
+// Tanda L5 (estado unificado): la limpieza es `housekeepingStatus` (siempre
+// presente, dirty | clean | inspected) en cualquier ocupación; la ocupación y el
+// fuera de servicio se leen de `status`.
 function hkStatusOf(item: HkBoardItem): string {
-  return item.room.housekeepingStatus ?? item.room.status ?? "dirty";
+  return item.room.housekeepingStatus;
+}
+
+function isOccupied(item: HkBoardItem): boolean {
+  return item.room.status === "occupied";
+}
+
+function isOutOfService(item: HkBoardItem): boolean {
+  return item.room.status === "out_of_order" || item.room.status === "out_of_service";
 }
 
 const FILTERS: { id: string; label: string; match: (i: HkBoardItem) => boolean }[] = [
@@ -99,8 +110,8 @@ const FILTERS: { id: string; label: string; match: (i: HkBoardItem) => boolean }
   { id: "dirty", label: "Sucias", match: (i) => hkStatusOf(i) === "dirty" },
   { id: "clean", label: "Limpias", match: (i) => hkStatusOf(i) === "clean" },
   { id: "inspected", label: "Inspeccionadas", match: (i) => hkStatusOf(i) === "inspected" },
-  { id: "occupied", label: "Ocupadas", match: (i) => hkStatusOf(i) === "occupied" },
-  { id: "ooo", label: "Fuera de servicio", match: (i) => hkStatusOf(i) === "out_of_order" || hkStatusOf(i) === "out_of_service" },
+  { id: "occupied", label: "Ocupadas", match: (i) => isOccupied(i) },
+  { id: "ooo", label: "Fuera de servicio", match: (i) => isOutOfService(i) },
   { id: "tasks", label: "Con tareas", match: (i) => i.tasks.length > 0 }
 ];
 
@@ -146,12 +157,13 @@ export function HousekeepingDashboard() {
   const kpis = useMemo(() => {
     const k = { dirty: 0, clean: 0, inspected: 0, occupied: 0, ooo: 0, tasks: 0 };
     for (const item of board) {
+      // Limpieza por hk en todas las ocupaciones; ocupadas y fuera de servicio por status.
       const s = hkStatusOf(item);
       if (s === "dirty") k.dirty += 1;
       else if (s === "clean") k.clean += 1;
       else if (s === "inspected") k.inspected += 1;
-      else if (s === "occupied") k.occupied += 1;
-      else if (s === "out_of_order" || s === "out_of_service") k.ooo += 1;
+      if (isOccupied(item)) k.occupied += 1;
+      else if (isOutOfService(item)) k.ooo += 1;
       k.tasks += item.tasks.length;
     }
     return k;
@@ -258,7 +270,12 @@ export function HousekeepingDashboard() {
                     <strong style={roomNumberStyle}>{item.room.number}</strong>
                     {item.room.floor ? <span style={captionStyle}>planta {item.room.floor}</span> : null}
                   </div>
-                  <CocoaBadge tone={HK_STATUS_TONE[s] ?? "info"}>{HK_STATUS_LABEL[s] ?? s}</CocoaBadge>
+                  <span className="cocoa-cluster">
+                    <CocoaBadge tone={HK_STATUS_TONE[s] ?? "info"}>{HK_STATUS_LABEL[s] ?? s}</CocoaBadge>
+                    {isOccupied(item) || isOutOfService(item) ? (
+                      <CocoaBadge tone={HK_STATUS_TONE[item.room.status] ?? "info"} variant="tinted">{HK_STATUS_LABEL[item.room.status] ?? item.room.status}</CocoaBadge>
+                    ) : null}
+                  </span>
                 </div>
 
                 {maint !== "ok" || !item.room.sellable ? (

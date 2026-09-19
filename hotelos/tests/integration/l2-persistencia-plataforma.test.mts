@@ -182,6 +182,14 @@ describe("L2-04 · HITL del check-in por escaneo en Prisma", () => {
   let reservationId = "";
 
   it("check-in-from-scan crea AiPendingConfirmation `pending` y AiToolCall `pending`", async () => {
+    // Corrector L5 (puerta 9): desde L5-B2 el pipeline SES es honesto — con
+    // SES.HOSPEDAJES desactivado en la propiedad responde 409 SES_DISABLED (sin
+    // fila), un código que el comando de check-in por escaneo (modules/ai, L6a)
+    // no tolera todavía. El tenant L2 nace con el interruptor apagado: se activa
+    // aquí para que el flujo llegue al 409 SES_ESTABLISHMENT_INCOMPLETE (fila
+    // aparcada, tolerado), como antes de L5. El parte lleva teléfono y residencia
+    // para que valide (el validador va antes que el establecimiento).
+    await prisma.property.update({ where: { id: tenantA.propertyA }, data: { sesHospedajesEnabled: true } });
     const documentNumber = `L2${RUN_A.slice(-6).toUpperCase()}X`;
     const guest = await prisma.guest.create({
       data: {
@@ -231,7 +239,11 @@ describe("L2-04 · HITL del check-in por escaneo en Prisma", () => {
           documentSupportNumber: "ABC123456",
           nationality: "ESP",
           dateOfBirth: "1985-04-12",
-          sex: "F"
+          sex: "F",
+          mobilePhone: "+34600000001",
+          residenceAddress: "Calle Real 1",
+          residenceLocality: "A Coruña",
+          residenceCountry: "ESP"
         },
         documentImageStored: false,
         idImageDiscarded: true

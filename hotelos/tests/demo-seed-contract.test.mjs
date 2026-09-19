@@ -27,6 +27,22 @@ describe("Flagship demo seed contract", () => {
     assert.match(seed, /asset_hvac_432/);
   });
 
+  // Tanda L5 (L5-B3): the demo hotels carry a complete SES.HOSPEDAJES
+  // establishment block (address, INE code, postal code) and a registry number
+  // labelled DEMO in property_compliance_settings — in `create` and `update`, so
+  // a re-seed converges — instead of parking every parte as
+  // SES_ESTABLISHMENT_INCOMPLETE. Faranda is never touched by this seed.
+  it("seeds a complete SES establishment (DEMO registry number) for the two demo hotels", () => {
+    assert.match(seed, /sesRegistryNumber: "DEMO-0000123"/);
+    assert.match(seed, /sesRegistryNumber: "DEMO-0000124"/);
+    assert.match(seed, /ineMunicipalityCode: "28079"/);
+    assert.match(seed, /ineMunicipalityCode: "38001"/);
+    assert.match(seed, /propertyComplianceSetting\.upsert\(\{\s*where: \{ propertyId: "prop_123" \}/);
+    assert.match(seed, /propertyComplianceSetting\.upsert\(\{\s*where: \{ propertyId: "prop_canary" \}/);
+    assert.match(seed, /no es un registro real/);
+    assert.doesNotMatch(seed, /cmrhw9jy30002fyvb6tsdiugt/, "the base seed never writes Faranda");
+  });
+
   it("records that the demo seed does not store ID document images", () => {
     assert.match(seed, /idDocumentImagesStored: false/);
     assert.match(seed, /DEMO_SEED_READY/);

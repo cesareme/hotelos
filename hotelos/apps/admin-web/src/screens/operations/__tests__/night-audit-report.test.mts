@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  REOPEN_REASON_CODES,
+  blockerLabel,
+  canForceClose,
   labelledAmounts,
   paymentMethodLabel,
+  preflightOverrideSummary,
+  reopenReasonLabel,
   reportSummary,
   revenueTypeLabel,
   roomChargeOutcomeTone,
+  runActionsFor,
+  runReviewState,
+  runReviewTone,
   runStatusLabel,
   runStatusTone,
+  settledFoliosSummary,
   stepLabel,
   stepStatusLabel,
   stepTone,
@@ -100,6 +109,57 @@ describe("Cierre del día · informe de la corrida", () => {
       stepsNeedingAttention(steps).map((s) => s.step),
       ["post_room_charges"]
     );
+  });
+
+  it("Tanda L5 (L5-D): the settled-folios step, the reopened status and the forced close are labelled", () => {
+    assert.equal(stepLabel("close_settled_folios"), "Folios liquidados");
+    assert.equal(runStatusLabel("reopened"), "Reabierto");
+    assert.equal(runStatusTone("reopened"), "warning");
+    assert.equal(settledFoliosSummary(REPORT), null, "a report persisted before the step has no figures");
+    assert.deepEqual(settledFoliosSummary({ settledFolios: { closed: 42, pendingInvoice: 3, withBalance: 9, totalWithBalance: "445.00" } }), {
+      closed: 42,
+      pendingInvoice: 3,
+      withBalance: 9,
+      totalWithBalance: "445.00",
+      leftOpen: 12
+    });
+    assert.equal(preflightOverrideSummary(REPORT), null, "a plain close has no override");
+    assert.deepEqual(
+      preflightOverrideSummary({ preflightOverride: { reasonText: "Reserva histórica sin resolver", blockers: [{ id: "unresolved_no_shows", title: "No-shows sin resolver", count: 2, detail: "2 reservas pasadas siguen confirmadas sin estancia." }] } }),
+      { reasonText: "Reserva histórica sin resolver", blockers: [{ id: "unresolved_no_shows", title: "No-shows sin resolver", count: 2, detail: "2 reservas pasadas siguen confirmadas sin estancia." }] }
+    );
+    assert.equal(blockerLabel({ count: 2, title: "No-shows sin resolver" }), "2 · No-shows sin resolver");
+    assert.equal(blockerLabel({ count: null, title: "Facturas pendientes" }), "— · Facturas pendientes");
+  });
+
+  it("Tanda L5 (L5-D): review state, T8a actions by permission and the reopen reason catalogue", () => {
+    assert.equal(runReviewState({ status: "completed", reviewedByUserId: null, reopenedByUserId: null }), "pending_review");
+    assert.equal(runReviewState({ status: "completed", reviewedByUserId: "usr_1", reopenedByUserId: null }), "reviewed");
+    assert.equal(runReviewState({ status: "reopened", reviewedByUserId: null, reopenedByUserId: "usr_2" }), "reopened");
+    assert.equal(runReviewState({ status: "reopened", reviewedByUserId: "usr_1", reopenedByUserId: "usr_2" }), "reviewed", "corrections of a reopened day reviewed");
+    assert.equal(runReviewState({ status: "completed", reviewedByUserId: null, reopenedByUserId: "usr_2" }), "pending_review", "a reopened day closed again needs a fresh review");
+    assert.equal(runReviewState({ status: "failed", reviewedByUserId: null, reopenedByUserId: null }), "not_applicable");
+    assert.equal(runReviewTone("reviewed"), "success");
+    assert.equal(runReviewTone("pending_review"), "info");
+    assert.equal(runReviewTone("reopened"), "warning");
+
+    const all = () => true;
+    const none = () => false;
+    assert.deepEqual(runActionsFor({ status: "completed", reviewedByUserId: null }, all), { review: true, reopen: true });
+    assert.deepEqual(runActionsFor({ status: "completed", reviewedByUserId: "usr_1" }, all), { review: false, reopen: true }, "an already reviewed run is not reviewed twice");
+    assert.deepEqual(runActionsFor({ status: "reopened", reviewedByUserId: null }, all), { review: true, reopen: false }, "a reopened day is reviewed (its corrections), never reopened twice");
+    assert.deepEqual(runActionsFor({ status: "reopened", reviewedByUserId: "usr_1" }, all), { review: false, reopen: false });
+    assert.deepEqual(runActionsFor({ status: "failed", reviewedByUserId: null }, all), { review: false, reopen: false }, "a failed run is neither reviewed nor reopened");
+    assert.deepEqual(runActionsFor({ status: "completed", reviewedByUserId: null }, none), { review: false, reopen: false });
+    assert.deepEqual(runActionsFor({ status: "completed", reviewedByUserId: null }, (key) => key === "night_audit.review"), { review: true, reopen: false });
+    assert.equal(canForceClose(all), true);
+    assert.equal(canForceClose(none), false);
+
+    assert.deepEqual([...REOPEN_REASON_CODES], ["missing_charge", "wrong_charge", "no_show_error", "payment_correction", "audit_finding", "other"]);
+    assert.equal(reopenReasonLabel("missing_charge"), "Cargo no contabilizado");
+    assert.equal(reopenReasonLabel("other"), "Otro motivo (indicar en el texto)");
+    assert.equal(reopenReasonLabel("unknown_code"), "unknown_code");
+    assert.equal(reopenReasonLabel(null), "—");
   });
 
   it("labels amounts by method and by type, largest first", () => {

@@ -213,10 +213,11 @@ async function seedHotel(input: { organizationId: string; legalEntityId: string;
     select: { id: true }
   });
   const rooms: string[] = [];
-  // maintenanceStatus es opcional y la disponibilidad filtra `not: "blocked"`, que excluye NULL: se fija.
+  // Tanda L5: vocabulario cerrado (housekeeping dirty | clean | inspected, mantenimiento
+  // ok | blocked | needs_attention, NOT NULL): las tres nacen libres, limpias y sin bloqueo.
   for (const number of ["101", "102", "103"]) {
     const room = await prisma.room.create({
-      data: { propertyId: input.id, roomTypeId: roomType.id, number, sellable: true, maintenanceStatus: "operational" },
+      data: { propertyId: input.id, roomTypeId: roomType.id, number, sellable: true, status: "clean", housekeepingStatus: "clean", maintenanceStatus: "ok" },
       select: { id: true }
     });
     rooms.push(room.id);

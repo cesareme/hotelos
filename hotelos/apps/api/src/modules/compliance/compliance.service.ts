@@ -193,10 +193,18 @@ export function validationInputFromRow(row: GuestRegisterRow): SpainGuestRegiste
   return guestRegisterValidationInput(row);
 }
 
+/**
+ * Spain guest-register input plus the columns the parte carries that the
+ * validator does not read (`isPrimaryGuest`: ReservationGuest.isPrimary of the
+ * link the parte was created from — Tanda L5 · L5-B1).
+ */
+export type GuestRegisterWriteInput = SpainGuestRegisterRecordInput & { isPrimaryGuest?: boolean };
+
 /** Columns for the keys present (non-undefined) in a Spain guest-register input. */
-function columnsFromInput(input: Partial<SpainGuestRegisterRecordInput>): Prisma.GuestRegisterRecordUncheckedUpdateInput {
+function columnsFromInput(input: Partial<GuestRegisterWriteInput>): Prisma.GuestRegisterRecordUncheckedUpdateInput {
   const data: Prisma.GuestRegisterRecordUncheckedUpdateInput = {};
   if (input.recordType !== undefined) data.recordType = input.recordType;
+  if (input.isPrimaryGuest !== undefined) data.isPrimaryGuest = input.isPrimaryGuest;
   if (input.firstName !== undefined) data.firstName = input.firstName;
   if (input.surname1 !== undefined) data.surname1 = input.surname1;
   if (input.surname2 !== undefined) data.surname2 = input.surname2;
@@ -343,7 +351,7 @@ async function persistGuestRegister(input: {
   propertyId: string;
   reservationId: string;
   guestId: string | undefined;
-  payload: SpainGuestRegisterRecordInput;
+  payload: GuestRegisterWriteInput;
   existingId?: string;
   auditAction: string;
   correlationId: string;
@@ -421,7 +429,7 @@ export async function prepareGuestRegisterRecord(input: {
   correlationId: string;
 }): Promise<GuestRegisterRecord> {
   const [reservation, existing] = await Promise.all([
-    prisma.reservation.findUnique({ where: { id: input.reservationId }, select: { code: true } }),
+    prisma.reservation.findUnique({ where: { id: input.reservationId }, select: { code: true, departureDate: true } }),
     prisma.guestRegisterRecord.findFirst({ where: { reservationId: input.reservationId, guestId: input.guestId }, select: { id: true } })
   ]);
   return persistGuestRegister({
@@ -438,6 +446,9 @@ export async function prepareGuestRegisterRecord(input: {
       travellerCount: 1,
       contractReference: reservation?.code,
       checkinAt: nowIso(),
+      // Corrector L5 (CS-06): la retención RGPD (3 años, RD 933/2021 art. 4) cuenta
+      // desde el FIN del servicio: la salida prevista de la reserva, no el check-in.
+      checkoutAt: reservation?.departureDate ? reservation.departureDate.toISOString() : undefined,
       idImageDiscarded: true
     }
   });
@@ -447,7 +458,7 @@ export async function createSpainGuestRegisterRecord(input: {
   context: UserContext;
   propertyId: string;
   reservationId: string;
-  payload: SpainGuestRegisterRecordInput & { guestId?: string };
+  payload: GuestRegisterWriteInput & { guestId?: string };
   correlationId: string;
 }): Promise<GuestRegisterRecord> {
   requirePermissions(input.context, ["guest_register.create"]);
@@ -463,6 +474,101 @@ export async function createSpainGuestRegisterRecord(input: {
   });
 }
 
+/** RD 933/2021: travellers under 14 do not sign and are declared through the accompanying adult. */
+export const GUEST_REGISTER_MINOR_AGE = 14;
+
+/** Guest profile columns the parte is built from (structural: the Prisma Guest row or a test double). */
+export type GuestRegisterLinkGuest = {
+  id: string;
+  firstName: string;
+  surname1: string | null;
+  surname2: string | null;
+  sex: string | null;
+  nationality: string | null;
+  dateOfBirth: Date | string | null;
+  documentType: string | null;
+  documentNumber: string | null;
+  documentSupportNumber: string | null;
+  residenceAddress: string | null;
+  residenceLocality: string | null;
+  residenceCountry: string | null;
+  phone: string | null;
+  mobilePhone: string | null;
+  email: string | null;
+};
+
+/**
+ * Whole years between `dateOfBirth` and `at` (calendar arithmetic, UTC day
+ * precision); undefined when the birth date is missing or unparsable.
+ */
+export function ageAtDate(dateOfBirth: Date | string | null | undefined, at: Date | string): number | undefined {
+  const born = dateOfBirth instanceof Date ? dateOfBirth : dateOfBirth ? new Date(dateOfBirth) : undefined;
+  const when = at instanceof Date ? at : new Date(at);
+  if (!born || Number.isNaN(born.getTime()) || Number.isNaN(when.getTime())) return undefined;
+  let age = when.getUTCFullYear() - born.getUTCFullYear();
+  const beforeBirthday =
+    when.getUTCMonth() < born.getUTCMonth() || (when.getUTCMonth() === born.getUTCMonth() && when.getUTCDate() < born.getUTCDate());
+  if (beforeBirthday) age -= 1;
+  return age;
+}
+
+/**
+ * Parte de viajeros payload for one ReservationGuest link (PURE — Tanda L5 ·
+ * L5-B1). Carries what the check-in used to drop:
+ *   · `isPrimaryGuest` = the link's isPrimary (the caller resolves the fallback
+ *     when no link is primary: the first one of the list acts as primary);
+ *   · `isMinor` = age < 14 at `checkinAt`, computed from the profile birth date
+ *     (`age` travels too so the validator waives the signature);
+ *   · `providedByAdultGuestId` = the primary guest, for a minor that is not the
+ *     primary guest itself;
+ *   · `kinshipRelationIfMinor` = ReservationGuest.relationshipType, when set.
+ * No document image is captured in this flow, so the discard flag is set.
+ */
+export function guestRegisterPayloadForLink(input: {
+  link: { isPrimary: boolean; relationshipType: string | null };
+  guest: GuestRegisterLinkGuest;
+  reservationCode: string;
+  checkinAt: string;
+  /** Corrector L5 (CS-06): salida prevista (fin del servicio) → `checkoutAt`, base de la retención de 3 años. */
+  checkoutAt?: string;
+  primaryGuestId: string | null;
+}): GuestRegisterWriteInput & { guestId: string } {
+  const { guest, link } = input;
+  const age = ageAtDate(guest.dateOfBirth, input.checkinAt);
+  const isMinor = age !== undefined && age < GUEST_REGISTER_MINOR_AGE;
+  const providedByAdultGuestId = isMinor && input.primaryGuestId && input.primaryGuestId !== guest.id ? input.primaryGuestId : undefined;
+  return {
+    guestId: guest.id,
+    recordType: "checkin",
+    isPrimaryGuest: link.isPrimary,
+    firstName: guest.firstName,
+    surname1: guest.surname1 ?? undefined,
+    surname2: guest.surname2 ?? undefined,
+    sex: guest.sex ?? undefined,
+    nationality: guest.nationality ?? undefined,
+    dateOfBirth: guest.dateOfBirth instanceof Date ? isoDay(guest.dateOfBirth) : guest.dateOfBirth ? guest.dateOfBirth.slice(0, 10) : undefined,
+    documentType: guest.documentType ?? undefined,
+    documentNumber: guest.documentNumber ?? undefined,
+    documentSupportNumber: guest.documentSupportNumber ?? undefined,
+    residenceFullAddress: guest.residenceAddress ?? undefined,
+    residenceLocality: guest.residenceLocality ?? undefined,
+    residenceCountry: guest.residenceCountry ?? undefined,
+    phoneLandline: guest.phone ?? undefined,
+    phoneMobile: guest.mobilePhone ?? undefined,
+    email: guest.email ?? undefined,
+    travellerCount: 1,
+    age,
+    isMinor,
+    providedByAdultGuestId,
+    kinshipRelationIfMinor: link.relationshipType ?? undefined,
+    contractReference: input.reservationCode,
+    checkinAt: input.checkinAt,
+    checkoutAt: input.checkoutAt,
+    // No document image is captured in this flow: nothing to retain.
+    idImageDiscarded: true
+  };
+}
+
 /**
  * Check-in: guarantee one parte per guest of the reservation, from the guest
  * profile in Prisma. Idempotent by (reservationId, guestId) AT CODE LEVEL: the
@@ -473,6 +579,8 @@ export async function createSpainGuestRegisterRecord(input: {
  * concurrent check-ins of the same reservation remain a known race.
  * Incomplete profiles still get a record (status missing_data) — that is the
  * SES reality the inbox must show, not a reason to skip.
+ * Tanda L5 (L5-B1): the payload comes from guestRegisterPayloadForLink, so the
+ * parte keeps isPrimaryGuest, isMinor, providedByAdultGuestId and the kinship.
  */
 export async function ensureReservationGuestRegisterRecords(input: {
   context: UserContext;
@@ -481,50 +589,43 @@ export async function ensureReservationGuestRegisterRecords(input: {
 }): Promise<{ created: GuestRegisterRecord[]; existing: number }> {
   const reservation = await prisma.reservation.findUnique({
     where: { id: input.reservationId },
-    select: { id: true, propertyId: true, code: true }
+    select: { id: true, propertyId: true, code: true, departureDate: true }
   });
   if (!reservation) {
     return { created: [], existing: 0 };
   }
   const [links, existingRows] = await Promise.all([
-    prisma.reservationGuest.findMany({ where: { reservationId: input.reservationId }, include: { guest: true } }),
+    prisma.reservationGuest.findMany({
+      where: { reservationId: input.reservationId },
+      include: { guest: true },
+      orderBy: [{ isPrimary: "desc" }, { id: "asc" }]
+    }),
     prisma.guestRegisterRecord.findMany({ where: { reservationId: input.reservationId }, select: { id: true, guestId: true } })
   ]);
   const existingGuestIds = new Set(existingRows.map((row) => row.guestId).filter((id): id is string => Boolean(id)));
-  const guests = links.map((link) => link.guest).filter((guest): guest is NonNullable<typeof guest> => Boolean(guest));
+  const linked = links.filter((link): link is typeof link & { guest: NonNullable<typeof link.guest> } => Boolean(link.guest));
+  // When no link is flagged primary (imports, older creation paths) the first
+  // link of the list acts as the primary guest: minors are declared through it.
+  const primaryLink = linked.find((link) => link.isPrimary) ?? linked[0];
+  const primaryGuestId = primaryLink?.guestId ?? null;
   const checkinAt = nowIso();
   const created: GuestRegisterRecord[] = [];
-  for (const guest of guests) {
+  for (const link of linked) {
+    const guest = link.guest;
     if (existingGuestIds.has(guest.id)) continue;
     const record = await createSpainGuestRegisterRecord({
       context: input.context,
       propertyId: reservation.propertyId,
       reservationId: input.reservationId,
       correlationId: input.correlationId,
-      payload: {
-        guestId: guest.id,
-        recordType: "checkin",
-        firstName: guest.firstName,
-        surname1: guest.surname1 ?? undefined,
-        surname2: guest.surname2 ?? undefined,
-        sex: guest.sex ?? undefined,
-        nationality: guest.nationality ?? undefined,
-        dateOfBirth: isoDay(guest.dateOfBirth),
-        documentType: guest.documentType ?? undefined,
-        documentNumber: guest.documentNumber ?? undefined,
-        documentSupportNumber: guest.documentSupportNumber ?? undefined,
-        residenceFullAddress: guest.residenceAddress ?? undefined,
-        residenceLocality: guest.residenceLocality ?? undefined,
-        residenceCountry: guest.residenceCountry ?? undefined,
-        phoneLandline: guest.phone ?? undefined,
-        phoneMobile: guest.mobilePhone ?? undefined,
-        email: guest.email ?? undefined,
-        travellerCount: 1,
-        contractReference: reservation.code,
+      payload: guestRegisterPayloadForLink({
+        link: { isPrimary: link.isPrimary || link.id === primaryLink?.id, relationshipType: link.relationshipType },
+        guest,
+        reservationCode: reservation.code,
         checkinAt,
-        // No document image is captured in this flow: nothing to retain.
-        idImageDiscarded: true
-      }
+        checkoutAt: reservation.departureDate.toISOString(),
+        primaryGuestId
+      })
     });
     existingGuestIds.add(guest.id);
     created.push(record);
@@ -690,6 +791,14 @@ export async function patchSpainGuestRegisterRecord(input: {
   return record;
 }
 
+/**
+ * POST …/validate: re-validates the persisted columns and answers the
+ * validator verdict (`valid`, `issues`, `payload`) with the PERSISTED status
+ * (Tanda L5 · L5-B1): the row status preserves pipeline-owned terminals
+ * (queued / accepted / annulled…) and applies the "signature is the sole
+ * blocker" rule, so it is the one the screens must show — the raw validator
+ * status is never returned on its own.
+ */
 export async function validateSpainGuestRegisterRecordApi(input: { context: UserContext; recordId: string; correlationId: string }): Promise<SpainGuestRegisterValidationResult> {
   requirePermissions(input.context, ["guest_register.read"]);
   const before = await requireGuestRegisterRow(input.recordId);
@@ -710,7 +819,7 @@ export async function validateSpainGuestRegisterRecordApi(input: { context: User
     afterJson: { valid: validation.valid, status: row.status, issues: validation.issues },
     correlationId: input.correlationId
   });
-  return validation;
+  return { ...validation, status: row.status as SpainGuestRegisterValidationResult["status"] };
 }
 
 export async function markGuestRegisterIdentityVerified(input: {

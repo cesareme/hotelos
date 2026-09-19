@@ -9,6 +9,9 @@ import {
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { isPlatformAdmin, requirePermissions } from "../auth/auth.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+// Tanda L5 (lote A): estado de habitación unificado — mark-clean / mark-inspected
+// delegan en la transición idempotente y auditada (room-state.service.ts).
+import { applyRoomTransition, type RoomStateSnapshot } from "./room-state.service.js";
 
 // Housekeeping writes now PERSIST TO PRISMA (housekeeping_tasks / housekeeping_events
 // / rooms) so the Prisma-backed housekeeping dashboard reflects them. Previously
@@ -69,12 +72,14 @@ function mapRoom(row: {
   number: string;
   floor: string | null;
   status: string;
-  housekeepingStatus: string | null;
-  maintenanceStatus: string | null;
+  housekeepingStatus: string;
+  maintenanceStatus: string;
   sellable: boolean;
   active: boolean;
   sortOrder: number | null;
 }): RoomRecord {
+  // Tanda L5: housekeepingStatus / maintenanceStatus son NOT NULL con vocabulario
+  // cerrado (migración 20260919090000_operaciones_l5): sin fallback a `status`.
   return {
     id: row.id,
     propertyId: row.propertyId,
@@ -82,8 +87,8 @@ function mapRoom(row: {
     number: row.number,
     floor: row.floor ?? "",
     status: row.status as RoomRecord["status"],
-    housekeepingStatus: (row.housekeepingStatus ?? row.status) as RoomRecord["housekeepingStatus"],
-    maintenanceStatus: (row.maintenanceStatus ?? "ok") as RoomRecord["maintenanceStatus"],
+    housekeepingStatus: row.housekeepingStatus as RoomRecord["housekeepingStatus"],
+    maintenanceStatus: row.maintenanceStatus as RoomRecord["maintenanceStatus"],
     sellable: row.sellable,
     active: row.active,
     sortOrder: row.sortOrder ?? 0
@@ -559,6 +564,24 @@ export async function addHousekeepingPhoto(input: {
   return event;
 }
 
+/** Espejo del demo store con el estado resultante de una transición. */
+function mirrorRoomState(roomId: string, state: RoomStateSnapshot): void {
+  mirrorRoomStatus(roomId, {
+    status: state.status,
+    housekeepingStatus: state.housekeepingStatus,
+    maintenanceStatus: state.maintenanceStatus,
+    sellable: state.sellable
+  });
+}
+
+/**
+ * Tanda L5 (lote A): `mark_clean` por la transición unificada. Idempotente: sobre
+ * una habitación ya limpia o inspeccionada responde 200 sin escribir ni emitir
+ * eventos; sobre una ocupada o fuera de servicio solo cambia la limpieza
+ * (`status` conserva la ocupación). Los eventos legados ROOM_MARKED_CLEAN /
+ * RoomMarkedClean se mantienen SOLO cuando hay cambio (además de
+ * ROOM_STATE_CHANGED / RoomStateChanged, que registra la transición).
+ */
 export async function markRoomClean(input: {
   context: UserContext;
   roomId: string;
@@ -568,86 +591,99 @@ export async function markRoomClean(input: {
   // Tenancy (HK-04a): org-scoped lookup before any write.
   const room = await findRoomInOrg(prisma, input.roomId, input.context);
 
-  await prisma.room.update({
-    where: { id: room.id },
-    data: { housekeepingStatus: "clean", status: "clean" }
+  const outcome = await applyRoomTransition({
+    roomId: room.id,
+    event: "mark_clean",
+    context: input.context,
+    correlationId: input.correlationId,
+    reason: "mark-clean"
   });
-  mirrorRoomStatus(room.id, { housekeepingStatus: "clean", status: "clean" });
+  mirrorRoomState(room.id, outcome.state);
 
-  recordAuditEvent({
-    organizationId: input.context.organizationId,
-    propertyId: room.propertyId,
-    actorUserId: input.context.userId,
-    actorType: "user",
-    action: "ROOM_MARKED_CLEAN",
-    entityType: "room",
-    entityId: room.id,
-    afterJson: { housekeepingStatus: "clean", status: "clean" },
-    correlationId: input.correlationId
-  });
+  if (outcome.changed) {
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: room.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "user",
+      action: "ROOM_MARKED_CLEAN",
+      entityType: "room",
+      entityId: room.id,
+      beforeJson: { housekeepingStatus: room.housekeepingStatus, status: room.status },
+      afterJson: { housekeepingStatus: outcome.state.housekeepingStatus, status: outcome.state.status },
+      correlationId: input.correlationId
+    });
 
-  recordDomainEvent({
-    organizationId: input.context.organizationId,
-    propertyId: room.propertyId,
-    entityType: "room",
-    entityId: room.id,
-    eventType: "RoomMarkedClean",
-    payload: { roomNumber: room.number },
-    actorType: "user",
-    actorUserId: input.context.userId,
-    correlationId: input.correlationId
-  });
+    recordDomainEvent({
+      organizationId: input.context.organizationId,
+      propertyId: room.propertyId,
+      entityType: "room",
+      entityId: room.id,
+      eventType: "RoomMarkedClean",
+      payload: { roomNumber: room.number },
+      actorType: "user",
+      actorUserId: input.context.userId,
+      correlationId: input.correlationId
+    });
+  }
 
-  return demoStore.rooms.find((r) => r.id === room.id) ?? ({ id: room.id, propertyId: room.propertyId, roomTypeId: room.roomTypeId, number: room.number, floor: room.floor ?? "", status: "clean", housekeepingStatus: "clean", maintenanceStatus: (room.maintenanceStatus ?? "ok") as RoomRecord["maintenanceStatus"], sellable: room.sellable, active: room.active, sortOrder: room.sortOrder } as RoomRecord);
+  return mapRoom(outcome.room);
 }
 
+/**
+ * Tanda L5 (lote A): `mark_inspected` por la transición unificada. Idempotente:
+ * una inspeccionada responde 200 sin evento; una sucia responde 409
+ * (`details.code = ROOM_NOT_CLEAN`, lo da la transición); una ocupada limpia
+ * pasa a inspeccionada conservando la ocupación en `status`.
+ */
 export async function markRoomInspected(input: {
   context: UserContext;
   roomId: string;
   correlationId: string;
 }): Promise<RoomRecord> {
   requirePermissions(input.context, ["housekeeping.task.manage"]);
-  // Tenancy (HK-04a) BEFORE the state rule below: a caller from another org must
+  // Tenancy (HK-04a) BEFORE the state rule: a caller from another org must
   // get the same 404 whether the room is missing, dirty or clean — otherwise the
   // 409 would confirm existence and state of a room it doesn't own.
   const room = await findRoomInOrg(prisma, input.roomId, input.context);
-  // A room counts as clean if either its HK status or its room status is "clean"
-  // (seed rooms may only carry status). Mirrors the board's display logic.
-  if ((room.housekeepingStatus ?? room.status ?? "") !== "clean") {
-    throw new ConflictError("Solo se pueden inspeccionar habitaciones limpias.");
+
+  const outcome = await applyRoomTransition({
+    roomId: room.id,
+    event: "mark_inspected",
+    context: input.context,
+    correlationId: input.correlationId,
+    reason: "mark-inspected"
+  });
+  mirrorRoomState(room.id, outcome.state);
+
+  if (outcome.changed) {
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: room.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "user",
+      action: "ROOM_INSPECTED",
+      entityType: "room",
+      entityId: room.id,
+      beforeJson: { housekeepingStatus: room.housekeepingStatus, status: room.status },
+      afterJson: { housekeepingStatus: outcome.state.housekeepingStatus, status: outcome.state.status },
+      correlationId: input.correlationId
+    });
+
+    recordDomainEvent({
+      organizationId: input.context.organizationId,
+      propertyId: room.propertyId,
+      entityType: "room",
+      entityId: room.id,
+      eventType: "RoomInspected",
+      payload: { roomNumber: room.number },
+      actorType: "user",
+      actorUserId: input.context.userId,
+      correlationId: input.correlationId
+    });
   }
 
-  await prisma.room.update({
-    where: { id: room.id },
-    data: { housekeepingStatus: "inspected", status: "inspected" }
-  });
-  mirrorRoomStatus(room.id, { housekeepingStatus: "inspected", status: "inspected" });
-
-  recordAuditEvent({
-    organizationId: input.context.organizationId,
-    propertyId: room.propertyId,
-    actorUserId: input.context.userId,
-    actorType: "user",
-    action: "ROOM_INSPECTED",
-    entityType: "room",
-    entityId: room.id,
-    afterJson: { housekeepingStatus: "inspected", status: "inspected" },
-    correlationId: input.correlationId
-  });
-
-  recordDomainEvent({
-    organizationId: input.context.organizationId,
-    propertyId: room.propertyId,
-    entityType: "room",
-    entityId: room.id,
-    eventType: "RoomInspected",
-    payload: { roomNumber: room.number },
-    actorType: "user",
-    actorUserId: input.context.userId,
-    correlationId: input.correlationId
-  });
-
-  return demoStore.rooms.find((r) => r.id === room.id) ?? ({ id: room.id, propertyId: room.propertyId, roomTypeId: room.roomTypeId, number: room.number, floor: room.floor ?? "", status: "inspected", housekeepingStatus: "inspected", maintenanceStatus: (room.maintenanceStatus ?? "ok") as RoomRecord["maintenanceStatus"], sellable: room.sellable, active: room.active, sortOrder: room.sortOrder } as RoomRecord);
+  return mapRoom(outcome.room);
 }
 
 async function recordHousekeepingEvent(input: {

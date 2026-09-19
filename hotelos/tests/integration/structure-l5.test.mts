@@ -174,15 +174,22 @@ async function createInvoice(input: { id: string; propertyId: string; number: st
   });
 }
 
+async function countJournalLinesOf(organizationId: string): Promise<number> {
+  // Corrector L5 (ronda 2): con 143.222 asientos de Sage 200 en la BD local, `journalEntryId: { in: ids }`
+  // supera los 32.767 parámetros de una sentencia preparada de PostgreSQL («too many bind variables») y
+  // cancelaba la suite entera; JournalLine no tiene relación Prisma con JournalEntry, así que se cuenta con un JOIN.
+  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT count(*)::bigint AS count FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_entry_id WHERE e.organization_id = ${organizationId}`;
+  return Number(rows[0]?.count ?? 0n);
+}
+
 async function farandaCounts(): Promise<Record<string, number | string>> {
   const entity = await prisma.legalEntity.findFirst({ where: { organizationId: FARANDA_ORG, isDefault: true }, select: { taxId: true, siiEnabled: true, largeCompany: true, pgcVariant: true } });
-  const entries = await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG }, select: { id: true } });
   const properties = await prisma.property.findMany({ where: { organizationId: FARANDA_ORG }, select: { id: true } });
   return {
     vatSettings: await prisma.vatSettings.count({ where: { organizationId: FARANDA_ORG } }),
     vatBookEntries: await prisma.vatBookEntry.count({ where: { organizationId: FARANDA_ORG } }),
-    journalEntries: entries.length,
-    journalLines: await prisma.journalLine.count({ where: { journalEntryId: { in: entries.map((e) => e.id) } } }),
+    journalEntries: await prisma.journalEntry.count({ where: { organizationId: FARANDA_ORG } }),
+    journalLines: await countJournalLinesOf(FARANDA_ORG),
     invoices: await prisma.invoice.count({ where: { propertyId: { in: properties.map((p) => p.id) } } }),
     accountingSettings: await prisma.accountingSetting.count({ where: { organizationId: FARANDA_ORG } }),
     entity: JSON.stringify(entity)
@@ -832,7 +839,11 @@ describe("C9 · equivalencia (solo lectura): Faranda y org_123 tras L1-L5", () =
       assert.equal(report.fuentes.origen, "libros");
       assert.equal(casilla(report, "27"), Number((Number(emitidas._sum.quota ?? 0) - superseded).toFixed(2)), "27 = Σ cuotas de emitidas del trimestre en los libros − originales sustituidas sin contrafila (derivadas en memoria, corrector L3 · DS-06)");
       assert.equal(Number((casilla(report, "27") - casilla(report, "45")).toFixed(2)), casilla(report, "71"));
-      assert.ok(m390.totales.volumenOperaciones > 805.76, "el 390 suma también las emitidas importadas de Sage");
+      // Corrector L5 (ronda 2): la carga real de Sage 200 trae libros de 2025 (2025-Q1..Q4), no de 2026: el 390 de
+      // 2026 solo suma emitidas importadas si hay filas de Sage fechadas en 2026; sin ellas, basta con que se calcule.
+      const sageBookRows2026 = await prisma.vatBookEntry.count({ where: { organizationId: FARANDA_ORG, sourceType: "sage200", date: { gte: new Date("2026-01-01T00:00:00.000Z"), lte: new Date("2026-12-31T00:00:00.000Z") } } });
+      if (sageBookRows2026 > 0) assert.ok(m390.totales.volumenOperaciones > 805.76, "el 390 suma también las emitidas importadas de Sage");
+      else assert.ok(m390.totales.volumenOperaciones > 0, "el 390 de 2026 se calcula desde los libros nativos");
       assert.equal(m390.presentacion.noSePresenta, undefined);
     }
     assert.deepEqual(await farandaCounts(), farandaBefore, "nothing written to Faranda");

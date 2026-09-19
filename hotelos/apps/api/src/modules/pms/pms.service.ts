@@ -24,6 +24,9 @@ import { requirePermissions } from "../auth/auth.service.js";
 import { queueSesBajaForReservation } from "../compliance/compliance.service.js";
 import { getReservationBalance, getFolioBalance } from "../folio/folio.service.js";
 import { createSystemHousekeepingTask } from "../housekeeping/housekeeping.service.js";
+// Tanda L5 (lote A): check-in / check-out / cambio de habitación escriben el estado
+// de habitación por la transición unificada, dentro de la transacción existente.
+import { applyRoomTransition, emitRoomStateEvents } from "../housekeeping/room-state.service.js";
 import { getCurrentBusinessDate } from "../night-audit/night-audit.service.js";
 import { assertApprovedOrAuthorized, type AuthorizationOutcome } from "../rbac/approvals.service.js";
 import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
@@ -204,8 +207,8 @@ function mapRoom(row: Awaited<ReturnType<typeof prisma.room.findUnique>>): RoomR
     orientation: row.orientation ?? undefined,
     squareMeters: row.squareMeters ? dec(row.squareMeters) : undefined,
     status: row.status,
-    housekeepingStatus: (row.housekeepingStatus ?? "clean") as RoomRecord["housekeepingStatus"],
-    maintenanceStatus: (row.maintenanceStatus ?? "ok") as RoomRecord["maintenanceStatus"],
+    housekeepingStatus: row.housekeepingStatus as RoomRecord["housekeepingStatus"],
+    maintenanceStatus: row.maintenanceStatus as RoomRecord["maintenanceStatus"],
     sellable: row.sellable,
     active: row.active,
     sortOrder: row.sortOrder
@@ -2032,18 +2035,32 @@ async function moveInHouseReservation(input: {
     if (claimed.count !== 1) {
       throw new ConflictError(RESERVATION_CHANGED_MEANWHILE);
     }
-    const occupied = await tx.room.updateMany({
-      where: { id: toRoom.id, ...(validation.roomStatus === "occupied" ? {} : { status: { not: "occupied" } }) },
-      data: { status: "occupied" }
+    // Tanda L5: check_in (status → occupied, limpieza intacta); una segunda escritura
+    // concurrente la corta el lock de fila + canAssignRoom, y la transición solo
+    // escribe si `status` sigue siendo el leído.
+    // Corrector L5 (OP-03): dentro de la transacción los eventos de estado quedan
+    // diferidos; se emiten tras el commit (emitRoomStateEvents más abajo).
+    const toRoomTransition = await applyRoomTransition({
+      db: tx,
+      roomId: toRoom.id,
+      event: "check_in",
+      context: input.context,
+      correlationId: input.correlationId,
+      reason: `Cambio de habitación ${reservation.code}: ${fromRoom?.number ?? "—"} → ${toRoom.number}`
     });
-    if (occupied.count !== 1) {
-      throw new ConflictError(ROOM_JUST_OCCUPIED);
-    }
+    const updatedToRoom = toRoomTransition.room;
     const updatedReservation = await tx.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
-    const updatedToRoom = await tx.room.findUniqueOrThrow({ where: { id: toRoom.id } });
-    const updatedFromRoom = fromRoom
-      ? await tx.room.update({ where: { id: fromRoom.id }, data: { status: "dirty", housekeepingStatus: "dirty" } })
+    const fromRoomTransition = fromRoom
+      ? await applyRoomTransition({
+          db: tx,
+          roomId: fromRoom.id,
+          event: "check_out",
+          context: input.context,
+          correlationId: input.correlationId,
+          reason: `Cambio de habitación ${reservation.code}: salida de ${fromRoom.number}`
+        })
       : null;
+    const updatedFromRoom = fromRoomTransition?.room ?? null;
     const housekeeping = fromRoom
       ? await createSystemHousekeepingTask({
           db: tx,
@@ -2061,8 +2078,9 @@ async function moveInHouseReservation(input: {
       where: { reservationId: reservation.id, checkoutAt: null },
       data: { roomId: toRoom.id }
     });
-    return { updatedReservation, updatedToRoom, updatedFromRoom, housekeeping, staysUpdated: stays.count, notes: validation.notes ?? [] };
+    return { updatedReservation, updatedToRoom, updatedFromRoom, housekeeping, staysUpdated: stays.count, notes: validation.notes ?? [], roomTransitions: [toRoomTransition, fromRoomTransition] };
   });
+  emitRoomStateEvents(...moved.roomTransitions);
 
   const after = await withPrimaryGuestId(moved.updatedReservation);
   const afterToRoom = mapRoom(moved.updatedToRoom);
@@ -2244,7 +2262,7 @@ export async function checkInReservation(input: {
   // REC-03 (same pattern as the room move): validate under the room row lock
   // and write conditionally, so two simultaneous check-ins into one room (or
   // two check-ins of the same reservation) end as one 200 and one 409.
-  const { updatedReservation, updatedRoom } = await prisma.$transaction(async (tx) => {
+  const { updatedReservation, updatedRoom, roomTransition } = await prisma.$transaction(async (tx) => {
     const validation = await validateRoomUnderLock(tx, {
       propertyId: reservation.propertyId,
       reservationId: reservation.id,
@@ -2262,15 +2280,18 @@ export async function checkInReservation(input: {
     if (claimed.count !== 1) {
       throw new ConflictError(`La reserva ${reservation.code} ha cambiado de estado mientras se procesaba el check-in; recarga y vuelve a intentarlo.`);
     }
-    const occupied = await tx.room.updateMany({
-      where: { id: room.id, ...(validation.roomStatus === "occupied" ? {} : { status: { not: "occupied" } }) },
-      // Fase 0: do NOT force housekeepingStatus:"clean" — preserve the room's
-      // prior state. The room is now occupied; housekeeping state is owned by HK.
-      data: { status: "occupied" }
+    // Tanda L5: check_in por la transición unificada (status → occupied; la
+    // limpieza es de pisos y NO se fuerza a clean). Escribe solo si `status` sigue
+    // siendo el leído bajo el lock de fila; idempotente sobre una ya ocupada.
+    // Corrector L5 (OP-03): eventos diferidos hasta el commit (emitRoomStateEvents).
+    const roomTransition = await applyRoomTransition({
+      db: tx,
+      roomId: room.id,
+      event: "check_in",
+      context: input.context,
+      correlationId: input.correlationId,
+      reason: `Check-in ${reservation.code}`
     });
-    if (occupied.count !== 1) {
-      throw new ConflictError(ROOM_JUST_OCCUPIED);
-    }
     // Fase 0: persist the Stay so ShiftManager.checkInsToday (which counts Stays
     // with checkinAt today, shift-manager.service.ts:83) stops always showing 0.
     await tx.stay.create({
@@ -2278,9 +2299,11 @@ export async function checkInReservation(input: {
     });
     return {
       updatedReservation: await tx.reservation.findUniqueOrThrow({ where: { id: reservation.id } }),
-      updatedRoom: await tx.room.findUniqueOrThrow({ where: { id: room.id } })
+      updatedRoom: await tx.room.findUniqueOrThrow({ where: { id: room.id } }),
+      roomTransition
     };
   });
+  emitRoomStateEvents(roomTransition);
 
   const afterReservation = await withPrimaryGuestId(updatedReservation);
   const afterRoom = mapRoom(updatedRoom);
@@ -2459,9 +2482,20 @@ export async function checkOutReservationDetailed(input: CheckOutReservationInpu
       throw new ConflictError(`La reserva ${reservation.code} ya no está alojada; recarga y vuelve a intentarlo.`);
     }
     const updatedReservation = await tx.reservation.findUniqueOrThrow({ where: { id: reservation.id } });
-    const updatedRoom = room
-      ? await tx.room.update({ where: { id: room.id }, data: { status: "dirty", housekeepingStatus: "dirty" } })
+    // Tanda L5: check_out por la transición unificada (libre y sucia; una OOO
+    // conserva su indisponibilidad).
+    // Corrector L5 (OP-03): eventos diferidos hasta el commit (emitRoomStateEvents).
+    const roomTransition = room
+      ? await applyRoomTransition({
+          db: tx,
+          roomId: room.id,
+          event: "check_out",
+          context: input.context,
+          correlationId: input.correlationId,
+          reason: `Check-out ${reservation.code}`
+        })
       : null;
+    const updatedRoom = roomTransition?.room ?? null;
     // Fase 0: close the open Stay so ShiftManager.checkOutsToday (Stays with
     // checkoutAt today, shift-manager.service.ts:91) reflects real check-outs.
     await tx.stay.updateMany({
@@ -2471,8 +2505,9 @@ export async function checkOutReservationDetailed(input: CheckOutReservationInpu
     const closedSecondaries = closeIds.length > 0
       ? await tx.folio.updateMany({ where: { id: { in: closeIds }, status: "open" }, data: { status: "closed" } })
       : { count: 0 };
-    return { updatedReservation, updatedRoom, closedSecondaries: closedSecondaries.count };
+    return { updatedReservation, updatedRoom, closedSecondaries: closedSecondaries.count, roomTransition };
   });
+  emitRoomStateEvents(outcome.roomTransition);
 
   const afterReservation = await withPrimaryGuestId(outcome.updatedReservation);
   const afterRoom = outcome.updatedRoom ? mapRoom(outcome.updatedRoom) : undefined;

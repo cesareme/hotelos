@@ -171,8 +171,29 @@ export type CashClosureListQuery = {
 
 // ── Night audit (cierre del día) ─────────────────────────────────────────────
 
-export type NightAuditStatus = "not_started" | "in_progress" | "completed" | "failed";
+/** `reopened` since Tanda 8a (reopenNightAuditRun); the front paints it as «Reabierto». */
+export type NightAuditStatus = "not_started" | "in_progress" | "completed" | "failed" | "reopened";
 export type NightAuditStepStatus = "ok" | "warning" | "skipped" | "failed";
+
+// Tanda L5 (L5-D) · wire of the preflight gate and the close_settled_folios step.
+
+/** One blocking check of the preflight (details.blockers of 409 NIGHT_AUDIT_PREFLIGHT_BLOCKED; report.preflightOverride.blockers). */
+export type NightAuditPreflightBlockerWire = { id: string; title: string; count: number | null; detail: string };
+
+/** Outcome of close_settled_folios: open folios of cancelled / no-show / checked-out reservations. Money as "445.00". */
+export type NightAuditSettledFoliosWire = { closed: number; pendingInvoice: number; withBalance: number; totalWithBalance: string };
+
+/** The run was forced over these blockers with this reason (audited NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN). */
+export type NightAuditPreflightOverrideWire = { reasonText: string; blockers: NightAuditPreflightBlockerWire[] };
+
+/** Body of POST …/night-audit/run: `force` needs `reasonText` (10..1000). */
+export type NightAuditRunBody = { force?: boolean; reasonText?: string };
+
+/** Reason codes of POST …/night-audit/runs/:runId/reopen (REOPEN_REASON_CODES of the API). */
+export type NightAuditReopenReasonCode = "missing_charge" | "wrong_charge" | "no_show_error" | "payment_correction" | "audit_finding" | "other";
+
+/** Body of POST …/night-audit/runs/:runId/reopen. */
+export type NightAuditReopenBody = { reasonCode: NightAuditReopenReasonCode; reasonText?: string; supervisorAuthorizationId?: string };
 
 export type NightAuditStepWire = {
   step: string;
@@ -201,10 +222,14 @@ export type NightAuditReportWire = {
   inHouseReservations: number;
   roomCharges: { posted: number; alreadyPosted: number; withoutRate: number; withoutFolio: number; totalPosted: string; items: NightAuditRoomChargeItem[] };
   noShows: { processed: number; totalCharged: string };
+  /** Tanda L5 (L5-D); absent on runs persisted before the step existed. */
+  settledFolios?: NightAuditSettledFoliosWire;
   revenue: { total: string; lines: number; byType: Record<string, string> };
   payments: { total: string; count: number; byMethod: Record<string, string> };
   cashClosures: Array<{ outletId: string; status: CashClosureStatus; difference: string | null }>;
   warnings: string[];
+  /** Tanda L5 (L5-D); present only when the run was forced over preflight blockers. */
+  preflightOverride?: NightAuditPreflightOverrideWire;
 };
 
 export type NightAuditRunWire = {
@@ -219,6 +244,16 @@ export type NightAuditRunWire = {
   report: NightAuditReportWire | null;
   errorMessage?: string;
   createdAt: string;
+  // Tanda 8a (income audit / reopening), exposed on the wire since Tanda L5 (L5-D).
+  reviewedByUserId?: string | null;
+  reviewedAt?: string | null;
+  reopenedByUserId?: string | null;
+  reopenedAt?: string | null;
+  reopenReasonCode?: string | null;
+  /** Corrector L5 (OP-04): solo en la respuesta de …/reopen — true cuando la fecha de negocio ha retrocedido al día reabierto (era el último cerrado). */
+  businessDateRewound?: boolean;
+  /** Corrector L5 (OP-04): fecha de negocio vigente tras la reapertura (solo en …/reopen). */
+  currentBusinessDate?: string | null;
 };
 
 // ── Error codes (details.code on 4xx) ────────────────────────────────────────
@@ -240,3 +275,7 @@ export type PosErrorCode =
   | "WINDOW_PARAMS_CONFLICT"
   | "NIGHT_AUDIT_ALREADY_COMPLETED"
   | "NIGHT_AUDIT_IN_PROGRESS";
+// Tanda L5 (L5-D) also answers NIGHT_AUDIT_PREFLIGHT_BLOCKED, NIGHT_AUDIT_NOT_COMPLETED
+// and NIGHT_AUDIT_ALREADY_REVIEWED; they join this union together with their
+// Spanish sentence in admin-web/services/finance-contracts.ts FINANCE_ERROR_MESSAGES
+// (the coverage test pins both together). Until then the front shows the API message.

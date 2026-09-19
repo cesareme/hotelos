@@ -236,8 +236,17 @@ export function validateSpainGuestRegisterRecord(input: SpainGuestRegisterRecord
     });
   }
 
-  const blocking = issues.some((issue) => issue.severity === "blocking");
-  const status: SpainGuestRegisterStatus = blocking ? (issues.some((issue) => issue.code === "signature_required") ? "ready_to_sign" : "missing_data") : "ready_to_submit";
+  // Tanda L5 (L5-B1): `ready_to_sign` ONLY when the missing signature is the
+  // sole blocking issue — the previous rule answered ready_to_sign whenever
+  // `signature_required` appeared, hiding missing identity data behind a
+  // "ready" label (same rule as deriveGuestRegisterStatus, ses-hospedajes/xml.ts).
+  const blockingCodes = issues.filter((issue) => issue.severity === "blocking").map((issue) => issue.code);
+  const blocking = blockingCodes.length > 0;
+  const status: SpainGuestRegisterStatus = !blocking
+    ? "ready_to_submit"
+    : blockingCodes.every((code) => code === "signature_required")
+      ? "ready_to_sign"
+      : "missing_data";
 
   return {
     valid: !blocking,

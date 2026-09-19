@@ -1402,7 +1402,8 @@ export async function runRefresh(flags: RefreshFlags, today: Date = dayUtc()): P
       for (const r of roomFrees) {
         const inHouse = await tx.stay.count({ where: { roomId: r.roomId, status: "in_house" } });
         if (inHouse > 0) continue;
-        await tx.room.update({ where: { id: r.roomId }, data: { status: "clean", housekeepingStatus: "clean" } });
+        // Tanda L5 (estado unificado): libre, limpia y sin bloqueo de mantenimiento.
+        await tx.room.update({ where: { id: r.roomId }, data: { status: "clean", housekeepingStatus: "clean", maintenanceStatus: "ok" } });
         applied.roomFrees++;
       }
       for (const f of folioCloses) {

@@ -209,15 +209,22 @@ const farandaCtx: UserContext = {
   permissions: ["accounting.read", "accounting.reports.read", "accounting.entity.read", "organization.structure.manage"] as UserContext["permissions"]
 };
 
+async function countJournalLinesOf(organizationId: string): Promise<number> {
+  // Corrector L5 (ronda 2): con 143.222 asientos de Sage 200 en la BD local, `journalEntryId: { in: ids }`
+  // supera los 32.767 parámetros de una sentencia preparada de PostgreSQL («too many bind variables») y
+  // cancelaba la suite entera; JournalLine no tiene relación Prisma con JournalEntry, así que se cuenta con un JOIN.
+  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT count(*)::bigint AS count FROM journal_lines l JOIN journal_entries e ON e.id = l.journal_entry_id WHERE e.organization_id = ${organizationId}`;
+  return Number(rows[0]?.count ?? 0n);
+}
+
 async function farandaCounts(): Promise<Record<string, number | string>> {
-  const entries = await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG }, select: { id: true } });
   const properties = await prisma.property.findMany({ where: { organizationId: FARANDA_ORG }, select: { id: true, code: true, kind: true, legalEntityId: true } });
   const entity = await prisma.legalEntity.findFirst({ where: { organizationId: FARANDA_ORG, isDefault: true }, select: { id: true, code: true, taxId: true, siiEnabled: true, largeCompany: true } });
   return {
     properties: JSON.stringify(properties),
     entity: JSON.stringify(entity),
-    journalEntries: entries.length,
-    journalLines: await prisma.journalLine.count({ where: { journalEntryId: { in: entries.map((e) => e.id) } } }),
+    journalEntries: await prisma.journalEntry.count({ where: { organizationId: FARANDA_ORG } }),
+    journalLines: await countJournalLinesOf(FARANDA_ORG),
     invoices: await prisma.invoice.count({ where: { propertyId: { in: properties.map((p) => p.id) } } }),
     sequences: await prisma.invoiceSequence.count({ where: { propertyId: { in: properties.map((p) => p.id) } } }),
     installations: await prisma.verifactuInstallation.count({ where: { legalEntity: { organizationId: FARANDA_ORG } } }),
@@ -1026,16 +1033,25 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     // Tanda 7b (modo sombra OPERA, demo del integrador en Rías Altas): Faranda tiene además el asiento diario
     // `pms_shadow_revenue` del 16/09 (posted), el del 15/09 (reversed) y su reverso (`reversal` con reversalOfId):
     // se excluyen como las nóminas; el invariante fiscal siguen siendo los 61 previos y el saldo 379,00 de 4300.
-    const shadowEntryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG, sourceType: "pms_shadow_revenue" }, select: { id: true } })).map((e) => e.id);
+    // Corrector L5 (ronda 2): con 143.222 asientos de Sage 200 en la BD local, `reversalOfId: { notIn: [ids] }` supera
+    // los 32.767 parámetros de PostgreSQL («too many bind variables»); la misma exclusión (reverso de un asiento sombra
+    // o de Sage) se expresa con una subconsulta y solo los ~63 ids del baseline viajan como parámetros.
+    const EXCLUDED_SOURCE_TYPES = ["payroll_cost_import", "pms_shadow_revenue", "sage200_journal", "sage200_balance"];
+    // Los reversos de los lotes de nómina (`reversal` sobre payroll_cost_import: 48 en local, 2026-01..08) son de la
+    // misma familia excluida que su original («sin payroll_cost_import»), como los de sombra y Sage.
+    const REVERSAL_TARGET_SOURCE_TYPES = ["payroll_cost_import", "pms_shadow_revenue", "sage200_journal", "sage200_balance"];
     // `reversalOfId` es nullable: un `NOT { in }` a secas dejaría fuera los asientos sin reverso (lógica trivaluada).
     // Tanda 7c (importación desde Sage 200, demo del integrador): Faranda lleva además los asientos importados
     // (`sage200_journal` / `sage200_balance`, 2024-2026) y los reversos de los lotes de la demo (`reversal` con
     // sourceId `ledger-import-reverse:<lote>:<asiento>`): se excluyen igual; los 61 previos y el 379,00 no cambian.
-    const sageEntryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG, sourceType: { in: ["sage200_journal", "sage200_balance"] } }, select: { id: true } })).map((e) => e.id);
-    const excludedReversalTargets = [...shadowEntryIds, ...sageEntryIds];
-    const baseline = { organizationId: FARANDA_ORG, sourceType: { notIn: ["payroll_cost_import", "pms_shadow_revenue", "sage200_journal", "sage200_balance"] }, ...(excludedReversalTargets.length > 0 ? { OR: [{ reversalOfId: null }, { reversalOfId: { notIn: excludedReversalTargets } }] } : {}) };
-    assert.equal(await prisma.journalEntry.count({ where: baseline }), 63);
-    const entryIds = (await prisma.journalEntry.findMany({ where: baseline, select: { id: true } })).map((e) => e.id);
+    const entryIds = (
+      await prisma.$queryRaw<Array<{ id: string }>>`SELECT e.id FROM journal_entries e
+        WHERE e.organization_id = ${FARANDA_ORG}
+          AND e.source_type <> ALL(${EXCLUDED_SOURCE_TYPES}::text[])
+          AND (e.reversal_of_id IS NULL OR e.reversal_of_id NOT IN (
+            SELECT x.id FROM journal_entries x WHERE x.organization_id = ${FARANDA_ORG} AND x.source_type = ANY(${REVERSAL_TARGET_SOURCE_TYPES}::text[])))`
+    ).map((row) => row.id);
+    assert.equal(entryIds.length, 63);
     const lines = await prisma.journalLine.findMany({ where: { accountCode: "4300", journalEntryId: { in: entryIds } }, select: { debit: true, credit: true } });
     const balance = lines.reduce((sum, line) => sum + Number(line.debit) - Number(line.credit), 0);
     assert.equal(balance.toFixed(2), "379.00");

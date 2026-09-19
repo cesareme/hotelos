@@ -131,6 +131,36 @@ export function fetchManualSetupOptions(propertyId: string): Promise<ManualSetup
   return apiRequest<ManualSetupOptionsResponse>(`${propertyPath(propertyId)}/manual-setup/options`);
 }
 
+// --- Pasos de puesta en marcha (GET /backoffice/properties/:propertyId/setup · backoffice.access) ---
+
+export type PropertySetupStep = {
+  id: string;
+  propertyId: string;
+  stepCode: string;
+  /** Corrector L5 (L5F-06): etiqueta en español del catálogo del API (SETUP_STEP_LABELS); el front no la duplica. */
+  label?: string;
+  status: "not_started" | "in_progress" | "completed" | "blocked" | "needs_review";
+  completedAt?: string;
+  completedBy?: string;
+  metadataJson: Record<string, unknown>;
+};
+
+/** Tanda L5 (lote C): los 15 pasos del catálogo materializados en property_setup_steps, con el estado en vivo. */
+export type PropertySetupProgress = {
+  propertyId: string;
+  steps: PropertySetupStep[];
+  completed: number;
+  total: number;
+  progressPercent: number;
+  /** true cuando approveGoLive escribió goLiveAt. */
+  live: boolean;
+  goLiveAt: string | null;
+};
+
+export function fetchSetupProgress(propertyId: string): Promise<PropertySetupProgress> {
+  return apiRequest<PropertySetupProgress>(`${propertyPath(propertyId)}/setup`);
+}
+
 export function saveManualSetupOption(propertyId: string, optionCode: string, payload: Record<string, unknown>): Promise<unknown> {
   return apiRequest<unknown>(`${propertyPath(propertyId)}/manual-setup/${encodeURIComponent(optionCode)}`, {
     method: "POST",

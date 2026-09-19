@@ -1,4 +1,8 @@
 import { prisma } from "@hotelos/database";
+// Tanda L5 (lote A): cifras de habitaciones por el helper único del estado
+// unificado (mismas cifras que operations-director, GET /properties/:id/dashboard
+// y el resumen del Room Rack).
+import { foldRoomStateCounts, roomStateCountsAsList } from "../housekeeping/room-state.service.js";
 
 export type HousekeepingDashboardInput = {
   propertyId: string;
@@ -6,10 +10,14 @@ export type HousekeepingDashboardInput = {
 };
 
 export type HousekeepingDashboardKpis = {
+  /** Limpieza por housekeepingStatus en TODAS las ocupaciones (Tanda L5). */
   roomsClean: number;
   roomsDirty: number;
   roomsInspected: number;
+  /** Por status: out_of_order + out_of_service. */
   roomsOutOfOrder: number;
+  /** Por status: occupied (aditivo, Tanda L5). */
+  roomsOccupied: number;
   tasksOpen: number;
   tasksOverdue: number;
   avgMinutesPerRoom: number;
@@ -58,25 +66,28 @@ export async function buildHousekeepingDashboard(
   const dayEnd = endOfDayUtc(dayStart);
   const now = new Date();
 
-  // Rooms grouped by status — drives KPIs (clean / dirty / inspected / OOO) and the bar table.
-  const roomStatusGroups = await prisma.room.groupBy({
-    by: ["status"],
-    where: { propertyId },
+  // Rooms grouped by status × housekeepingStatus, folded with the single helper:
+  // clean / dirty / inspected by CLEANLINESS in every occupancy, occupied and OOO
+  // (out_of_order + out_of_service) by `status`. `roomsByStatus` keeps its shape
+  // (folded list) for the bar table. Integrador L5 (INT-L5-07): the SAME room set
+  // as the Room Rack, operations-director and the mobile board (`active: true`) —
+  // a hotel with retired rooms (OPERA inventory correction: 45 in Rías Altas) must
+  // give one count everywhere.
+  const roomStateGroups = await prisma.room.groupBy({
+    by: ["status", "housekeepingStatus"],
+    where: { propertyId, active: true },
     _count: { _all: true }
   });
+  const roomCounts = foldRoomStateCounts(
+    roomStateGroups.map((row) => ({ status: String(row.status), housekeepingStatus: row.housekeepingStatus, count: safeNumber(row._count?._all) }))
+  );
+  const roomsByStatus = roomStateCountsAsList(roomCounts);
 
-  const roomsByStatus = roomStatusGroups.map((row) => ({
-    status: String(row.status),
-    count: safeNumber(row._count?._all)
-  }));
-
-  const statusCount = (status: string): number =>
-    safeNumber(roomsByStatus.find((row) => row.status === status)?.count ?? 0);
-
-  const roomsClean = statusCount("clean");
-  const roomsDirty = statusCount("dirty");
-  const roomsInspected = statusCount("inspected");
-  const roomsOutOfOrder = statusCount("out_of_order") + statusCount("out_of_service");
+  const roomsClean = roomCounts.clean;
+  const roomsDirty = roomCounts.dirty;
+  const roomsInspected = roomCounts.inspected;
+  const roomsOutOfOrder = roomCounts.outOfOrder;
+  const roomsOccupied = roomCounts.occupied;
 
   // Open tasks: pending / assigned / in_progress.
   const tasksOpen = await prisma.housekeepingTask.count({
@@ -262,6 +273,7 @@ export async function buildHousekeepingDashboard(
       roomsDirty: safeNumber(roomsDirty),
       roomsInspected: safeNumber(roomsInspected),
       roomsOutOfOrder: safeNumber(roomsOutOfOrder),
+      roomsOccupied: safeNumber(roomsOccupied),
       tasksOpen: safeNumber(tasksOpen),
       tasksOverdue: safeNumber(tasksOverdue),
       avgMinutesPerRoom: safeNumber(avgMinutesPerRoom)

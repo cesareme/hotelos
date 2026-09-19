@@ -16,19 +16,33 @@
 // screen that fixes it; environment-level checks offer «Ver estado» instead of
 // «Configurar». The head button keeps «Recalcular preparación» («readiness» left the
 // visible copy at the Tanda C close; tests/backoffice-contract.test.mjs pins the label).
+//
+// Tanda L5 (lote C): the GET computes the checks live (freshness window on the
+// API), so «Sin calcular» only remains for a session that cannot read them (403 /
+// network). «Aprobar salida en vivo» (POST …/go-live, property.go_live) shows only
+// when the property is ready and not yet live; the approval writes goLiveAt and
+// completes the `go_live` setup step, and the head then reads «En vivo desde …».
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../services/activeProperty";
 import { ApiError } from "../services/api-client";
-import { fetchPropertyReadiness, recalculatePropertyReadiness, type PropertyReadiness, type ReadinessCheck } from "../services/billingApi";
+import { getUser } from "../services/auth-storage";
+import { approvePropertyGoLive, fetchPropertyReadiness, recalculatePropertyReadiness, type PropertyReadiness, type ReadinessCheck } from "../services/billingApi";
 import { useToast } from "../components/Toast";
 import { toArray } from "../utils/toArray";
 import { navigateTo, type ScreenKey } from "../lib/navigate";
-import { dateTime, plural, readinessMessage } from "../lib/format";
+import { date, dateTime, plural, readinessMessage } from "../lib/format";
+import { goLiveHeadState } from "./go-live-state";
 import { useTabHost } from "./tabs/TabHost";
 import { treeHeaderFor } from "./tabs/tab-helpers";
-import { CocoaBadge, CocoaButton, CocoaChart, CocoaPage, CocoaSection, CocoaSkeleton, CocoaState, type CocoaTone } from "../components/cocoa";
+import { CocoaBadge, CocoaButton, CocoaChart, CocoaDialog, CocoaPage, CocoaSection, CocoaSkeleton, CocoaState, type CocoaTone } from "../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+
+/** Same rule as the shell banner (BackOfficeLayout): a session without a permission list (demo mode) may try; the API decides. */
+function sessionMayApproveGoLive(): boolean {
+  const user = getUser();
+  return !user?.permissions || user.permissions.includes("property.go_live");
+}
 
 const HEADER = treeHeaderFor("GoLiveChecklist", { eyebrow: "Configuración · Puesta en marcha", title: "Salida en vivo" });
 
@@ -86,6 +100,9 @@ function GoLivePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recalculating, setRecalculating] = useState(false);
+  const [approveOpen, setApproveOpen] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const canApprove = useMemo(() => sessionMayApproveGoLive(), []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,6 +119,35 @@ function GoLivePage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function handleApprove() {
+    setApproving(true);
+    try {
+      const result = await approvePropertyGoLive(PROPERTY_ID);
+      if (result.status === "approved") {
+        showToast(
+          result.alreadyLive
+            ? `La propiedad ya estaba en vivo desde el ${date(result.goLiveAt)}.`
+            : `Salida en vivo aprobada: la propiedad está en vivo desde el ${date(result.goLiveAt)} y el paso de puesta en marcha queda completado.`,
+          { variant: result.alreadyLive ? "info" : "success" }
+        );
+      } else {
+        showToast(`No se puede aprobar la salida en vivo: ${plural(result.blockers.length, "comprobación bloqueante", "comprobaciones bloqueantes")}.`, { variant: "error" });
+      }
+      setApproveOpen(false);
+      await load();
+    } catch (err) {
+      const message =
+        err instanceof ApiError && err.status === 403
+          ? "No tienes permiso para aprobar la salida en vivo (property.go_live)."
+          : err instanceof Error
+            ? err.message
+            : "No se pudo aprobar la salida en vivo.";
+      showToast(message, { variant: "error" });
+    } finally {
+      setApproving(false);
+    }
+  }
 
   async function handleRecalculate() {
     setRecalculating(true);
@@ -129,23 +175,23 @@ function GoLivePage() {
 
   const checks = useMemo(() => toArray<ReadinessCheck>(readiness?.checks), [readiness]);
   const lastUpdated = useMemo(() => {
+    if (readiness?.computedAt) return readiness.computedAt;
     const stamps = checks.map((check) => check.updatedAt ?? check.createdAt).filter((value): value is string => Boolean(value));
     if (stamps.length === 0) return null;
     return stamps.sort().at(-1) ?? null;
-  }, [checks]);
-  const blocking = checks.filter((check) => check.severity === "blocking" && check.status !== "pass");
-  const passed = checks.filter((check) => check.status === "pass").length;
+  }, [readiness, checks]);
   const nextPending = checks.find((check) => check.status !== "pass");
-
-  const headerTone: CocoaTone = checks.length === 0 ? "info" : readiness?.status === "ready" ? "success" : "danger";
-  const headerLabel = checks.length === 0 ? "Sin calcular" : readiness?.status === "ready" ? "Lista para salir en vivo" : plural(blocking.length, "bloqueante", "bloqueantes");
-  const progressTone: CocoaTone = readiness?.status === "ready" ? "success" : blocking.length > 0 ? "danger" : "warning";
+  // Head state (pure, tested in screens/__tests__/go-live-checklist.test.mts): the API
+  // computes the checks live, so «Sin calcular» only for a session that could not read them.
+  const head = goLiveHeadState(readiness, checks, canApprove);
+  const { blocking, passed, showApprove, tone: headerTone, label: headerLabel, progressTone } = head;
+  const goLiveAt = readiness?.goLiveAt ?? null;
 
   return (
     <CocoaPage
       eyebrow={HEADER.eyebrow}
       title={HEADER.title}
-      subtitle={lastUpdated ? `Última comprobación: ${dateTime(lastUpdated)}` : "Aún no se han calculado las comprobaciones de esta propiedad"}
+      subtitle={lastUpdated ? `Última comprobación: ${dateTime(lastUpdated)}` : "Aún no se han podido calcular las comprobaciones de esta propiedad"}
       actions={
         <>
           <CocoaBadge tone={headerTone}>{headerLabel}</CocoaBadge>
@@ -154,24 +200,44 @@ function GoLivePage() {
               Puesta en marcha
             </CocoaButton>
           )}
-          <CocoaButton variant="filled" tone="accent" size="small" onClick={() => void handleRecalculate()} disabled={recalculating} loading={recalculating}>
+          <CocoaButton variant={showApprove ? "bordered" : "filled"} tone={showApprove ? "neutral" : "accent"} size="small" onClick={() => void handleRecalculate()} disabled={recalculating} loading={recalculating}>
             Recalcular preparación
           </CocoaButton>
+          {showApprove ? (
+            <CocoaButton variant="filled" tone="accent" size="small" onClick={() => setApproveOpen(true)} disabled={approving || recalculating}>
+              Aprobar salida en vivo
+            </CocoaButton>
+          ) : null}
         </>
       }
       state={loading && !readiness ? "loading" : error && !readiness ? "error" : "ready"}
       skeleton={<CocoaSkeleton variant="card" height={320} />}
       error={{ title: "No se pudo cargar la lista de comprobación", message: error ?? undefined, onRetry: () => void load() }}
-      commands={[{ id: "go-live-recalculate", label: "Recalcular preparación", run: () => { void handleRecalculate(); } }]}
+      commands={[
+        { id: "go-live-recalculate", label: "Recalcular preparación", run: () => { void handleRecalculate(); } },
+        ...(showApprove ? [{ id: "go-live-approve", label: "Aprobar salida en vivo", run: () => setApproveOpen(true) }] : [])
+      ]}
     >
+      <CocoaDialog
+        open={approveOpen}
+        onClose={() => setApproveOpen(false)}
+        title="Aprobar la salida en vivo"
+        description="Se recalculan todas las comprobaciones y, si no queda ninguna bloqueante, la propiedad pasa a estar en vivo desde hoy y el paso «Salida en vivo» de la puesta en marcha queda completado. La aprobación se registra en la auditoría."
+        confirmLabel="Aprobar salida en vivo"
+        onConfirm={handleApprove}
+        busy={approving}
+      />
       {checks.length === 0 ? (
+        // Corrector L5 (L5F-08): the API computes the checks live, so an empty list only
+        // means the session could not read them (403 / network); reloading is the
+        // action — «Recalcular» needs property.configure and is already in the head.
         <CocoaSection aria-label="Comprobaciones sin calcular">
           <CocoaState
             kind="empty"
             illustration="box"
             title="Comprobaciones sin calcular"
-            message="La propiedad no tiene comprobaciones guardadas. Pulsa «Recalcular ahora» para evaluar perfil legal, estructura, usuarios, facturación, pagos y cumplimiento."
-            primaryAction={{ label: "Recalcular ahora", onClick: () => void handleRecalculate(), loading: recalculating }}
+            message="No se han podido leer las comprobaciones de esta propiedad. Vuelve a cargar la lista; si persiste, tu sesión no puede leer la preparación de esta propiedad."
+            primaryAction={{ label: "Volver a cargar", onClick: () => void load(), loading: loading }}
           />
         </CocoaSection>
       ) : (
@@ -214,7 +280,9 @@ function GoLivePage() {
       )}
 
       <p className="cocoa-note">
-        La aprobación de la salida en vivo recalcula todas las comprobaciones y se bloquea si queda alguna bloqueante; las comprobaciones de módulos desactivados pasan automáticamente.
+        {goLiveAt
+          ? `Salida en vivo aprobada el ${dateTime(goLiveAt)}. Las comprobaciones se siguen recalculando para detectar cambios posteriores, pero la propiedad ya está en marcha.`
+          : "La aprobación de la salida en vivo recalcula todas las comprobaciones y se bloquea si queda alguna bloqueante; si no queda ninguna, fija la fecha de salida en vivo de la propiedad y completa el paso de la puesta en marcha. Las comprobaciones de módulos desactivados pasan automáticamente."}
       </p>
     </CocoaPage>
   );

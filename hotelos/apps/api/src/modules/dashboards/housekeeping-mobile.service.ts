@@ -18,6 +18,8 @@
 
 import { prisma } from "@hotelos/database";
 import { createDegradedCollector } from "../../lib/degraded.js";
+// Tanda L5 (lote A): limpieza / OOO por el helper único del estado unificado.
+import { roomStateOf } from "../housekeeping/room-state.service.js";
 
 export type HkMobilePriority = "urgent" | "high" | "normal" | "low";
 
@@ -197,12 +199,12 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
   // Construir rooms con prioridad.
   const items: HkMobileRoom[] = [];
   for (const room of rooms) {
-    const hk = (room.housekeepingStatus ?? "").toLowerCase();
-    const isStayover = hk === "stayover";
-    // "stayover" no es propiamente clean (requiere limpieza diaria) ni dirty
-    // (la cama no se rehace, no se cambia todo). Lo tratamos como necesita HK.
-    const isClean = !isStayover && (hk === "clean" || hk === "inspected" || hk === "ready" || (room.status === "clean" && !hk));
-    const isOoo = room.status === "out_of_order" || hk === "out_of_order";
+    // Tanda L5: limpia por housekeepingStatus (clean | inspected) en cualquier
+    // ocupación; el «stayover» ya no es un valor de limpieza sino la reserva
+    // alojada sin salida hoy (derivada más abajo), que solo fija motivo y prioridad.
+    const state = roomStateOf(room);
+    const isClean = state.isClean;
+    const isOoo = state.occupancy === "out_of_order" || state.occupancy === "out_of_service";
     if (isOoo) continue; // las FOS no son tarea de pisos
 
     const arrival = arrivalByRoom.get(room.id);
@@ -260,7 +262,7 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
       floor: room.floor ?? undefined,
       roomTypeName: room.roomTypeId ? roomTypeById.get(room.roomTypeId)?.name : undefined,
       status: String(room.status),
-      housekeepingStatus: room.housekeepingStatus ?? undefined,
+      housekeepingStatus: state.cleanliness,
       priority,
       reason,
       nextArrivalEta: arrival?.eta ?? undefined,

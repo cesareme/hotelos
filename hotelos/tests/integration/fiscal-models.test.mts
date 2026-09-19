@@ -585,9 +585,18 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
     // Tras la migración Faranda → CELUISMA (runbook §17.13) la sociedad declarante es CEL · A33615980 (NIF real solo en la demo local).
     assert.equal(report.declarante.nif, "A33615980");
     assert.ok(report.casillas.some((box) => box.casilla === "71"));
-    // Tanda 7c: con libros importados de Sage 200 (sourceType sage200) en el trimestre, el 303 sale de los libros.
-    const sageBookRows = await prisma.vatBookEntry.count({ where: { organizationId: FARANDA_ORG_ID, sourceType: "sage200", period: "2026-Q3" } });
-    assert.equal(report.fuentes.origen, sageBookRows > 0 ? "libros" : "documentos");
+    // Tanda 7c · corrector L5 (ronda 2): el 303 sale de los libros salvo que algún libro del trimestre no tenga filas
+    // materializadas y los documentos sí produzcan filas para él (regla de loadVatBookRows). En la BD local conviven
+    // libros de Sage 200 (sourceType sage200, 2025) y libros materializados por rebuild (invoice / rectification,
+    // 2026-Q3), así que la expectativa se calcula con esa misma regla en vez de suponer `sage200`.
+    const persistedByBook = await prisma.vatBookEntry.groupBy({
+      by: ["book"],
+      where: { organizationId: FARANDA_ORG_ID, date: { gte: new Date("2026-07-01T00:00:00.000Z"), lte: new Date("2026-09-30T00:00:00.000Z") } },
+      _count: { _all: true }
+    });
+    const persistedRows = new Map(persistedByBook.map((row) => [row.book, row._count._all]));
+    const anyDerived = (["emitidas", "recibidas", "bienes_inversion"] as const).some((book) => (persistedRows.get(book) ?? 0) === 0 && (report.fuentes.libros?.[book]?.filas ?? 0) > 0);
+    assert.equal(report.fuentes.origen, anyDerived ? "documentos" : "libros");
     const annual = await buildModelo390({ context: farandaCtx, year: 2026 });
     assert.equal(annual.modelo, "390");
     assert.deepEqual(await farandaCounts(), before);

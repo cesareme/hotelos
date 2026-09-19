@@ -362,8 +362,18 @@ export function SesHospedajesSettingsScreen() {
     }
   }
 
-  // Live readiness derived from real settings.
+  // Live readiness derived from real settings AND the resolved establishment
+  // (Tanda L5 · L5-B3): the codes typed in the connector form are not what the
+  // pipeline sends — resolveSesEstablishment (GET /properties/:id/ses/
+  // establishment) reads the property profile + PropertyComplianceSetting.
+  // sesRegistryNumber, so «Códigos configurados» / «Listos» only when that
+  // resolution passes; otherwise «Faltan N» with the resolver's own count.
   const credsReady = Boolean(form.establishmentCode && form.landlordCode);
+  const missing = useMemo(() => toArray<string>(establishment?.missing), [establishment]);
+  const establishmentReady = establishment?.ok === true;
+  const connectorReady = credsReady && establishmentReady;
+  const connectorBadge = connectorReady ? "Códigos configurados" : missing.length > 0 ? `Faltan ${number(missing.length)}` : "Configuración pendiente";
+  const connectorKpi = connectorReady ? "Listos" : missing.length > 0 ? `Faltan ${number(missing.length)}` : "Faltan";
   const webServiceReady = form.webServiceEnabled && form.officialSchemaConfigured && Boolean(form.webServiceSecretRef);
   const counts = useMemo(
     () =>
@@ -373,8 +383,10 @@ export function SesHospedajesSettingsScreen() {
       }, {}),
     [submissions]
   );
-  const rejected = (counts.rejected ?? 0) + (counts.failed ?? 0) + (counts.abandoned ?? 0);
-  const missing = useMemo(() => toArray<string>(establishment?.missing), [establishment]);
+  // Corrector L5 (CS-04): las filas descartadas por el operador (failed + SES_DISCARDED) son
+  // historial cerrado: ni «fallidas» ni pendientes.
+  const discarded = useMemo(() => submissions.filter((s) => s.status === "failed" && s.errorCode === "SES_DISCARDED").length, [submissions]);
+  const rejected = (counts.rejected ?? 0) + (counts.failed ?? 0) + (counts.abandoned ?? 0) - discarded;
   // The legacy heuristic: outcomes read as success, the rest as a plain note.
   const noticeTone = status && /guardada|generado|encolado|conexión/.test(status) ? "success" : "neutral";
   const historyReady = !submissionsError && submissions.length > 0;
@@ -390,7 +402,7 @@ export function SesHospedajesSettingsScreen() {
       }
       actions={
         <>
-          <CocoaBadge tone={credsReady ? "success" : "warning"}>{credsReady ? "Códigos configurados" : "Configuración pendiente"}</CocoaBadge>
+          <CocoaBadge tone={connectorReady ? "success" : "warning"}>{connectorBadge}</CocoaBadge>
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void handleTest()} disabled={busy} loading={busy}>
             Probar conexión
           </CocoaButton>
@@ -429,7 +441,7 @@ export function SesHospedajesSettingsScreen() {
       ) : null}
 
       <CocoaKpiStrip aria-label="Preparación del conector">
-        <CocoaKpi label="Códigos de establecimiento y arrendador" value={credsReady ? "Listos" : "Faltan"} polarity="neutral" status={credsReady ? "ok" : "warning"} />
+        <CocoaKpi label="Códigos de establecimiento y arrendador" value={connectorKpi} degraded={!establishment} polarity="neutral" status={connectorReady ? "ok" : "warning"} />
         <CocoaKpi
           label="Datos del establecimiento"
           value={establishment ? (establishment.ok ? "Completos" : `Faltan ${number(missing.length)}`) : "—"}

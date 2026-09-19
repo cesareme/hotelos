@@ -2,14 +2,21 @@
 import { apiRequest } from "./api-client";
 import { getActivePropertyId } from "./activeProperty";
 
+// Tanda L5 (lote A) · estado de habitación unificado (vocabulario cerrado):
+// `status` = ocupación / disponibilidad y, si está libre, espejo de la limpieza;
+// `housekeepingStatus` = limpieza (siempre presente); `maintenanceStatus` = mantenimiento.
+export type HkRoomStatus = "clean" | "dirty" | "inspected" | "occupied" | "out_of_order" | "out_of_service";
+export type HkHousekeepingStatus = "dirty" | "clean" | "inspected";
+export type HkMaintenanceStatus = "ok" | "blocked" | "needs_attention";
+
 export type HkRoom = {
   id: string;
   propertyId: string;
   number: string;
   floor?: string;
-  status: string;
-  housekeepingStatus?: string;
-  maintenanceStatus?: string;
+  status: HkRoomStatus;
+  housekeepingStatus: HkHousekeepingStatus;
+  maintenanceStatus: HkMaintenanceStatus;
   sellable: boolean;
 };
 export type HkTask = {

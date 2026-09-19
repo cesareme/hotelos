@@ -617,6 +617,10 @@ async function seedProperty(spec: HotelSpec) {
       fiscalTerritory: spec.fiscalTerritory
     }
   });
+  // Corrector L5 (L5F-07): los ocho centros están en explotación (piloto desde
+  // 2026-09-14); sin go_live_at el banner de puesta en marcha los trata como
+  // hoteles sin abrir. Solo si está vacío: una aprobación real no se pisa.
+  await prisma.property.updateMany({ where: { id: spec.id, goLiveAt: null }, data: { goLiveAt: new Date("2026-09-14T00:00:00.000Z") } });
 
   // 2) Room types + rooms
   let createdRoomTypeIds: string[] = [];
@@ -666,7 +670,10 @@ async function seedProperty(spec: HotelSpec) {
         roomTypeId: r.roomTypeId,
         number: r.number,
         floor: String(r.floor),
+        // Tanda L5 (estado unificado): limpieza y mantenimiento explícitos.
         status: "clean",
+        housekeepingStatus: "clean",
+        maintenanceStatus: "ok",
         sellable: true,
         active: true
       },

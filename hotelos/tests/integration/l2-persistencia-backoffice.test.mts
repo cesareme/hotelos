@@ -377,11 +377,19 @@ describe("L2-04 · gestor de categorías y campos personalizados en Prisma", () 
   });
 
   it("readiness y centro de configuración leen solo Prisma", async () => {
+    // Tanda L5 (lote C): sin filas persistidas el GET evalúa las 17 comprobaciones,
+    // las persiste (sin auditar) y responde con computedAt; un hotel recién creado
+    // sigue «blocked» porque le faltan comprobaciones bloqueantes reales.
+    assert.equal(await prisma.propertyReadinessCheck.count({ where: { propertyId: tenantA.propertyA } }), 0, "sin filas antes del primer GET");
     const readiness = await call(app, "GET", `${base(tenantA.propertyA)}/readiness`, gmA);
     assert.equal(readiness.status, 200, JSON.stringify(readiness.body));
     assert.equal(readiness.body.propertyId, tenantA.propertyA);
-    assert.equal(readiness.body.status, "blocked", "sin checks calculados no está lista");
-    assert.deepEqual(readiness.body.checks, []);
+    assert.equal(readiness.body.status, "blocked", "un hotel recién creado tiene comprobaciones bloqueantes pendientes");
+    assert.equal(readiness.body.checks.length, 17, "el GET calcula las 17 comprobaciones");
+    assert.ok(readiness.body.blockingCount > 0);
+    assert.match(String(readiness.body.computedAt), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, "computedAt en ISO 8601");
+    assert.equal(readiness.body.goLiveAt, null);
+    assert.equal(await prisma.propertyReadinessCheck.count({ where: { propertyId: tenantA.propertyA } }), 17, "las 17 filas quedan persistidas");
     const center = await call(app, "GET", `${base(tenantA.propertyA)}/configuration-center`, gmA);
     if (center.status === 200) {
       assert.equal(center.body.optionCount, 2);

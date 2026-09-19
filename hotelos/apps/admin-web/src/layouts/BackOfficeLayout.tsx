@@ -40,6 +40,7 @@ import { openHelpCenter } from "../components/guide/guideStore";
 import { SupervisorPinSettingsDialog } from "../components/SupervisorPinSettingsDialog";
 import { useToast } from "../components/Toast";
 import { fetchPropertyReadiness, type PropertyReadiness } from "../services/billingApi";
+import { setupBannerMessage, shouldShowSetupBanner } from "./setup-banner";
 import { PROPERTY_KIND_LABELS, type StructuredPropertyRow } from "../services/financeScope";
 import { BRAND } from "../config/brand";
 
@@ -544,11 +545,9 @@ function writeSetupBannerDismissed(propertyId: string): void {
   }
 }
 
-/** Pure decision used by the banner (and its tests): show only when the API says "blocked". */
-export function shouldShowSetupBanner(readiness: PropertyReadiness | null | undefined, dismissed: boolean): boolean {
-  if (dismissed || !readiness) return false;
-  return readiness.status === "blocked" || (readiness.blockingCount ?? 0) > 0;
-}
+// Pure decision of the banner: `layouts/setup-banner.ts` (corrector L5 · L5F-02,
+// pinned by `layouts/__tests__/setup-banner.test.mts`); re-exported for the callers.
+export { shouldShowSetupBanner };
 
 function SetupPendingBanner(props: { activeScreen: string }) {
   const propertyId = getActiveProperty().propertyId;
@@ -585,11 +584,10 @@ function SetupPendingBanner(props: { activeScreen: string }) {
 
   if (!shouldShowSetupBanner(readiness, dismissed)) return null;
 
+  // shouldShowSetupBanner guarantees pending > 0 (the API computes the checks
+  // live, so «pending 0» can no longer reach the banner).
   const pending = readiness?.blockingCount ?? 0;
-  const message =
-    pending > 0
-      ? `Faltan ${pending} ${pending === 1 ? "comprobación" : "comprobaciones"} para poner la propiedad en marcha.`
-      : "La propiedad aún no supera las comprobaciones de puesta en marcha.";
+  const message = setupBannerMessage(pending);
 
   function openChecklist() {
     window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "GoLiveChecklist" }));

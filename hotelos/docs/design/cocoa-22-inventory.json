@@ -11,31 +11,31 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 226,
-    "lines": 94191,
+    "files": 227,
+    "lines": 95990,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1095,
+    "cocoaButtons": 1106,
     "rawTables": 2,
     "cocoaTables": 309,
     "rawInputs": 0,
-    "cocoaInputs": 1101,
+    "cocoaInputs": 1106,
     "inlineStyles": 679,
     "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 201,
-    "withTabHost": 89,
+    "withPageHeader": 202,
+    "withTabHost": 90,
     "debtPoints": 193
   },
   "bySize": {
     "S": 95,
-    "M": 106,
-    "L": 20,
+    "M": 104,
+    "L": 23,
     "XL": 5
   },
   "byArchetype": {
@@ -45,7 +45,7 @@
     "formulario": 19,
     "asistente": 11,
     "workspace": 5,
-    "calendario": 6,
+    "calendario": 7,
     "chat": 1,
     "dialogo": 14,
     "contenedor": 41,
@@ -71,13 +71,13 @@
     },
     "compartido": {
       "label": "Compartido / sin entrada de menú",
-      "files": 11,
-      "lines": 2426,
+      "files": 12,
+      "lines": 3420,
       "debtPoints": 0,
       "sizes": {
         "S": 7,
         "M": 4,
-        "L": 0,
+        "L": 1,
         "XL": 0
       },
       "archetypes": {
@@ -85,13 +85,14 @@
         "dialogo": 4,
         "otro": 1,
         "contenedor": 3,
+        "calendario": 1,
         "lista": 1
       }
     },
     "configuracion": {
       "label": "Configuración",
       "files": 45,
-      "lines": 17008,
+      "lines": 17188,
       "debtPoints": 22,
       "sizes": {
         "S": 19,
@@ -113,7 +114,7 @@
     "cumplimiento": {
       "label": "Cumplimiento",
       "files": 29,
-      "lines": 8689,
+      "lines": 8701,
       "debtPoints": 10,
       "sizes": {
         "S": 15,
@@ -169,12 +170,12 @@
     "hoy": {
       "label": "Hoy",
       "files": 11,
-      "lines": 5072,
+      "lines": 5424,
       "debtPoints": 17,
       "sizes": {
         "S": 3,
-        "M": 7,
-        "L": 1,
+        "M": 6,
+        "L": 2,
         "XL": 0
       },
       "archetypes": {
@@ -204,12 +205,12 @@
     "operaciones": {
       "label": "Operaciones",
       "files": 27,
-      "lines": 11121,
+      "lines": 11371,
       "debtPoints": 38,
       "sizes": {
         "S": 9,
-        "M": 16,
-        "L": 2,
+        "M": 15,
+        "L": 3,
         "XL": 0
       },
       "archetypes": {
@@ -240,7 +241,7 @@
     "recepcion": {
       "label": "Recepción",
       "files": 19,
-      "lines": 10444,
+      "lines": 10455,
       "debtPoints": 26,
       "sizes": {
         "S": 6,
@@ -1601,14 +1602,14 @@
         "configuracion"
       ],
       "archetype": "dashboard",
-      "lines": 403,
+      "lines": 515,
       "metrics": {
-        "lines": 403,
+        "lines": 515,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 9,
+        "cocoaButtons": 10,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -2171,9 +2172,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 840,
+      "lines": 852,
       "metrics": {
-        "lines": 840,
+        "lines": 852,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3333,14 +3334,14 @@
         "configuracion"
       ],
       "archetype": "asistente",
-      "lines": 229,
+      "lines": 297,
       "metrics": {
-        "lines": 229,
+        "lines": 297,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 3,
+        "cocoaButtons": 4,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -4529,9 +4530,9 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 363,
+      "lines": 380,
       "metrics": {
-        "lines": 363,
+        "lines": 380,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4567,9 +4568,9 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 406,
+      "lines": 426,
       "metrics": {
-        "lines": 406,
+        "lines": 426,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4825,18 +4826,18 @@
         "hoy"
       ],
       "archetype": "dashboard",
-      "lines": 573,
+      "lines": 925,
       "metrics": {
-        "lines": 573,
+        "lines": 925,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 5,
+        "cocoaButtons": 9,
         "rawTables": 0,
         "cocoaTables": 1,
         "rawInputs": 0,
-        "cocoaInputs": 0,
+        "cocoaInputs": 4,
         "inlineStyles": 4,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -4850,7 +4851,7 @@
       },
       "headerExempt": false,
       "debtPoints": 1,
-      "size": "M"
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/operations/OperationsDirectorScreen.tsx",
@@ -5087,18 +5088,18 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "dialogo",
-      "lines": 759,
+      "lines": 972,
       "metrics": {
-        "lines": 759,
+        "lines": 972,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 8,
+        "cocoaButtons": 9,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
-        "cocoaInputs": 3,
+        "cocoaInputs": 4,
         "inlineStyles": 12,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -5112,7 +5113,7 @@
       },
       "headerExempt": true,
       "debtPoints": 3,
-      "size": "M"
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/operations/QuickCheckOutDrawer.tsx",
@@ -6150,9 +6151,9 @@
         "recepcion"
       ],
       "archetype": "asistente",
-      "lines": 1291,
+      "lines": 1302,
       "metrics": {
-        "lines": 1291,
+        "lines": 1302,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -8395,6 +8396,40 @@
       "headerExempt": false,
       "debtPoints": 0,
       "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/timeline/LiveTimeline.tsx",
+      "name": "LiveTimeline",
+      "screenKeys": [],
+      "category": "compartido",
+      "categories": [],
+      "archetype": "calendario",
+      "lines": 994,
+      "metrics": {
+        "lines": 994,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 4,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/timeline/LiveTimelineWorkspace.tsx",

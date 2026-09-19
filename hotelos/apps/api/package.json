@@ -29,6 +29,7 @@
     "accounting:relabel-customer-account": "node --env-file-if-exists=../../.env --import tsx src/scripts/accounting-relabel-customer-account.ts",
     "import:pms-history-forecast": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-pms-history-forecast.ts",
     "reservations:import": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-reservations.ts",
+    "ses:discard-failed": "node --env-file-if-exists=../../.env --import tsx src/scripts/discard-failed-ses-submissions.ts",
     "pms-shadow:pull": "node --env-file-if-exists=../../.env --import tsx src/scripts/pms-shadow-pull.ts",
     "sage200:import": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-sage200.ts"
   },

@@ -521,7 +521,9 @@ const AcceptInviteSchema = z.object({
   deviceId: z.string().trim().min(1).max(120).optional()
 });
 const SesSubmissionListQuerySchema = z.object({
-  status: z.string().trim().min(1).max(40).optional()
+  status: z.string().trim().min(1).max(40).optional(),
+  // Corrector L5 (CS-04): with status=failed the discarded rows (SES_DISCARDED, closed history) only come with includeDiscarded=true.
+  includeDiscarded: z.enum(["true", "false", "1", "0"]).optional()
 });
 // Tanda 3 (cierre · server-rutas): filters of GET /properties/:propertyId/verifactu/submissions.
 // `limit` / `cursor` / `envelope` are parsed by parsePageQuery, not here.
@@ -801,6 +803,10 @@ import {
   markRoomInspected,
   updateHousekeepingTask
 } from "./modules/housekeeping/housekeeping.service.js";
+// Tanda L5 (lote A): estado de habitación unificado — la ruta libre de limpieza
+// pasa por la transición auditada y los KPIs de habitaciones se pliegan con el
+// helper único (mismas cifras que /dashboards/housekeeping y operations-director).
+import { applyRoomTransition, foldRoomStateCounts, normalizeHousekeepingInput } from "./modules/housekeeping/room-state.service.js";
 import {
   attachWorkOrderMedia,
   blockRoomForMaintenance,
@@ -4447,7 +4453,7 @@ export async function buildApiServer() {
     today.setUTCHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-    const [arrivalsToday, departuresToday, todayRevenueAgg, unpaidAgg, roomsDirty, roomsCleanInspected, roomsOutOfOrder] = await Promise.all([
+    const [arrivalsToday, departuresToday, todayRevenueAgg, unpaidAgg, roomStateGroups] = await Promise.all([
       prisma.reservation.count({
         where: { propertyId: params.propertyId, status: { in: ["confirmed", "checked_in"] }, arrivalDate: { gte: today, lt: tomorrow } }
       }),
@@ -4465,15 +4471,23 @@ export async function buildApiServer() {
         where: { reservation: { propertyId: params.propertyId, status: { in: ["checked_in", "confirmed"] } }, status: "open" },
         include: { lines: true, payments: { where: { status: "captured" } } }
       }),
-      // housekeepingStatus falls back to status when unset (housekeeping.service mapRoom).
-      prisma.room.count({
-        where: { propertyId: params.propertyId, OR: [{ housekeepingStatus: "dirty" }, { housekeepingStatus: null, status: "dirty" }] }
-      }),
-      prisma.room.count({
-        where: { propertyId: params.propertyId, OR: [{ housekeepingStatus: "inspected" }, { housekeepingStatus: null, status: "inspected" }] }
-      }),
-      prisma.room.count({ where: { propertyId: params.propertyId, status: "out_of_order" } })
+      // Tanda L5: un solo groupBy (status × limpieza) plegado con el helper único:
+      // sucias / inspeccionadas por housekeepingStatus (NOT NULL, sin fallback) en
+      // todas las ocupaciones; fuera de servicio = out_of_order | out_of_service.
+      // Integrador L5 (INT-L5-07): solo habitaciones activas, el mismo conjunto que
+      // el Room Rack, /dashboards/housekeeping y operations-director.
+      prisma.room.groupBy({
+        by: ["status", "housekeepingStatus"],
+        where: { propertyId: params.propertyId, active: true },
+        _count: { _all: true }
+      })
     ]);
+    const roomCounts = foldRoomStateCounts(
+      roomStateGroups.map((row) => ({ status: String(row.status), housekeepingStatus: row.housekeepingStatus, count: row._count._all }))
+    );
+    const roomsDirty = roomCounts.dirty;
+    const roomsCleanInspected = roomCounts.inspected;
+    const roomsOutOfOrder = roomCounts.outOfOrder;
     const unpaidBalances = unpaidAgg.reduce((sum: number, f: { lines: Array<{ total: unknown }>; payments: Array<{ amount: unknown }> }) => {
       const charges = f.lines.reduce((s: number, l) => s + Number(l.total), 0);
       const paid = f.payments.reduce((s: number, p) => s + Number(p.amount), 0);
@@ -5629,22 +5643,24 @@ export async function buildApiServer() {
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { status?: unknown };
     if (typeof body.status !== "string") throw new BadRequestError("status is required");
-    const status = body.status.toLowerCase();
-    if (!status) throw new BadRequestError("status is required");
-    if (!/^[a-z_]{2,32}$/.test(status)) throw new BadRequestError("Estado de limpieza no válido.");
+    // Tanda L5 (lote A): vocabulario cerrado. Los alias (ready → clean; stayover |
+    // cleaning | in_progress → dirty) se aceptan pero NUNCA se almacenan; cualquier
+    // otro texto es un 400. La escritura pasa por la transición unificada: auditada
+    // (ROOM_STATE_CHANGED), idempotente y respetuosa con la ocupación / OOO en
+    // `status` (una ocupada marcada limpia sigue ocupada). Los tres botones del
+    // Room Rack y la pantalla móvil de pisos entran por aquí.
+    const housekeeping = normalizeHousekeepingInput(body.status);
+    if (!housekeeping) throw new BadRequestError("Estado de limpieza no válido: usa clean, dirty o inspected.");
     await assertEntityAccess(request, { entity: "room", id: params.id });
-    const { prisma: db } = await import("@hotelos/database");
-    // Mapeamos a RoomStatus si encaja, además de housekeepingStatus libre.
-    const isClean = status === "clean" || status === "inspected" || status === "ready";
-    const isDirty = status === "dirty" || status === "stayover";
-    const updated = await db.room.update({
-      where: { id: params.id },
-      data: {
-        housekeepingStatus: status,
-        ...(isClean ? { status: "clean" as never } : isDirty ? { status: "dirty" as never } : {})
-      }
+    const event = housekeeping === "clean" ? "mark_clean" : housekeeping === "dirty" ? "mark_dirty" : "mark_inspected";
+    const outcome = await applyRoomTransition({
+      roomId: params.id,
+      event,
+      context: request.userContext,
+      correlationId: createId("corr"),
+      reason: `housekeeping-status ${String(body.status).toLowerCase()}`
     });
-    return updated;
+    return outcome.room;
   });
 
   app.post("/rooms/:id/sellable", async (request) => {
@@ -5652,11 +5668,19 @@ export async function buildApiServer() {
     const body = (request.body ?? {}) as { sellable?: boolean };
     if (typeof body.sellable !== "boolean") throw new BadRequestError("sellable boolean is required");
     await assertEntityAccess(request, { entity: "room", id: params.id });
-    const { prisma: db } = await import("@hotelos/database");
-    return db.room.update({
-      where: { id: params.id },
-      data: { sellable: body.sellable }
+    // Corrector L5 (OP-05): «Bloquear / Desbloquear habitación» del Room Rack pasa
+    // por la transición unificada (auditada ROOM_STATE_CHANGED, idempotente):
+    // no vendible → out_of_service si está libre; vendible de nuevo → vuelve al
+    // inventario con su limpieza. Una bloqueada por orden de trabajo NO se libera
+    // aquí (409 ROOM_MAINTENANCE_BLOCKED): invariante blocked ⇒ sellable=false.
+    const outcome = await applyRoomTransition({
+      roomId: params.id,
+      event: body.sellable ? "mark_sellable" : "mark_unsellable",
+      context: request.userContext,
+      correlationId: createId("corr"),
+      reason: body.sellable ? "room-rack: desbloquear habitación" : "room-rack: bloquear habitación"
     });
+    return outcome.room;
   });
 
   app.get("/properties/:propertyId/work-orders", async (request) => {
@@ -6944,7 +6968,8 @@ export async function buildApiServer() {
       limit: page.limit,
       // Contract (F) types the cursor as `string | undefined`; parsePageQuery yields null for "no cursor".
       cursor: page.cursor ?? undefined,
-      status: filters.status
+      status: filters.status,
+      includeDiscarded: filters.includeDiscarded === "true" || filters.includeDiscarded === "1"
     });
     reply.headers(pageHeaders(result));
     return pageBody(result, page);
