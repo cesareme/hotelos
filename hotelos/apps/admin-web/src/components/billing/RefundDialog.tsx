@@ -139,6 +139,7 @@ export function RefundDialog({ open, onClose, payments, initialPaymentId, curren
     <CocoaDialog
       open={open}
       onClose={onClose}
+      submitOnEnter
       title="Devolver un cobro"
       description="La devolución queda como un movimiento propio del folio (nunca se borra el cobro original) y se contabiliza al momento."
       tone="destructive"

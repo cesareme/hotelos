@@ -45,7 +45,7 @@ import {
 import { devQueryFrom, matchPath, normalizePathname } from "../../navigation/nav-tree";
 import { MOBILE_BREAKPOINT_PX } from "../../navigation/role-tokens";
 import { TAB_ITEM_RADIUS, tabSurfaceStyle } from "./CocoaSegmentedControl";
-import { CocoaSkeleton } from "./CocoaState";
+import { CocoaSkeleton, SKELETON_DELAY_MS, useSkeletonDelay } from "./CocoaState";
 
 /** Cancelable event dispatched BEFORE a tab switch; guards veto with preventDefault. */
 export const TAB_NAV_EVENT = "hotelos-tab-nav";
@@ -380,9 +380,17 @@ const visuallyHidden: CSSProperties = {
   border: 0
 };
 
-/** Cocoa-spaced shimmer lines announced as «Cargando sección…»; the default Suspense fallback (CocoaSkeleton, no `.bo-*`). */
-export function CocoaTabSkeleton(props: { lines?: number; label?: string }) {
+/**
+ * Cocoa-spaced shimmer lines announced as «Cargando sección…»; the default
+ * Suspense fallback (CocoaSkeleton, no `.bo-*`). Painted only after
+ * `SKELETON_DELAY_MS` (300 ms, NN/g «< 1 s nada»): a warm SPA navigation
+ * (⌥R / ⌥H with the chunk already loaded) shows nothing instead of a 300 ms
+ * flash (corrector L-19, §6.1 «nunca esqueleto si hay caché»).
+ */
+export function CocoaTabSkeleton(props: { lines?: number; label?: string; delayMs?: number }) {
   const lines = props.lines ?? 4;
+  const show = useSkeletonDelay(true, props.delayMs ?? SKELETON_DELAY_MS);
+  if (!show) return null;
   return (
     <div
       role="status"

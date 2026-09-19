@@ -82,7 +82,9 @@ export function selectionVars(sel: CellSelection, cellWidth: number): TlVars {
 /**
  * Variables de la parrilla: anchura de columna, número de días, índice de hoy
  * (−1 si hoy no está en el rango), la columna de recursos (LEAD_WIDTH, o
- * LEAD_WIDTH_NARROW en teléfonos) y las medidas fijas del motor.
+ * LEAD_WIDTH_NARROW en teléfonos), la altura de barra del rango (40 px con
+ * ratón, 44 px con el dedo: `rangeFor(..., { coarse })`, UX-1 · U9b) y las
+ * medidas fijas del motor.
  */
 export function gridVars(range: TimelineRange, todayIndex: number, leadWidth: number = LEAD_WIDTH): TlVars {
   const today = Number.isInteger(todayIndex) && todayIndex >= 0 && todayIndex < range.dayCount ? todayIndex : -1;
@@ -92,7 +94,7 @@ export function gridVars(range: TimelineRange, todayIndex: number, leadWidth: nu
     "--tl-today": String(today),
     "--tl-lead": px(leadWidth),
     "--tl-head-h": px(HEAD_HEIGHT),
-    "--tl-bar-h": px(BAR_HEIGHT),
+    "--tl-bar-h": px(range.barHeight ?? BAR_HEIGHT),
     "--tl-lane-gap": px(LANE_GAP)
   };
 }

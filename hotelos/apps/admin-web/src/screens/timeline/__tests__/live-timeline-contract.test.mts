@@ -12,10 +12,11 @@ import { LIVE_TIMELINE_INSTRUCTIONS } from "../../../content/screen-instructions
 // los componentes (≤ 12, esperados 7, sin `style={{`); cabecera Cocoa,
 // fecha de negocio, paginación por `nextCursor`, degradación honesta del 403,
 // nombres de huésped por lotes, los nueve componentes compuestos, la única
-// live region, deshacer, creación por celdas, y que TODA escritura pasa por
-// el diálogo (las seis funciones de escritura solo dentro de applyPending /
-// onUndo); copy en español sin Intl; hoja por una sola vía; barrel; L3-F1
-// traspasado (previsualización de penalización + applyPolicy + toast de resultado).
+// live region (la del shell: la pantalla ya no monta ninguna, UX-1 · U4/U9b),
+// deshacer, creación por celdas, y que TODA escritura vive en applyPending
+// (diálogo) / applyDirect (move y resize sin diálogo, F24) / onUndo; copy en
+// español sin Intl; hoja por una sola vía; barrel; L3-F1 traspasado
+// (previsualización de penalización + applyPolicy + toast de resultado).
 
 const source = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const count = (src: string, re: RegExp) => (src.match(re) ?? []).length;
@@ -165,7 +166,7 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /title=\{LIVE_TIMELINE_TITLE\}/);
     assert.match(screen, /useTabHost\(/);
     assert.match(screen, /subtitle=\{hosted \? undefined : LIVE_TIMELINE_SUBTITLE\}/);
-    assert.match(screen, /Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el detalle con folio y actividad, y arrastra para mover o redimensionar la estancia\. Las acciones críticas piden confirmación antes de ejecutarse\./);
+    assert.match(screen, /Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el detalle con folio y actividad, y arrastra \(o usa ⌥ con las flechas\) para mover o redimensionar la estancia: el cambio se aplica al momento y se puede deshacer durante 8 segundos\. Solo el check-in, el check-out, cancelar y el no-show piden confirmación\./);
     assert.match(screen, /fullBleed\s+density="compact"\s+state=\{pageState\}/);
     assert.match(screen, /skeleton=\{<CocoaSkeleton variant="chart" height=\{420\} \/>\}/);
     assert.match(screen, /error=\{\{ title: LOAD_ERROR_TITLE, message: error \?\? undefined, onRetry: \(\) => void loadBase\(\) \}\}/);
@@ -175,6 +176,13 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /label: "Actualizar Live Timeline"/);
     assert.match(screen, /label: "Live Timeline: ir a hoy"/);
     assert.match(screen, /label: "Nueva reserva desde el timeline", run: openNewReservation/);
+    // U9b (§5.11 (5)): «Mover un día» y «Deshacer» llegan a ⌘K (CocoaPage registra los commands en cocoa-page-commands).
+    assert.match(screen, /export const MOVE_LATER_COMMAND = "Mover un día la reserva seleccionada";/);
+    assert.match(screen, /export const MOVE_EARLIER_COMMAND = "Mover un día antes la reserva seleccionada";/);
+    assert.match(screen, /export const UNDO_COMMAND = "Deshacer el último cambio del Live Timeline";/);
+    assert.match(screen, /id: "live-timeline-move-later", label: MOVE_LATER_COMMAND, shortcut: "⌥→", run: \(\) => moveSelected\(1\)/);
+    assert.match(screen, /id: "live-timeline-move-earlier", label: MOVE_EARLIER_COMMAND, shortcut: "⌥←", run: \(\) => moveSelected\(-1\)/);
+    assert.match(screen, /\.\.\.\(undo \? \[\{ id: "live-timeline-undo", label: UNDO_COMMAND, shortcut: "⌘Z", run: \(\) => void onUndo\(\) \}\] : \[\]\)/, "Deshacer solo mientras hay algo que deshacer");
   });
 
   it("5b · importa primitivas solo del índice Cocoa, componentes del barrel timeline, lógica del motor y los servicios previstos", () => {
@@ -186,7 +194,7 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /import \{ getActivePropertyId \} from "\.\.\/\.\.\/services\/activeProperty";/);
     assert.match(screen, /import \{ fetchNightAuditBusinessDate \} from "\.\.\/\.\.\/services\/posApi";/);
     assert.match(screen, /import \{ fetchGuest \} from "\.\.\/\.\.\/services\/guestsApi";/);
-    assert.match(screen, /import \{ guestFullName, pendingGuestIds \} from "\.\.\/reservations\/reservation-guest-label";/);
+    assert.match(screen, /import \{ guestFullName, guestNamesFromRows, pendingGuestIds \} from "\.\.\/reservations\/reservation-guest-label";/, "L-15: los nombres que trae la lista se siembran sin GET /guests/:id");
     assert.match(screen, /import \{ CocoaScreenInstructionsCard \} from "\.\.\/\.\.\/components\/cocoa-guidance\/CocoaScreenInstructionsCard";/);
     assert.match(screen, /import \{ LIVE_TIMELINE_INSTRUCTIONS \} from "\.\.\/\.\.\/content\/screen-instructions\/timeline";/);
     assert.match(screen, /import \{ useToast \} from "\.\.\/\.\.\/components\/Toast";/);
@@ -204,7 +212,9 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /setBusinessDateKey\(businessDate\?\.currentDate \?\? null\)/);
     assert.match(screen, /businessDateKey !== null && businessDateKey < todayKey/, "aviso de cierre nocturno pendiente");
     assert.match(screen, /Cierre nocturno pendiente · fecha de negocio/);
-    assert.match(screen, /rangeFor\(anchor, granularity, \{ narrow \}\)/, "escala estrecha en teléfonos");
+    assert.match(screen, /rangeFor\(anchor, granularity, \{ narrow, coarse \}\)/, "escala estrecha en teléfonos y barras de 44 px con el dedo (U9b)");
+    assert.match(screen, /const coarse = useCoarsePointer\(\);/);
+    assert.match(screen, /import \{ useCoarsePointer \} from "\.\.\/\.\.\/lib\/useCoarsePointer";/);
     assert.match(screen, /anchorForToday\(/);
     assert.match(screen, /nextCursor/);
     assert.match(screen, /MAX_RANGE_PAGES = 10/);
@@ -255,12 +265,11 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
       "<TimelineDateSelector",
       "<TimelineFilterBar",
       "<TimelineGapAlert",
-      "<TimelineUndoBar",
+      "<CocoaUndoBar",
       '<div className="tl-workspace" data-panel={inspected ? "open" : "closed"}>',
       "<TimelineGrid\n",
       "<TimelineLegend",
       "<TimelineInspector",
-      "<CocoaLiveRegion",
       "<TimelineActionDialog",
       "<TimelineCreateDialog"
     ];
@@ -274,14 +283,19 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /description=\{LIVE_TIMELINE_INSTRUCTIONS\.whatIsThis\}/);
     assert.match(screen, /steps=\{\[\.\.\.LIVE_TIMELINE_INSTRUCTIONS\.howToUse\]\}/);
     assert.match(screen, /tip=\{LIVE_TIMELINE_INSTRUCTIONS\.tips\[0\]\}/);
-    assert.equal(count(screen, /<CocoaLiveRegion/g), 1, "una sola live region");
-    assert.match(screen, /<CocoaLiveRegion message=\{liveMessage\} \/>/);
+    // U4/U9b: la única live region es la del shell (CocoaShellLiveRegion); la pantalla anuncia por useCocoaAnnounce y no monta otra.
+    assert.equal(count(screen, /<CocoaLiveRegion/g), 0, "ninguna live region propia: la del shell es la única de la página");
+    assert.doesNotMatch(screen, /CocoaLiveRegion|liveMessage|setLiveMessage/);
+    assert.match(screen, /import \{ useCocoaAnnounce \} from "\.\.\/\.\.\/providers\/CocoaGlobalProvider";/);
+    assert.match(screen, /const \{ announce \} = useCocoaAnnounce\(\);/);
+    assert.equal(count(code, /\bannounce\(/g), 1, "la región del shell solo anuncia la selección");
+    assert.match(screen, /announce\(`Seleccionada la reserva \$\{res\.code\}`\)/);
     assert.match(screen, /onDropRejected/);
     assert.match(screen, /maxHeight=\{narrow \? GRID_HEIGHT_NARROW : GRID_HEIGHT\}/);
     assert.match(screen, /const narrow = useIsNarrow\(\);/);
     assert.match(screen, /<CocoaState\s+kind="empty"/);
     assert.match(screen, /rows\.length === 0/);
-    for (const chip of ["habitación\", \"habitaciones\"", "reserva visible\", \"reservas visibles\"", "En casa: {inHouseCount}", "Llegadas hoy: {arrivalsToday}", "Salidas hoy: {departuresToday}"]) {
+    for (const chip of ["habitación\", \"habitaciones\"", "reserva visible\", \"reservas visibles\"", "En el hotel: {inHouseCount}", "Llegadas hoy: {arrivalsToday}", "Salidas hoy: {departuresToday}"]) {
       assert.ok(screen.includes(chip), `chip ${chip}`);
     }
     assert.match(screen, /<TimelineGapAlert days=\{overbooking\} roomOverlaps=\{roomOverlaps\} onGoToDay=\{goToDay\} \/>/);
@@ -298,7 +312,7 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /const \[focusToken, setFocusToken\] = useState\(0\);/);
     assert.match(screen, /const inspected = inspectorOpen \? selected : null;/);
     assert.match(screen, /const detailId = inspected\?\.id \?\? null;/, "folio y actividad solo se piden con el detalle abierto");
-    assert.match(screen, /const onSelect = useCallback\(\(id: string \| null\) => \{\s*setSelectedId\(id\);/);
+    assert.match(screen, /const onSelect = useCallback\(\s*\(id: string \| null\) => \{\s*setSelectedId\(id\);/);
     assert.doesNotMatch(code.slice(code.indexOf("const onSelect = useCallback("), code.indexOf("const onOpen = useCallback(")), /setInspectorOpen/, "seleccionar no abre");
     assert.match(screen, /const onOpen = useCallback\(\(id: string, via: TimelineOpenVia\) => \{\s*setSelectedId\(id\);\s*setInspectorOpen\(true\);\s*if \(via === "keyboard"\) setFocusToken/);
     assert.match(screen, /setInspectorOpen\(false\);\s*if \(selectedId\) gridHandle\.current\?\.focusBar\(selectedId\);/, "cerrar conserva la selección y devuelve el foco a la barra");
@@ -332,19 +346,18 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     assert.match(screen, /"Calculando la penalización prevista…"/);
     // Una sola voz por resultado: deshacible → barra de deshacer (role=status); el resto → toast; nunca los tres a la vez.
     assert.match(screen, /const entry = undoEntryFor\(pending\);\s*if \(entry\) setUndo\(entry\);\s*else showToast\(done, \{ variant: "success" \}\);/);
-    assert.doesNotMatch(screen, /setLiveMessage\(copy\.done\)/, "la live region no repite el toast ni la barra de deshacer");
-    assert.doesNotMatch(screen, /setLiveMessage\(UNDO_DONE_MESSAGE\)/);
-    assert.equal(count(code, /setLiveMessage\(/g), 1, "la live region solo anuncia la selección");
+    assert.doesNotMatch(screen, /announce\(copy\.done\)|announce\(done\)/, "la región del shell no repite el toast ni la barra de deshacer");
+    assert.doesNotMatch(screen, /announce\(UNDO_DONE_MESSAGE\)/);
     assert.match(screen, /"Cambio deshecho\."/);
     assert.match(screen, /entry\.roomOnly \? IN_HOUSE_UNDO_DONE_MESSAGE : UNDO_DONE_MESSAGE/, "deshacer un traslado en casa lo dice con honestidad");
     assert.match(screen, /entry\.roomOnly/);
     assert.match(screen, /updateReservation\(entry\.reservationId, entry\.patch\)/);
-    assert.match(screen, /<TimelineUndoBar entry=\{undo\} onUndo=\{onUndo\} onDismiss=\{dismissUndo\} \/>/);
+    assert.match(screen, /<CocoaUndoBar entry=\{undo\} onUndo=\{onUndo\} onDismiss=\{dismissUndo\} \/>/);
     assert.match(screen, /dialogCopy\(pending, \{ roomLabel, guest \}\)/);
   });
 
-  it("5h · TODA escritura pasa por el diálogo: las seis funciones de escritura solo dentro de applyPending / onUndo", () => {
-    const ranges = [callbackRange(code, "applyPending"), callbackRange(code, "onUndo")];
+  it("5h · TODA escritura vive en applyPending (diálogo), applyDirect (move / resize sin diálogo) u onUndo: las seis funciones de escritura solo ahí", () => {
+    const ranges = [callbackRange(code, "applyPending"), callbackRange(code, "applyDirect"), callbackRange(code, "onUndo")];
     const inside = (at: number) => ranges.some(([start, end]) => at >= start && at < end);
     const writes = ["updateReservation", "assignReservationRoom", "checkInReservation", "checkOutReservation", "cancelReservation", "noShowReservation"];
     for (const name of writes) {
@@ -352,12 +365,52 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
       assert.ok(calls.length > 0, `${SCREEN}: ${name}( se invoca`);
       for (const call of calls) {
         const line = code.slice(0, call.index).split("\n").length;
-        assert.ok(inside(call.index ?? -1), `${SCREEN}:${line}: ${name}( fuera de applyPending / onUndo`);
+        assert.ok(inside(call.index ?? -1), `${SCREEN}:${line}: ${name}( fuera de applyPending / applyDirect / onUndo`);
       }
+    }
+    // applyDirect solo escribe move / resize (PATCH o assign-room): el resto de verbos siguen en el diálogo.
+    const [directStart, directEnd] = callbackRange(code, "applyDirect");
+    const direct = code.slice(directStart, directEnd);
+    for (const name of ["checkInReservation", "checkOutReservation", "cancelReservation", "noShowReservation"]) {
+      assert.doesNotMatch(direct, new RegExp(`\\b${name}\\(`), `applyDirect no hace ${name}`);
     }
     // applyPending recibe la entrada del diálogo y onUndo la entrada de deshacer: nada más escribe.
     assert.match(code, /onConfirm=\{applyPending\}/);
     assert.match(code, /onUndo=\{onUndo\}/);
+  });
+
+  it("5h-bis · U9b (F24, §4.2): mover / redimensionar sin diálogo — optimista + barra de deshacer 8 s, teclado por la misma vía, 409 → diálogo con el conflicto, deshacer espera al vuelo", () => {
+    // El arrastre y ⌥ + flechas entran por onDrop: solo lo que el motor marca (needsConfirmation) abre el diálogo.
+    const [dropStart, dropEnd] = callbackRange(code, "onDrop");
+    const drop = code.slice(dropStart, dropEnd);
+    assert.match(drop, /if \(needsConfirmation\(change\)\) \{\s*setPending\(change\);\s*return;\s*\}/);
+    assert.match(drop, /void applyDirect\(change, via\);/);
+    assert.match(code, /\(change: PendingChange, via: TimelineOpenVia = "pointer"\)/);
+    // applyDirect: barra optimista y barra de deshacer ANTES de la petición; foco de vuelta a la barra si vino del teclado.
+    const [directStart, directEnd] = callbackRange(code, "applyDirect");
+    const direct = code.slice(directStart, directEnd);
+    assert.match(direct, /const next = optimisticReservation\(change\);/);
+    assert.match(direct, /const entry = undoEntryFor\(change\);/);
+    assert.match(direct, /requestSeq\.current\+\+;/, "una carga en vuelo no pisa la barra optimista");
+    assert.ok(direct.indexOf("setUndo(entry)") < direct.indexOf("await updateReservation("), "la barra de deshacer aparece antes de que responda el API");
+    assert.match(direct, /if \(via === "keyboard"\) requestAnimationFrame\(\(\) => gridHandle\.current\?\.focusBar\(res\.id\)\);/);
+    // Fallo: rollback de la barra y de la entrada de deshacer; 409 tipado → el diálogo explica el conflicto; otro error → toast.
+    assert.match(direct, /setReservations\(\(prev\) => prev\.map\(\(item\) => \(item\.id === res\.id \? res : item\)\)\);/);
+    assert.match(direct, /setUndo\(\(current\) => \(current === entry \? null : current\)\);/);
+    assert.match(direct, /if \(code\) \{\s*setActionError\(null\);\s*setConflict\(\{ code, message: conflictMessage\(code\) \}\);\s*setPending\(change\);/);
+    assert.match(direct, /showToast\(describeError\(err, UNKNOWN_CONFLICT_MESSAGE\), \{ variant: "error" \}\)/);
+    assert.match(direct, /inflightRef\.current = request;/);
+    // onUndo: espera al cambio directo en vuelo y revierte también en optimista.
+    const [undoStart, undoEnd] = callbackRange(code, "onUndo");
+    const undo = code.slice(undoStart, undoEnd);
+    assert.match(undo, /if \(inflight && !\(await inflight\)\) return;/);
+    assert.match(undo, /withPatch\(item, entry\.patch\)/);
+    // ⌘K «Mover un día» usa la misma resolución que el teclado de la parrilla.
+    assert.match(code, /resolveKeyboardMove\(\{ type: "dates", res: selected, mode: "move", dxDays \}, \{ rows, roomById, roomTypeById, reservations \}\)/);
+    assert.match(screen, /"Selecciona una reserva del Live Timeline para moverla\."/);
+    // Estados de reserva del diccionario, nunca el enum crudo (P6, U2).
+    assert.match(screen, /\(id\) => reservationStatusLabel\(id\)/);
+    assert.doesNotMatch(screen, /RES_STATUS_LABEL\[id\] \?\? id/);
   });
 
   it("5i · crear por celdas → Nueva reserva con la query; enlaces del inspector; teclado global con Escape en orden", () => {
@@ -412,16 +465,22 @@ describe("Live Timeline · composición y contrato de pantalla", () => {
     }
   });
 
-  it("9 · LIVE_TIMELINE_INSTRUCTIONS: forma A (whatIsThis, 5 pasos sin numerar, 2 consejos, 3 atajos, 3 pantallas relacionadas {name, path})", () => {
-    assert.match(LIVE_TIMELINE_INSTRUCTIONS.whatIsThis, /^Reservas en casa y proyectadas por habitación en un calendario/);
+  it("9 · LIVE_TIMELINE_INSTRUCTIONS: forma A (whatIsThis, 5 pasos sin numerar, 2 consejos, 7 atajos, 3 pantallas relacionadas {name, path})", () => {
+    assert.match(LIVE_TIMELINE_INSTRUCTIONS.whatIsThis, /^Reservas en el hotel y proyectadas por habitación en un calendario/, "vocabulario D5 (U2): «en el hotel», no «en casa»");
     assert.equal(LIVE_TIMELINE_INSTRUCTIONS.howToUse.length, 5);
     for (const step of LIVE_TIMELINE_INSTRUCTIONS.howToUse) assert.doesNotMatch(step, /^\s*\d+[.)]\s/, `paso sin numerar: ${step}`);
     assert.equal(LIVE_TIMELINE_INSTRUCTIONS.tips.length, 2);
-    assert.equal(LIVE_TIMELINE_INSTRUCTIONS.shortcuts.length, 3);
+    assert.equal(LIVE_TIMELINE_INSTRUCTIONS.shortcuts.length, 7);
     assert.deepEqual(
       LIVE_TIMELINE_INSTRUCTIONS.shortcuts.map((shortcut) => shortcut.keys),
-      ["←→↑↓", "Intro", "Esc"]
+      ["←→↑↓", "Intro", "Esc", "⌥←→", "⌥⇧←→", "⌥↑↓", "⌘Z"]
     );
+    // U9b: las instrucciones ya no prometen un diálogo por cambio; dicen que se aplica y se deshace, y hablan de «en el hotel» (D5).
+    assert.match(LIVE_TIMELINE_INSTRUCTIONS.howToUse[2], /se aplica al momento y se puede deshacer durante 8 segundos/);
+    assert.doesNotMatch(LIVE_TIMELINE_INSTRUCTIONS.howToUse[2], /cada cambio pide confirmación/);
+    assert.match(LIVE_TIMELINE_INSTRUCTIONS.howToUse[2], /mantén pulsada/);
+    assert.match(LIVE_TIMELINE_INSTRUCTIONS.tips[0], /en el hotel/);
+    assert.doesNotMatch(instructions, /en casa/);
     assert.deepEqual(
       LIVE_TIMELINE_INSTRUCTIONS.relatedScreens.map((related) => related.path),
       ["/recepcion/reservas/lista", "/recepcion/reservas/tablero", "/hoy"]

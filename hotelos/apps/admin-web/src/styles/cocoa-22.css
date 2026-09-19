@@ -334,6 +334,8 @@
   font-size: var(--cocoa-fs-footnote);
   font-weight: var(--cocoa-fw-medium);
 }
+/* CocoaStatusBadge `dense` (tiles of the board, UX-1 · U2/U4): small + sentence case → 10 px. */
+.c22-badge[data-size="small"][data-uppercase="false"] { font-size: var(--cocoa-fs-caption); }
 .c22-badge__icon {
   display: inline-flex;
   width: 10px;
@@ -980,6 +982,17 @@ table.cocoa-table {
   transition: opacity var(--cocoa-duration-base) var(--cocoa-ease-out);
 }
 .c22-scrim[data-open="true"] { opacity: 1; pointer-events: auto; }
+/* The overlay scrim (CocoaDrawer / CocoaSheet / CocoaDialog) always carries
+   `data-open`; the shell's navigation veil (`.cocoa-shell > .c22-scrim`,
+   cocoa-22-shell.css, `display: none` until `.open`) does not. (0,2,0) beats
+   that (0,1,0) rule whatever the import order, so drawers stay visible
+   (regression from Cocoa 22 · ola 11 found in UX-1 · U1; fixed in U4). */
+.c22-scrim[data-open] { display: block; }
+
+/* CocoaSegmentedControl: cada segmento mide ≥ 24 px con ratón (2.5.8; `small`
+   medía 21 px en los cajones de check-in / check-out, corrector L-07). Con
+   `:where` para que la capa táctil (mobile.css, 44 px) gane. */
+:where([data-cocoa="segmented"]) [role="tab"] { min-height: 24px; }
 .c22-scrim[data-level="modal"] { z-index: var(--cocoa-z-modal); }
 
 .c22-drawer {
@@ -1416,6 +1429,191 @@ table.cocoa-table {
 }
 
 /* ------------------------------------------------------------
+   Tanda UX-1 · U4 — feedback: skip link + focus on main, toast with action,
+   CocoaUndoBar, CocoaInspector, CocoaTable selection / columns / busy,
+   generic page skeleton (docs/design/UX-RECEPCION-FEEL.md §4, §6.1, §7.1)
+   ------------------------------------------------------------ */
+/* Skip link (WCAG 2.4.1): the first Tab stop, visible only while focused. */
+.c22-skip-link {
+  position: absolute;
+  top: var(--cocoa-space-2);
+  left: var(--cocoa-space-2);
+  z-index: var(--cocoa-z-toast);
+  padding: var(--cocoa-space-2) var(--cocoa-space-3);
+  border-radius: var(--cocoa-radius-md);
+  background: var(--cocoa-background-content);
+  color: var(--cocoa-label);
+  font-family: var(--cocoa-font);
+  font-size: var(--cocoa-fs-callout);
+  font-weight: var(--cocoa-fw-semibold);
+  box-shadow: var(--cocoa-shadow-popover);
+  text-decoration: none;
+  transform: translateY(-200%);
+  opacity: 0;
+  pointer-events: none;
+}
+.c22-skip-link:focus,
+.c22-skip-link:focus-visible {
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cocoa-focus-ring), var(--cocoa-shadow-popover);
+}
+/* `main` takes the focus after a navigation (tabIndex -1): a ring only when it
+   was reached with the keyboard (the skip link), never after a mouse click. */
+.cocoa-content:focus { outline: none; }
+.cocoa-content:focus-visible { outline: 2px solid var(--cocoa-focus-ring); outline-offset: -2px; }
+
+/* Toast with action («Deshacer», «Ver folio»): message + plain button, paused while hovered / focused. */
+.c22-toast__message { flex: 1 1 auto; min-width: 0; }
+.c22-toast__action { flex-shrink: 0; margin: -4px -8px -4px 0; }
+.c22-toast[data-paused="true"] { border-color: var(--cocoa-separator-opaque); }
+
+/* CocoaUndoBar: the success callout + «Deshacer ⌘Z». */
+.c22-undo-bar .c22-kbd { margin-left: var(--cocoa-space-1); }
+.c22-undo-bar .c22-callout__actions { flex-wrap: wrap; }
+
+/* CocoaInspector: non-modal right panel, 360–420 px, sticky under the toolbar; stacks under the list < 900. */
+.c22-inspector-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--cocoa-space-4);
+  min-width: 0;
+}
+.c22-inspector-layout > :first-child { flex: 1 1 auto; min-width: 0; }
+.c22-inspector {
+  flex: 0 0 auto;
+  width: var(--c22-inspector-width, 420px);
+  max-width: 100%;
+  position: sticky;
+  top: var(--cocoa-space-4);
+  max-height: calc(100dvh - var(--cocoa-toolbar-height) - var(--cocoa-space-6));
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--cocoa-background-content);
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-lg);
+  box-shadow: var(--cocoa-shadow-card);
+  font-family: var(--cocoa-font);
+  color: var(--cocoa-label);
+}
+.c22-inspector[data-width="sm"] { --c22-inspector-width: 360px; }
+.c22-inspector[data-width="md"] { --c22-inspector-width: 420px; }
+.c22-inspector__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cocoa-space-3);
+  padding: var(--cocoa-space-3) var(--cocoa-space-4);
+  border-bottom: 1px solid var(--cocoa-separator);
+  flex-shrink: 0;
+}
+.c22-inspector__title {
+  margin: 0;
+  font-size: var(--cocoa-fs-title-3);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c22-inspector__commands {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  padding: var(--cocoa-space-2) var(--cocoa-space-4);
+  border-bottom: 1px solid var(--cocoa-separator);
+  flex-shrink: 0;
+}
+.c22-inspector__body {
+  padding: var(--cocoa-space-4);
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 899px) {
+  .c22-inspector-layout { flex-direction: column; align-items: stretch; }
+  .c22-inspector { width: auto; position: static; max-height: none; }
+}
+
+/* CocoaTable · «Columnas ▾» tools row above the table. */
+.c22-table__tools {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  margin-bottom: var(--cocoa-space-2);
+}
+.c22-table__columns { min-width: 220px; max-width: min(320px, 90vw); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-body); color: var(--cocoa-label); }
+.c22-table__columns-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 50vh; overflow: auto; }
+.c22-table__columns-item { display: flex; align-items: center; justify-content: space-between; gap: var(--cocoa-space-2); min-height: 28px; }
+.c22-table__columns-toggle { display: inline-flex; align-items: center; gap: var(--cocoa-space-2); min-width: 0; cursor: pointer; }
+.c22-table__columns-toggle > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.c22-table__columns-move { display: inline-flex; gap: 2px; flex-shrink: 0; }
+.c22-table__columns-foot { display: flex; justify-content: flex-end; margin-top: var(--cocoa-space-2); padding-top: var(--cocoa-space-2); border-top: 1px solid var(--cocoa-separator); }
+
+/* CocoaTable · selectable="multiple": checkbox cell ≥ 24 px with a mouse, 44 px on a coarse pointer (WCAG 2.5.8). */
+.c22-table__check-cell {
+  width: 1px;
+  padding: 0 var(--cocoa-space-2);
+  border-bottom: 1px solid var(--cocoa-separator);
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.c22-table__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--cocoa-space-2);
+  min-width: 24px;
+  min-height: 24px;
+  cursor: pointer;
+}
+.c22-table__check-input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--cocoa-accent);
+  cursor: pointer;
+}
+.c22-table__check-input:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--cocoa-focus-ring); border-radius: var(--cocoa-radius-sm); }
+.c22-table__check--card { align-self: flex-start; font-size: var(--cocoa-fs-caption); color: var(--cocoa-label-secondary); }
+@media (pointer: coarse) {
+  .c22-table__check { min-width: var(--cocoa-touch-target); min-height: var(--cocoa-touch-target); }
+  .c22-table__check-input { width: 20px; height: 20px; }
+}
+/* Batch bar under the table (CocoaActionBar sticky at the bottom of the page scroller). */
+.c22-table__batch { margin-top: var(--cocoa-space-2); }
+
+/* CocoaTable · keepDataWhileLoading: the rows stay, dimmed, under a thin shimmer (aria-busy on the wrapper). */
+.c22-table-wrap[aria-busy="true"] > .c22-table,
+.c22-table-cards[aria-busy="true"] > :not(.c22-table__busy) { opacity: 0.6; transition: opacity var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.c22-table__busy { position: absolute; inset: 0; pointer-events: none; }
+.c22-table__busy::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--cocoa-skeleton-shimmer);
+  background-size: 200% 100%;
+  animation: cocoa-shimmer var(--cocoa-skeleton-duration, 1.2s) ease-in-out infinite;
+}
+
+/* Generic page skeleton (App's Suspense): title + text + rows, after 300 ms. */
+.c22-page-skeleton { display: flex; flex-direction: column; gap: var(--cocoa-space-3); padding: var(--cocoa-space-4) 0; min-height: 0; }
+.c22-page-skeleton[data-pending="true"] { padding: 0; }
+.c22-page-skeleton__rows { display: flex; flex-direction: column; gap: var(--cocoa-space-2); margin-top: var(--cocoa-space-2); }
+
+/* ------------------------------------------------------------
    Reduced motion — static skeleton, no lifts, no slides
    ------------------------------------------------------------ */
 @media (prefers-reduced-motion: reduce) {
@@ -1430,6 +1628,7 @@ table.cocoa-table {
   .c22-scrim,
   .c22-dialog,
   .c22-toast { animation: none !important; transition: none !important; }
+  .c22-table__busy::before { animation: none !important; background: var(--cocoa-background-control); opacity: 0.6; }
 }
 :root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .c22-skeleton {
   animation: none !important;

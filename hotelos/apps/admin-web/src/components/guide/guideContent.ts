@@ -9,6 +9,7 @@
 // shortcuts are mentioned (content/help-articles/keyboard-shortcuts.ts).
 import { NAV_TREE, type NavCategory, type NavItem } from "../../navigation/nav-tree";
 import { canSee, type RoleToken } from "../../navigation/role-tokens";
+import { shortcutKeys } from "../../content/shortcuts-registry";
 
 export type TourStep = {
   /** CSS selector of a real element to spotlight (dims the rest). */
@@ -172,9 +173,48 @@ const ITEM_NARRATION: Record<string, string> = {
   AuditLogViewer: "Registro de auditoría, webhooks, aplicaciones conectadas, referencia de la API y organizaciones (administración de la plataforma)."
 };
 
+/**
+ * Las seis tareas de mostrador de la Tanda UX-1 (docs/design/UX-RECEPCION-FEEL.md
+ * §8.2) con el atajo que las arranca. Los atajos se citan por id del registro
+ * único (content/shortcuts-registry.ts) y se resuelven al montar: un id que no
+ * existe rompe el arranque y el contrato guide-content-contract.test.mts lo
+ * detecta antes.
+ */
+export type ReceptionTask = {
+  id: "t1" | "t2" | "t3" | "t4" | "t5" | "t6";
+  /** Qué hace el recepcionista, en una frase corta. */
+  title: string;
+  /** Ids de content/shortcuts-registry.ts que arrancan la tarea, en orden. */
+  shortcutIds: readonly string[];
+  /** Camino en dos o tres palabras (después de los atajos). */
+  how: string;
+};
+
+export const RECEPTION_TASKS: readonly ReceptionTask[] = [
+  { id: "t1", title: "Check-in de una llegada sin habitación", shortcutIds: ["nav.today"], how: "fila › Check-in" },
+  { id: "t2", title: "Walk-in: crear, cobrar y check-in", shortcutIds: ["nav.walk-in"], how: "" },
+  { id: "t3", title: "Salida con saldo: cobrar y cerrar", shortcutIds: ["nav.today", "global.enter"], how: "Sale hoy › Cobrar" },
+  { id: "t4", title: "Cambiar de habitación a un alojado", shortcutIds: ["global.palette"], how: "reserva › Cambiar habitación" },
+  { id: "t5", title: "Reserva para una empresa", shortcutIds: ["nav.reservation-create"], how: "" },
+  { id: "t6", title: "Buscar a un alojado y añadir un cargo", shortcutIds: ["global.palette", "global.enter"], how: "Folio › importe" }
+];
+
+/** «Check-in de una llegada sin habitación: ⌥H, fila › Check-in». */
+export function receptionTaskLine(task: ReceptionTask): string {
+  const keys = task.shortcutIds.map(shortcutKeys).join(" · ");
+  return `${task.title}: ${keys}${task.how ? `, ${task.how}` : ""}`;
+}
+
+/** Cuerpo del paso «Seis tareas de mostrador» (≤ 400 caracteres, límite de los pasos del recorrido). */
+export function receptionTasksBody(tasks: readonly ReceptionTask[] = RECEPTION_TASKS): string {
+  return `${tasks.map(receptionTaskLine).join(". ")}. Con ${shortcutKeys("access.reveal")} se ve la letra de cada acción.`;
+}
+
+export const RECEPTION_TASKS_STEP_TITLE = "Seis tareas de mostrador";
+
 const CATEGORY_INTRO: Record<string, { summary: string; body: string; badge: string }> = {
   hoy: { badge: "Hoy", summary: "Mi día, el asistente, el turno y el cierre.", body: "Lo que necesitas cada día nada más entrar: tu panel, el asistente, el turno, el cierre del día y lo que la IA espera de ti." },
-  recepcion: { badge: "Recepción", summary: "Reservas, huéspedes, mensajes y grupos.", body: "Todo el ciclo de una reserva: crearla, encontrarla, atender al huésped y cerrar la estancia." },
+  recepcion: { badge: "Recepción", summary: "Reservas, huéspedes, mensajes y grupos.", body: `Todo el ciclo de una reserva: crearla, encontrarla, atender al huésped y cerrar la estancia. Con el teclado: ${shortcutKeys("nav.today")} Mi día, ${shortcutKeys("nav.reservations")} Reservas, ${shortcutKeys("nav.reservation-create")} Nueva reserva, ${shortcutKeys("nav.timeline")} Live Timeline, ${shortcutKeys("nav.room-rack")} Tablero, ${shortcutKeys("global.palette")} buscar o ejecutar un comando.` },
   operaciones: { badge: "Operaciones", summary: "Pisos, mantenimiento, punto de venta y más.", body: "Los tableros con los que trabajan los equipos de pisos, mantenimiento, restauración y servicios." },
   comercial: { badge: "Comercial", summary: "Clientes, reputación, ventas y canales.", body: "Las herramientas para vender más y mejor: clientes, reputación, extras, empresas y canales de venta." },
   revenue: { badge: "Revenue", summary: "Tarifas, previsión, competencia y reglas.", body: "Las herramientas para maximizar ingresos: panel, parrilla de tarifas, reglas, previsión y competencia." },
@@ -197,6 +237,8 @@ export function buildCategoryTour(category: NavCategory): Tour {
   const roles = Array.from(new Set(category.items.flatMap((item) => item.roles)));
   const steps: TourStep[] = [
     { center: true, title: category.label, body: intro.body },
+    // Recepción (UX-1 · U5, §4 «Onboarding»): las seis tareas de §8.2 con su atajo.
+    ...(category.key === "recepcion" ? [{ center: true, title: RECEPTION_TASKS_STEP_TITLE, body: receptionTasksBody() }] : []),
     ...category.items.map((item) => ({
       navigateTo: item.screenKey,
       roles: item.roles,

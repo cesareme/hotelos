@@ -47,7 +47,7 @@
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Switch track is only 32×20 / 52×32: expand the TAP area invisibly. */
+  /* Switch track is only 36×24 / 52×32: expand the TAP area invisibly. */
   .cocoa-switch { position: relative; }
   .cocoa-switch::before {
     content: "";
@@ -62,12 +62,23 @@
   .cocoa-content button:not([class]):not([data-cocoa] *),
   .cocoa-content [role="tab"],
   .cocoa-content [role="menuitem"],
+  .c22-drawer [role="tab"],
+  .c22-dialog [role="tab"],
+  .c22-drawer [role="menuitem"],
+  .c22-dialog [role="menuitem"],
+  .c22-drawer .cocoa-switch,
+  .c22-dialog .cocoa-switch,
   .c22-kpi[role="button"],
   .cocoa-kpi[role="button"],
   .c22-table tbody tr[data-interactive="true"] > td,
   .cocoa-table tbody tr[tabindex] > td {
     min-height: var(--cocoa-touch-target);
   }
+  /* Los cajones y diálogos van por portal (fuera de .cocoa-content): sus
+     segmentados «Cobrar saldo / Cobrar depósito / Sin cobro», «Borrador /
+     Emitir ahora / Sin factura» y «Huésped / Empresa» medían 21 px con el dedo
+     (corrector L-07, 2.5.8 / §7.2). El switch «Sin cobro ahora» crece con su
+     etiqueta al mismo objetivo. */
   .c22-sidebar-close,
   .cocoa-shell > [data-cocoa="toolbar"] button,
   .cocoa-shell > .cocoa-toolbar button {
@@ -97,6 +108,62 @@
   .cocoa-content table:not(.cocoa-table) tbody td {
     padding-top: var(--cocoa-space-3);
     padding-bottom: var(--cocoa-space-3);
+  }
+  /* CocoaTable selectable="multiple" (UX-1 · U10, §7.2 «se verifica en filas
+     con checkbox y en la barra de lote»): la etiqueta que envuelve la casilla
+     ya mide 44 px (cocoa-22.css) y la caja del input sube de 20 a 24 px para
+     que el propio control cumpla 2.5.8 aunque el toque caiga sobre él
+     (medido: 20 × 20 en U6 con el dedo). La barra de lote son CocoaButton
+     (44 px por useCoarsePointer). */
+  .c22-table__check {
+    min-width: var(--cocoa-touch-target);
+    min-height: var(--cocoa-touch-target);
+  }
+  /* En la celda la etiqueta pasa a bloque flex: como inline-flex alineada a la
+     línea base, la cabecera crecía a 61 px por el hueco del descendente (medido). */
+  .c22-table__check-cell > .c22-table__check {
+    display: flex;
+  }
+  .c22-table__check-input {
+    width: 24px;
+    height: 24px;
+  }
+  /* Objetivos que la medida en tablet (U10, e2e/target-size.spec.ts) encontró
+     por debajo de 24 / 44 px con el dedo:
+       · botones de ordenación de la cabecera de CocoaTable (16 px de caja de
+         línea: el inline pone padding y margin 0): pasan a bloque flex de
+         44 px a todo el ancho de la columna; la celda cede su relleno
+         vertical (Chromium ignora los márgenes negativos del hijo en una
+         celda) y la flecha ::after de la columna ordenada (cocoa-22.css) se
+         oculta con el dedo porque, tras un bloque, abría una segunda línea
+         de 16 px; la celda de selección de la cabecera también cede su
+         relleno (medido: cabecera 61 → 45 px; el botón ya pinta SortIcon);
+       · buscador del menú lateral (input de 22 px dentro de una caja de 36):
+         el input sube a 44 y la caja cede su relleno vertical;
+       · buscador global de la toolbar (38 px; la toolbar mide 48): 44. */
+  .c22-table thead th > button {
+    display: flex !important;
+    min-height: var(--cocoa-touch-target);
+  }
+  .c22-table thead th:has(> button),
+  .c22-table thead th.c22-table__check-cell {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+  .c22-table thead th[aria-sort="ascending"]::after,
+  .c22-table thead th[aria-sort="descending"]::after {
+    display: none;
+  }
+  .c22-sidebar .c22-sidebar-search {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  .c22-sidebar .c22-sidebar-search input {
+    min-height: var(--cocoa-touch-target);
+  }
+  .cocoa-shell > [data-cocoa="toolbar"] input[role="searchbox"],
+  .cocoa-shell > .cocoa-toolbar input[role="searchbox"] {
+    min-height: var(--cocoa-touch-target);
   }
 }
 

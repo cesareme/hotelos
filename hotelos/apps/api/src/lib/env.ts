@@ -790,6 +790,12 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     doc: "URL del API que llama el admin-web; se hornea en el build (vite build). En producción https://<host>/api. Sin barra final."
   },
   VITE_APP_VERSION: { section: "Frontend", format: "string", default: "0.1.0", doc: "Versión mostrada en la ayuda del admin-web." },
+  VITE_UX_TRACE: {
+    section: "Frontend",
+    format: "string",
+    doc:
+      "Modo prueba de recepción (Tanda UX-1 · U1): con «1» el admin-web monta UxTraceProvider (trazas de clic/tecla/ruta/overlay/fetch por sesión y tarea en IndexedDB, ⌘⇧T tarea siguiente, ⌘⇧E exportar; sin PII: ids, roles y etiquetas de botones nativos recortadas antes de cualquier nombre; nunca opciones de ⌘K, barras ni filas). Solo sesiones de prueba con personas; nunca en producción. Se hornea en el build de Vite."
+  },
   EXPO_PUBLIC_API_BASE_URL: { section: "Frontend", format: "url", doc: "URL del API para la app móvil (Expo)." },
   EXPO_PUBLIC_ADMIN_WEB_URL: { section: "Frontend", format: "url", doc: "URL del admin-web que abre la app móvil desde Más." },
   EXPO_PUBLIC_SHOW_DEV_LAUNCHER: {
@@ -827,6 +833,19 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     format: "string",
     tags: ["dev-only", "dangerous"],
     doc: "Guard DATA-05: id exacto (o lista separada por comas) de la organización/propiedad NO demo que confirmas como objetivo del seed; solo se honra con SEED_ALLOW_REAL=1."
+  },
+  SEED_UXDAY_PASSWORD: {
+    section: "Seeds",
+    format: "string",
+    tags: ["dev-only"],
+    doc: "seed-ux-day (Tanda UX-1, corrector R9): contraseña de los tres usuarios *@uxday.test del tenant de prueba; sin ella, «uxday-demo». Nunca en producción."
+  },
+  SEED_UXDAY_ALLOW_PRODUCTION: {
+    section: "Seeds",
+    format: "enum",
+    values: ["1"],
+    tags: ["dev-only", "dangerous"],
+    doc: "seed-ux-day (Tanda UX-1, corrector R9): con NODE_ENV=production el seed aborta (crea un usuario admin con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente."
   },
   RBAC_DEMO_PASSWORD: {
     section: "Seeds",

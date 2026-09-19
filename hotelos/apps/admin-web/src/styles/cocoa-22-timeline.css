@@ -172,6 +172,7 @@
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
+  -webkit-touch-callout: none;
   touch-action: none;
   padding: var(--cocoa-space-1) var(--cocoa-space-2);
   overflow: hidden;
@@ -190,6 +191,10 @@
 }
 .tl-bar[data-locked="true"] {
   cursor: default;
+}
+/* Pulsación larga con el dedo: el arrastre queda armado (UX-1 · U9b). */
+.tl-bar[data-armed="true"] {
+  box-shadow: 0 0 0 2px var(--cocoa-accent), var(--cocoa-shadow-floating);
 }
 /* Los tres estados «neutros» se distinguen por el trazo, no solo por el tono
    (LEGEND_VARIANT en timeline-presentation.ts los refleja en la leyenda). */
@@ -254,17 +259,24 @@
   right: 0;
 }
 @media (pointer: coarse) {
-  /* Con el dedo, la parrilla se desplaza también sobre las barras (en filas
-     ocupadas casi toda la superficie es barra): el arrastre para mover una
-     estancia queda para el ratón; los asideros sí capturan el toque para
-     redimensionar. El navegador cancela la pulsación (pointercancel) al
-     empezar a desplazar y el hook la descarta. */
+  /* Con el dedo (UX-1 · U9b, §5.11 (3), §7.2): la barra mide 44 px
+     (gridVars pone --tl-bar-h desde range.barHeight; este valor es el
+     respaldo) y los asideros 24 px (WCAG 2.5.8); la parrilla se desplaza en
+     vertical también sobre las barras y los asideros (`pan-y`: en filas
+     ocupadas casi toda la superficie es barra) y el arrastre para mover o
+     redimensionar solo empieza tras mantener pulsado 250 ms (useTimelineDrag
+     arma el arrastre y bloquea el gesto del navegador con un touchmove no
+     pasivo). Un toque que se desplaza antes es un scroll: el navegador cancela
+     la pulsación (pointercancel) o el hook la descarta al superar el umbral. */
+  .tl-grid {
+    --tl-bar-h: 44px;
+  }
   .tl-bar {
-    touch-action: pan-x pan-y;
+    touch-action: pan-y;
   }
   .tl-bar__handle {
-    width: 16px;
-    touch-action: none;
+    width: 24px;
+    touch-action: pan-y;
   }
 }
 

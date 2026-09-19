@@ -177,6 +177,10 @@ export type AdminReservation = {
   groupCode?: string;
   externalReference?: string;
   bookerName?: string;
+  /** Nombre visible del titular (API, L-15): evita GET /guests/:id por fila. */
+  primaryGuestName?: string;
+  /** Origen de la reserva (`phone`, `walk_in`…), distinto del `sourceCode` del canal. */
+  bookingSource?: string;
   bookerEmail?: string;
   specialRequests?: string;
   notes?: string;
@@ -491,6 +495,88 @@ export function updateReservation(reservationId: string, patch: ReservationPatch
   return apiRequest<AdminReservation>(`/reservations/${reservationId}`, { method: "PATCH", body: patch });
 }
 
+// --- Estancia editable desde la ficha (Tanda UX-1 · lote U7 · F8) -----------
+// PATCH /reservations/:id admite `arrivalDate` / `departureDate` en reservas
+// no alojadas (una `checked_in` solo acepta el cambio de habitación: 409
+// REC-03, pms.service.ts) y NO recotiza: `totalAmount` solo cambia si viaja en
+// el mismo PATCH (price_source manual, guardado contra la cotización publicada).
+// La ficha cotiza antes (POST /properties/:id/availability/quote, mismo cotizador
+// que fija el precio al crear) y aplica fechas + total en una sola escritura.
+
+export type StayDates = { arrivalDate: string; departureDate: string };
+
+/** Noches entre dos fechas ISO (calendario, sin deriva horaria); 0 si no son válidas. */
+export function stayNights(arrivalDate: string, departureDate: string): number {
+  const a = Date.parse(`${arrivalDate.slice(0, 10)}T00:00:00Z`);
+  const d = Date.parse(`${departureDate.slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(d)) return 0;
+  return Math.max(0, Math.round((d - a) / 86_400_000));
+}
+
+/** La estancia con `delta` noches más o menos (mueve la salida; nunca por debajo de 1 noche). */
+export function stayWithNights(current: StayDates, delta: number): StayDates {
+  const nights = Math.max(1, stayNights(current.arrivalDate, current.departureDate) + delta);
+  return { arrivalDate: current.arrivalDate.slice(0, 10), departureDate: shiftIsoDate(current.arrivalDate.slice(0, 10), nights) };
+}
+
+/** Por qué las fechas no se pueden editar en este estado, o null si se pueden (honestidad, P7). */
+export function stayDatesLockedReason(status: string | null | undefined): string | null {
+  const value = (status ?? "").trim().toLowerCase();
+  if (value === "checked_in") return "Con el huésped alojado el API solo admite el cambio de habitación (REC-03).";
+  if (value === "checked_out" || value === "cancelled" || value === "no_show") return "La reserva está cerrada.";
+  return null;
+}
+
+/** Validación de una estancia propuesta: salida posterior a la llegada; mensaje en español o null. */
+export function stayDatesError(next: StayDates): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next.arrivalDate) || !/^\d{4}-\d{2}-\d{2}$/.test(next.departureDate)) return "Indica las dos fechas.";
+  if (next.departureDate <= next.arrivalDate) return "La fecha de salida debe ser posterior a la fecha de llegada.";
+  return null;
+}
+
+/** Cuerpo del PATCH: solo las claves que cambian (`UpdateReservationSchema` es estricto); `totalAmount` cuando la recotización lo mueve. */
+export function stayDatesPatch(current: StayDates & { totalAmount?: number | null }, next: StayDates, quotedTotal?: number | null): ReservationPatch {
+  const patch: ReservationPatch = {};
+  if (next.arrivalDate !== current.arrivalDate.slice(0, 10)) patch.arrivalDate = next.arrivalDate;
+  if (next.departureDate !== current.departureDate.slice(0, 10)) patch.departureDate = next.departureDate;
+  if (typeof quotedTotal === "number" && Number.isFinite(quotedTotal) && !moneyEquals(quotedTotal, current.totalAmount)) patch.totalAmount = quotedTotal;
+  return patch;
+}
+
+function moneyEquals(a: number | null | undefined, b: number | null | undefined): boolean {
+  if (typeof a !== "number" || typeof b !== "number") return false;
+  return Math.abs(a - b) < 0.005;
+}
+
+/**
+ * Total cotizado de la estancia para el tipo de la reserva (una habitación),
+ * o null si el cotizador no publica precio para ese tipo / fechas. Un fallo
+ * de red también devuelve null: la ficha aplica las fechas sin tocar el total
+ * y lo dice.
+ */
+export async function quoteStayTotal(
+  propertyId: string,
+  reservation: { roomTypeId: string; adults?: number | null; children?: number | null; ratePlanId?: string | null; roomsCount?: number | null },
+  dates: StayDates
+): Promise<{ total: number; currency: string; priceSource?: AvailabilityQuote["priceSource"] } | null> {
+  try {
+    const quotes = await quoteAvailability(propertyId, {
+      arrivalDate: dates.arrivalDate,
+      departureDate: dates.departureDate,
+      adults: Math.max(1, reservation.adults ?? 1),
+      children: Math.max(0, reservation.children ?? 0),
+      roomTypeId: reservation.roomTypeId,
+      ...(reservation.ratePlanId ? { ratePlanId: reservation.ratePlanId } : {})
+    });
+    const quote = quotes.find((item) => item.roomTypeId === reservation.roomTypeId) ?? null;
+    if (!quote || typeof quote.totalAmount !== "number" || !Number.isFinite(quote.totalAmount)) return null;
+    const rooms = Math.max(1, reservation.roomsCount ?? 1);
+    return { total: Math.round(quote.totalAmount * rooms * 100) / 100, currency: quote.currency, priceSource: quote.priceSource };
+  } catch {
+    return null;
+  }
+}
+
 export function checkInReservation(
   reservationId: string,
   body: { roomId: string; signatureObjectKey?: string }
@@ -707,6 +793,48 @@ export function createInvoiceDraft(payload: CreateInvoiceDraftPayload): Promise<
 
 export function issueInvoice(invoiceId: string): Promise<InvoiceDraft> {
   return apiRequest<InvoiceDraft>(`/invoices/${invoiceId}/issue`, { method: "POST", body: {} });
+}
+
+// --- factura desde la reserva (Tanda UX-1 · lote U7 · F14) -------------------
+// POST /folios/:id/invoice (IssueInvoiceSchema strict: customerType ·
+// customerName · customerTaxId) crea un BORRADOR con las líneas vivas del folio
+// (400 «El folio no tiene cargos que facturar.», 409 si ya tiene factura viva);
+// con `issue: true` se encadena POST /invoices/:id/issue y el resultado lleva
+// el número real (irreversible: cadena VeriFactu). Dinero: nunca por `mutate`.
+
+export type FolioInvoiceCustomerType = "guest" | "company" | "agency";
+
+export type FolioInvoiceInput = {
+  customerType: FolioInvoiceCustomerType;
+  customerName?: string | null;
+  customerTaxId?: string | null;
+  /** Emitir con número tras crear el borrador (por defecto solo el borrador). */
+  issue?: boolean;
+};
+
+export type FolioInvoiceResult = {
+  invoice: InvoiceDraft;
+  /** `true` cuando POST /invoices/:id/issue respondió con número. */
+  issued: boolean;
+  invoiceNumber: string | null;
+};
+
+/** Cuerpo de POST /folios/:id/invoice: solo las claves con valor (el esquema es estricto). */
+export function buildFolioInvoiceBody(input: FolioInvoiceInput): { customerType: FolioInvoiceCustomerType; customerName?: string; customerTaxId?: string } {
+  const body: { customerType: FolioInvoiceCustomerType; customerName?: string; customerTaxId?: string } = { customerType: input.customerType };
+  const name = (input.customerName ?? "").trim();
+  const taxId = (input.customerTaxId ?? "").trim();
+  if (name) body.customerName = name;
+  if (taxId) body.customerTaxId = taxId;
+  return body;
+}
+
+export async function issueFolioInvoice(folioId: string, input: FolioInvoiceInput): Promise<FolioInvoiceResult> {
+  const draft = await apiRequest<InvoiceDraft>(`/folios/${encodeURIComponent(folioId)}/invoice`, { method: "POST", body: buildFolioInvoiceBody(input) });
+  if (!input.issue) return { invoice: draft, issued: false, invoiceNumber: draft.invoiceNumber ?? null };
+  const issued = await issueInvoice(draft.id);
+  const invoiceNumber = issued?.invoiceNumber ?? null;
+  return { invoice: issued ?? draft, issued: Boolean(invoiceNumber), invoiceNumber };
 }
 
 export type RectifyingReasonCode = "R1" | "R2" | "R3" | "R4" | "R5";

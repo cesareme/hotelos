@@ -17,11 +17,15 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CocoaPage } from "../CocoaPage.tsx";
+import { CocoaPage, resolvePageDensity } from "../CocoaPage.tsx";
 import { CocoaScrollArea } from "../CocoaScrollArea.tsx";
+import { CocoaPageSkeleton, SKELETON_DELAY_MS, fadeInClass, shouldShowSkeleton } from "../CocoaState.tsx";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const layoutCss = readFileSync(resolve(here, "../../../styles/cocoa-22-layout.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const motionCss = readFileSync(resolve(here, "../../../styles/cocoa-motion.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const appSource = readFileSync(resolve(here, "../../../App.tsx"), "utf8");
+const drawerSource = readFileSync(resolve(here, "../CocoaDrawer.tsx"), "utf8");
 
 type Rule = { selector: string; body: string };
 
@@ -167,5 +171,99 @@ describe("CocoaPage · the body is the tabpanel of the inner views (qa#10)", () 
     const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", children: "cuerpo" } as never));
     assert.ok(html.includes('<div class="c22-page__body cocoa-page-body">cuerpo</div>'), html);
     assert.doesNotMatch(html, /tabpanel|aria-controls/);
+  });
+});
+
+// Tanda UX-1 · U4 · esqueleto con retardo + fundido (§4 «Esqueleto con
+// retardo», §6.1, F28): nada antes de 300 ms, esqueleto después, y
+// `.cocoa-fade-in` en el cuerpo al resolver.
+describe("CocoaPage · skeletonDelayMs (retardo del esqueleto)", () => {
+  it("shouldShowSkeleton (puro): nunca antes del retardo; 0 = al instante; sin carga, nunca", () => {
+    assert.equal(SKELETON_DELAY_MS, 300);
+    assert.equal(shouldShowSkeleton({ loading: true, delayMs: 300, elapsedMs: 0 }), false);
+    assert.equal(shouldShowSkeleton({ loading: true, delayMs: 300, elapsedMs: 299 }), false);
+    assert.equal(shouldShowSkeleton({ loading: true, delayMs: 300, elapsedMs: 300 }), true);
+    assert.equal(shouldShowSkeleton({ loading: true, delayMs: 0, elapsedMs: 0 }), true);
+    assert.equal(shouldShowSkeleton({ loading: false, delayMs: 0, elapsedMs: 900 }), false);
+    assert.equal(fadeInClass(true), "cocoa-fade-in");
+    assert.equal(fadeInClass(false), undefined);
+  });
+  it("con el retardo por defecto el cuerpo en carga está vacío y ocupado (aria-busy, data-skeleton=pending), sin esqueleto", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", state: "loading", skeleton: createElement("div", { className: "mirror" }), children: "cuerpo" } as never));
+    assert.match(html, /<div class="c22-page__body cocoa-page-body" aria-busy="true" data-skeleton="pending"><\/div>/);
+    assert.doesNotMatch(html, /mirror|cocoa-skeleton|cuerpo/);
+  });
+  it("skeletonDelayMs=0 pinta el esqueleto espejo al instante (o CocoaState loading si no hay espejo)", () => {
+    const mirror = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", state: "loading", skeletonDelayMs: 0, skeleton: createElement("div", { className: "mirror" }), children: "cuerpo" } as never));
+    assert.match(mirror, /<div class="c22-page__body cocoa-page-body" aria-busy="true" data-skeleton="visible"><div class="mirror"><\/div><\/div>/);
+    const generic = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", state: "loading", skeletonDelayMs: 0, children: "cuerpo" } as never));
+    assert.match(generic, /data-skeleton="visible"/);
+    assert.match(generic, /data-cocoa="skeleton"/);
+  });
+  it("listo: sin data-skeleton y la clase del cuerpo intacta (el fundido solo se añade al resolver una carga)", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", children: "cuerpo" } as never));
+    assert.ok(html.includes('<div class="c22-page__body cocoa-page-body">cuerpo</div>'), html);
+    assert.match(motionCss, /\.cocoa-fade-in \{\s*animation: cocoa-fade-in/);
+  });
+  it("CocoaDrawer acepta loading / skeleton / skeletonDelayMs y funde el cuerpo; el Suspense de App pinta el esqueleto genérico de página", () => {
+    assert.match(drawerSource, /skeletonDelayMs = SKELETON_DELAY_MS/);
+    assert.match(drawerSource, /\{loading \? \(showSkeleton \? \(skeleton \?\? <CocoaState kind="loading" \/>\) : null\) : children\}/);
+    assert.match(drawerSource, /fadeInClass\(fade\)/);
+    assert.match(appSource, /<Suspense fallback=\{<CocoaPageSkeleton \/>\}>\{body\}<\/Suspense>/);
+    assert.doesNotMatch(appSource, /fallback=\{<CocoaState kind="loading" title="Cargando pantalla…"/);
+  });
+  it("CocoaPageSkeleton: pendiente por defecto (solo el texto para AT), título + filas con delayMs=0", () => {
+    const pending = renderToStaticMarkup(createElement(CocoaPageSkeleton, {}));
+    assert.match(pending, /^<div role="status" aria-busy="true" class="c22-page-skeleton" data-cocoa="page-skeleton" data-pending="true"><span class="cocoa-sr-only">Cargando pantalla…<\/span><\/div>$/);
+    const shown = renderToStaticMarkup(createElement(CocoaPageSkeleton, { delayMs: 0, rows: 3 }));
+    assert.doesNotMatch(shown, /data-pending/);
+    assert.match(shown, /data-variant="title"/);
+    assert.equal((shown.match(/data-variant="row"/g) ?? []).length, 3);
+    assert.doesNotMatch(readFileSync(resolve(here, "../CocoaState.tsx"), "utf8").split("// ----------------------------------------------------------------- skeleton delay + fade (U4)")[1] ?? "", /style=\{/);
+  });
+});
+
+// Tanda UX-1 · U10 · densidad operativa por dispositivo (§1.1 P5, §7.2, D10,
+// R7): la pantalla declara `density="operational"` y la página resuelve
+// `compact` (28 px) con ratón y `comfortable` + 44 px con puntero grueso.
+describe("CocoaPage · density=\"operational\" (densidad por dispositivo, U10)", () => {
+  it("resolvePageDensity (puro): operational → compact con ratón, comfortable con el dedo; fija se respeta; sin declarar, nada", () => {
+    assert.equal(resolvePageDensity("operational", false), "compact");
+    assert.equal(resolvePageDensity("operational", true), "comfortable");
+    assert.equal(resolvePageDensity("compact", true), "compact", "una densidad fija no cambia con el dispositivo");
+    assert.equal(resolvePageDensity("comfortable", false), "comfortable");
+    assert.equal(resolvePageDensity(undefined, true), undefined);
+  });
+  it("SSR (sin matchMedia = puntero fino): data-cocoa-density=compact y data-density-mode=operational en la raíz", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Reservas", density: "operational", children: "cuerpo" } as never));
+    assert.match(html, /<div[^>]*data-cocoa="page"[^>]*data-cocoa-density="compact"[^>]*data-density-mode="operational"/);
+    assert.doesNotMatch(html, /data-touch-laptop/, "sin matchMedia el tier es desktop y el puntero fino: no es portátil táctil");
+  });
+  it("una densidad fija sigue emitiendo solo data-cocoa-density (sin modo)", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Reservas", density: "comfortable", children: "cuerpo" } as never));
+    assert.match(html, /data-cocoa-density="comfortable"/);
+    assert.doesNotMatch(html, /data-density-mode/);
+    const none = renderToStaticMarkup(createElement(CocoaPage, { title: "Reservas", children: "cuerpo" } as never));
+    assert.doesNotMatch(none, /data-cocoa-density|data-density-mode/);
+  });
+  it("las cuatro pantallas de recepción (Mi día, lista, huéspedes, ficha) declaran density=\"operational\" en su CocoaPage", () => {
+    const screens = [
+      "../../../screens/operations/FrontDeskDashboard.tsx",
+      "../../../screens/reservations/ReservationsListScreen.tsx",
+      "../../../screens/guests/GuestsListScreen.tsx",
+      "../../../screens/reservations/ReservationWorkspaceScreen.tsx"
+    ];
+    for (const file of screens) {
+      const source = readFileSync(resolve(here, file), "utf8");
+      const page = source.match(/<CocoaPage\n([\s\S]*?)>\n/);
+      assert.ok(page, `${file}: <CocoaPage no encontrado`);
+      assert.match(page[1], /^\s*density="operational"$/m, `${file}: la CocoaPage de recepción declara density="operational"`);
+    }
+  });
+  it("cocoa-tokens.css sigue resolviendo compact = fila 28 px y comfortable = 36 px, y el objetivo táctil es 44 px", () => {
+    const tokens = readFileSync(resolve(here, "../../../styles/cocoa-tokens.css"), "utf8");
+    assert.match(tokens, /\[data-cocoa-density="compact"\] \{[\s\S]*?--cocoa-density-row-height:\s*28px;/);
+    assert.match(tokens, /\[data-cocoa-density="comfortable"\] \{[\s\S]*?--cocoa-density-row-height:\s*36px;/);
+    assert.match(tokens, /--cocoa-touch-target:\s*44px;/);
   });
 });

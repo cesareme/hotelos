@@ -40,7 +40,7 @@ import { UI_STATES } from "./content/actions";
 import { makeModulePlaceholder } from "./screens/ModuleSettingsPlaceholder";
 import { ToastProvider, ToastHost } from "./components/Toast";
 import { CocoaGlobalProvider } from "./providers/CocoaGlobalProvider";
-import { CocoaState } from "./components/cocoa/CocoaState";
+import { CocoaPageSkeleton, CocoaState } from "./components/cocoa/CocoaState";
 import { CocoaButton } from "./components/cocoa/CocoaButton";
 import "./styles.css";
 
@@ -883,7 +883,9 @@ export function App() {
               palette must not open on top of it (cierre 2026-09-15). */}
           <CocoaGlobalProvider commandPaletteHotkey={false}>
             <BackOfficeLayout activeScreen={activeScreen ?? ""} onSelect={selectScreen}>
-              <Suspense fallback={<CocoaState kind="loading" title="Cargando pantalla…" />}>{body}</Suspense>
+              {/* Screen chunk on its way: a generic page skeleton (title + rows, after 300 ms)
+                  instead of «Cargando pantalla…» (UX-1 · U4, §6.1 «Cambiar de pantalla»). */}
+              <Suspense fallback={<CocoaPageSkeleton />}>{body}</Suspense>
             </BackOfficeLayout>
           </CocoaGlobalProvider>
         </AuthGate>

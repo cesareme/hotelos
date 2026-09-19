@@ -126,8 +126,8 @@ Returns arrivals, departures, room readiness, maintenance, messages, unpaid bala
 - `POST /properties/:propertyId/rooms`
 - `GET /properties/:propertyId/room-types`
 - `POST /properties/:propertyId/availability/quote`
-- `GET /properties/:propertyId/reservations`
-- `POST /properties/:propertyId/reservations` (Tanda 8a · corrector FSOD-06: acepta `discountReasonCode` — código de motivo del descuento ≤ T1, §4.7 — y `supervisorAuthorizationId` — autorización de un solo uso por PIN para `pms.reservation.override`: overbooking / descuento > T1)
+- `GET /properties/:propertyId/reservations` (Tanda UX-1 · corrector L-15: cada fila lleva además `primaryGuestName` — «Nombre Apellido1 Apellido2» del titular, `undefined` sin titular — resuelto con una sola consulta por página; la lista y el Live Timeline ya no piden `GET /guests/:id` por reserva)
+- `POST /properties/:propertyId/reservations` (Tanda 8a · corrector FSOD-06: acepta `discountReasonCode` — código de motivo del descuento ≤ T1, §4.7 — y `supervisorAuthorizationId` — autorización de un solo uso por PIN para `pms.reservation.override`: overbooking / descuento > T1). Tanda UX-1 (corrector L-02): una `arrivalDate` anterior a hoy (fecha local de la propiedad) responde 400 `details.code = PAST_ARRIVAL_DATE` (`arrivalDate`, `today`) salvo `allowPastArrival: true`, que la ruta solo honra con `pms.reservation.modify`; el importador (`historico` / cortes de sincronización) queda fuera del guard porque valida la llegada fila a fila.
 - `GET /reservations/:id`
 - `PATCH /reservations/:id` (`UpdateReservationBodySchema`, strict: el parche de columnas más `discountReasonCode` y `supervisorAuthorizationId`, que la ruta separa antes de llamar al servicio)
 - `POST /reservations/:id/assign-room`

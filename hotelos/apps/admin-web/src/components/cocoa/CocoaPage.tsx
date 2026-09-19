@@ -10,7 +10,14 @@
 //               error (CocoaState with `onRetry`)
 //   density     `data-cocoa-density="compact|comfortable"` — cocoa-tokens.css
 //               resolves the `--cocoa-density-*` set (card padding, row
-//               height, cell padding, control height) for the whole subtree
+//               height, cell padding, control height) for the whole subtree.
+//               `density="operational"` (Tanda UX-1 · U10, D10, P5, R7) lo
+//               resuelve la página por dispositivo: `compact` (filas 28 px) con
+//               ratón y `comfortable` + objetivos de 44 px con puntero grueso
+//               (`useCoarsePointer`); emite además `data-density-mode=
+//               "operational"` y, en un iPad apaisado, `data-touch-laptop`
+//               (`useIsTouchLaptop`, cocoa-viewport.ts) para la banda tablet
+//               de cocoa-22-layout.css
 //   fullBleed   `data-full-bleed` — cocoa-22-layout.css lets the wide scroller
 //               (a CocoaScrollArea, or the rate grid, as a direct child of the
 //               body) bleed into the content gutter (`--cocoa-content-padding`,
@@ -28,16 +35,30 @@
 // hooks (§8 contract: data-cocoa root + c22-* classes + data-* variants).
 
 import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
+import { useCoarsePointer } from "../../lib/useCoarsePointer";
 import { useHostedEyebrow, useTabHost } from "../../screens/tabs/TabHost";
+import { useIsTouchLaptop } from "./cocoa-viewport";
 import { CocoaPageHeader, type CocoaPageHeaderProps } from "./CocoaPageHeader";
 import { HostedHead } from "./HostedHead";
-import { CocoaState, type CocoaStateProps } from "./CocoaState";
+import { CocoaState, SKELETON_DELAY_MS, fadeInClass, useFadeInAfterLoading, useSkeletonDelay, type CocoaStateProps } from "./CocoaState";
 import { commandsKey, registerPageCommands, resolvePageState, type CocoaPageCommand, type CocoaPageState } from "./cocoa-page-commands";
 
 export { commandsKey };
 
 export type CocoaPageDensity = "comfortable" | "compact";
+/** Densidad declarada por la pantalla: fija, u `operational` (resuelta por dispositivo, D10). */
+export type CocoaPageDensityMode = CocoaPageDensity | "operational";
 export type CocoaPageGap = 3 | 4 | 5;
+
+/**
+ * Densidad efectiva de la página (pura): `operational` → `compact` con ratón y
+ * `comfortable` con puntero grueso (44 px); una densidad fija se respeta tal
+ * cual; sin declaración, nada (heredan los tokens por defecto).
+ */
+export function resolvePageDensity(density: CocoaPageDensityMode | undefined, coarse: boolean): CocoaPageDensity | undefined {
+  if (density === "operational") return coarse ? "comfortable" : "compact";
+  return density;
+}
 
 export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange" | "panelId" | "wrap"> {
   /** Actions row (standalone → header; hosted → HOSTED_ACTIONS_ROW). */
@@ -45,9 +66,11 @@ export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "
   state?: CocoaPageState;
   /** Mirror skeleton painted while loading (default: CocoaState loading). */
   skeleton?: ReactNode;
+  /** Delay before the skeleton paints (ms): 300 by default (NN/g), 0 = at once. The body fades in (`.cocoa-fade-in`) when the load resolves. */
+  skeletonDelayMs?: number;
   empty?: Partial<Omit<CocoaStateProps, "kind">>;
   error?: Partial<Omit<CocoaStateProps, "kind">>;
-  density?: CocoaPageDensity;
+  density?: CocoaPageDensityMode;
   fullBleed?: boolean;
   /** Stack gap between sections: 3 = 12 · 4 = 16 (default) · 5 = 24. */
   gap?: CocoaPageGap;
@@ -73,6 +96,7 @@ export function CocoaPage({
   actions,
   state,
   skeleton,
+  skeletonDelayMs = SKELETON_DELAY_MS,
   empty,
   error,
   density,
@@ -86,6 +110,10 @@ export function CocoaPage({
   "aria-label": ariaLabel
 }: CocoaPageProps) {
   const hosted = useTabHost() !== null;
+  // Densidad por dispositivo (U10, D10): la pantalla declara la intención y la página la resuelve.
+  const coarse = useCoarsePointer();
+  const touchLaptop = useIsTouchLaptop();
+  const resolvedDensity = resolvePageDensity(density, coarse);
   // Hosted: the container paints the eyebrow — hand it ours so it can qualify its category
   // («Finanzas · CELUISMA S.A.», design §5.3; fix:L7 qa#12). No-op standalone.
   useHostedEyebrow(eyebrow);
@@ -106,8 +134,14 @@ export function CocoaPage({
     return registerPageCommands(proxies);
   }, [key]);
 
+  // Skeleton with delay (U4): nothing under `skeletonDelayMs`, then the mirror
+  // skeleton; once resolved the body fades in (`.cocoa-fade-in`).
+  const loading = resolved === "loading";
+  const showSkeleton = useSkeletonDelay(loading, skeletonDelayMs);
+  const fade = useFadeInAfterLoading(loading);
+
   let body: ReactNode;
-  if (resolved === "loading") body = skeleton ?? <CocoaState kind="loading" />;
+  if (loading) body = showSkeleton ? (skeleton ?? <CocoaState kind="loading" />) : null;
   else if (resolved === "error") body = <CocoaState kind="error" {...error} />;
   else if (resolved === "empty") body = <CocoaState kind="empty" {...empty} />;
   else body = children;
@@ -133,7 +167,9 @@ export function CocoaPage({
       data-cocoa="page"
       data-state={resolved}
       data-gap={gap}
-      data-cocoa-density={density}
+      data-cocoa-density={resolvedDensity}
+      data-density-mode={density === "operational" ? "operational" : undefined}
+      data-touch-laptop={touchLaptop ? "true" : undefined}
       data-full-bleed={fullBleed ? "true" : undefined}
       data-hosted={hosted ? "true" : undefined}
     >
@@ -149,11 +185,12 @@ export function CocoaPage({
         </div>
       )}
       <div
-        className="c22-page__body cocoa-page-body"
+        className={["c22-page__body", "cocoa-page-body", fadeInClass(fade)].filter(Boolean).join(" ")}
         id={ownsPanel ? resolvedPanelId : undefined}
         role={ownsPanel ? "tabpanel" : undefined}
         aria-label={ownsPanel ? activeView?.label : undefined}
-        aria-busy={resolved === "loading" || undefined}
+        aria-busy={loading || undefined}
+        data-skeleton={loading ? (showSkeleton ? "visible" : "pending") : undefined}
       >
         {body}
       </div>

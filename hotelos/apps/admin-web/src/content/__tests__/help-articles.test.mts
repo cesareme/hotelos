@@ -4,12 +4,16 @@ import { NAV_TREE } from "../../navigation/nav-tree.ts";
 import { HELP_ARTICLES, HELP_CATEGORIES, KEYBOARD_SHORTCUTS, normalizeSearchText, searchHelpArticles } from "../help-articles/index.ts";
 import { PERSONA_GUIDES, personaGuidesFor } from "../persona-guides/index.ts";
 import { ROLE_TOKENS } from "../../navigation/role-tokens.ts";
+import { SHORTCUTS } from "../shortcuts-registry.ts";
 
 const KEEP_KEYS = new Set(NAV_TREE.categories.flatMap((category) => category.items.map((item) => item.screenKey)));
 const JARGON = /sandbox|\bstub\b|\bmock|\bdemo\b|\bQ[34]\b|pendiente de implementaci|próximamente|proximamente|pagerduty|devtools|#soporte/i;
-// Combinations no screen implements (plan §2.3): only ⌘K, ⌘/, ⌘, and Esc are wired.
+// Combinations no screen implements (plan §2.3). Since UX-1 · U5 the wired set is the
+// registry content/shortcuts-registry.ts (tests/shortcuts-catalog-contract.test.mjs proves
+// every entry is wired in code and gen-shortcuts.mjs renders the catalog from it): the
+// help may only announce those keys (⌥H/⌥R/⌥N/⌥T/⌥B/⌥F/⌥W, ⌥1-3, ⌘⇧T/⌘⇧E included).
 const FAKE_SHORTCUTS = /⌘[1-9A-JL-Z]|Cmd\+[1-9A-JL-Z]\b|Ctrl\+[1-9A-JL-Z]\b|\bJ\/K\b/;
-const ALLOWED_KEYS = new Set(["⌘K", "⌘/", "⌘,", "Esc", "↑ ↓", "Intro", "← →", "Inicio / Fin", "Intro / Espacio", "→", "←"]);
+const ALLOWED_KEYS = new Set(SHORTCUTS.map((entry) => entry.keys));
 
 describe("help-articles · unified knowledge base", () => {
   it("has unique ids, non-empty bodies and a category for every article", () => {

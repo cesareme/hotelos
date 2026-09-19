@@ -3,6 +3,13 @@
 // destructive × small/regular/large).
 //
 //   - Heights 22 / 28 / 32 on a mouse; ≥ 44 px tap target on a coarse pointer.
+//     WCAG 2.2 · 2.5.8 (UX-1 · U5, §7.1): `small` keeps its 22 px metrics but
+//     the box grows to `min-height: 24px` with a fine pointer (SMALL_TARGET_MIN_PX),
+//     so row actions of Mi día / ficha meet the 24 × 24 minimum without relying
+//     on the spacing exception.
+//   - `accessKey="C"` (UX-1 · U5, D7): a CocoaKbd «C» shows next to the label
+//     while ⌥ is held and ⌥C clicks the button when visible and enabled
+//     (components/cocoa/CocoaAccessKey.tsx); `aria-keyshortcuts` announces it.
 //   - Radius 4 (small) / 8; Inter 500; transitions of 100 ms; press scale 0.97
 //     gated on reduced motion; hover brightens filled, deepens tinted, fills
 //     ghosts with the control background.
@@ -17,8 +24,9 @@
 //     sets aria-busy; icon-only buttons MUST pass `aria-label`.
 //   - React 19: `ref` is a plain prop (dialogs use it for the initial focus).
 
-import { useMemo, type CSSProperties, type FocusEventHandler, type KeyboardEventHandler, type MouseEventHandler, type ReactNode, type Ref } from "react";
+import { useCallback, useMemo, useRef, type CSSProperties, type FocusEventHandler, type KeyboardEventHandler, type MouseEventHandler, type ReactNode, type Ref } from "react";
 import { useCoarsePointer, TAP_TARGET_PX } from "../../lib/useCoarsePointer";
+import { CocoaAccessKey, accessKeyAriaShortcut, useAccessKeyRegistration } from "./CocoaAccessKey";
 
 export type CocoaButtonVariant = "filled" | "tinted" | "bordered" | "plain";
 export type CocoaButtonSize = "small" | "regular" | "large";
@@ -70,9 +78,19 @@ export interface CocoaButtonProps {
   fullWidth?: boolean;
   /** Horizontal alignment of icon + label inside the button: `center` (default) · `start` (list rows) · `between` (label + trailing chevron). */
   align?: CocoaButtonAlign;
+  /** Access key (one letter or digit): shown as a CocoaKbd while ⌥ is held; ⌥+letter clicks the button when visible and enabled. Never H R N T B F W (global navigation). */
+  accessKey?: string;
 }
 
 const HEIGHT_BY_SIZE: Record<CocoaButtonSize, number> = { small: 22, regular: 28, large: 32 };
+/** WCAG 2.2 · 2.5.8 Target Size (Minimum): 24 × 24 CSS px with a fine pointer; `small` (22) grows its box to this. */
+export const SMALL_TARGET_MIN_PX = 24;
+
+/** Minimum box height of a button (pure): 44 on a coarse pointer, else the size height raised to the 2.5.8 floor. */
+export function buttonMinHeight(size: CocoaButtonSize, coarse: boolean): number {
+  if (coarse) return TAP_TARGET_PX;
+  return Math.max(HEIGHT_BY_SIZE[size], SMALL_TARGET_MIN_PX);
+}
 /** Line height of a wrapping label by size (token + its px mirror, cocoa-tokens.css `--cocoa-lh-*`): a one-line `wrap` button keeps the fixed height. */
 const LINE_HEIGHT_BY_SIZE: Record<CocoaButtonSize, { css: string; px: number }> = {
   small: { css: "var(--cocoa-lh-subheadline)", px: 14 },
@@ -197,10 +215,22 @@ export function CocoaButton({
   "aria-selected": ariaSelected,
   wrap = false,
   fullWidth = false,
-  align = "center"
+  align = "center",
+  accessKey
 }: CocoaButtonProps) {
   const isDisabled = disabled || loading;
   const coarse = useCoarsePointer();
+  // Own ref (access key registration) merged with the consumer's `ref` prop.
+  const innerRef = useRef<HTMLButtonElement | null>(null);
+  const mergedRef = useCallback(
+    (node: HTMLButtonElement | null) => {
+      innerRef.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref && typeof ref === "object") (ref as { current: HTMLButtonElement | null }).current = node;
+    },
+    [ref]
+  );
+  const accessLetter = useAccessKeyRegistration(innerRef, accessKey);
   const height = HEIGHT_BY_SIZE[size];
   const paddingX = PADDING_X_BY_SIZE[size];
   const fontSize = FONT_SIZE_BY_SIZE[size];
@@ -218,7 +248,8 @@ export function CocoaButton({
       gap,
       height,
       // Touch: grow to a ≥ 44 px tap target; minHeight/minWidth win over `height`.
-      minHeight: coarse ? TAP_TARGET_PX : height,
+      // Mouse: `small` rises from 22 to the 24 px floor of WCAG 2.5.8 (SMALL_TARGET_MIN_PX).
+      minHeight: buttonMinHeight(size, coarse),
       minWidth: coarse ? TAP_TARGET_PX : undefined,
       paddingInline: paddingX,
       paddingBlock: 0,
@@ -266,7 +297,7 @@ export function CocoaButton({
       // Wrapping label: the height follows the text; a single line still measures 22 / 28 / 32.
       const line = LINE_HEIGHT_BY_SIZE[size];
       base.height = "auto";
-      base.minHeight = coarse ? TAP_TARGET_PX : height;
+      base.minHeight = buttonMinHeight(size, coarse);
       base.paddingBlock = Math.max(0, (height - 2 - line.px) / 2);
       base.lineHeight = line.css;
       base.whiteSpace = "normal";
@@ -331,7 +362,7 @@ export function CocoaButton({
 
   return (
     <button
-      ref={ref}
+      ref={mergedRef}
       id={id}
       name={name}
       form={form}
@@ -351,6 +382,8 @@ export function CocoaButton({
       aria-haspopup={ariaHasPopup}
       aria-current={ariaCurrent}
       aria-selected={ariaSelected}
+      aria-keyshortcuts={accessLetter ? accessKeyAriaShortcut(accessLetter) : undefined}
+      data-access-key={accessLetter ?? undefined}
       role={role}
       title={title}
       data-cocoa={dataCocoa}
@@ -375,6 +408,7 @@ export function CocoaButton({
       {!loading && iconNode && iconPosition === "left" ? iconNode : null}
       {children != null ? <span style={wrap ? { minWidth: 0 } : undefined}>{children}</span> : null}
       {!loading && iconNode && iconPosition === "right" ? iconNode : null}
+      {accessLetter ? <CocoaAccessKey letter={accessLetter} /> : null}
     </button>
   );
 }

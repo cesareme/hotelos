@@ -9,6 +9,12 @@
 // ⌘/Ctrl+Enter, status text) → «Estancias» CocoaTable (a row opens the
 // reservation). Same API: fetchGuest, createGuest, updateGuest; the `:id`
 // comes from the tab URL (useRouteParam) and `new` opens an empty form.
+//
+// Tanda UX-1 · lote U8 (§5.8): barra de comandos en la cabecera — primaria
+// «Abrir la estancia de hoy» si el huésped está en el hotel, si no «Nueva
+// reserva para este huésped» (prefill por `?guestId=`, U9a) — y `keepData`:
+// una recarga o un guardado nunca vacían la ficha ni las estancias (el
+// esqueleto solo sale la primera vez). Sin cambios de estructura.
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { urlForScreen } from "../../navigation/nav-tree";
@@ -16,12 +22,13 @@ import { createGuest, fetchGuest, updateGuest, type GuestDetail, type GuestInput
 import { useToast } from "../../components/Toast";
 import { useTabHost } from "../tabs/TabHost";
 import { useRouteParam } from "../tabs/tab-helpers";
-import { reservationStatusLabel } from "../operations/frontdesk-labels";
+import { reservationStatus } from "../../content/status-dictionary";
 import { EMPTY, date, money, number, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import {
   CocoaActionBar,
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaButton,
   CocoaDatePicker,
   CocoaField,
@@ -38,12 +45,15 @@ import {
   CocoaSwitch,
   CocoaTable,
   openTabPath,
-  type CocoaTableColumn,
-  type CocoaTone
+  type CocoaTableColumn
 } from "../../components/cocoa";
 
 const FICHA_URL = urlForScreen("GuestDetail") ?? "/recepcion/huespedes/:id";
 const LIST_URL = urlForScreen("GuestsList") ?? "/recepcion/huespedes";
+/** Nueva reserva (modo rápido) con el huésped prefijado (`?guestId=`, lo lee ReservationCreateScreen en U9a). */
+const NEW_RESERVATION_URL = urlForScreen("ReservationCreate") ?? "/recepcion/reservas/nueva";
+const OPEN_TODAY_STAY = "Abrir la estancia de hoy";
+const NEW_RESERVATION_FOR_GUEST = "Nueva reserva para este huésped";
 
 // A real «none» choice is an explicit { value: "", label } option (never a placeholder).
 const TITLE_OPTIONS = ["", "Sr.", "Sra.", "Srta.", "Dr.", "Dra.", "Mr.", "Mrs.", "Ms.", "Mx."].map((t) => ({ value: t, label: t || EMPTY }));
@@ -118,18 +128,9 @@ function buildInput(form: FormState): GuestInput {
   };
 }
 
-const STAY_TONE: Record<string, CocoaTone> = {
-  draft: "neutral",
-  confirmed: "info",
-  checked_in: "success",
-  checked_out: "neutral",
-  cancelled: "danger",
-  no_show: "danger"
-};
-
 const STAY_COLUMNS: CocoaTableColumn<GuestStay>[] = [
   { key: "code", label: "Reserva", fit: true, render: (s) => <strong className="cocoa-mono">{s.code}</strong> },
-  { key: "status", label: "Estado", fit: true, render: (s) => <CocoaBadge tone={STAY_TONE[s.status] ?? "neutral"}>{reservationStatusLabel(s.status)}</CocoaBadge> },
+  { key: "status", label: "Estado", fit: true, render: (s) => <CocoaStatusBadge entry={reservationStatus(s.status)} /> },
   { key: "arrivalDate", label: "Entrada", fit: true, render: (s) => (s.arrivalDate ? date(s.arrivalDate, "medium") : EMPTY) },
   { key: "departureDate", label: "Salida", fit: true, hideOnNarrow: true, render: (s) => (s.departureDate ? date(s.departureDate, "medium") : EMPTY) },
   { key: "totalAmount", label: "Importe", align: "right", fit: true, render: (s) => money(s.totalAmount, s.currency) },
@@ -249,6 +250,8 @@ export function GuestProfileScreen() {
         openTabPath(urlForScreen("GuestDetail", { id: created.id }) ?? LIST_URL);
       } else {
         const updated = await updateGuest(guestId, input);
+        // keepData: el título y el resumen reflejan lo guardado sin recargar la ficha.
+        setDetail((current) => (current ? { ...current, guest: updated } : current));
         setStatus(`Cambios guardados (${updated.fullName}).`);
         showToast(STATUS_LABELS.saved, { variant: "success" });
       }
@@ -265,6 +268,10 @@ export function GuestProfileScreen() {
   const guestName = isNew ? "Nuevo huésped" : detail?.guest.fullName || form.firstName || "Huésped";
   const stays = detail?.stayHistory ?? [];
   const primaryLabel = isNew ? "Crear huésped" : ACTIONS.saveChanges;
+  // Barra de comandos (§5.8): la estancia en el hotel manda; si no la hay, una reserva nueva con el huésped prefijado.
+  const currentStay = stays.find((stay) => stay.status === "checked_in") ?? null;
+  const openNewReservation = () => openTabPath(`${NEW_RESERVATION_URL}?guestId=${encodeURIComponent(guestId)}`);
+  const headerCommand = isNew || !detail ? null : currentStay ? { label: OPEN_TODAY_STAY, run: () => openReservation(currentStay.id) } : { label: NEW_RESERVATION_FOR_GUEST, run: openNewReservation };
 
   return (
     <CocoaPage
@@ -272,15 +279,28 @@ export function GuestProfileScreen() {
       title={guestName}
       subtitle={hosted ? undefined : isNew ? "Alta de un perfil de huésped: identidad, contacto, residencia y fidelización." : "Identidad, contacto, residencia, fidelización y estancias del huésped."}
       actions={
-        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => openTabPath(LIST_URL)}>
-          Volver al listado
-        </CocoaButton>
+        <>
+          {headerCommand ? (
+            <CocoaButton variant="filled" tone="accent" size="small" onClick={headerCommand.run}>
+              {headerCommand.label}
+            </CocoaButton>
+          ) : null}
+          {headerCommand && currentStay ? (
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={openNewReservation}>
+              {NEW_RESERVATION_FOR_GUEST}
+            </CocoaButton>
+          ) : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => openTabPath(LIST_URL)}>
+            Volver al listado
+          </CocoaButton>
+        </>
       }
-      state={loading ? "loading" : error ? "error" : "ready"}
+      state={loading && !detail ? "loading" : error && !detail ? "error" : "ready"}
       skeleton={<ProfileSkeleton />}
       error={{ title: "No se pudo cargar el huésped", message: error ?? undefined, onRetry: () => setReloadNonce((n) => n + 1) }}
       commands={[
         { id: "guest-profile-save", label: primaryLabel, run: () => void handleSave() },
+        ...(headerCommand ? [{ id: "guest-profile-primary", label: headerCommand.label, run: headerCommand.run }] : []),
         { id: "guest-profile-back", label: "Volver al listado de huéspedes", run: () => openTabPath(LIST_URL) }
       ]}
     >
@@ -373,6 +393,9 @@ export function GuestProfileScreen() {
               columns={STAY_COLUMNS}
               rows={stays}
               rowKey="id"
+              loading={loading}
+              keepDataWhileLoading
+              selectedKey={currentStay?.id}
               onSelect={(s) => openReservation(s.id)}
               rowTitle={() => "Abrir la reserva"}
               caption="Estancias del huésped"

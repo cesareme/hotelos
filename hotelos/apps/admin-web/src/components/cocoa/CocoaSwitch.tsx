@@ -1,4 +1,4 @@
-// CocoaSwitch — iOS-style toggle (COCOA-22.md §3.8): tracks 52×32 / 32×20,
+// CocoaSwitch — iOS-style toggle (COCOA-22.md §3.8): tracks 52×32 / 36×24,
 // accent when on, translucent separator when off; thumb slides with the
 // spring easing (the only spring in the kit); focus ring via
 // `.cocoa-focus-ring`; ±12 px tap area on touch (`.cocoa-switch::before` in
@@ -29,7 +29,8 @@ interface Dimensions {
 }
 
 const DIMENSIONS: Record<NonNullable<CocoaSwitchProps["size"]>, Dimensions> = {
-  small: { trackWidth: 32, trackHeight: 20, thumbSize: 16, padding: 2 },
+  // `small` 36×24 (era 32×20): un objetivo < 24 px incumple 2.5.8 con ratón (corrector L-07).
+  small: { trackWidth: 36, trackHeight: 24, thumbSize: 20, padding: 2 },
   regular: { trackWidth: 52, trackHeight: 32, thumbSize: 28, padding: 2 }
 };
 

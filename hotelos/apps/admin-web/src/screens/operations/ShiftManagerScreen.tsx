@@ -10,13 +10,19 @@
 // timeline as a section list with CocoaBadge dots (no emoji, §6).
 // Data: GET /dashboards/shift-manager?propertyId= (30 s poll); `degraded[]`
 // labels paint «—» through the Degraded* helpers (QC-06).
+//
+// Tanda UX-1 · lote U6 (docs/design/UX-RECEPCION-FEEL.md §5.12, F15): Turno
+// gana dos acciones en cabecera — «Arqueo de caja» (TPV › Cierre de caja) y
+// «Cerrar el día» (Hoy › Cierre del día, que recomprueba el preflight al
+// pulsar «Cerrar día») — para enlazar el ritual «turno → caja → día» sin
+// fusionar pantallas.
 
 import type { CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
-import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { ACTIONS, FRONT_DESK_ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { money, plural, time } from "../../lib/format";
 import { CheckCircleIcon, ExclamationCircleIcon, XCircleIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
@@ -176,12 +182,22 @@ export function ShiftManagerScreen() {
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>
             {ACTIONS.refresh}
           </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("CashClosureScreen")} title="Abrir el arqueo de caja del turno (TPV › Cierre de caja)">
+            {FRONT_DESK_ACTIONS.cashClosure}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={() => navigateTo("NightAuditScreen")} title="Ir al cierre del día: las comprobaciones se releen al pulsar «Cerrar día»">
+            {FRONT_DESK_ACTIONS.closeDay}
+          </CocoaButton>
         </>
       }
       state={state}
       skeleton={<ShiftSkeleton />}
       error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
-      commands={[{ id: "shift-refresh", label: "Actualizar el turno", run: refresh }]}
+      commands={[
+        { id: "shift-refresh", label: "Actualizar el turno", run: refresh },
+        { id: "shift-cash-closure", label: FRONT_DESK_ACTIONS.cashClosure, run: () => navigateTo("CashClosureScreen") },
+        { id: "shift-close-day", label: FRONT_DESK_ACTIONS.closeDay, run: () => navigateTo("NightAuditScreen") }
+      ]}
     >
       {k ? (
         <>

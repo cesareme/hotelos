@@ -56,10 +56,10 @@ describe("CocoaScreenInstructionsCard · dismiss control (qa#10)", () => {
     assert.doesNotMatch(button, /width:24px/);
   });
 
-  it("keeps the dense 22 px control on a fine pointer", () => {
+  it("keeps the dense 22 px control on a fine pointer (box raised to the 24 px floor of WCAG 2.5.8 · UX-1 U5, CocoaButton SMALL_TARGET_MIN_PX)", () => {
     const button = render(false).match(BUTTON_RE)?.[0] ?? "";
     assert.match(button, /height:22px/);
-    assert.match(button, /min-height:22px/);
+    assert.match(button, /min-height:24px/);
     assert.doesNotMatch(button, /min-width:44px/);
   });
 

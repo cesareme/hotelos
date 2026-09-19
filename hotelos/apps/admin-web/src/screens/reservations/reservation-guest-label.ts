@@ -19,6 +19,8 @@ export type GuestNameParts = {
 export type GuestLabelSource = {
   bookerName?: string | null;
   primaryGuestId?: string | null;
+  /** Nombre del titular que ya trae la lista del API (UX-1 · L-15): sin petición por fila. */
+  primaryGuestName?: string | null;
 };
 
 function text(value: string | null | undefined): string {
@@ -39,7 +41,18 @@ export function guestFullName(guest: GuestNameParts | null | undefined): string 
  * the primary guest, then «Huésped pendiente». The internal id is never shown.
  */
 export function reservationGuestLabel(reservation: GuestLabelSource, primaryGuestName?: string | null): string {
-  return text(reservation.bookerName) || text(primaryGuestName) || PENDING_GUEST_LABEL;
+  return text(reservation.bookerName) || text(primaryGuestName) || text(reservation.primaryGuestName) || PENDING_GUEST_LABEL;
+}
+
+/** Nombres que las filas ya traen (`primaryGuestName`, L-15): se siembran en la caché de nombres sin pedir nada. */
+export function guestNamesFromRows(reservations: ReadonlyArray<GuestLabelSource>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const reservation of reservations) {
+    const id = text(reservation.primaryGuestId);
+    const name = text(reservation.primaryGuestName);
+    if (id && name && !(id in out)) out[id] = name;
+  }
+  return out;
 }
 
 /**
@@ -50,7 +63,7 @@ export function reservationGuestLabel(reservation: GuestLabelSource, primaryGues
 export function pendingGuestIds(reservations: ReadonlyArray<GuestLabelSource>, known: ReadonlySet<string>): string[] {
   const ids = new Set<string>();
   for (const reservation of reservations) {
-    if (text(reservation.bookerName)) continue;
+    if (text(reservation.bookerName) || text(reservation.primaryGuestName)) continue;
     const id = text(reservation.primaryGuestId);
     if (id && !known.has(id)) ids.add(id);
   }

@@ -161,6 +161,8 @@ export type RequestOptions = {
   body?: unknown;
   query?: Record<string, string | number | undefined>;
   signal?: AbortSignal;
+  /** `fetch({ keepalive })`: la petición sobrevive al cierre de la pestaña (cargos diferidos en `pagehide`, UX1-REV-02). */
+  keepalive?: boolean;
 };
 
 /**
@@ -184,14 +186,88 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const token = await getToken();
+// ---------------------------------------------------------------------------
+// Dedupe de GET idénticos en vuelo (Tanda UX-1 · lote U3 · diseño §2.3, §4.1)
+//
+// Dos pantallas (o dos hooks) que piden la misma URL con la misma propiedad
+// activa mientras la primera petición vuela comparten UNA sola llamada a
+// fetch. Cada interesado conserva su `signal`: al abortarla su promesa rechaza
+// con AbortError y, cuando ya no queda nadie esperando, se aborta la petición
+// compartida. Solo GET sin cuerpo; POST/PUT/PATCH/DELETE nunca se comparten.
+// ---------------------------------------------------------------------------
+
+type SharedGet = { promise: Promise<unknown>; controller: AbortController; waiters: number };
+
+const inflightGets = new Map<string, SharedGet>();
+
+/** Peticiones GET compartidas en vuelo (diagnóstico y tests). */
+export function inflightGetCount(): number {
+  return inflightGets.size;
+}
+
+function buildRequestUrl(path: string, query: RequestOptions["query"]): URL {
   const url = new URL(path.startsWith("http") ? path : `${API_BASE}${path}`);
-  if (options.query) {
-    for (const [key, value] of Object.entries(options.query)) {
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
   }
+  return url;
+}
+
+function abortError(): Error {
+  if (typeof DOMException !== "undefined") return new DOMException("Petición cancelada.", "AbortError");
+  const error = new Error("Petición cancelada.");
+  error.name = "AbortError";
+  return error;
+}
+
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const method = options.method ?? "GET";
+  if (method !== "GET" || options.body) return performRequest<T>(path, options, options.signal);
+  const url = buildRequestUrl(path, options.query).toString();
+  const scope = activePropertyHeader(path)[ACTIVE_PROPERTY_HEADER] ?? "";
+  const key = `${url} @${scope}${options.keepSessionOn401 ? " keep401" : ""}`;
+  let shared = inflightGets.get(key);
+  if (!shared) {
+    const controller = new AbortController();
+    const promise = performRequest<T>(path, options, controller.signal).finally(() => {
+      if (inflightGets.get(key)?.controller === controller) inflightGets.delete(key);
+    });
+    shared = { promise, controller, waiters: 0 };
+    inflightGets.set(key, shared);
+  }
+  const entry = shared;
+  entry.waiters += 1;
+  const signal = options.signal;
+  if (!signal) return entry.promise as Promise<T>;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      entry.waiters -= 1;
+      if (entry.waiters <= 0 && inflightGets.get(key) === entry) entry.controller.abort();
+      reject(abortError());
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    entry.promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value as T);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+async function performRequest<T>(path: string, options: RequestOptions, signal: AbortSignal | undefined): Promise<T> {
+  const token = await getToken();
+  const url = buildRequestUrl(path, options.query);
   const method = options.method ?? "GET";
   // PII-safe: solo método y path (sin query string ni body) para evitar tokens
   // o datos personales en breadcrumbs.
@@ -204,7 +280,8 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       ...(options.body ? { "Content-Type": "application/json" } : {})
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
-    signal: options.signal
+    signal,
+    ...(options.keepalive ? { keepalive: true } : {})
   });
   logBreadcrumb(`api.${method}.${path}`, "api", { method, path, status: response.status });
   if (response.status === 401 && options.keepSessionOn401) {

@@ -3,39 +3,31 @@
 // floor that is "" (Rías Altas, 120/120 rooms) or already «Planta 1» (Los
 // Tilos); the operator must never read them as-is. Pure and unit-tested
 // (__tests__/frontdesk-labels.test.mts).
+//
+// Tanda UX-1 · lote U2: the labels come from content/status-dictionary.ts
+// (one vocabulary for every screen, D5); this module only re-exports them
+// and keeps the helpers the drawers already import.
 
-/** Reservation status → Spanish label (wording of FrontDeskDashboard / PropertyDetailScreen). */
-export const RESERVATION_STATUS_LABELS: Record<string, string> = {
-  draft: "Borrador",
-  confirmed: "Confirmada",
-  checked_in: "En casa",
-  checked_out: "Salida realizada",
-  cancelled: "Cancelada",
-  no_show: "No-show"
-};
+import { RESERVATION_STATUS, ROOM_STATUS, reservationStatus, roomStatus, statusLabels } from "../../content/status-dictionary";
 
-/** Label of a reservation status; an unknown status falls back to the raw value, never to "" (qa#8). */
+export { RESERVATION_STATUS, ROOM_STATUS, reservationStatus, roomStatus } from "../../content/status-dictionary";
+
+/** Reservation status → Spanish label (D5 vocabulary, derived from the dictionary). */
+export const RESERVATION_STATUS_LABELS: Record<string, string> = statusLabels(RESERVATION_STATUS);
+
+/** Label of a reservation status; an unknown or absent status reads «Desconocido», never the raw enum (qa#8, P6). */
 export function reservationStatusLabel(status: string | null | undefined): string {
-  const key = (status ?? "").trim().toLowerCase();
-  return RESERVATION_STATUS_LABELS[key] ?? (key || "desconocido");
+  return reservationStatus(status).label;
 }
 
 /** Housekeeping status of a room → lowercase label for inline use («Hab. 119 · sucia»). */
-export const HOUSEKEEPING_STATUS_LABELS: Record<string, string> = {
-  clean: "limpia",
-  inspected: "inspeccionada",
-  ready: "lista",
-  dirty: "sucia",
-  occupied: "ocupada",
-  ooo: "fuera de servicio",
-  out_of_order: "fuera de servicio",
-  out_of_service: "fuera de servicio"
-};
+export const HOUSEKEEPING_STATUS_LABELS: Record<string, string> = Object.fromEntries(
+  Object.entries(statusLabels(ROOM_STATUS)).map(([key, label]) => [key, label.toLowerCase()])
+);
 
-/** Label of a housekeeping status; unknown → the raw value, absent → «desconocido». */
+/** Lowercase label of a housekeeping status; unknown or absent → «desconocido», never the raw enum. */
 export function housekeepingStatusLabel(status: string | null | undefined): string {
-  const key = (status ?? "").trim().toLowerCase();
-  return HOUSEKEEPING_STATUS_LABELS[key] ?? (key || "desconocido");
+  return roomStatus(status).label.toLowerCase();
 }
 
 /**

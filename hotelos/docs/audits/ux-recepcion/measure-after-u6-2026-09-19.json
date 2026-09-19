@@ -1,0 +1,181 @@
+{
+  "generatedAt": "2026-09-19T09:36:27.726Z",
+  "baseUrl": "http://127.0.0.1:5183",
+  "apiUrl": "http://127.0.0.1:3913",
+  "tasks": {
+    "t1": {
+      "task": "t1",
+      "title": "T1 · Check-in de una llegada sin habitación",
+      "clicks": 2,
+      "keys": 0,
+      "requests": 11,
+      "ms": 751,
+      "completed": true,
+      "path": [
+        "step:Mi día cargado",
+        "click:Check-in en NNN (fila de Mi día, candidata preseleccionada)",
+        "click:Hacer check-in (drawer)"
+      ],
+      "target": {
+        "clicks": 4,
+        "requests": 12
+      },
+      "context": {
+        "reservationCode": "UXDAY-T1"
+      },
+      "strict": true,
+      "measuredAt": "2026-09-19T09:36:22.857Z"
+    },
+    "t2": {
+      "task": "t2",
+      "title": "T2 · Walk-in: crear, cobrar y check-in",
+      "clicks": 2,
+      "keys": 13,
+      "requests": 11,
+      "ms": 788,
+      "completed": true,
+      "path": [
+        "step:Mi día cargado",
+        "click:Walk-in (cabecera de Mi día)",
+        "fill:Nombre(7)",
+        "fill:Primer apellido(6)",
+        "click:Crear y hacer check-in"
+      ],
+      "target": {
+        "clicks": 11,
+        "requests": 30
+      },
+      "context": {
+        "reservationCode": "RES-00006",
+        "bookingSource": "walk_in",
+        "totalEur": 89
+      },
+      "note": "cajón Walk-in de Mi día (U6): tipo con precio en vivo y habitación preseleccionados; el cobro del importe de la estancia se registra como anticipo (el cargo de alojamiento lo asienta el cierre del día)",
+      "strict": true,
+      "measuredAt": "2026-09-19T09:36:25.090Z"
+    },
+    "t3": {
+      "task": "t3",
+      "title": "T3 · Salida con 120 € pendientes: cobrar y cerrar",
+      "clicks": 3,
+      "keys": 0,
+      "requests": 7,
+      "ms": 1234,
+      "completed": true,
+      "path": [
+        "step:Mi día cargado",
+        "click:Pestaña Salen hoy",
+        "click:Cobrar 120,00 € y cerrar (fila 204)",
+        "click:Cobrar 120,00 € y cerrar (drawer)"
+      ],
+      "target": {
+        "clicks": 3,
+        "requests": 12
+      },
+      "context": {
+        "reservationCode": "UXDAY-T3",
+        "room": 204,
+        "balanceEur": 120
+      },
+      "strict": true,
+      "measuredAt": "2026-09-19T09:36:27.725Z"
+    },
+    "t4": {
+      "task": "t4",
+      "title": "T4 · Avería: cambiar de habitación a un alojado",
+      "clicks": 2,
+      "keys": 0,
+      "requests": 5,
+      "ms": 1031,
+      "completed": false,
+      "path": [
+        "step:Mi día cargado",
+        "click:Pestaña En el hotel",
+        "click:Abrir la ficha de la 310"
+      ],
+      "target": {
+        "clicks": 4,
+        "requests": 10
+      },
+      "context": {
+        "reservationCode": "UXDAY-T4",
+        "room": 310,
+        "assignEnabledForInHouse": false
+      },
+      "note": "sin acción «Cambiar habitación» para un alojado en la ficha (F7); traslado solo por arrastre en Live Timeline",
+      "strict": false,
+      "measuredAt": "2026-09-19T09:27:22.567Z"
+    },
+    "t5": {
+      "task": "t5",
+      "title": "T5 · Reserva por teléfono para una empresa",
+      "clicks": 9,
+      "keys": 112,
+      "requests": 1,
+      "ms": 387,
+      "completed": true,
+      "path": [
+        "step:Nueva reserva cargada",
+        "fill:Fecha de llegada(10)",
+        "fill:Fecha de salida(10)",
+        "select:Tipo de habitación = Doble",
+        "click:Siguiente → Huéspedes",
+        "fill:Nombre(8)",
+        "fill:Primer apellido(11)",
+        "fill:Correo electrónico (huésped)(27)",
+        "fill:País de residencia (ISO-3)(3)",
+        "click:Siguiente → Tarifa",
+        "click:Siguiente → Origen",
+        "select:Origen de la reserva = Teléfono",
+        "fill:Empresa (facturación)(16)",
+        "fill:Correo de quien reserva (obligatorio para el API)(27)",
+        "click:Siguiente → Pagos",
+        "select:Instrucción de cobro = Factura a empresa",
+        "click:Siguiente → Solicitudes",
+        "click:Confirmar y crear reserva"
+      ],
+      "target": {
+        "clicks": 7,
+        "requests": 24
+      },
+      "context": {
+        "reservationCode": "RES-00004",
+        "steps": 6,
+        "arrival": "2026-09-26",
+        "departure": "2026-09-28",
+        "company": "Empresa UXDAY SL"
+      },
+      "note": "6 pasos (5 «Siguiente» + Confirmar); el asistente exige correo del huésped, correo de quien reserva y país ISO-3 (400 si no); sin NIF de la empresa en el formulario (F14)",
+      "strict": false,
+      "measuredAt": "2026-09-19T09:27:24.303Z"
+    },
+    "t6": {
+      "task": "t6",
+      "title": "T6 · Buscar por apellido y añadir un cargo de 12 €",
+      "clicks": 2,
+      "keys": 8,
+      "requests": 8,
+      "ms": 1306,
+      "completed": true,
+      "path": [
+        "step:Mi día cargado",
+        "press:⌘K",
+        "fill:Búsqueda (apellido)(4)",
+        "press:Enter (primer resultado)",
+        "click:Pestaña Folio",
+        "fill:Importe (€)(2)",
+        "click:Añadir cargo"
+      ],
+      "target": {
+        "clicks": 6,
+        "requests": 12
+      },
+      "context": {
+        "reservationCode": "UXDAY-T6",
+        "amountEur": 12
+      },
+      "strict": false,
+      "measuredAt": "2026-09-19T09:27:26.951Z"
+    }
+  }
+}

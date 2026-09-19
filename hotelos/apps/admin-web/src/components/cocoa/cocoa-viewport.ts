@@ -6,6 +6,7 @@
 // changes tier at the same pixel.
 
 import { useEffect, useState, type RefObject } from "react";
+import { useCoarsePointer } from "../../lib/useCoarsePointer";
 
 export const COCOA_BREAKPOINTS = {
   /** Below this the layout is a single column (phone). */
@@ -60,6 +61,26 @@ export function useViewportTier(): CocoaViewportTier {
   if (tablet) return "tablet";
   if (laptop) return "laptop";
   return "desktop";
+}
+
+/**
+ * «Portátil táctil» (Tanda UX-1 · U10, UX-RECEPCION-FEEL §7.2, D4): un iPad
+ * apaisado (1024 px) cae en el tier `laptop` pero se maneja con el dedo. Puro:
+ * el tier es `laptop` Y el puntero primario es grueso (`pointer: coarse`).
+ * En CSS la misma banda es `@media (pointer: coarse) and (min-width: 900px)
+ * and (max-width: 1199px)` (cocoa-22-layout.css «banda tablet»): el inspector
+ * apila bajo la tabla y las tablas ya ocultan `showFrom: "desktop"` porque el
+ * tier sigue siendo `laptop` (CocoaTable.isColumnVisible).
+ */
+export function isTouchLaptop(tier: CocoaViewportTier, coarse: boolean): boolean {
+  return tier === "laptop" && coarse;
+}
+
+/** Reactive `isTouchLaptop` (tier + `useCoarsePointer`). CocoaPage lo emite como `data-touch-laptop`. */
+export function useIsTouchLaptop(): boolean {
+  const tier = useViewportTier();
+  const coarse = useCoarsePointer();
+  return isTouchLaptop(tier, coarse);
 }
 
 /**

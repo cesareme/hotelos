@@ -67,3 +67,21 @@ describe("ReservationCreateScreen · contrato de fuente del prefijado", () => {
     assert.doesNotMatch(prefill, /TODAY|Date\.now\(\)|new Date\(\)/, "no rellena con hoy: lo que falta se queda como estaba");
   });
 });
+
+describe("ReservationCreateScreen · prefijado compartido por los dos modos (U9a)", () => {
+  const screen = readFileSync(new URL("../ReservationCreateScreen.tsx", import.meta.url), "utf8");
+
+  it("el prefijado del Live Timeline y el huésped de ?guestId= (lista y ficha de huéspedes) se leen una vez y alimentan el MISMO formulario que usan el modo rápido y el completo", () => {
+    assert.match(screen, /const \[prefillGuestId\] = useState\(\(\) => guestIdFromSearch\(typeof window === "undefined" \? "" : window\.location\.search\)\);/);
+    assert.match(screen, /const \[mode, setMode\] = useState<ReservationCreateMode>\(\(\) => reservationModeFromSearch\(/);
+    assert.match(screen, /prefillNote=\{prefilled \? PREFILL_NOTE : null\}/, "el modo rápido pinta la misma nota del Live Timeline");
+    assert.match(screen, /<ReservationQuickCreate[\s\S]*?form=\{form\}[\s\S]*?setForm=\{setForm\}/, "el modo rápido recibe el formulario de la pantalla, no uno propio");
+    assert.equal(screen.match(/useState<FormValues>\(/g)?.length, 1, "un único estado de formulario");
+  });
+
+  it("el conmutador cambia solo ?modo= (replaceState) y conserva el prefijado; rápida = sin parámetro", () => {
+    assert.match(screen, /searchWithReservationMode\(window\.location\.search, next\)/);
+    assert.match(screen, /window\.history\.replaceState\(window\.history\.state, "", `\$\{window\.location\.pathname\}\$\{search\}\$\{window\.location\.hash\}`\)/);
+    assert.doesNotMatch(screen, /navigateTo\("ReservationCreate"/, "sin rutas nuevas: el modo vive en la misma URL");
+  });
+});

@@ -54,10 +54,69 @@ export function trapTabTarget(input: {
   return null;
 }
 
+type FocusCandidate = { disabled?: boolean; getAttribute?: (name: string) => string | null };
+
+/** A preferred target that cannot take the focus (disabled / aria-disabled): `focus()` on it is a silent no-op. */
+export function isFocusDisabled(element: FocusCandidate | null | undefined): boolean {
+  if (!element) return true;
+  if (element.disabled === true) return true;
+  return element.getAttribute?.("aria-disabled") === "true";
+}
+
+/**
+ * Where the initial focus of a trap lands (pure): the preferred element when it
+ * can take the focus, else the first focusable, else the root. A CTA that is
+ * born `disabled` (the check-in drawer while the room is being preselected,
+ * UX-1 corrector L-01) must never leave the focus outside the panel.
+ */
+export function initialFocusTarget<E extends FocusCandidate>(preferred: E | null | undefined, focusables: readonly E[], root: E | null): E | null {
+  if (preferred && !isFocusDisabled(preferred)) return preferred;
+  return focusables[0] ?? root;
+}
+
+/** Frames tried before giving up on the initial focus (≈ 500 ms at 60 Hz). */
+export const FOCUS_RETRY_FRAMES = 30;
+
+/**
+ * Focuses `pick()` on the next frame and RETRIES frame by frame while it does
+ * not land (the panel is still `visibility: hidden` until `data-open` flips,
+ * so an early `focus()` is a silent no-op — the check-in drawer opened from
+ * the inspector with cached data hit exactly that, L-01). Stops as soon as the
+ * focus is inside `root` (or `stop()` says the operator already moved it).
+ * Returns the cancel function.
+ */
+export function focusWhenFocusable(root: HTMLElement | null, pick: () => HTMLElement | null | undefined, options: { maxFrames?: number; stop?: () => boolean } = {}): () => void {
+  const maxFrames = options.maxFrames ?? FOCUS_RETRY_FRAMES;
+  let raf = 0;
+  let attempts = 0;
+  const attempt = () => {
+    attempts += 1;
+    if (options.stop?.()) return;
+    const target = pick();
+    target?.focus({ preventScroll: true });
+    const active = document.activeElement as HTMLElement | null;
+    const landed = target ? active === target : Boolean(root && active && (active === root || root.contains(active)));
+    if (!landed && attempts < maxFrames) raf = window.requestAnimationFrame(attempt);
+  };
+  raf = window.requestAnimationFrame(attempt);
+  return () => window.cancelAnimationFrame(raf);
+}
+
+/** Active traps, innermost last: only the topmost one pulls a stray Tab back in (a dialog over a drawer). */
+const activeTrapRoots: HTMLElement[] = [];
+
+/** Whether `root` is the topmost active trap (pure over the stack). */
+export function isTopmostTrap(stack: readonly HTMLElement[], root: HTMLElement): boolean {
+  return stack.length > 0 && stack[stack.length - 1] === root;
+}
+
 /**
  * Traps Tab/Shift+Tab inside `ref` and moves the initial focus in (to
- * `initialFocus()` when given, else the first focusable, else the root).
- * Restores focus to the previously focused element on unmount.
+ * `initialFocus()` when given and focusable, else the first focusable, else
+ * the root). A Tab pressed while the focus is OUTSIDE the panel (the trigger
+ * row kept it because the CTA was disabled) is captured at document level and
+ * brought back in (UX-1 corrector L-01). Restores focus to the previously
+ * focused element on unmount.
  */
 export function useFocusTrap(
   ref: React.RefObject<HTMLElement | null>,
@@ -70,17 +129,38 @@ export function useFocusTrap(
     if (!active) return undefined;
     previouslyFocused.current = (document.activeElement as HTMLElement | null) ?? null;
     const root = ref.current;
-    const raf = window.requestAnimationFrame(() => {
-      const preferred = initialFocus?.();
-      const target = preferred ?? getFocusableElements(root)[0] ?? root;
-      target?.focus({ preventScroll: true });
-    });
+    const cancel = focusWhenFocusable(root, () => initialFocusTarget(initialFocus?.(), getFocusableElements(root), root));
     return () => {
-      window.cancelAnimationFrame(raf);
+      cancel();
       const previous = previouslyFocused.current;
       if (previous && typeof previous.focus === "function") previous.focus({ preventScroll: true });
     };
     // `initialFocus` is read once on activation on purpose (not a dependency).
+  }, [active, ref]);
+
+  // Tab outside the panel while it is the topmost modal: pull the focus in.
+  useEffect(() => {
+    if (!active) return undefined;
+    const root = ref.current;
+    if (!root) return undefined;
+    activeTrapRoots.push(root);
+    const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Tab" || event.defaultPrevented) return;
+      if (!isTopmostTrap(activeTrapRoots, root)) return;
+      const current = document.activeElement as HTMLElement | null;
+      if (current && root.contains(current)) return; // the panel's own handler owns it
+      const focusables = getFocusableElements(root);
+      const target = trapTabTarget({ count: focusables.length, activeIndex: -1, shiftKey: event.shiftKey });
+      event.preventDefault();
+      if (target === "root" || target === null) root.focus({ preventScroll: true });
+      else focusables[target]?.focus({ preventScroll: true });
+    };
+    document.addEventListener("keydown", handler, true);
+    return () => {
+      document.removeEventListener("keydown", handler, true);
+      const at = activeTrapRoots.lastIndexOf(root);
+      if (at >= 0) activeTrapRoots.splice(at, 1);
+    };
   }, [active, ref]);
 
   return useCallback(

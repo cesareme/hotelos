@@ -754,6 +754,43 @@
 }
 
 /* ------------------------------------------------------------
+   Rejilla de tiles (tablero de habitaciones, RoomRackScreen): tarjetas
+   interactivas de ≥ 150 px con ratón; con el dedo (§7.2 «Tablero», UX-1 · U10)
+   suben a 160 px para que el número, el badge de estado y los avisos quepan
+   sin recortar el objetivo de 44 px.
+   ------------------------------------------------------------ */
+.c22-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--cocoa-space-2);
+  min-width: 0;
+}
+@media (pointer: coarse) {
+  .c22-tile-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
+
+/* ------------------------------------------------------------
+   Banda tablet · «portátil táctil» (UX-1 · U10, §7.2, D4): un iPad apaisado
+   (1024 × 768) cae en el tier laptop (900–1199) pero se maneja con el dedo.
+   Misma condición que `isTouchLaptop` (cocoa-viewport.ts) y que el
+   `data-touch-laptop` de CocoaPage. El inspector lateral (CocoaInspector,
+   420 px) dejaría la tabla en ~300 px con scroll horizontal (medido por U8 a
+   1024 × 768): aquí apila bajo la tabla como < 900. Selectores (0,2,0) porque
+   cocoa-22.css (importada después) fija el ancho y el sticky con (0,1,0).
+   ------------------------------------------------------------ */
+@media (pointer: coarse) and (min-width: 900px) and (max-width: 1199px) {
+  .c22-inspector-layout[data-cocoa="inspector-layout"] {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .c22-inspector[data-cocoa="inspector"] {
+    width: auto;
+    position: static;
+    max-height: none;
+  }
+}
+
+/* ------------------------------------------------------------
    Safe areas (viewport-fit=cover is active): toolbar clears the notch,
    drawers and bars clear the home indicator.
    ------------------------------------------------------------ */

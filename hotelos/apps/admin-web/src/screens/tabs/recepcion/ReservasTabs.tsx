@@ -50,7 +50,7 @@ export default function ReservasTabs() {
     <NavItemTabs
       screenKey="ReservationWorkspace"
       loaders={LOADERS}
-      subtitle="Lista, tablero de habitaciones e importación masiva; cada reserva abre su detalle y su recorrido (el cronograma vive en Hoy › Live Timeline)."
+      subtitle="Lista con el detalle al lado (Intro o clic en una fila; ↑↓ cambian de reserva), tablero de habitaciones e importación masiva; cada reserva abre además su ficha completa y su recorrido (el cronograma vive en Hoy › Live Timeline)."
       actions={
         <>
           {canSeeImport ? (

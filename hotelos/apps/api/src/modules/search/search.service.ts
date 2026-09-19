@@ -19,6 +19,25 @@ const CUID_RE = /^c[a-z0-9]{20,}$/;
 const PHONE_RE = /^[+\d][\d\s().-]{4,}$/;
 const DOC_RE = /^[A-Za-z0-9-]{5,}$/;
 
+/**
+ * Hit de habitación (puro, corrector L-06): con reserva alojada abre la ficha de
+ * esa reserva; sin ella, el tablero (`RoomRackScreen`) con la habitación.
+ */
+export function roomHit(input: { room: { id: string; number: string; roomCode: string | null; displayName: string | null; floor: string | null; status: string }; live: { id: string; code: string } | null }): SearchHit {
+  const { room, live } = input;
+  const base = [room.floor ? `Planta ${room.floor}` : null, room.roomCode].filter(Boolean).join(" · ");
+  const subtitle = live ? `${base ? `${base} · ` : ""}En el hotel: ${live.code}` : base || undefined;
+  return {
+    kind: "room",
+    id: room.id,
+    title: `Habitación ${room.number}${room.displayName ? ` · ${room.displayName}` : ""}`,
+    subtitle,
+    badge: room.status,
+    screen: live ? "ReservationDetailWorkspace" : "RoomRackScreen",
+    params: live ? { reservationId: live.id, roomId: room.id } : { roomId: room.id }
+  };
+}
+
 export type SearchHit = {
   kind:
     | "reservation"
@@ -341,16 +360,26 @@ export async function globalSearch(input: SearchInput): Promise<GlobalSearchResu
     });
   }
 
+  // Tanda UX-1 (corrector L-06): «buscar por habitación» en ⌘K es el camino
+  // alternativo de T4/T6 (§8.7). Un hit de habitación abre la reserva ALOJADA
+  // en ella cuando la hay y, si no, el tablero de habitaciones con la
+  // habitación (ambos los abre el perfil de recepción); nunca el inventario de
+  // configuración, que a recepción le responde «Sin acceso».
+  const liveByRoom = new Map<string, { id: string; code: string }>();
+  if (rooms.length > 0 && input.propertyId) {
+    const live = await safe(
+      "room_reservations",
+      prisma.reservation.findMany({
+        where: { propertyId: input.propertyId, deletedAt: null, status: "checked_in", assignedRoomId: { in: rooms.map((r) => r.id) } },
+        select: { id: true, code: true, assignedRoomId: true }
+      }),
+      [] as Array<{ id: string; code: string; assignedRoomId: string | null }>
+    );
+    for (const r of live) if (r.assignedRoomId && !liveByRoom.has(r.assignedRoomId)) liveByRoom.set(r.assignedRoomId, { id: r.id, code: r.code });
+  }
   for (const r of rooms) {
-    items.push({
-      kind: "room",
-      id: r.id,
-      title: `Habitación ${r.number}${r.displayName ? ` · ${r.displayName}` : ""}`,
-      subtitle: [r.floor ? `Planta ${r.floor}` : null, r.roomCode].filter(Boolean).join(" · ") || undefined,
-      badge: r.status,
-      screen: "RoomInventoryManager",
-      params: { roomId: r.id }
-    });
+    const live = liveByRoom.get(r.id) ?? null;
+    items.push(roomHit({ room: r, live }));
   }
 
   for (const f of folios) {

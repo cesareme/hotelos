@@ -280,6 +280,9 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
         aria-modal="false"
         aria-labelledby={headingId}
         aria-hidden={!open}
+        // Cerrado: fuera del orden de Tab y del árbol de accesibilidad (el botón «Cerrar notificaciones» quedaba en x=1614 y su role=status
+        // «Estás al día» sonaba en toda pantalla; corrector L-09 / L-04, WCAG 2.4.3).
+        inert={!open}
         style={panelStyle}
         onClick={(event) => event.stopPropagation()}
         data-testid="cocoa-notification-center"

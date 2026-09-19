@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { housekeepingStatusLabel, reservationStatusLabel, roomOptionLabel } from "../frontdesk-labels.ts";
+import { HOUSEKEEPING_STATUS_LABELS, RESERVATION_STATUS_LABELS, housekeepingStatusLabel, reservationStatusLabel, roomOptionLabel } from "../frontdesk-labels.ts";
+import { RESERVATION_STATUS, statusLabels } from "../../../content/status-dictionary.ts";
 
 // fix:2-A qa#7 — the room select of the check-in drawer read «Hab. 119 ·
 // planta  · limpia» (floor "" on 120/120 rooms of Rías Altas) and «planta
@@ -19,19 +20,26 @@ describe("Recepción · etiqueta de habitación", () => {
 });
 
 // fix:2-A qa#8 — «Reserva en estado "checked_out"» painted the raw enum.
+// Tanda UX-1 · U2 (D5): the labels are the dictionary's («En el hotel»,
+// «Salida hecha») and an unknown value reads «Desconocido», never the enum.
 describe("Recepción · estados en español", () => {
-  it("translates reservation statuses and never paints the raw enum for known ones", () => {
-    assert.equal(reservationStatusLabel("checked_out"), "Salida realizada");
-    assert.equal(reservationStatusLabel("CHECKED_IN"), "En casa");
+  it("translates reservation statuses and never paints the raw enum", () => {
+    assert.equal(reservationStatusLabel("checked_out"), "Salida hecha");
+    assert.equal(reservationStatusLabel("CHECKED_IN"), "En el hotel");
     assert.equal(reservationStatusLabel("confirmed"), "Confirmada");
-    assert.equal(reservationStatusLabel("weird_state"), "weird_state");
-    assert.equal(reservationStatusLabel(undefined), "desconocido");
-    assert.equal(reservationStatusLabel(""), "desconocido");
+    assert.equal(reservationStatusLabel("no_show"), "No-show");
+    assert.equal(reservationStatusLabel("weird_state"), "Desconocido");
+    assert.equal(reservationStatusLabel(undefined), "Desconocido");
+    assert.equal(reservationStatusLabel(""), "Desconocido");
+    assert.deepEqual(RESERVATION_STATUS_LABELS, statusLabels(RESERVATION_STATUS), "re-exported from the dictionary, not copied");
   });
   it("translates housekeeping statuses for the inline room label", () => {
     assert.equal(housekeepingStatusLabel("dirty"), "sucia");
     assert.equal(housekeepingStatusLabel("Inspected"), "inspeccionada");
     assert.equal(housekeepingStatusLabel("out_of_order"), "fuera de servicio");
+    assert.equal(housekeepingStatusLabel("blocked"), "bloqueada");
+    assert.equal(housekeepingStatusLabel("weird"), "desconocido");
     assert.equal(housekeepingStatusLabel(null), "desconocido");
+    assert.equal(HOUSEKEEPING_STATUS_LABELS.clean, "limpia");
   });
 });

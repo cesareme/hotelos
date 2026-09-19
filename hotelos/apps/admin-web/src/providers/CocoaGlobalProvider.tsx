@@ -13,11 +13,19 @@
 //   useCocoaPreferences()    -> { prefs, update(partial) => Promise, openSheet }
 //   useCocoaShortcuts()      -> { openHelp, register(combo, handler) => off }
 //   useCocoaAbout()          -> { open }
+//   useCocoaAnnounce()       -> { announce(text, politeness?) } → the shell's single
+//                               live region (CocoaShellLiveRegion, UX-1 · U4)
+//   useCocoaAltHeld()        -> boolean, true while ⌥ is held (UX-1 · U5: the
+//                               access keys of CocoaButton show their CocoaKbd)
 //
 // Global key listeners:
 //   Cmd/Ctrl+K  -> open command palette
 //   Cmd/Ctrl+/  -> open keyboard shortcuts help
 //   Cmd/Ctrl+,  -> open preferences sheet
+//   ⌥+letter    -> access key of a visible, enabled CocoaButton (dispatchAccessKey,
+//                  components/cocoa/CocoaAccessKey.tsx) and, after it, the external
+//                  registry (`register("Alt+KeyH", handler)`: combos may name the
+//                  physical key by `KeyboardEvent.code`, UX-1 · U5 · R8)
 //
 // On mount the provider GETs /users/me/preferences and applies the response to
 // <html> (data-theme, data-reduced-motion, data-high-contrast) through the
@@ -62,6 +70,8 @@ import { getToken, onAuthChange } from "../services/auth-storage";
 import { listNotifications, markNotificationRead, type NotificationRecord } from "../services/notificationsApi";
 import { navigateTo } from "../lib/navigate";
 import { openHelpCenter } from "../components/guide/guideStore";
+import { announce as announceToShell, type CocoaAnnouncePoliteness } from "../components/cocoa/CocoaLiveRegion";
+import { dispatchAccessKey, installAltHeldTracking, useCocoaAltHeld } from "../components/cocoa/CocoaAccessKey";
 import { BRAND } from "../config/brand";
 
 // ---------------------------------------------------------------------------
@@ -146,11 +156,20 @@ interface AboutContextValue {
   open: () => void;
 }
 
+/** `announce(text)` → the shell's single live region (CocoaShellLiveRegion in BackOfficeLayout; UX-1 · U4, §4 «Foco y anuncio»). */
+interface AnnounceContextValue {
+  announce: (text: string, politeness?: CocoaAnnouncePoliteness) => void;
+}
+
 const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null);
 const NotificationsContext = createContext<NotificationsContextValue | null>(null);
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 const ShortcutsContext = createContext<ShortcutsContextValue | null>(null);
 const AboutContext = createContext<AboutContextValue | null>(null);
+const AnnounceContext = createContext<AnnounceContextValue | null>(null);
+
+// Stable value: the announcer is a module store, so the context never re-renders its consumers.
+const ANNOUNCE_VALUE: AnnounceContextValue = { announce: announceToShell };
 
 // ---------------------------------------------------------------------------
 // Document-level application — the pure helpers of cocoa-preferences.ts
@@ -163,12 +182,16 @@ function applyAllPreferences(prefs: CocoaPreferences): void {
 }
 
 // ---------------------------------------------------------------------------
-// Shortcut combo parser. Accepts strings like "Cmd+K", "Ctrl+Shift+P", "?".
-// "Cmd" or "Meta" both map to event.metaKey; "Mod" matches metaKey OR ctrlKey
-// so callers can write platform-agnostic combos.
+// Shortcut combo parser. Accepts strings like "Cmd+K", "Ctrl+Shift+P", "?" and,
+// since UX-1 · U5 (R8), physical keys by `KeyboardEvent.code`: "Alt+KeyN",
+// "Mod+Shift+KeyT", "Alt+Digit1" — ⌥N yields key «˜» on macOS, so ⌥ combos
+// must never match on `key`. "Cmd" or "Meta" both map to event.metaKey; "Mod"
+// matches metaKey OR ctrlKey so callers can write platform-agnostic combos.
 // ---------------------------------------------------------------------------
 interface ParsedCombo {
   key: string;
+  /** Physical key (`KeyboardEvent.code`), when the combo names one («KeyN», «Digit1»). */
+  code: string;
   meta: boolean;
   ctrl: boolean;
   shift: boolean;
@@ -176,7 +199,9 @@ interface ParsedCombo {
   mod: boolean; // platform-agnostic Cmd/Ctrl
 }
 
-function parseCombo(combo: string): ParsedCombo {
+const CODE_TOKEN = /^(?:Key[A-Z]|Digit[0-9]|F[0-9]{1,2}|Numpad[A-Za-z0-9]+|Arrow(?:Up|Down|Left|Right)|Space|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown)$/;
+
+export function parseCombo(combo: string): ParsedCombo {
   const parts = combo
     .split("+")
     .map((part) => part.trim())
@@ -187,6 +212,7 @@ function parseCombo(combo: string): ParsedCombo {
   let alt = false;
   let mod = false;
   let key = "";
+  let code = "";
   for (const raw of parts) {
     const token = raw.toLowerCase();
     if (token === "cmd" || token === "meta" || token === "command") meta = true;
@@ -194,14 +220,19 @@ function parseCombo(combo: string): ParsedCombo {
     else if (token === "shift") shift = true;
     else if (token === "alt" || token === "option" || token === "opt") alt = true;
     else if (token === "mod") mod = true;
+    else if (CODE_TOKEN.test(raw)) code = raw;
     else key = token;
   }
-  return { key, meta, ctrl, shift, alt, mod };
+  return { key, code, meta, ctrl, shift, alt, mod };
 }
 
-function eventMatchesCombo(event: KeyboardEvent, combo: ParsedCombo): boolean {
-  const eventKey = event.key.toLowerCase();
-  if (combo.key && eventKey !== combo.key) return false;
+export function eventMatchesCombo(event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">, combo: ParsedCombo): boolean {
+  if (combo.code) {
+    if (event.code !== combo.code) return false;
+  } else {
+    const eventKey = event.key.toLowerCase();
+    if (combo.key && eventKey !== combo.key) return false;
+  }
   if (combo.mod) {
     if (!(event.metaKey || event.ctrlKey)) return false;
   } else {
@@ -486,11 +517,18 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
   const openAbout = useCallback(() => setAboutOpen(true), []);
   const closeAbout = useCallback(() => setAboutOpen(false), []);
 
-  // Global keydown listener: built-in shortcuts run first, then we walk the
-  // external registry. The built-ins call preventDefault so the browser
-  // doesn't open its own Cmd+K / Cmd+, dialogs.
+  // ⌥ held → the access keys of the visible CocoaButtons show their CocoaKbd
+  // (components/cocoa/CocoaAccessKey.tsx keeps the global `altHeld`).
+  useEffect(() => installAltHeldTracking(window, document), []);
+
+  // Global keydown listener: built-in shortcuts run first, then the access
+  // keys (⌥+letter of a visible, enabled button — they win over the ⌥
+  // navigation of the shell), then we walk the external registry. The
+  // built-ins call preventDefault so the browser doesn't open its own
+  // Cmd+K / Cmd+, dialogs.
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
+      if (dispatchAccessKey(event)) return;
       const mod = event.metaKey || event.ctrlKey;
       if (mod && !event.shiftKey && !event.altKey) {
         const key = event.key.toLowerCase();
@@ -580,7 +618,9 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
         <PreferencesContext.Provider value={preferencesValue}>
           <ShortcutsContext.Provider value={shortcutsValue}>
             <AboutContext.Provider value={aboutValue}>
+              <AnnounceContext.Provider value={ANNOUNCE_VALUE}>
               {children}
+              </AnnounceContext.Provider>
               <CocoaCommandPalette
                 open={paletteOpen}
                 onClose={closePalette}
@@ -653,6 +693,18 @@ export function useCocoaAbout(): AboutContextValue {
   const ctx = useContext(AboutContext);
   if (!ctx) {
     throw new Error("useCocoaAbout must be used within <CocoaGlobalProvider>");
+  }
+  return ctx;
+}
+
+/** `true` while ⌥ is held (UX-1 · U5): re-exported so screens read it from the provider module. */
+export { useCocoaAltHeld };
+
+/** `announce(text, politeness?)`: one live region per page (the shell's), any screen. */
+export function useCocoaAnnounce(): AnnounceContextValue {
+  const ctx = useContext(AnnounceContext);
+  if (!ctx) {
+    throw new Error("useCocoaAnnounce must be used within <CocoaGlobalProvider>");
   }
   return ctx;
 }

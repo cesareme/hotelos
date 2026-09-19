@@ -19,11 +19,16 @@
 // de rechazo), selección de celdas en carriles vacíos de habitaciones no
 // bloqueadas SOLO al arrastrar más de DRAG_THRESHOLD_PX (un clic o un toque
 // en un hueco no crea nada), y teclado en las barras: las flechas SOLO mueven
-// la selección (neighborBar + roving tabindex), Intro / Espacio y el clic
-// abren el detalle (`onOpen`), Escape lo delega en la pantalla (`onEscape`:
-// cierra el detalle antes de deseleccionar). `handleRef` expone `focusBar`
-// para devolver el foco a la barra al cerrar el detalle. Tres estilos inline,
-// todos variables CSS: la parrilla (gridVars) y los dos espaciadores (spacerVars).
+// la selección (neighborBar + roving tabindex), `⌥` + flechas MUEVEN la
+// reserva (UX-1 · U9b, WCAG 2.5.7: `⌥←/→` un día, `⌥⇧←/→` la salida, `⌥↑/↓`
+// la habitación de la fila vecina; keyboardMove + resolveKeyboardMove del
+// motor, la misma validación que el arrastre, comparando `event.code`),
+// Intro / Espacio y el clic abren el detalle (`onOpen`), Escape lo delega en
+// la pantalla (`onEscape`: cierra el detalle antes de deseleccionar). Con el
+// dedo, la pulsación larga arma el arrastre y abre la tarjeta rápida (`onArm`).
+// `handleRef` expone `focusBar` para devolver el foco a la barra al cerrar el
+// detalle o tras un movimiento por teclado. Tres estilos inline, todos
+// variables CSS: la parrilla (gridVars) y los dos espaciadores (spacerVars).
 
 import {
   useCallback,
@@ -47,9 +52,11 @@ import {
   dragAllowed,
   dragPhase,
   guestLabel,
+  keyboardMove,
   neighborBar,
   pinRow,
   resolveDrop,
+  resolveKeyboardMove,
   rowOffsets,
   rowWindow,
   type ArrowDirection,
@@ -95,8 +102,8 @@ export type TimelineGridProps = {
   onOpen(id: string, via: TimelineOpenVia): void;
   /** Escape sobre una barra; sin manejador, deselecciona. */
   onEscape?(): void;
-  /** Cambio propuesto por un arrastre (la pantalla pide confirmación). */
-  onDrop(pending: PendingChange): void;
+  /** Cambio propuesto por un arrastre o por ⌥ + flechas (la pantalla lo aplica directo o pide confirmación). */
+  onDrop(pending: PendingChange, via: TimelineOpenVia): void;
   /** Motivo por el que el motor rechaza el arrastre (toast de la pantalla). */
   onDropRejected?(reason: string): void;
   onToggleGroup(roomTypeId: string): void;
@@ -244,8 +251,9 @@ export function TimelineGrid(props: TimelineGridProps) {
     ({ id, mode, dxDays, targetRoomId }: DragDropInput) => {
       const bar = index.barById.get(id);
       if (!bar) return;
+      setHover(null);
       const r = resolveDrop({ res: bar.res, mode, dxDays, targetRoomId, roomById, roomTypeById, reservations });
-      if (r.pending) onDrop(r.pending);
+      if (r.pending) onDrop(r.pending, "pointer");
       else if (r.rejected) onDropRejected?.(r.rejected);
     },
     [index, roomById, roomTypeById, reservations, onDrop, onDropRejected]
@@ -253,7 +261,16 @@ export function TimelineGrid(props: TimelineGridProps) {
 
   const handleDragCancel = useCallback(() => setHover(null), []);
 
-  const drag = useTimelineDrag({ cellWidth: range.cellWidth, onClick: handleBarClick, onDrop: handleDrop, onCancel: handleDragCancel, ghostRef, scrollerRef });
+  /** Pulsación larga con el dedo: la tarjeta rápida se abre sobre la barra armada (no hay hover). */
+  const handleArm = useCallback(
+    (id: string, el: HTMLElement) => {
+      const bar = index.barById.get(id);
+      if (bar) setHover({ bar, el });
+    },
+    [index]
+  );
+
+  const drag = useTimelineDrag({ cellWidth: range.cellWidth, onClick: handleBarClick, onDrop: handleDrop, onCancel: handleDragCancel, onArm: handleArm, ghostRef, scrollerRef });
   const { begin, dragging } = drag;
 
   const onBarPointerDown = useCallback(
@@ -298,6 +315,18 @@ export function TimelineGrid(props: TimelineGridProps) {
   // ---- teclado en las barras ----------------------------------------------
   const onBarKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLElement>, id: string) => {
+      const bar = layoutRef.current.index.barById.get(id);
+      const move = bar ? keyboardMove(bar, e) : null;
+      if (move) {
+        // ⌥ + flecha (por `code`, R8): mover la reserva con la validación del arrastre;
+        // nunca llega al shell (los ⌥+letra de navegación no usan flechas).
+        e.preventDefault();
+        e.stopPropagation();
+        const r = resolveKeyboardMove(move, { rows, roomById, roomTypeById, reservations });
+        if (r.pending) onDrop(r.pending, "keyboard");
+        else if (r.rejected) onDropRejected?.(r.rejected);
+        return;
+      }
       const dir = ARROWS[e.key];
       if (dir) {
         // Las flechas solo mueven la selección y el foco: nunca abren el detalle.
@@ -337,7 +366,7 @@ export function TimelineGrid(props: TimelineGridProps) {
         }
       }
     },
-    [rows, onSelect, onOpen, onEscape, focusBar]
+    [rows, roomById, roomTypeById, reservations, onSelect, onOpen, onEscape, onDrop, onDropRejected, focusBar]
   );
 
   // ---- selección de celdas (crear reserva) --------------------------------
@@ -469,6 +498,7 @@ export function TimelineGrid(props: TimelineGridProps) {
             label={guestLabel(hover.bar.res, guestNames[hover.bar.res.primaryGuestId ?? ""])}
             room={roomById.get(hover.bar.res.assignedRoomId ?? "")}
             kind={hover.bar.kind}
+            allowed={dragAllowed(hover.bar.res)}
           />
         ) : null}
       </CocoaPopover>

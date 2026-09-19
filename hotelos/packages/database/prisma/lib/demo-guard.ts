@@ -16,8 +16,10 @@
 // restricted to erasable TypeScript syntax: no enums, no parameter
 // properties, no namespaces.
 
-export const DEMO_ORG_IDS: readonly string[] = ["org_123"];
-export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary"];
+// Tanda UX-1 (lote U1): el tenant aislado del «día de prueba» de recepción
+// (prisma/seed-ux-day.ts) también es demo: org_uxday / prop_uxday.
+export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday"];
+export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday"];
 
 /** One write the seed intends to perform (printed before the decision). */
 export type PlannedWrite = {

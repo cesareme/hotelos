@@ -1,9 +1,10 @@
-// Live Timeline · arrastre con pointer events (Tanda TL · lote TL-3).
+// Live Timeline · arrastre con pointer events (Tanda TL · lote TL-3; UX-1 · U9b: pulsación larga con el dedo).
 //
 // Hook + funciones puras exportadas (cellIndexAt, dropRoomFromElement,
-// autoscrollDelta) que el test carga bajo `node --import tsx`: importa solo
-// `react`, el motor y timeline-presentation (puro: solo el motor, sin DOM ni
-// barrel Cocoa), y no toca `window`/`document` fuera de los manejadores.
+// autoscrollDelta, isLongPressPointer, touchMoveBeforeArm) que el test carga
+// bajo `node --import tsx`: importa solo `react`, el motor y
+// timeline-presentation (puro: solo el motor, sin DOM ni barrel Cocoa), y no
+// toca `window`/`document` fuera de los manejadores.
 //
 // Sin setPointerCapture ni librerías: como en el Cronograma actual, los
 // listeners de pointermove/pointerup/pointercancel/keydown se cuelgan de
@@ -14,13 +15,24 @@
 // IMPERATIVAMENTE con `style.setProperty` sobre las variables de ghostVars
 // (snap visual por día) + `--tl-dy` en move: cero re-render por movimiento.
 //
+// Con el dedo (pointerType «touch», UX-1 §5.11 (3) y §7.2): la hoja deja
+// `touch-action: pan-y` sobre las barras, así que un toque que se desplaza es
+// un scroll de la parrilla (el navegador cancela la pulsación con
+// pointercancel, o el hook la descarta al superar el umbral antes de tiempo);
+// el arrastre solo se ARMA tras mantener LONG_PRESS_MS (250 ms) sin moverse:
+// entonces la parrilla abre la tarjeta rápida (`onArm`), la barra se marca
+// `data-armed` y un `touchmove` no pasivo impide que el navegador se lleve el
+// gesto mientras dura el arrastre. Soltar armado sin mover deja la tarjeta
+// abierta (no abre el detalle: eso lo hace el toque corto). Ratón y lápiz
+// arrastran como siempre desde el umbral.
+//
 // Barra bloqueada (cerrada / en casa sin permiso para el modo): la pulsación
 // sigue contando como clic (selecciona al soltar) pero nunca entra en «drag».
 // Autoscroll en los dos ejes al rozar los bordes del scroller; soltar en
 // modo «move» fuera de toda fila cancela (sin onDrop).
 
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
-import { dragPhase, snapDays, type BarGeometry, type BarModel, type DragMode } from "../../screens/timeline/timeline-engine";
+import { DRAG_THRESHOLD_PX, LONG_PRESS_MS, dragPhase, snapDays, type BarGeometry, type BarModel, type DragMode } from "../../screens/timeline/timeline-engine";
 import { ghostVars } from "./timeline-presentation";
 
 /** Índice de celda (día) para una X relativa al carril: floor, mínimo 0. */
@@ -45,6 +57,20 @@ export function autoscrollDelta(clientX: number, left: number, right: number, ed
   return 0;
 }
 
+/** Con el dedo el arrastre exige pulsación larga; ratón y lápiz arrastran desde el umbral (puro). */
+export function isLongPressPointer(pointerType: string | undefined): boolean {
+  return pointerType === "touch";
+}
+
+/**
+ * Qué significa un movimiento del dedo ANTES de armar el arrastre (puro):
+ * dentro del umbral se sigue esperando; fuera, el toque era un desplazamiento
+ * (scroll) y la pulsación se descarta sin clic ni arrastre.
+ */
+export function touchMoveBeforeArm(dx: number, dy: number, threshold = DRAG_THRESHOLD_PX): "wait" | "scroll" {
+  return dragPhase(dx, dy, threshold) === "click" ? "wait" : "scroll";
+}
+
 export type DragState = {
   id: string;
   mode: DragMode;
@@ -53,6 +79,10 @@ export type DragState = {
   originRoomId: string | null;
   phase: "click" | "drag";
   base: BarGeometry;
+  /** Pulsación con el dedo: el arrastre solo empieza tras LONG_PRESS_MS. */
+  longPress: boolean;
+  /** Armado: ya puede arrastrar (siempre true con ratón; tras la pulsación larga con el dedo). */
+  armed: boolean;
 };
 
 export type DragAllowed = { move: boolean; resize: boolean; room: boolean };
@@ -66,6 +96,8 @@ export type UseTimelineDragInput = {
   onDrop(input: DragDropInput): void;
   /** Escape o pointercancel: sin onDrop. */
   onCancel(): void;
+  /** Pulsación larga con el dedo: el arrastre queda armado (la parrilla abre la tarjeta rápida). */
+  onArm?(id: string, el: HTMLElement): void;
   ghostRef: RefObject<HTMLDivElement | null>;
   /** Scroller horizontal (autoscroll al rozar los bordes). */
   scrollerRef: RefObject<HTMLElement | null>;
@@ -85,6 +117,8 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
   const scrollStartRef = useRef(0);
   const scrollTopStartRef = useRef(0);
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const elementRef = useRef<HTMLElement | null>(null);
+  const timerRef = useRef(0);
   const inputRef = useRef(input);
   const [dragging, setDragging] = useState<{ id: string; mode: DragMode } | null>(null);
 
@@ -104,7 +138,15 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
     return clientY - d.startY + (scrollTop - scrollTopStartRef.current);
   }, []);
 
+  const clearTimer = useCallback(() => {
+    if (timerRef.current !== 0) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = 0;
+    }
+  }, []);
+
   const end = useCallback(() => {
+    clearTimer();
     unsubscribeRef.current?.();
     unsubscribeRef.current = null;
     const ghost = inputRef.current.ghostRef.current;
@@ -112,10 +154,12 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
       for (const key of GHOST_VARS) ghost.style.removeProperty(key);
       ghost.removeAttribute("data-valid");
     }
+    elementRef.current?.removeAttribute("data-armed");
+    elementRef.current = null;
     stateRef.current = null;
     lockedRef.current = false;
     setDragging(null);
-  }, []);
+  }, [clearTimer]);
 
   const onMove = useCallback(
     (e: PointerEvent) => {
@@ -123,6 +167,14 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
       if (!d || lockedRef.current) return;
       const { cellWidth, ghostRef, scrollerRef } = inputRef.current;
       const dy = e.clientY - d.startY;
+      if (!d.armed) {
+        // Dedo sin pulsación larga todavía: moverse es desplazar la parrilla, no arrastrar.
+        if (touchMoveBeforeArm(e.clientX - d.startX, dy) === "scroll") {
+          end();
+          inputRef.current.onCancel();
+        }
+        return;
+      }
       if (d.phase === "click") {
         if (dragPhase(e.clientX - d.startX, dy) === "click") return;
         d.phase = "drag";
@@ -148,7 +200,7 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
       const under = dropRoomFromElement(document.elementFromPoint(e.clientX, e.clientY));
       ghost.setAttribute("data-valid", String(under !== null));
     },
-    [contentDx, contentDy]
+    [contentDx, contentDy, end]
   );
 
   const onUp = useCallback(
@@ -158,9 +210,11 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
       const { cellWidth, onClick, onDrop, onCancel } = inputRef.current;
       const dxDays = snapDays(contentDx(e.clientX, d), cellWidth);
       const targetRoomId = d.mode === "move" ? dropRoomFromElement(document.elementFromPoint(e.clientX, e.clientY)) : null;
-      const phase = d.phase;
+      const { phase, longPress, armed } = d;
       end();
       if (phase === "click") {
+        // Pulsación larga soltada sin mover: la tarjeta rápida queda abierta; el detalle lo abre el toque corto.
+        if (longPress && armed) return;
         onClick(d.id);
         return;
       }
@@ -190,6 +244,27 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
     [cancel]
   );
 
+  /** Armado con el dedo: el navegador no se lleva el gesto (touch-action: pan-y) mientras se arrastra. */
+  const onTouchMove = useCallback((e: TouchEvent) => {
+    const d = stateRef.current;
+    if (d?.longPress && d.armed && e.cancelable) e.preventDefault();
+  }, []);
+
+  /** Sin menú contextual ni selección de texto por mantener pulsado. */
+  const onContextMenu = useCallback((e: Event) => {
+    if (stateRef.current?.longPress) e.preventDefault();
+  }, []);
+
+  const arm = useCallback(() => {
+    timerRef.current = 0;
+    const d = stateRef.current;
+    const el = elementRef.current;
+    if (!d || d.armed || !el) return;
+    d.armed = true;
+    el.setAttribute("data-armed", "true");
+    inputRef.current.onArm?.(d.id, el);
+  }, []);
+
   const begin = useCallback(
     (e: ReactPointerEvent<HTMLElement>, bar: BarModel, base: BarGeometry, mode: DragMode, allowed: DragAllowed) => {
       if (e.button !== 0) return;
@@ -197,6 +272,7 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
       e.stopPropagation();
       if (stateRef.current) return;
       const permitted = mode === "move" ? allowed.move || allowed.room : allowed.resize;
+      const longPress = isLongPressPointer(e.pointerType);
       stateRef.current = {
         id: bar.id,
         mode,
@@ -204,8 +280,11 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
         startY: e.clientY,
         originRoomId: bar.res.assignedRoomId ?? null,
         phase: "click",
-        base
+        base,
+        longPress,
+        armed: !longPress
       };
+      elementRef.current = e.currentTarget;
       lockedRef.current = !permitted;
       scrollStartRef.current = inputRef.current.scrollerRef.current?.scrollLeft ?? 0;
       scrollTopStartRef.current = inputRef.current.scrollerRef.current?.scrollTop ?? 0;
@@ -213,17 +292,30 @@ export function useTimelineDrag(input: UseTimelineDragInput): UseTimelineDragRes
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", cancel);
       window.addEventListener("keydown", onKey);
+      if (longPress) {
+        window.addEventListener("touchmove", onTouchMove, { passive: false });
+        window.addEventListener("contextmenu", onContextMenu);
+        if (permitted) timerRef.current = window.setTimeout(arm, LONG_PRESS_MS);
+      }
       unsubscribeRef.current = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", cancel);
         window.removeEventListener("keydown", onKey);
+        window.removeEventListener("touchmove", onTouchMove);
+        window.removeEventListener("contextmenu", onContextMenu);
       };
     },
-    [onMove, onUp, cancel, onKey]
+    [onMove, onUp, cancel, onKey, onTouchMove, onContextMenu, arm]
   );
 
-  useEffect(() => () => unsubscribeRef.current?.(), []);
+  useEffect(
+    () => () => {
+      clearTimer();
+      unsubscribeRef.current?.();
+    },
+    [clearTimer]
+  );
 
   return { begin, dragging };
 }
