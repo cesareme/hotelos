@@ -1,0 +1,452 @@
+/* ============================================================
+   Cocoa 22 · Live Timeline · se importa desde styles.css tras
+   cocoa-22-guide.css (línea 26) y antes de mobile.css; hasta la fusión la
+   importa temporalmente screens/timeline/LiveTimeline.tsx.
+
+   Prefijo de clase `tl-`, estado en atributos `data-*`. SOLO tokens
+   `var(--cocoa-*)` y `var(--c22-tone*)` (resueltos por `data-tone`,
+   cocoa-22.css); ningún literal de color (cocoa-tokens.css es la única hoja
+   con literales). Las variables `--tl-*` las ponen los componentes con
+   components/timeline/timeline-presentation.ts (barVars, ghostVars, rowVars,
+   selectionVars, gridVars, spacerVars).
+
+   La cabecera lleva `data-sticky-head` (cocoa-22-layout.css la hace sticky
+   top 0, z 2, fondo sidebar) y la celda de recurso `data-sticky-column`
+   (sticky left, z 1). La parrilla vive dentro de CocoaScrollArea.
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   Parrilla: columna de recursos + N columnas de día
+   (NUNCA `repeat(N, 1fr)` inline: mobile.css lo aplana bajo 600 px)
+   ------------------------------------------------------------ */
+.tl-grid {
+  display: grid;
+  grid-template-columns: var(--tl-lead, 200px) repeat(var(--tl-days, 14), var(--tl-col, 118px));
+  min-width: max-content;
+  position: relative;
+  font-family: var(--cocoa-font);
+  color: var(--cocoa-label);
+  --tl-head-h: 48px;
+  --tl-bar-h: 40px;
+  --tl-lane-gap: 6px;
+  --tl-group-h: 36px;
+}
+.tl-grid__head,
+.tl-row,
+.tl-spacer {
+  grid-column: 1 / -1;
+}
+.tl-grid__head,
+.tl-row {
+  display: grid;
+  grid-template-columns: var(--tl-lead, 200px) repeat(var(--tl-days, 14), var(--tl-col, 118px));
+  position: relative;
+}
+/* Esquina fija (cabecera × columna de recursos). */
+.tl-grid__head [data-sticky-column] {
+  z-index: 3;
+  background: var(--cocoa-background-sidebar);
+}
+
+/* ------------------------------------------------------------
+   Cabecera de días
+   ------------------------------------------------------------ */
+.tl-head-cell {
+  height: var(--tl-head-h);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 var(--cocoa-space-2);
+  background: var(--cocoa-background-sidebar);
+  border-right: 1px solid var(--cocoa-separator);
+  border-bottom: 1px solid var(--cocoa-separator);
+  font-size: var(--cocoa-fs-caption);
+  font-weight: var(--cocoa-fw-semibold);
+  color: var(--cocoa-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.tl-head-cell > strong {
+  color: var(--cocoa-label);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: var(--cocoa-font-numeric-tabular);
+}
+.tl-head-cell[data-weekend="true"] {
+  background: var(--cocoa-background-grouped);
+}
+.tl-head-cell[data-today="true"],
+.tl-head-cell[data-today="true"] > strong {
+  background: var(--cocoa-accent-bg);
+  color: var(--cocoa-tone-accent-text);
+}
+
+/* ------------------------------------------------------------
+   Filas (habitación, grupo por tipo, «Sin asignar»)
+   Altura FIJA = la que asume el motor (rowHeight / GROUP_ROW_HEIGHT): la
+   ventana virtual suma esas alturas, así que el DOM no puede crecer por su
+   contenido (la celda de recursos recorta con elipsis).
+   ------------------------------------------------------------ */
+.tl-row {
+  height: var(--tl-row-h, 56px);
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--cocoa-separator);
+}
+.tl-row--group {
+  background: var(--cocoa-background-grouped);
+  height: var(--tl-group-h);
+}
+.tl-lead {
+  padding: var(--cocoa-space-1) var(--cocoa-space-2);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--cocoa-separator);
+  background: var(--cocoa-background-content);
+  font-size: var(--cocoa-fs-callout);
+}
+.tl-row--group .tl-lead {
+  background: var(--cocoa-background-grouped);
+}
+.tl-lead > strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Segunda línea de la celda de recursos: tipo · pax · planta y, en la misma
+   línea, el badge «Bloqueada»; nunca una tercera línea (altura fija). */
+.tl-lead__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--cocoa-space-1);
+  min-width: 0;
+}
+.tl-lead__meta > .cocoa-caption {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Carril de una habitación: rejilla de días pintada con el separador. Sin
+   altura propia: la pista de la fila (altura fija, borde incluido) lo estira. */
+.tl-lane {
+  grid-column: 2 / -1;
+  position: relative;
+  min-height: 0;
+  background-image: linear-gradient(to right, var(--cocoa-separator) 1px, transparent 1px);
+  background-size: var(--tl-col) 100%;
+}
+.tl-row--blocked .tl-lane {
+  background-image: repeating-linear-gradient(45deg, var(--cocoa-separator) 0 4px, transparent 4px 10px);
+}
+.tl-lane__today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--tl-today) * var(--tl-col));
+  width: var(--tl-col);
+  background: var(--cocoa-accent-bg);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Bloque de reserva (color por estado vía data-tone → --c22-tone*)
+   ------------------------------------------------------------ */
+.tl-bar {
+  position: absolute;
+  left: var(--tl-left);
+  top: var(--tl-top);
+  width: var(--tl-width);
+  height: var(--tl-bar-h);
+  box-sizing: border-box;
+  border-radius: var(--cocoa-radius-md);
+  background: var(--c22-tone-bg);
+  border: 1px solid var(--c22-tone-border);
+  color: var(--c22-tone-text);
+  box-shadow: var(--cocoa-shadow-control);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  padding: var(--cocoa-space-1) var(--cocoa-space-2);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  text-align: left;
+  transition: box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.tl-bar:hover {
+  box-shadow: var(--cocoa-shadow-floating);
+}
+.tl-bar:active {
+  cursor: grabbing;
+}
+.tl-bar[data-locked="true"] {
+  cursor: default;
+}
+/* Los tres estados «neutros» se distinguen por el trazo, no solo por el tono
+   (LEGEND_VARIANT en timeline-presentation.ts los refleja en la leyenda). */
+.tl-bar[data-kind="cancelled"] {
+  border-style: dashed;
+  opacity: 0.7;
+}
+.tl-bar[data-kind="draft"] {
+  border-style: dashed;
+}
+.tl-bar[data-kind="checked_out"] {
+  opacity: 0.6;
+}
+.tl-bar[data-kind="no_show"] {
+  border-style: dotted;
+}
+.tl-bar[data-kind="no_show"] .tl-bar__title {
+  text-decoration: line-through;
+}
+/* Seleccionada (con o sin el detalle abierto): anillo de acento. */
+.tl-bar[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--cocoa-accent);
+}
+/* Mientras se arrastra el original se apaga y deja pasar el puntero, para
+   que elementFromPoint caiga en la fila de destino. */
+.tl-bar[data-dragging="true"] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+.tl-bar[data-continues-left="true"] {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.tl-bar[data-continues-right="true"] {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.tl-bar__title {
+  font-size: var(--cocoa-fs-callout);
+  font-weight: var(--cocoa-fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-bar__meta {
+  font-size: var(--cocoa-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-bar__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: ew-resize;
+}
+.tl-bar__handle[data-edge="start"] {
+  left: 0;
+}
+.tl-bar__handle[data-edge="end"] {
+  right: 0;
+}
+@media (pointer: coarse) {
+  /* Con el dedo, la parrilla se desplaza también sobre las barras (en filas
+     ocupadas casi toda la superficie es barra): el arrastre para mover una
+     estancia queda para el ratón; los asideros sí capturan el toque para
+     redimensionar. El navegador cancela la pulsación (pointercancel) al
+     empezar a desplazar y el hook la descarta. */
+  .tl-bar {
+    touch-action: pan-x pan-y;
+  }
+  .tl-bar__handle {
+    width: 16px;
+    touch-action: none;
+  }
+}
+
+/* Fantasma del arrastre: copia del bloque desplazada con translate. */
+.tl-ghost {
+  position: absolute;
+  pointer-events: none;
+  z-index: var(--cocoa-z-sticky);
+  box-shadow: var(--cocoa-shadow-floating);
+  transform: translate(var(--tl-dx, 0px), var(--tl-dy, 0px));
+  will-change: transform;
+  transition: border-color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.tl-ghost[data-valid="false"] {
+  border-color: var(--cocoa-tone-danger-border);
+  border-style: dashed;
+}
+
+/* Selección de celdas (crear reserva). */
+.tl-cell-select {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: var(--tl-left);
+  width: var(--tl-width);
+  background: var(--cocoa-accent-bg);
+  border: 1px dashed var(--cocoa-accent);
+  border-radius: var(--cocoa-radius-md);
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Fila de disponibilidad (libres por tipo y día)
+   ------------------------------------------------------------ */
+.tl-avail__cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--cocoa-fs-caption);
+  border-right: 1px solid var(--cocoa-separator);
+}
+.tl-avail__cell[data-level="none"] {
+  background: var(--cocoa-tone-danger-bg);
+  color: var(--cocoa-tone-danger-text);
+}
+.tl-avail__cell[data-level="low"] {
+  background: var(--cocoa-tone-warning-bg);
+  color: var(--cocoa-tone-warning-text);
+}
+.tl-avail__cell[data-level="ok"] {
+  background: var(--cocoa-tone-success-bg);
+  color: var(--cocoa-tone-success-text);
+}
+.tl-avail--sticky {
+  position: sticky;
+  top: var(--tl-head-h);
+  z-index: 2;
+  background: var(--cocoa-background-sidebar);
+}
+
+/* Espaciadores de la ventana virtual de filas. */
+.tl-spacer {
+  height: var(--tl-h, 0px);
+}
+
+/* ------------------------------------------------------------
+   Leyenda, tarjeta rápida y ficha
+   ------------------------------------------------------------ */
+.tl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cocoa-space-2);
+}
+.tl-quick {
+  width: min(280px, 80vw);
+}
+.tl-quick__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--cocoa-space-2);
+}
+/* Hechos de la ficha del inspector (TL-4). */
+.tl-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--cocoa-space-3);
+}
+
+/* ------------------------------------------------------------
+   Espacio de trabajo: parrilla + panel lateral NO modal (el inspector)
+   Como en Mews / FNS: el detalle se acopla a la derecha sin scrim ni
+   bloqueo del foco; la parrilla sigue viva (hover, selección, arrastre).
+   En teléfonos el inspector es una hoja inferior (CocoaDrawer) y este
+   panel no se monta.
+   ------------------------------------------------------------ */
+.tl-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--cocoa-space-4);
+  align-items: start;
+}
+.tl-workspace__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cocoa-space-3);
+  min-width: 0;
+}
+.tl-workspace[data-panel="open"] {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+}
+.tl-panel {
+  position: sticky;
+  top: var(--cocoa-space-3);
+  max-height: calc(100dvh - var(--cocoa-space-6));
+  overflow: auto;
+  outline: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cocoa-space-3);
+  padding: var(--cocoa-space-4);
+  box-sizing: border-box;
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-lg);
+  background: var(--cocoa-background-content);
+  box-shadow: var(--cocoa-shadow-card);
+  font-family: var(--cocoa-font);
+  color: var(--cocoa-label);
+}
+.tl-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--cocoa-space-3);
+  padding-bottom: var(--cocoa-space-3);
+  border-bottom: 1px solid var(--cocoa-separator);
+}
+.tl-panel__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.tl-panel__title {
+  margin: 0;
+  font-size: var(--cocoa-fs-title-3);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-panel__subtitle {
+  margin: 0;
+  font-size: var(--cocoa-fs-caption);
+  color: var(--cocoa-label-secondary);
+  line-height: 1.35;
+}
+.tl-panel__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--cocoa-space-2);
+  padding-top: var(--cocoa-space-3);
+  border-top: 1px solid var(--cocoa-separator);
+}
+@media (max-width: 899px) {
+  /* Tableta: el panel baja debajo de la parrilla (una columna). */
+  .tl-workspace[data-panel="open"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tl-panel {
+    position: static;
+    max-height: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-bar,
+  .tl-ghost {
+    transition: none;
+  }
+}
