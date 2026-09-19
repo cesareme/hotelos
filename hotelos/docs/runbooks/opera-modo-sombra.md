@@ -870,9 +870,54 @@ responde `RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED`):
 | **Fila de cabecera del export Responsys** (`RESPONSYS_RESV_AUTO`) | el perfil y el clasificador del feed (`classifyFeed`: `RESERVATION_ID` + `ARRIVAL_DATE` en la primera línea) asumen que el CSV trae los nombres de columna; si el export real llega sin cabecera, se añade `headerless` a `feeds.arrivals` como en `departures` | primer export real (SFTP o descarga manual) |
 | **Adopción de reservas ya existentes en ehotelOS** (creadas por recepción, canal o lote en modo crear) como gobernadas por OPERA | no hay ruta: la misma referencia sin enlace es `OPERA_CONFLICT_LOCAL_RESERVATION` (fila omitida, alerta); en la demo del integrador los 29 enlaces del lote de la Tanda 7 se crearon por SQL (`pms_shadow_links` con `first_import_id` del lote y `row_hash` centinela) | decisión de producto (§8.1 del diseño): opción `adoptLocal` del importador o CLI `pms-shadow:adopt` auditado |
 
-Documentos relacionados: [`reservas-importacion.md`](reservas-importacion.md) (§18 modo sincronizar),
+Con la muestra real de los informes R&A del 2026-09-19 varios de estos huecos se cierran o cambian de forma:
+ver **§15**.
+
+Documentos relacionados: [`reservas-importacion.md`](reservas-importacion.md) (§18 modo sincronizar, §19 carga real R&A),
 [`finanzas-contabilidad.md`](finanzas-contabilidad.md) (motor contable, reversos, periodos cerrados),
 [`pms-history-forecast-import.md`](pms-history-forecast-import.md) (History & Forecast de OPERA ya
 importado), [`rbac-sync.md`](rbac-sync.md) (plantillas de rol), diseño
 [`docs/design/OPERA-CLOUD-MODO-SOMBRA.md`](../design/OPERA-CLOUD-MODO-SOMBRA.md) e informe del integrador
 `docs/audits/TANDA-7B-OPERA-MODO-SOMBRA-2026-09-17.md` (cifras reales de la demo).
+
+## 15 · Huecos cerrados con la muestra real (formato real confirmado 2026-09-19)
+
+El 2026-09-19 César entregó los primeros informes reales de OPERA Cloud R&A de los cinco hoteles (dos por
+hotel, `.xlsx`, hoja «Hoja1»): «<Hotel> - 01.08.26 to 18.09.26.xlsx» (estancias con noche en el periodo, 40
+columnas) y «Llegadas - <Hotel> (18.09.26 to 31.12.28).xlsx» (108-119 columnas). No son ni `RESPONSYS_RESV_AUTO`
+ni `departure_all`: se cargaron por el CLI `apps/api/src/scripts/import-opera-reports.ts` (prep a CSV canónico +
+`importReservations` en modo `sync` sin perfil), documentado en
+[`reservas-importacion.md`](reservas-importacion.md) §19. Lo que cambia respecto a §14:
+
+| Hueco de §14 | Lo que dice la muestra real | Efecto |
+| --- | --- | --- |
+| Cabeceras de los informes de reservas | Estancias: `RESORT GRPBY_DISP1 ROOM_CLASS GRPBY_DISP2 RESV_NAME_ID GUARANTEE_CODE RESV_STATUS ROOM FULL_NAME DEPARTURE PERSONS GROUP_NAME NO_OF_ROOMS ROOM_CATEGORY_LABEL RATE_CODE INSERT_USER INSERT_DATE GUARANTEE_CODE_DESC COMPANY_NAME TRAVEL_AGENT_NAME ARRIVAL NIGHTS COMP_HOUSE_YN SHARE_AMOUNT C_T_S_NAME SHORT_RESV_STATUS SHARE_AMOUNT_PER_STAY` + `RC_*`, `RES_*`, `SUM*`, `S_*`, `LOGO`. Llegadas: `GROUPBY1_* … EXTERNAL_REFERENCE UPDATE_DATE UPDATE_USER DISP_ROOM_NO … CONFIRMATION_NO ARRIVAL PRODUCTS SHORT_RESV_STATUS RESORT FULL_NAME_NO_SHR_IND … FULL_NAME NO_OF_ROOMS ROOM_CATEGORY_LABEL ARRIVAL_TIME DEPARTURE_TIME MARKET_CODE RATE_CODE DEPARTURE VIP GUARANTEE_CODE BILL_TO_ADDRESS PREFERRED_ROOM_TYPE BEGIN_DATE GROUP_ID BLOCK_CODE ORIGIN_OF_BOOKING EFFECTIVE_RATE_AMOUNT SPECIAL_REQUESTS EXP_DATE PAYMENT_METHOD ADULTS CHILDREN PERSONS DEPOSIT_PAID ARRIVAL_CARRIER_CODE COMPANY_NAME CURRENCY_CODE ROOM_NO SHARE_AMOUNT CREDIT_CARD_NUMBER PHYSICAL_QUANTITY RESV_NAME_ID GUEST_NAME_ID PREFERENCES LAST_ROOM SHARE_NAMES ACCOMPANYING_YN COMP_HOUSE ACCOMPANYING_NAMES …` (el resto son marcadores, contadores y totales; el orden cambia entre hoteles a partir de la columna ~60) | Mapeo por NOMBRE de cabecera; estos dos informes no entran en `OPERA_CLOUD_PROFILE.feeds` (siguen `arrivals` = Responsys y `departures` = `departure_all`): la carga bulk va por el prep del CLI |
+| Formato «Delimited» | La entrega fue `.xlsx` con una sola hoja «Hoja1» y cabecera en la primera fila; fechas como TEXTO `DD/MM/YY` y `UPDATE_DATE` como `DD-MON-YY`; números como números | `parseXlsxTable` los lee sin cambios (10 ficheros ≤ 1,5 MB, ≤ 119 columnas, ≤ 3.278 filas: dentro de los límites 5 MiB / 200 / 5.000); `parseImportDate` ya admite `DD/MM/YY` |
+| Pseudo rooms del perfil | Además de `PM` (paymaster, 9000-9099) existe **`PI`** (uso de casa: 9100-9115 y 9500), con 66-444 filas por hotel y `PERSONS = 0` | `pseudoRoomTypes` del perfil RIAS (`mappingJson`) debe incluir `PI` además de `PM` / `HOUSE`: es un cambio de **datos** del perfil (`PATCH /properties/:id/pms-shadow/profile` con `mappingJson.pseudoRoomTypes = ["PM","PI","HOUSE"]`), no de código; el prep de la carga bulk ya las omite |
+| Clave de la reserva | Estancias y llegadas comparten solo `RESV_NAME_ID` (7-8 dígitos); `CONFIRMATION_NO` (9 dígitos) solo está en llegadas y `EXTERNAL_REFERENCE` es el localizador del canal (compartido en multi-habitación) | La carga bulk enlaza por `RESV_NAME_ID` (`PmsShadowLink.confirmationNo`). Los cortes futuros por `RESPONSYS_RESV_AUTO` traen `RESERVATION_ID` = nº de confirmación: antes de programarlos hay que decidir entre reindexar `confirmationNo` de los enlaces a `CONFIRMATION_NO` (mapa 1:1 disponible en el informe de llegadas) o pedir `RESV_NAME_ID` en el export (columna disponible en `EXP_GENERAL_RESV_VIEW`). Decisión de producto pendiente |
+| Estados | `RESV_STATUS` real: `CHECKED OUT`, `CHECKED IN`, `RESERVED`, `NO SHOW`, `CANCELLED` (mayúsculas con espacio) | Ya estaban en `OPERA_CLOUD_STATUS_MAP`; el modo `sync` sin perfil hereda ahora ese diccionario (Tanda 7d) |
+| Ingresos por transaction code | Ningún informe de ingresos en la entrega: solo `SHARE_AMOUNT` (tarifa/noche) y `SHARE_AMOUNT_PER_STAY` (total de la estancia) | `pms_shadow_revenue` sigue vacío para los cinco hoteles; los importes de las reservas son los de OPERA, no asientos. Pedir `GEN_XMLBO_REVENUE` / `findeptcodes` (§14 punto 4) |
+| Garantía | `GUARANTEE_CODE` (`CC`, `4P`, `6P`, `DB`, `PD`, `DP`, `DP-REC`, `VC`, `DG`, `TG`, `PG`, `GM`) y `SHORT_RESV_STATUS` en RESERVED; en las alojadas / cerradas OPERA escribe el literal de estado (`CHECKED IN`…), que no es garantía | Sin campo canónico en `RESERVATION_IMPORT_FIELDS` (fuera del alcance), pero desde la corrección t8 (2026-09-19) el CSV del prep lleva la columna extra `garantia` y el importador la reconoce por cabecera → `reservations.guarantee_type` al crear (`resolveExtraColumns`, runbook de importación §19.3); en BD 7.434 de 13.347 reservas reales con garantía (DG 3.866 · CC 2.182 · 4P 954 · DP-REC 278 · DB 41 · 6P 35 · DP 31 · VC 23 · PD 22 · GM 2; el resto traía literal de estado). Sigue alimentando `metodo_pago` cuando no hay `PAYMENT_METHOD` (`CC` → tarjeta, `DB` → factura a empresa, `PD` → prepago, `DP`/`DP-REC` → transferencia, `VC` → bono) y también va a las notas |
+| Datos personales en los informes | `INSERT_USER` / `UPDATE_USER` (personal de OPERA, con correos), `CREDIT_CARD_NUMBER` (enmascarado `XXXX9999`) y `EXP_DATE`, `BILL_TO_ADDRESS`, `SHARE_NAMES`, `ACCOMPANYING_NAMES`, `MEMBERSHIP_*`, `TRX_STRING`, `TRACE_TEXT`, `FC_*`, `GUEST_NAME_ID` | `OUTPUT_DENYLIST` del prep: nunca llegan a la salida, a los logs ni a las notas (test). Para programar estos informes por correo pedir a OPERA que no incluya esas columnas (§8.1 decisión 6 del diseño) |
+| Categorías de habitación reales | `KNE1`, `KND1`, `KND2`, `DND2`, `DND3`, `DND4`, `DSD3`, `DSD4`, `DSD5`, `TND1`, `TND2`, `TND3` (+ `PI`, `PM`); numeración real con `001`-`016` en planta 0 (Marsol, Rías Altas) | Inventario de los 5 hoteles alineado con OPERA por el subcomando `inventory` (tipos con el código OPERA, nombre propuesto pendiente de `cf_roomtypes`); `roomTypes` del perfil RIAS pasa a ser identidad |
+| Sobreventa de categoría en OPERA | Los informes de llegadas traen más reservas de una categoría que habitaciones físicas en ciertas noches (Marsol DND2 en 4 semanas de grupo de 2027: un bloque preasignado a las 12 DND2 y otro sin habitación; Los Tilos DND3 el 26/09/2026) | `permitirOverbooking: true` en la carga bulk: cada exceso queda con su aviso `OVERBOOKING` en `reservation_import_rows`; el recuento por noche y tipo en BD solo supera el cupo ahí (y en 1 noche histórica de Pathos por solape en el propio informe). Un corte diario futuro con la misma sobreventa hará lo mismo: avisar, no bloquear |
+| Ids cortos de auditoría | 4 eventos (`aud_`/`evt_` + 8 hex) no persistidos en 3 lotes por colisión con eventos previos del mismo día (`Unique constraint failed on the fields: (id)` / `(event_id)`) | Las reservas y asignaciones están en BD; solo falta el evento. Causa en `audit.service.ts` (fuera de esta tanda): ampliar el id o reintentar con otro. Vigilar el `.err` de cada `apply` |
+
+**Resultado de la carga (2026-09-19, t0-t7; corrección t8 y verificación final t9 en [`reservas-importacion.md`](reservas-importacion.md) §19.10-§19.12):** 10 lotes `sync` `imported` (RA `cmu7n7c2g…` / `cmu7nnkca…`, LT
+`cmu7nwad6…` / `cmu7nxlg2…`, PG `cmu7o6l1h…` / `cmu7o7pxb…`, MC `cmu7oi72b…` / `cmu7olqui…`, AS `cmu7ovk2d…` /
+`cmu7owpj4…`): 13.491 filas · 13.347 creadas · 45 actualizadas · 99 sin cambio · 0 omitidas · 0 errores; enlaces
+`pms_shadow_links` por `RESV_NAME_ID` 13.347 (+ 34 de la demo de RA); por hotel y estado = OPERA; 148 en casa a
+18/09 habitación por habitación; `pms_shadow_revenue` sin filas nuevas (`pms_shadow_revenue_imports` sigue en 2);
+invariantes intactas. «0 omitidas» vale frente al prep: de las 15.724 filas brutas, 1.754 se excluyen a
+propósito (1.737 pseudo rooms PM / PI, 16 day-use, 1 de 734 noches) y 479 son filas repetidas de marcadores
+(`verify --in` lo muestra hotel a hotel). Corrección t8: `guarantee_type` 7.434 · `price_source = quoted` 4.779 ·
+`deposit_paid` 63 · habitación + `Stay` repuestas en 25 cerradas. Verificación final t9 (05:10-05:17 CEST): SQL,
+`verify --in` 5/5 y API :3909 (RA 175 = 153 + 22, LT 302 = 274 + 28, Mi día, inventario) = BD; 0 usuarios de OPERA
+en la BD; puertas en verde. Tras los 11 night audits de L5 (RA y LT hasta el 18/09) las fechas de negocio son RA = LT
+= AS 2026-09-19, MC 09-17 y PG 09-16, y 108 llegadas del 18/09 siguen `confirmed` (decisión abierta, §19.8 del
+runbook de importación). Detalle y verificación: [`reservas-importacion.md`](reservas-importacion.md) §19.10-§19.12 e
+informe `docs/audits/TANDA-7D-OPERA-REAL-2026-09-19.md`. Antes de programar cortes diarios reales: 1) `PATCH
+…/pms-shadow/profile` con `mappingJson.pseudoRoomTypes = ["PM","PI","HOUSE"]`; 2) decidir la clave (`RESV_NAME_ID` en
+el export o reindexar `confirmation_no` de los 13.347 enlaces con el mapa 1:1 del informe de llegadas); 3) pedir
+el informe de ingresos por transaction code para que `revenue` deje de estar vacío.
+

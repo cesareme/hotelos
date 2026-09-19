@@ -975,6 +975,477 @@ el siguiente corte las trata como reactivación (reserva nueva con
 
 `bookingSource` sigue siendo `import:<importId>` (clave del lote y del deshacer; la propiedad OPERA de
 la reserva la marca el enlace, no el `bookingSource`); `bookerEmail` vacío y ningún correo; el fichero
-no se guarda; las filas del lote sin datos personales (§15); el CLI `reservations:import` **no** tiene
-`--mode sync`: los cortes de OPERA entran por el ingest (`pms-shadow:pull`), el buzón o el panel
-([`opera-modo-sombra.md`](opera-modo-sombra.md) §5-§6).
+no se guarda; las filas del lote sin datos personales (§15); el CLI `reservations:import` **sigue sin**
+`--mode` ni `--feed` (2026-09-19: no se han añadido): los cortes de OPERA entran por el ingest
+(`pms-shadow:pull`), el buzón o el panel ([`opera-modo-sombra.md`](opera-modo-sombra.md) §5-§6) y, para la
+carga real de los informes R&A por CLI, los suple el script nuevo `import-opera-reports.ts` (§19), que llama a
+`importReservations` con `mode: "sync"` desde fuera del CLI de la Tanda 7. Con él se ejecutó la carga real de
+los cinco hoteles el 2026-09-19 (10 lotes `sync`, 13.347 reservas, 0 errores: §19.10).
+
+## 19 · Carga real OPERA Cloud R&A (formato real confirmado 2026-09-19)
+
+El 2026-09-19 llegaron los primeros informes **reales** de OPERA Cloud R&A de los cinco hoteles de Faranda
+(Rías Altas, Los Tilos, Pathos, Marsol y Alisas), exportados a `.xlsx` (hoja «Hoja1») y guardados FUERA del
+repo (`~/anfitorio-demo/pilots/faranda-celuisma/opera-real/`, carpeta git-ignorada). No son los informes
+sintéticos de la Tanda 7b (`RESPONSYS_RESV_AUTO` / `departure_all`): son otros dos informes con sus propias
+cabeceras, así que **no** se importan con `profile: "opera_cloud"` sino con el CSV canónico de 33 campos que
+produce el preprocesado (`prep`) del CLI `apps/api/src/scripts/import-opera-reports.ts`, en modo `sync` sin
+perfil. Este apartado documenta el formato real, las decisiones del preprocesado, los tres cambios de código
+que exigió y el procedimiento completo. Cifras y decisiones en `docs/audits/TANDA-7D-OPERA-REAL-2026-09-19.md`.
+
+### 19.1 · Los dos informes reales
+
+| Informe | Fichero | Filas / columnas | Cabeceras que se leen (el resto se ignora) |
+| --- | --- | --- | --- |
+| **Estancias** (reservas con noche en el periodo 01/08-18/09/2026, cualquier estado) | `<Hotel> - 01.08.26 to 18.09.26.xlsx` | 1.602-2.633 filas · **40 columnas** fijas: `RESORT GRPBY_DISP1 ROOM_CLASS GRPBY_DISP2 RESV_NAME_ID GUARANTEE_CODE RESV_STATUS ROOM FULL_NAME DEPARTURE PERSONS GROUP_NAME NO_OF_ROOMS ROOM_CATEGORY_LABEL RATE_CODE INSERT_USER INSERT_DATE GUARANTEE_CODE_DESC COMPANY_NAME TRAVEL_AGENT_NAME ARRIVAL NIGHTS COMP_HOUSE_YN SHARE_AMOUNT C_T_S_NAME SHORT_RESV_STATUS SHARE_AMOUNT_PER_STAY RC_* RES_* SUM* S_* LOGO` | `RESV_NAME_ID RESV_STATUS ROOM FULL_NAME ARRIVAL DEPARTURE NIGHTS PERSONS NO_OF_ROOMS ROOM_CATEGORY_LABEL RATE_CODE GUARANTEE_CODE GUARANTEE_CODE_DESC COMPANY_NAME TRAVEL_AGENT_NAME GROUP_NAME SHARE_AMOUNT SHARE_AMOUNT_PER_STAY COMP_HOUSE_YN INSERT_DATE` |
+| **Llegadas** (reservas con llegada 18/09/2026-31/12/2028) | `Llegadas - <Hotel> (18.09.26 to 31.12.28).xlsx` | 317-3.278 filas · **108-119 columnas** (varía por hotel: `LIST_G_*`, `FC_*`, `GTV_*`, `DEPT_ID`, `TRACE_TEXT` aparecen o no) y **el orden cambia a partir de la columna ~60** → mapear SIEMPRE por nombre de cabecera, nunca por posición | `CONFIRMATION_NO RESV_NAME_ID EXTERNAL_REFERENCE ARRIVAL DEPARTURE ROOM_CATEGORY_LABEL DISP_ROOM_NO NO_OF_ROOMS ADULTS CHILDREN PERSONS MARKET_CODE RATE_CODE GUARANTEE_CODE COMPANY_NAME ORIGIN_OF_BOOKING GROUP_ID BLOCK_CODE VIP SHARE_AMOUNT CURRENCY_CODE DEPOSIT_PAID PAYMENT_METHOD PRODUCTS COMP_HOUSE FULL_NAME` |
+
+Hechos del formato: fechas como **texto** `DD/MM/YY` (`ARRIVAL`, `DEPARTURE`, `INSERT_DATE`; el lector xlsx las
+entrega como cadena, no como serial) y `UPDATE_DATE` como `DD-MON-YY` (`18-SEP-26`); números como números
+(`97.75`, `238`); `RESV_STATUS` literal en mayúsculas con espacio (`CHECKED OUT`, `CHECKED IN`, `RESERVED`,
+`NO SHOW`, `CANCELLED`); `SHORT_RESV_STATUS` es el estado corto (`CKOT`, `CKIN`, `CXL`, `NOSH`) o, en RESERVED, el
+código de garantía; `GUARANTEE_CODE` vale `CHECKED IN` en las estancias ya alojadas o cerradas; `NIGHTS` =
+`DEPARTURE − ARRIVAL` siempre; `FULL_NAME` es «APELLIDOS, NOMBRE» en el ~93 % de las filas.
+
+**Importes.** En estancias `SHARE_AMOUNT` es la **tarifa por noche** (de la primera noche) y
+`SHARE_AMOUNT_PER_STAY` el **total de la estancia** (Σ por estado cuadra con los totales del informe
+`S_RATE`): `importe_total ← SHARE_AMOUNT_PER_STAY`. En llegadas solo hay `SHARE_AMOUNT` (tarifa/noche, igual a
+`EFFECTIVE_RATE_AMOUNT`): `importe_total ← SHARE_AMOUNT × noches`, marcado en las notas como «importe estimado
+tarifa×noches»; la fila de estancias del mismo `RESV_NAME_ID` (cuando la reserva ya está en el periodo) lo
+corrige después con el total real. Cortesías y uso de casa con 0 € se escriben `0,00`: **nunca se cotiza**
+(`tarifa` vacía y además ignorada con `mapping: { tarifa: null }`, así ninguna fila cae en
+`RATE_PLAN_DEFAULTED` ni `OPERA_RATE_CODE_UNMAPPED`; el `RATE_CODE` de OPERA va a las notas).
+
+### 19.2 · Pseudo rooms, dedupe y referencia
+
+- **Pseudo rooms**: `ROOM_CATEGORY_LABEL` `PI` (uso de casa, habitaciones 9100-9115 y 9500) y `PM` (paymaster,
+  9000-9099) no son tipos de habitación: sus filas se omiten en el prep (`<HOTEL>-omitidas.csv`, motivo
+  `pseudo`). Regla: categoría `PI`/`PM` **o** habitación 9000-9500. Las habitaciones `001`-`016` de Marsol y
+  `001`-`007` de Rías Altas son reales (planta 0).
+- **Day-use** (`NIGHTS = 0`) y estancias de más de 365 noches (una cancelada de Marsol de 734 noches, tope
+  `RESERVATION_IMPORT_MAX_NIGHTS`) se omiten (`day_use`, `over_365`).
+- **Llegadas con filas repetidas**: el informe repite la fila de una reserva por cada marcador (`|ROUT`,
+  `|TRACE`, `|MEMB`, `FC` en `FULL_NAME` y columnas `LIST_G_*` / `FC_*`): Rías Altas 855 filas → 383 reservas,
+  Alisas 317 → 310. Se deduplica por `CONFIRMATION_NO` quedándose con la **primera** fila (las repetidas no
+  difieren en ningún campo núcleo; `RESV_NAME_ID` ↔ `CONFIRMATION_NO` es 1:1).
+- **Referencia externa = `RESV_NAME_ID` en los dos informes** (7-8 dígitos), porque es el único identificador
+  que comparten: las llegadas traen además `CONFIRMATION_NO` (9 dígitos) y `EXTERNAL_REFERENCE` (localizador
+  del canal, compartido por varias reservas multi-habitación), que van a las notas. Así las 144 filas
+  `RESERVED` de estancias (todas con llegada 18/09) son las MISMAS reservas que las 144 llegadas del 18/09: el
+  primer lote las crea y el segundo las encuentra enlazadas (`annotateSync` resuelve el enlace antes del
+  chequeo `DUPLICATE_REFERENCE`) y solo actualiza el importe (y el nombre completo de agencia / empresa,
+  truncado a 20 caracteres en el informe de llegadas). Para los cortes futuros por `RESPONSYS_RESV_AUTO`
+  (`RESERVATION_ID` = `CONFIRMATION_NO`) hará falta reindexar los enlaces o mapear `RESV_NAME_ID`: ver
+  [`opera-modo-sombra.md`](opera-modo-sombra.md) §15.
+- Los enlaces sintéticos de la demo (`IMP-RA-*`, `RIAS-*`) no colisionan con los `RESV_NAME_ID` numéricos.
+
+### 19.3 · Lo que hace el prep fila a fila (y por qué)
+
+| Campo canónico | Estancias | Llegadas | Motivo |
+| --- | --- | --- | --- |
+| `nombre` / `apellidos` | `FULL_NAME` partido con la MISMA regla que `splitFullName`: «Apellidos, Nombre» → apellidos antes de la coma; sin coma → primer token nombre y resto apellidos; un solo token → nombre = apellidos = token | ídem | `splitName` solo se activa cuando la columna mapeada a `nombre` tiene cabecera de nombre completo y no hay `apellidos`; al escribir las dos columnas ya rellenas ninguna fila cae en `MISSING_FIELD` y el reparto es determinista |
+| `estado` | `RESV_STATUS` literal | `RESERVED` | los literales reales los resuelve el `statusMap` de OPERA (§19.4) |
+| `habitacion` | `ROOM`; **en blanco** en `CANCELLED` / `NO SHOW` (no consumen inventario) y en la fila que **solapa** a otra fila VIVA (`CHECKED IN` / `RESERVED`) en la misma habitación (se blanquea la que no es `CHECKED IN`; el número va a las notas «hab. OPERA n»). Dos `CHECKED OUT` solapadas —cambio de habitación a mitad de estancia; OPERA deja la última en `ROOM`— **conservan las dos su habitación** (corrección t8: antes se blanqueaba la posterior y 26 estancias cerradas quedaron sin habitación ni `Stay`) | `DISP_ROOM_NO` (preasignada); en un solape, la fila posterior | `ROOM_DUPLICATE_IN_FILE` ya no salta entre dos filas históricas (`normalizeTable`) y `annotateRooms` no exige habitación libre a una estancia cerrada (nace `checked_out` con su `Stay`, sin consumir inventario); las vivas siguen exigiendo habitación libre |
+| `tipo_habitacion` | `ROOM_CATEGORY_LABEL`, o el **tipo físico** de la habitación (categoría dominante de esa habitación en los dos informes) cuando difiere | ídem con `DISP_ROOM_NO` | `ROOM_TYPE_MISMATCH` es error de fila; la categoría reservada va a las notas («categoría DND3») |
+| `adultos` / `ninos` | `PERSONS` / 0 (0 → 1; > máximo del tipo → recorte con nota «PERSONS OPERA n») | `ADULTS` / `CHILDREN` | `OCCUPANCY_EXCEEDED` es error |
+| `canal` / `segmento` / `metodo_pago` / `vip` / `deposito` / `grupo` | derivados de `TRAVEL_AGENT_NAME`, `COMPANY_NAME`, `GROUP_NAME`, `RATE_CODE`, `COMP_HOUSE_YN`, `GUARANTEE_CODE` (diccionarios en el script: `channelOfAgency`, `deriveChannel`, `deriveSegment`, `mapPayment`, `mapGuarantee`) | de `COMPANY_NAME` («T- » agencia / «C- » empresa), `ORIGIN_OF_BOOKING`, `MARKET_CODE`, `PAYMENT_METHOD`, `VIP`, `DEPOSIT_PAID`, `BLOCK_CODE` | las 144 `RESERVED` de estancias se **enriquecen** con su fila de llegadas (C9) para que el segundo lote solo tenga que actualizar el importe |
+| `notas` | formato fijo «OPERA · conf … · ext … · garantía CC (desc) · tarifa … · tarifa/noche … · pago … · mercado … · origen … · categoría … · bloque id/código · productos … · VIP … · comp … · creada AAAA-MM-DD · hab. OPERA … · PERSONS OPERA … · importe estimado tarifa×noches» | ídem | solo códigos, fechas e importes; `INSERT_DATE` solo como fecha |
+| `tarifa`, `regimen`, `email`, `telefono`, `nacionalidad`, `documento_*`, `hora_llegada`, `peticiones` | vacíos | vacíos | los informes no traen contacto ni documento (una ficha de huésped por reserva); `PRODUCTS` (régimen en OPERA) va a las notas |
+
+**Columnas que jamás llegan a la salida ni a los logs** (`OUTPUT_DENYLIST`, con test): `INSERT_USER`,
+`UPDATE_USER` (personal de OPERA), `CREDIT_CARD_NUMBER`, `EXP_DATE`, `BILL_TO_ADDRESS`, `SHARE_NAMES`,
+`ACCOMPANYING_*`, `MEMBERSHIP_*`, `TRX_STRING`, `TRACE_TEXT`, `FC_*`, `BILL_RESORT`, `BILL_RESV`,
+`GUEST_NAME_ID`, `RC_*`, `RES_*`, `S_*`, `SUM*`, `LOGO`. El prep nunca imprime celdas: el resumen
+(`RESUMEN.json`) solo lleva recuentos, códigos, números de habitación y sha256.
+
+**Columnas extra del CSV canónico (corrección t8, 2026-09-19).** Tras los 33 campos el prep escribe tres columnas
+sin campo canónico que el importador reconoce por NOMBRE de cabecera (`resolveExtraColumns` en
+`reservation-import.service.ts`; sinónimos `guarantee_code`, `total_estimado`, `deposit_paid`) y aplica solo al
+CREAR la reserva (una enlazada no las actualiza: `ReservationShadowPatch` no las admite): `garantia`
+(`GUARANTEE_CODE` real → `reservations.guarantee_type`; los literales de estado que OPERA escribe en las alojadas
+y cerradas —`CHECKED IN`, `CHECKED OUT`, `DUE OUT`…— no son garantía y quedan vacíos; en las `RESERVED` de
+estancias se toma la de la llegada), `importe_estimado` («si» cuando `importe_total` es tarifa × noches, es decir,
+en todas las llegadas → `totalSource = quoted` → `price_source = quoted`, cuenta como cotizado en los totales y
+**nunca pisa el total exacto** de una reserva enlazada porque `diffFields` solo compara importes `file`: reaplicar
+`<HOTEL>-llegadas.csv` deja de ser peligroso) y `deposito_pagado` (`DEPOSIT_PAID`, ya cobrado en OPERA →
+`reservations.deposit_paid`; `deposito` sigue llevando el mismo importe como depósito solicitado). Un fichero sin
+estas columnas se importa exactamente igual que antes; con ellas la previsualización avisa «3 columna(s) extra
+reconocida(s)» en vez de «sin mapear».
+
+**Orden de las estancias** (determinista): `CANCELLED`, `NO SHOW`, `CHECKED OUT` (por llegada), `RESERVED` y
+`CHECKED IN` al final, para que las filas que ocupan habitación se validen contra un fichero ya recorrido.
+
+### 19.4 · Cambios de código (Tanda 7d: tres en la carga + cuatro en la corrección t8)
+
+Corrección t8 (2026-09-19, tras la revisión de la carga):
+
+4. **Columnas extra `garantia` / `importe_estimado` / `deposito_pagado`** (`reservation-import.service.ts`:
+   `resolveExtraColumns`, `extraOf`, `AnalysedRow.extra`, `buildCreateReservationInput({ extra })`): ver §19.3.
+   Sin tocar `packages/shared` (fuera del alcance): no son campos canónicos, se reconocen por cabecera.
+5. **`ROOM_DUPLICATE_IN_FILE` no salta entre dos filas históricas** (`reservation-import.normalize.ts`,
+   `seenRooms[].historical`): dos estancias cerradas solapadas en la misma habitación son un cambio de
+   habitación a mitad de estancia, no un choque. Entre filas vivas (o viva + cerrada) sigue igual.
+6. **`annotateRooms` no valida la habitación de una fila histórica** (`canAssignRoom` la rechazaría si la
+   habitación está ocupada HOY por otro huésped; una estancia cerrada nace `checked_out` con su `Stay` y no
+   consume inventario).
+7. **Folio cerrado tras cancelación / no-show sombra** (`closeSettledFolio`, misma regla que el check-out sombra:
+   solo si existe, está `open` y |saldo| < 0,005; un fallo se registra y no deshace la transición). Antes las
+   2.511 canceladas / no-show de la carga dejaban el folio `open` (la cancelación nativa lo cierra; en RA y LT lo
+   cerró el paso `close_settled_folios` del night audit de L5). Las 1.778 de PG / MC / AS siguen `open` hasta su
+   primer night audit (no se han tocado por SQL).
+
+CLI: subcomando **`backfill`** (corrección de reservas ya cargadas a partir del prep con las columnas extra:
+`guarantee_type`, `price_source = quoted` en las llegadas estimadas no enlazadas, retirada de la nota «importe
+estimado tarifa×noches» en las enlazadas cuyo total exacto puso el lote de estancias, `deposit_paid`, y
+habitación + `Stay` cerrada de las `checked_out` que el prep de t0 blanqueó; dry-run por defecto, `--json` con el
+`before` de cada reserva, un evento de auditoría `RESERVATION_IMPORT_BACKFILLED` por propiedad con recuentos e
+ids, escrituras por Prisma dentro del CLI porque el producto no expone esos campos en `PATCH` para reservas
+cerradas), **`verify --in <dir xlsx>`** (relee los informes brutos y compara: tabla «OPERA bruto → cargado» por
+`RESV_STATUS` más las comprobaciones de garantía, `price_source`, `deposit_paid` y cerradas sin `Stay`; antes
+solo comparaba con `RESUMEN.json`, ya filtrado, y no podía ver las 1.754 filas excluidas) e **`inventory`**
+marca `sellable = false` los tipos sin habitación OPERA que sigan vendibles (`patchBackOfficeRoomType`;
+`deactivateBackOfficeRoomType` solo pone `active = false`).
+
+1. **`sync` sin perfil hereda el diccionario de estados de OPERA Cloud** (`reservation-import.service.ts`,
+   `syncContext.statusMap = OPERA_CLOUD_PROFILE.statusMap` en vez de `{}`): los literales reales
+   `CHECKED OUT` / `CHECKED IN` / `RESERVED` / `NO SHOW` / `CANCELLED` → `checked_out` / `checked_in` /
+   `confirmed` / `no_show` / `cancelled` vía `foldValue` + `resolveSyncTargetStatus`; `WAITLIST` → omitida.
+   **Cambio de comportamiento también en la ruta HTTP** `POST …/reservations/imports` con `mode: "sync"` y sin
+   `profile`: antes toda fila salía `RESERVATION_IMPORT_ROW_INVALID_STATUS` (el modo era inutilizable sin
+   perfil); ahora se aplica el diccionario OPERA. `normalizeRow` con `statusMap: {}` sigue dando
+   `INVALID_STATUS` (el defecto vive en el servicio, no en el normalizador).
+2. **`cutBusinessDate`** (`NormalizeRowOptions` / `NormalizeTableOptions`; el servicio lo rellena con el
+   `businessDate` del corte): en `sync`, una fila con destino `confirmed` cuya llegada cae en
+   `[min(businessDate, hoy), hoy)` ya NO es `PAST_ARRIVAL`. Necesario porque el corte es del 18/09 y se carga
+   el 19/09: OPERA tenía 144 reservas `RESERVED` con llegada 18/09 (pendientes de check-in en recepción). La
+   frontera solo se adelanta (un business date posterior a hoy no la atrasa) y `create` no cambia.
+3. **`Stay.checkinAt` de un check-in sombra = llegada a las 15:00 hora local** (`arrivalCheckInAt(arrivalDate,
+   timezone)`, exportada y con test; `ReservationImportCatalogs.timezone`): `checkInReservation` crea la `Stay`
+   con `checkinAt = ahora`, y las 148 estancias `CHECKED IN` de los informes llevan días en casa. Solo en la
+   transición `check_in` (`check_in_and_out` no la necesita: las `CHECKED OUT` nacen históricas con `Stay`
+   15:00 → 11:00). Además `shadowCheckOut` pasa a exportarse para que `demo-retire` haga el check-out de la
+   demo exactamente como el check-out sombra.
+
+### 19.5 · Orden de carga: inventario → llegadas → estancias
+
+`canAssignRoom` (`inventory.engine.ts`) trata una habitación **`occupied`** por otra reserva alojada como
+conflicto **sin mirar fechas**. Si las estancias entraran antes, sus 22-52 check-ins sombra por hotel dejarían
+esas habitaciones ocupadas y toda llegada preasignada a ellas —aunque llegue después de la salida del huésped
+actual— fallaría con `ROOM_UNAVAILABLE`. Por eso: 1) `inventory` (tipos OPERA, re-tipado, altas,
+desactivaciones), 2) `apply --feed arrivals` (confirmadas con habitación preasignada por `assignRoom`: solo
+solape de fechas), 3) `apply --feed inhouse` (históricas, canceladas, no-show, check-ins sombra; las 144
+`RESERVED` salen `update` / `unchanged`). Criterio para aplicar cada lote: 0 filas en error salvo las
+documentadas en `RESUMEN.json`, 0 `ROOM_UNAVAILABLE` en filas `CHECKED IN`, 0
+`OPERA_CONFLICT_LOCAL_RESERVATION`.
+
+### 19.6 · Qué NO revierte `--undo` (copia `pg_dump` por tramo)
+
+`undo` cancela solo lo creado en `draft | confirmed` (§18.6). **No** revierte: los check-ins sombra ni las
+estancias históricas (`kept`), las cancelaciones y no-shows aplicados en el mismo lote, las fichas de huésped
+creadas, los enlaces `PmsShadowLink`, las actualizaciones de importe del segundo lote ni los cambios de
+inventario. Antes de cada tramo: `pg_dump "$DATABASE_URL" -Fc -f
+~/anfitorio-demo/pilots/faranda-celuisma/opera-real/backups/pre-t<N>-<HOTEL>-<fecha>.dump`.
+
+### 19.7 · CLI `import-opera-reports.ts` paso a paso
+
+```bash
+WT=~/anfitorio-demo-wt-opera/hotelos; OR=~/anfitorio-demo/pilots/faranda-celuisma/opera-real
+cd $WT/apps/api; RUN=(node --env-file-if-exists=../../.env --import tsx)
+# 1) prep (sin BD; reproducible: dos ejecuciones dan el mismo sha256 en RESUMEN.json)
+"${RUN[@]}" src/scripts/import-opera-reports.ts prep --in "$OR" --out "$OR/prep" [--hotel RA] [--json]
+grep -c '@' "$OR/prep"/*.csv                     # → 0 (sin correos ni usuarios de OPERA)
+grep -il 'XXXX[0-9]\{4\}' "$OR/prep"/*.csv        # → nada (sin tarjetas)
+# 2) copia previa
+pg_dump "$(grep -E '^DATABASE_URL=' $WT/.env | cut -d= -f2- | tr -d '"')" -Fc -f "$OR/backups/pre-t0-$(date +%Y%m%d-%H%M).dump"
+# 3) demo fuera (solo Rías Altas): --undo de los lotes y demo-retire (dry-run → --apply)
+"${RUN[@]}" src/scripts/import-reservations.ts --undo <importId> --property <RA> --reason "…"
+"${RUN[@]}" src/scripts/import-opera-reports.ts demo-retire --property <RA> --cancel RES-…,RES-… --checkout RES-… --reason "…" [--apply]
+# 4) inventario (dry-run → --apply; idempotente)
+"${RUN[@]}" src/scripts/import-opera-reports.ts inventory --property <id> --plan "$OR/prep/<HOTEL>-inventario.json" [--apply] [--json]
+# 5) llegadas y después estancias (dry-run → --apply; --json solo recuentos y códigos)
+"${RUN[@]}" src/scripts/import-opera-reports.ts apply --property <id> --file "$OR/prep/<HOTEL>-llegadas.csv" --feed arrivals --business-date 2026-09-18 --json > "$OR/prep/logs/<HOTEL>-llegadas.dryrun.json"
+"${RUN[@]}" src/scripts/import-opera-reports.ts apply --property <id> --file "$OR/prep/<HOTEL>-llegadas.csv" --feed arrivals --business-date 2026-09-18 --apply --json > "$OR/prep/logs/<HOTEL>-llegadas.apply.json"
+"${RUN[@]}" src/scripts/import-opera-reports.ts apply --property <id> --file "$OR/prep/<HOTEL>-estancias.csv" --feed inhouse --business-date 2026-09-18 [--apply] --json
+# 6) verificación y, si hace falta, deshacer (solo draft | confirmed)
+"${RUN[@]}" src/scripts/import-opera-reports.ts verify --property <id> --expected "$OR/prep/RESUMEN.json" --hotel <HOTEL>
+"${RUN[@]}" src/scripts/import-opera-reports.ts verify --property <id> --in "$OR" --hotel <HOTEL>          # contra los xlsx BRUTOS (t8)
+"${RUN[@]}" src/scripts/import-opera-reports.ts undo --property <id> --import <importId> --reason "…"
+# 7) corrección posterior (t8): garantía, price_source, deposit_paid, habitación + Stay de las cerradas blanqueadas
+"${RUN[@]}" src/scripts/import-opera-reports.ts backfill --property <id> --hotel <HOTEL> --out "$OR/prep" --json > "$OR/prep/logs/<HOTEL>-backfill.dryrun.json"
+"${RUN[@]}" src/scripts/import-opera-reports.ts backfill --property <id> --hotel <HOTEL> --out "$OR/prep" --apply --json > "$OR/prep/logs/<HOTEL>-backfill.apply.json"
+```
+
+Opciones internas de `apply`: `importReservations({ mode: "sync", feed, businessDate, mapping: { tarifa: null },
+omitirInvalidas: true, permitirOverbooking: true, horizonDays: 730, force }, source: "cli")` con el contexto de
+sistema `usr_system_pms_shadow` (`pms-shadow.rules.ts`; `inventory` añade `property.map.manage`),
+`hydrateAuditChainFromPostgres` antes y `flushAuditQueues` / `flushAccountingProjection` /
+`flushExtraProjections` después (patrón de `pms-shadow:pull`). Un reintento del mismo fichero + feed +
+business date sobre un lote vivo da 409 `RESERVATION_IMPORT_DUPLICATE` → `--force` (las filas ya creadas salen
+`unchanged`); si TODO está enlazado, `canImport` exige `toCreate > 0` y no aplica (seguro). **Nunca** reaplicar
+`<HOTEL>-llegadas.csv` con `--force` después de haber aplicado las estancias: el fichero de llegadas conserva el
+importe estimado tarifa × noches y el `--force` sobrescribiría los totales reales que el lote de estancias
+corrigió en las reservas enlazadas (45 en la carga del 2026-09-19). Marsol (3.278
+llegadas) tarda minutos: `nohup … --apply > log.json 2> log.err &`. No hay script npm en `apps/api/package.json`
+(fichero fuera del alcance de la tanda): se invoca con `node --import tsx`.
+
+### 19.8 · Fechas de negocio (coordinación con la Tanda L5)
+
+El corte es del **18/09/2026** y las fechas de negocio de la BD local van por detrás (RA 2026-09-13, LT 09-14,
+PG 09-16, MC 09-17; AS sin fila). La carga no las mueve (`getCurrentBusinessDate` solo crea la fila si falta).
+Reglas: 1) no cerrar días de RA con las reservas de la demo vivas (`processNoShows` las marcaría `no_show` con
+penalización); 2) preferible avanzar RA/LT/PG/MC hasta 2026-09-18 entre la retirada de la demo y la carga de
+llegadas (con 0 reservas vivas ningún audit postea cargos sobre estancias reales) e inicializar AS en
+2026-09-18 ANTES de su primer dry-run (si no, la fila nace con la fecha del día y sus 23 llegadas del 18/09
+quedan como llegada pasada para el audit); 3) **nunca cerrar el 18/09** hasta que recepción registre los
+check-ins de las 144 llegadas de ese día (siguen `confirmed`: el importador no hace su check-in).
+
+**Cómo quedó el 2026-09-19 (t7, 03:30 CEST):** L5 no avanzó las fechas antes de la carga, así que se cargó con RA
+2026-09-13 · LT 09-14 · PG 09-16 · MC 09-17 y `night_audit_runs` 0. La fila de AS **la creó el primer dry-run**
+(2026-09-19 01:08:28 UTC, `current_date = 2026-09-19`). Además de las 144 llegadas del 18/09, hay 21 alojados con
+salida prevista 18/09 que en OPERA seguían CHECKED IN al corte (AS 2 · LT 9 · PG 7 · RA 3).
+
+**Cómo quedó DESPUÉS de L5 (estado real a 2026-09-19 04:50 CEST, revisión t8):** entre las 01:48:15 y las
+01:59:15 UTC (03:48-03:59 CEST, 8-20 min después del cierre de t7) la sesión L5 del árbol principal ejecutó **11
+night audits** con `NIGHT_AUDIT_PREFLIGHT_OVERRIDDEN`: RA 2026-09-13 → 09-18 (6, actor `cmu6tni3h00ahfydal93bweag`)
+y LT 09-14 → 09-18 (5, actor `cmu6tni3g00affydagdnxyyhe`). Fechas de negocio ahora: **RA = LT = AS = 2026-09-19**,
+MC 09-17, PG 09-16. Consecuencias que la regla 3 quería evitar y que siguen ABIERTAS (decisión del orquestador,
+no de este runbook):
+
+- **Trampa de no-show:** 108 llegadas reales del 18/09 que OPERA tenía `RESERVED` al corte siguen `confirmed`
+  con `arrival_date < current_date` (RA 33 · LT 52 · AS 23); el preflight de los tres hoteles las lista como
+  «no-shows sin resolver» y `canClose = false`; el próximo cierre (el del 19/09) las marcaría `no_show` con
+  penalización (`processNoShows`). El check-in por endpoint cabe HOY (referencia = max(business date, hoy) =
+  09-19, ventana ±1 día); desde mañana exige `allowEarlyCheckIn` + `pms.reservation.modify`. PG (26) y MC (10)
+  sufrirán lo mismo cuando L5 los avance.
+- **Cargos de habitación sobre folios reales:** los audits postearon **153 líneas `room` = 15.867,35 €** en 47
+  reservas reales en casa (RA 70 líneas / 7.314,63 € / 21 reservas · LT 83 / 8.552,72 € / 26), `price_source`
+  `file`; Mi día pasa de saldo pendiente 0 a RA 6.312,68 € y LT 5.751,57 €; el preflight bloquea por «folios
+  abiertos con saldo». Contradice la decisión 3 del brief (estancias reales sin cargos; contabilidad en Sage)
+  salvo decisión explícita.
+- **12 noches cobradas después de la salida (1.152,74 €):** `post_room_charges` del cierre del 18/09 cargó la
+  noche del 18/09 a alojados con `departure_date = 2026-09-18` (RA 3 = 240,82 € en 416 / 424 / 414 · LT 9 =
+  911,92 € en 221 / 328 / 215 / 312 / 326 / 302 / 217 / 230 / 320; ids de línea en el informe externo §7). El
+  producto no expone anulación de líneas de folio (solo `POST /folios/:id/lines` y transferencias): decidir
+  entre línea de ajuste negativa por el producto o corrección por el orquestador de L5.
+- **Regla nueva:** los due-out del día del corte (21 a 18/09) deben salir por recepción **ANTES** de cerrar ese día,
+  y el 18/09 no se cierra hasta los check-ins de sus llegadas; con la fecha ya en 19/09, hacer hoy los 108
+  check-ins (o pausar el cierre del 19/09 en RA / LT / AS) es lo único que evita el no-show automático.
+- Nada de esto lo revierte `--undo` ni lo toca esta tanda (night audit fuera del alcance); recuentos y SQL en
+  el informe externo §7 y en `docs/audits/TANDA-7D-OPERA-REAL-2026-09-19.md` §5.
+- **Estado a t9 (2026-09-19 05:17 CEST): idéntico** — RA = LT = AS 2026-09-19, MC 09-17, PG 09-16; `night_audit_runs`
+  11; 108 llegadas del 18/09 `confirmed`; 153 líneas `room`; 0 `no_show` desde el corte (§19.12).
+
+### 19.9 · SQL de verificación (solo lectura)
+
+```sql
+-- por estado (reales = referencia numérica de 7-8 dígitos)
+select p.code, r.status, count(*) from reservations r join properties p on p.id=r.property_id
+ where r.deleted_at is null and r.external_reference ~ '^[0-9]{7,8}$' and p.id in (…5 ids…) group by 1,2 order by 1,2;
+-- en casa por habitación
+select p.code, ro.number from reservations r join rooms ro on ro.id=r.assigned_room_id join properties p on p.id=r.property_id
+ where r.status='checked_in' and p.id in (…) order by 1,2;
+-- llegadas 18/09 y 19/09
+select p.code, r.arrival_date, count(*) from reservations r join properties p on p.id=r.property_id
+ where r.arrival_date in ('2026-09-18','2026-09-19') and r.status in ('confirmed','checked_in') and p.id in (…) group by 1,2 order by 1,2;
+-- room-nights de agosto (reales)
+select p.code, sum(least(r.departure_date,'2026-09-01'::date)-greatest(r.arrival_date,'2026-08-01'::date))
+  from reservations r join properties p on p.id=r.property_id
+ where r.status in ('checked_out','checked_in') and r.arrival_date<'2026-09-01' and r.departure_date>'2026-08-01'
+   and r.external_reference ~ '^[0-9]{7,8}$' and p.id in (…) group by 1;
+-- duplicados (debe devolver 0 filas) y lotes
+select property_id, external_reference, count(*) from reservations where deleted_at is null
+   and external_reference ~ '^[0-9]{7,8}$' group by 1,2 having count(*)>1;
+select id,property_id,status,row_count,created_count,skipped_count,error_count,options_json->>'feed' from reservation_imports order by created_at;
+-- invariantes: facturas 33 (RA 25) · VeriFactu 41 (RA 33) · permisos 250 · roles Faranda 24 · lotes de ingresos sombra 2
+select (select count(*) from invoices),(select count(*) from verifactu_submissions),(select count(*) from permissions),
+       (select count(*) from roles where organization_id='cmrhw9jy30002fyvb6tsdiugt'),(select count(*) from pms_shadow_revenue_imports);
+```
+
+### 19.10 · Resultado de la carga real (2026-09-19, tramos t0-t7)
+
+| Tramo | Hotel · feed | Lote `reservation_imports` | Filas · creadas · actualizadas · sin cambio · omitidas · error |
+| --- | --- | --- | --- |
+| t0 | RA demo fuera + inventario | (sin lote; `--undo` de `cmu4t43gh…`, `cmu5bkqxi…`, `cmu5blcyj…`, `cmu5bml1o…` + `demo-retire`) | 110 reservas de demo → 13 `checked_out` + 97 `cancelled`; RA 6 tipos OPERA · 75 re-tipadas · 27 altas · 45 desactivadas · 5 tipos sintéticos desactivados |
+| t1 | RA llegadas | `cmu7n7c2g0000fyd38pppgps0` | 383 · 383 · 0 · 0 · 0 · 0 |
+| t2 | RA estancias | `cmu7nnkca0000fyl4vbkufvmp` | 1.620 · 1.587 · 14 · 19 · 0 · 0 |
+| t3 | LT llegadas / estancias (inventario 5 tipos, 74/18/18/4) | `cmu7nwad60000fyccfk2wxx17` / `cmu7nxlg20000fyk3huyn1dw0` | 493 · 493 · 0 · 0 · 0 · 0 / 1.683 · 1.631 · 4 · 48 · 0 · 0 |
+| t4 | PG llegadas / estancias (inventario 4 tipos, 35/20/21/3) | `cmu7o6l1h0000fy8dqaub1mca` / `cmu7o7pxb0000fyq9rglhimsh` | 459 · 459 · 0 · 0 · 0 · 0 / 1.617 · 1.591 · 11 · 15 · 0 · 0 |
+| t5 | MC llegadas / estancias (inventario 9 tipos, 34/51/51/4) | `cmu7oi72b0000fyc8v6m2rn8l` / `cmu7olqui0000fycb75mp5xno` | 3.278 · 3.278 · 0 · 0 · 0 · 0 / 2.135 · 2.125 · 1 · 9 · 0 · 0 |
+| t6 | AS llegadas / estancias (inventario 6 tipos, 13/49/65/3) | `cmu7ovk2d0000fyiqr94dj8am` / `cmu7owpj40000fy2z2w5dg05f` | 310 · 310 · 0 · 0 · 0 · 0 / 1.513 · 1.490 · 15 · 8 · 0 · 0 |
+| **Total** | 10 lotes `imported` | | **13.491 · 13.347 · 45 · 99 · 0 · 0** (actualizadas + sin cambio = las 144 RESERVED enlazadas) |
+| t8 (04:45-04:50) | Corrección post-revisión, 5 hoteles: `prep` regenerado (36 columnas; v1 en `prep/v1-t7/`), `backfill --apply`, `inventory --apply` (sellable), housekeeping RA | (sin lote; `RESERVATION_IMPORT_BACKFILLED` × 5, `ROOM_MARKED_CLEAN` × 13; copia `backups/pre-t8-correccion-20260919-0445.dump`) | 7.459 reservas corregidas (RA 776 · LT 843 · PG 1.049 · MC 4.070 · AS 721): `guarantee_type` 7.434 · `price_source` → `quoted` 4.779 · nota «importe estimado» retirada 144 · `deposit_paid` 63 · habitación + `Stay` 25 (de 26; la que queda solapa a la alojada de AS 114) · 0 fallos; 19 tipos sintéticos `sellable = false`; 13 habitaciones vacantes de RA limpias (104, 117 y 411 ocupadas se dejan) |
+
+**Verificación (t7; la final del integrador, t9, está en §19.12):** por hotel y estado = OPERA (confirmed 4.923 · checked_in 148 · checked_out 5.765 · no_show
+74 · cancelled 2.437); `verify` 9/9 OK en los 5 hoteles; en casa a 18/09 148 habitaciones = OPERA (AS 23 · LT 28 ·
+MC 52 · PG 23 · RA 22; `rooms.status = occupied` 148; `stays in_house` 148 con `checkin_at` = llegada 15:00 local);
+llegadas 18/09 `confirmed` 144 (AS 23 · LT 52 · MC 10 · PG 26 · RA 33) y 19/09 82 (AS 16 · LT 5 · MC 15 · PG 16 · RA
+30); RN agosto AS 1.500 · LT 1.728 · MC 2.147 · PG 1.401 · RA 2.196; tipos sintéticos activos 0 y habitaciones
+activas = las vistas en los informes (62 / 92 / 85 / 55 / 102); 0 duplicados por referencia; huéspedes 13.436 = 89
++ 13.347; invariantes idénticas (facturas 33 · VeriFactu 41 · permisos 250 · roles Faranda 24 ·
+`pms_shadow_revenue_imports` 2 · `journal_entries` 143.279); cronograma de RA por API (`GET
+/properties/<RA>/reservations?from=2026-09-01&to=2026-10-01&status=confirmed,checked_in`, instancia propia :3909
+con `RUN_SCHEDULERS=false` y `TENANT_BOOTSTRAP_SKIP=true`, parada después) = 175 (153 + 22) = SQL. Batería SQL
+en `opera-real/prep/logs/t7-verify.sql` (salida `t7-verify.out`). Informe: `docs/audits/TANDA-7D-OPERA-REAL-2026-09-19.md`.
+
+**Avisos y desviaciones con causa (ninguna bloqueante):**
+
+- `OVERBOOKING` en llegadas (LT 1, MC 12) = sobreventa de categoría **de OPERA** (bloques de grupo de Marsol en 4
+  semanas de 2027 con un bloque preasignado a las 12 DND2 físicas y otro sin habitación; una noche de LT DND3):
+  el recuento por noche y tipo en BD solo supera el cupo ahí y en 1 noche histórica de PG DND2 (solape en el
+  informe, habitación blanqueada). Los `OVERBOOKING` de los lotes de estancias (RA 10 · LT 2 · PG 11 · MC 1 · AS 12)
+  son de la regla de rango (§5.1), que suma reservas ya enlazadas por referencia: 0 excesos reales, 0
+  `ROOM_UNAVAILABLE`, 0 dobles asignaciones físicas.
+- 26 estancias cerradas quedaron sin habitación ni `Stay` en t0-t7 (solape en el propio informe: AS 10 · LT 7 ·
+  MC 1 · PG 5 · RA 3); **t8 repuso 25** (habitación por `hab. OPERA n` de las notas + `Stay` cerrada 15:00 →
+  11:00 local); la que queda (AS, ref. 38962355, solapa a la alojada de la 114) debe seguir sin habitación. 21
+  alojados con salida prevista 18/09 (due-out al corte) siguen en casa.
+- 63 reservas llevan un tipo distinto de la categoría reservada (`ROOM_CATEGORY_LABEL`) por la regla «tipo físico
+  dominante de la habitación» (AS 33 · LT 10 · RA 20): la categoría reservada está en las notas («categoría
+  DND3»); es fiel a la habitación física, no a lo vendido (a confirmar con `cf_roomtypes`).
+- 17 reservas reales de OPERA no se cargan por límites del producto: 16 day-use (`NIGHTS = 0`; 1 NO SHOW y 2
+  CANCELLED entre ellas) y 1 cancelada de 734 noches (`prep/<HOTEL>-omitidas.csv`, motivos `day_use` /
+  `over_365`); `verify --in` las muestra en la tabla «OPERA bruto → cargado».
+- Canal / segmento de las 8.424 estancias son INFERIDOS (agencia, `RATE_CODE`, `GROUP_NAME`) y en llegadas
+  `ORIGIN_OF_BOOKING = SAL` / `SLC` sale `corporate` (2.554 filas, MC 2.514 de bloques `GR_*` con segmento
+  `group`): pendiente de `cf_origincodes`.
+- `POSSIBLE_DUPLICATE` (3.204 filas) es la heurística nombre + fechas + tipo: multi-habitación y series de grupos;
+  ninguna por referencia.
+- Persistencia de auditoría: 4 eventos no persistidos por colisión del id corto (`aud_`/`evt_` + 8 hex) con
+  eventos previos del mismo día (RA llegadas 1 `RoomAssigned`; PG estancias 1 `RESERVATION_CANCELLED`; MC
+  llegadas 1 `ROOM_ASSIGNED` + 1 `ReservationCreated`); las reservas y asignaciones están en BD. **La cadena hash
+  queda rota en 4 puntos** (el servicio siguió encadenando con el hash del evento perdido: enlaces con
+  `previous_hash` sin `current_hash` correspondiente), en UTC: `audit_events` PG 2026-09-19 00:50:23.761
+  (`RESERVATION_CREATED`) y MC 00:58:26.374 (`RESERVATION_CREATED`); `event_stream` RA 00:22:00.338
+  (`ReservationCreated`) y MC 00:58:38.027 (`RoomAssigned`). Cualquier verificación de la cadena de PG / MC / RA
+  falla desde ahí. La causa vive en `audit.service.ts` líneas 76 y 107 (fuera de esta tanda): ampliar el id o
+  reintentar con otro id al recibir `Unique constraint failed`; tarea pendiente para el orquestador.
+- Un segundo `apply` del mismo fichero + feed + business date sobre un lote vivo devuelve 409
+  `RESERVATION_IMPORT_DUPLICATE` (comprobado en t6 con dos agentes en paralelo): un solo lote por feed en BD.
+- La CARGA no generó ingresos ni cargos (0 líneas de folio, 0 facturas, 0 asientos nuevos: los informes no traen
+  transaction codes); **los night audits de L5 sí** (153 líneas `room` en RA / LT, §19.8). Las 13.347 reservas
+  llevan el plan BAR por defecto (`RATE_CODE` en notas; `board_type` vacío aunque `PKBB*` son paquetes con
+  desayuno) y la Rate Grid de los 30 tipos OPERA está vacía (§19.11): ninguna cotización L3 devuelve precio.
+  `price_source`: `file` en las 8.568 con total exacto de OPERA (estancias + 144 enlazadas), `quoted` en las
+  4.779 llegadas con total tarifa × noches (en la muestra contrastable de 144 el 27 % difería del total real:
+  pedir a OPERA el informe con total por reserva o rate detail). `rate_days` huérfanos de los tipos sintéticos
+  desactivados: RA 900, LT 1.460.
+
+
+### 19.11 · Mapa de categorías OPERA, huéspedes, tarifas y cronograma (revisión t8, 2026-09-19)
+
+**Mapa `ROOM_CATEGORY_LABEL` → tipo de ehotelOS** (código = código OPERA; nombre PROPUESTO por inferencia,
+`ROOM_TYPE_PROPOSALS` del CLI; **recepción debe confirmarlo con `cf_roomtypes`**; máx. ocupación = máximo observado;
+base 2 salvo `TND*` 1). Habitaciones activas por hotel entre paréntesis:
+
+| Código | Nombre propuesto | Máx. | AS | LT | MC | PG | RA |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `DND2` | Doble estándar | 3 | 5 | 61 | 12 | 25 | 45 |
+| `DND3` | Doble con supletoria / triple | 4 | 29 | 6 | 2 | 3 | 7 |
+| `DND4` | Doble superior | 4 | 17 | — | 9 | — | 30 |
+| `DSD3` | Doble superior vista, triple | 4 | — | — | 10 | — | — |
+| `DSD4` | Doble superior vista mar | 4 | — | — | 29 | — | — |
+| `DSD5` | Doble superior vista premium | 3 | — | — | 10 | — | — |
+| `KND1` | Doble cama king | 3 | — | 16 | 2 | 19 | 10 |
+| `KND2` | Doble king superior | 4 | — | — | — | — | 7 |
+| `KNE1` | King ejecutiva / familiar | 5 | 1 | 3 | — | — | 3 |
+| `TND1` | Individual | 2 | — | 6 | 3 | 8 | — |
+| `TND2` | Individual superior / doble uso individual | 2 | 7 | — | 8 | — | — |
+| `TND3` | Individual superior plus | 2 | 3 | — | — | — | — |
+| `PI` / `PM` | pseudo (uso de casa / paymaster): NO son tipos, filas omitidas | — | 6 / 6 | 9 / 15 | 9 / 15 | 9 / 8 | 9 / 18 |
+
+15 habitaciones aparecen con dos categorías en el periodo (se aplicó la dominante): AS 232, 238, 252, 253, 254 ·
+LT 127, 130 · RA 117, 118, 217, 218, 317, 318, 417, 418 (detalle en `prep/<HOTEL>-inventario.json`, `ambiguous`).
+Los 19 tipos sintéticos (`DBL`, `DBM`, `DSV`, `IND`, `JSU`, `SRA`, `SUI`) están `active = false` y, desde t8,
+`sellable = false`; sus `rate_days` (RA 900, LT 1.460) son huérfanos.
+
+**Huéspedes (decisión pendiente de César / orquestador).** La carga creó **una ficha por reserva** (13.347) sin
+deduplicar: 953 nombres repetidos suman 5.310 fichas (mediana 2, máximo 200) y los 13 nombres con ≥ 50 fichas
+(1.989) son rooming-lists de grupo / touroperador cargadas como huéspedes (100 % con `group_code`; en 11 de 13 el
+nombre coincide con la empresa / agencia / bloque; el de 200 fichas tiene nombre = apellido por la regla «un
+token → ambos» de `splitOperaName`). La única clave de deduplicación fiable de las llegadas, `GUEST_NAME_ID` (id
+interno de perfil OPERA, no es un dato personal), está en `OUTPUT_DENYLIST` y no se conserva. Propuesta: (a)
+decidir si las reservas de grupo sin nombre de persona deben crear ficha (hoy sí) o solo `group_booking`; (b) sacar
+`GUEST_NAME_ID` de la denylist y guardarlo como enlace opaco (`guest_profile_links` / `pms_shadow_links`) para
+deduplicar en cortes futuros; (c) hasta entonces, ninguna fusión de fichas por nombre (minimización: mejor una
+ficha de más que fundir dos personas). La regla de §19.3 sigue siendo «una ficha por reserva».
+
+**Rate Grid (plan de acción, pendiente de datos de César).** Los 30 tipos OPERA tienen 0 `rate_days`: publicar BAR
+(`revenue/actuals.ts` filtra `active + sellable` → `no_rate_days`) y cotizar / crear reservas desde la UI no
+funciona en los 5 hoteles. Opciones: 1) pedir `cf_ratecodeheader` + tarifas por temporada y cargarlas en Rate Grid
+por tipo OPERA (correcto); 2) mientras tanto, derivar una BAR de referencia por tipo y mes de la media de
+`SHARE_AMOUNT` de las reservas con `RATE_CODE = BASE` (SQL en el informe externo §8) y cargarla con
+`rate-grid/bulk-update` marcada como derivada. No se ha ejecutado ninguna de las dos (decisión de negocio).
+
+**Cronograma en vista «mes» (limitación de producto, fuera de esta tanda).**
+`apps/admin-web/src/screens/timeline/LiveTimelineWorkspace.tsx` pide `from/to` ± 1 día con `limit: 500`, no sigue
+`X-Next-Cursor` y no filtra estados: agosto de 2026 tiene 1.089-1.582 reservas por hotel en la ventana de 32 días
+(RA 1.121 · LT 1.112 · PG 1.164 · MC 1.582 · AS 1.089; MC 18/09 → 20/10 = 593), así que la vista mes pinta solo las
+500 últimas llegadas y omite el resto sin aviso. Las vistas semana / 14 días caben (RA 13-26/09 = 335, LT 433, MC
+256). Para verificar ocupación histórica: vista semana, o el API con `status=confirmed,checked_in` y cursor.
+Propuesta al orquestador: seguir el cursor o filtrar estados vivos en `LiveTimelineWorkspace`.
+
+**Residuos de la demo de RA con salida futura (decisión pendiente).** `RES-00006` (411, 16 → 20/09), `RES-00007`
+(601, 17 → 19/09), `RES-00008` (202, 18 → 20/09) y `RES-00156` (119, 17 → 19/09) son `checked_out` por el check-out
+sombra de t0 pero conservan su `departure_date` original, así que siguen en el cronograma (la 411 muestra tres
+barras el 19/09: demo + alojado real + llegada real) y en Mi día (`departuresToday` de RA cuenta 2 de demo).
+`PATCH` no admite reservas cerradas y no hay otro mecanismo de producto: la corrección sería
+`departure_date = 2026-09-19` (día del check-out sombra) para esas 4 por el orquestador (SQL en el informe externo
+§7), o aceptarlas como historial. `RES-00028` (616, 10 → 12/07/2027, cerrada) es un residuo anterior a la tanda.
+
+### 19.12 · Verificación final del integrador (t9, 2026-09-19 05:10-05:17 CEST)
+
+Estado de la BD local sin ningún cambio de datos desde t8. Esta verificación no escribió reservas, folios, fechas
+de negocio ni inventario (13.466 filas de `reservations` antes y después); su única huella son 6 eventos de
+auditoría de inicio de sesión de la instancia :3909 (ver «Escrituras»).
+
+- **SQL** (`opera-real/prep/logs/t9-verify.sql`, salida `t9-verify.out`; batería de t7 + secciones R-Z y L3):
+  reservas reales 13.347 = confirmed 4.923 · checked_in 148 · checked_out 5.765 · no_show 74 · cancelled 2.437 (AS
+  1.800 · LT 2.124 · MC 5.403 · PG 2.050 · RA 1.970); en casa por habitación 148 = OPERA (`rooms.status = occupied`
+  148, `stays in_house` 148); llegadas 18/09 `confirmed` 144 (+ 3 `checked_in`) y 19/09 82; RN agosto 8.972; 0
+  duplicados por referencia; enlaces sombra 13.347 reales (+ 34 de la demo de RA); huéspedes de Faranda 13.436
+  (13.347 vínculos `reservation_guests`, 13.347 huéspedes distintos); tipos activos y vendibles 30 / 19 sintéticos
+  `active = false, sellable = false`; habitaciones activas y vendibles AS 62 · LT 92 · MC 85 · PG 55 · RA 102; cupo por
+  tipo: los 3 excesos de OPERA (MC DND2 19 noches de 2027, LT DND3 26/09, PG DND2 04/09); **dobles asignaciones
+  físicas con alguna reserva viva: 0**; entre estancias cerradas 28 pares / 35 noches (AS 9 / 11 · LT 9 / 13 · MC 1 / 1
+  · PG 5 / 5 · RA 4 / 5) = los cambios de habitación a mitad de estancia que t8 conserva por diseño (t7 daba 0
+  porque los blanqueaba); `guarantee_type` 7.434 · `price_source` `quoted` 4.779 / `file` 8.568 · `deposit_paid` 63 ·
+  cerradas sin `Stay` 1 (AS); invariantes idénticas (facturas 33 / RA 25 · VeriFactu 41 / RA 33 · permisos 250 ·
+  roles Faranda 24 · asignaciones de rol vivas de Faranda 31 + 1 revocada · `pms_shadow_revenue_imports` 2 ·
+  `journal_entries` 143.279); `users` 33 (Faranda 32), 0 creados hoy; `rate_days` huérfanos RA 900 · LT 1.460.
+- **0 usuarios de OPERA en la BD**: los 83 valores distintos de `INSERT_USER` / `UPDATE_USER` de los 10 xlsx (42 con
+  correo; 125 tokens contando la parte local del correo) no aparecen en `users` (correo ni nombre), `guests.email`,
+  `reservations.notes`, `reservation_import_rows` (avisos y errores), `audit_events` ni `event_stream`: 0 en las 8
+  comprobaciones (fichero temporal con permisos 600, borrado al terminar); 0 `@` en los 15 CSV del prep y en los
+  logs; 0 tarjetas.
+- **`verify --in` × 5** (`opera-real/prep/logs/<HOTEL>-verify-t9.txt`): 13/13 OK y «Todo cuadra» en RA, LT, PG, MC y
+  AS; cuerpo idéntico al de t8.
+- **API** (instancia propia :3909 arrancada desde el worktree con `PORT=3909 RUN_SCHEDULERS=false
+  TENANT_BOOTSTRAP_SKIP=true node --env-file-if-exists=../../.env --import tsx src/server.ts`, parada al terminar;
+  `opera-real/prep/logs/t9-api-3909.txt`): `GET /properties/<RA>/reservations?from=2026-09-01&to=2026-10-01&status=confirmed,checked_in&limit=500&envelope=1`
+  → **175** (153 + 22; `X-Total-Count` 175, 172 con habitación, 175 con referencia OPERA, llegadas 19/08-30/09) y
+  `<LT>` → **302** (274 + 28; 146 con habitación: las llegadas sin `DISP_ROOM_NO` no la tienen); noches con reservas
+  vivas RA 18/09 52 · 19/09 65 · 20/09 42 · 21/09 48 · 22/09 50 · 23/09 56 · 24/09 49 · 25/09 16 · 26/09 20 y LT 71 · 73 ·
+  64 · 37 · 56 · 67 · 86 · 86 · 69 = SQL; vista semana de RA sin filtro de estado (12-27/09) 430 items (< 500: cabe), con
+  24 residuos de la demo (4 cerradas con salida ≥ 19/09 en 411 / 601 / 202 / 119 y 20 canceladas o cerradas de
+  septiembre) y 1 habitación con dos barras el 19/09 (411: llegada real + `RES-00006` cerrada hasta el 20/09);
+  llegadas 18/09 y 19/09 por API = SQL en los 5 hoteles (RA 34 / 30 · LT 53 / 5 · PG 27 / 16 · MC 10 / 15 · AS 23 / 16,
+  `confirmed` + `checked_in`); Mi día (`GET /dashboards/front-desk?propertyId=…`): llegadas · salidas · saldo
+  pendiente RA 30 · 12 (10 reales + 2 demo) · 6.312,68 € — LT 5 · 2 · 5.751,57 € — PG 16 · 6 · 0 — MC 15 · 23 · 0 — AS 16 ·
+  10 · 0 (en casa = `inHouseNow` + salidas de hoy + vencidas: RA 9 + 10 + 3 = 22 · LT 17 + 2 + 9 = 28 · PG 10 + 6 + 7 =
+  23 · MC 29 + 23 + 0 = 52 · AS 11 + 10 + 2 = 23); inventario por API = SQL (tipos activos 6 / 5 / 4 / 9 / 6, todos con
+  código OPERA; habitaciones activas y vendibles 102 / 92 / 55 / 85 / 62); RBAC: `recepcion.rias` sobre las reservas
+  de LT → 404 opaco. La contraseña de `recepcion.tilos` no es la del seed (1 intento, 401, sin reintentos): LT se
+  consultó con el superusuario demo de `HOTELOS_ALLOW_DEMO_AUTH`.
+- **Puertas** (05:10 CEST): `corepack pnpm --filter @hotelos/api typecheck` OK · `corepack pnpm --filter
+  @hotelos/api test` 2.351 tests · 2.350 pass · 1 skipped (preexistente) · 0 fail.
+- **Escrituras de la verificación y ruido concurrente**: la instancia :3909 escribió 6 `audit_events` (4
+  `AUTH_LOGIN`, 1 `LOGIN_FAILED`, 1 `ACCESS_DENIED`); con :3000 vivo eso añade 2 puntos de bifurcación a la cadena
+  en memoria (deuda 12(c) del CLAUDE.md; hoy hay 52 puntos de bifurcación / 127 eventos en `audit_events`, casi
+  todos de L5, t8 y suites). En el mismo minuto (03:15:19-22 UTC) otra sesión ejecutó una suite de integración
+  contra la misma BD como `usr_123` (`PROPERTY_SWITCHED` × 11, `ROLE_CREATED_FROM_TEMPLATE`,
+  `SES_HOSPEDAJES_SUBMISSION_REFUSED`, `RESERVATION_CREATED` × 3 en RA, borradas después: 0 reservas creadas hoy
+  en RA). Las cadenas conservan eventos de reservas que ya no existen; nada de esto es de la tanda.
+- **Fechas de negocio y L5 (sin cambios desde t8)**: RA = LT = AS = 2026-09-19, MC 09-17, PG 09-16; `night_audit_runs`
+  11 `completed`; 108 llegadas del 18/09 siguen `confirmed` (RA 33 · LT 52 · AS 23); 153 líneas `room` (15.867,35 €) en
+  47 folios reales de RA / LT y 12 noches posteriores a la salida (1.152,74 €); 0 `no_show` desde el corte. Folios
+  de reservas reales: cerrados AS 1.065 · LT 1.603 · MC 1.282 · PG 983 · RA 1.565; abiertos 735 · 521 · 4.121 · 1.067 · 405.

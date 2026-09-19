@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 import type { NormalizedReservationRow } from "@hotelos/shared";
 import type { UserContext } from "../../../lib/demo-store.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../../lib/http-error.js";
-import { buildCreateReservationInput, deriveImportStatus, importBadRequest, importConflict, importNotFound, sanitizeRowError } from "../reservation-import.service.js";
+import { RESERVATION_IMPORT_EXTRA_COLUMNS, arrivalCheckInAt, buildCreateReservationInput, deriveImportStatus, extraColumnNames, extraOf, importBadRequest, importConflict, importNotFound, resolveExtraColumns, sanitizeRowError } from "../reservation-import.service.js";
 
 const context = {
   organizationId: "org_test",
@@ -83,6 +83,19 @@ describe("deriveImportStatus", () => {
     assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 1, updatedCount: 2, unchangedCount: 0, transitionedCount: 0 }), "partial");
     assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 1, updatedCount: 0, unchangedCount: 0, transitionedCount: 0 }), "failed");
     assert.equal(deriveImportStatus({ createdCount: 2, skippedCount: 0, errorCount: 0, updatedCount: 0, unchangedCount: 0, transitionedCount: 0 }), "imported");
+  });
+});
+
+describe("arrivalCheckInAt (Tanda 7d · check-in sombra de estancias ya en casa)", () => {
+  it("llegada a las 15:00 hora local del hotel en UTC: verano (CEST, +2) e invierno (CET, +1)", () => {
+    assert.equal(arrivalCheckInAt("2026-09-15", "Europe/Madrid").toISOString(), "2026-09-15T13:00:00.000Z");
+    assert.equal(arrivalCheckInAt("2026-01-01", "Europe/Madrid").toISOString(), "2026-01-01T14:00:00.000Z");
+    assert.equal(arrivalCheckInAt("2026-09-15", "Atlantic/Canary").toISOString(), "2026-09-15T14:00:00.000Z");
+    assert.equal(arrivalCheckInAt("2026-09-15", "UTC").toISOString(), "2026-09-15T15:00:00.000Z");
+  });
+
+  it("zona horaria inválida → 15:00 UTC (misma tolerancia que zonedDateTimeToUtc)", () => {
+    assert.equal(arrivalCheckInAt("2026-09-15", "No/Existe").toISOString(), "2026-09-15T15:00:00.000Z");
   });
 });
 
@@ -261,5 +274,42 @@ describe("buildCreateReservationInput", () => {
     for (const key of ["ratePlanId", "boardType", "sourceCode", "marketSegment", "externalReference", "companyName", "travelAgentName", "groupCode", "depositAmount", "paymentMethod", "estimatedArrivalTime", "eta", "specialRequests", "notes", "bookerEmail"]) {
       assert.equal(key in minimal, false, `${key} ausente`);
     }
+  });
+});
+
+describe("Tanda 7d · columnas extra (garantia, importe_estimado, deposito_pagado)", () => {
+  it("resolveExtraColumns: por nombre de cabecera, sin distinguir mayúsculas ni espacios; ausentes → −1", () => {
+    const header = ["referencia_externa", "llegada", " Garantia ", "importe_estimado", "notas"];
+    const index = resolveExtraColumns(header);
+    assert.deepEqual(index, { guaranteeType: 2, estimatedTotal: 3, depositPaid: -1 });
+    assert.deepEqual(extraColumnNames(header, index), [" Garantia ", "importe_estimado"]);
+    assert.deepEqual(resolveExtraColumns(["a", "b"]), { guaranteeType: -1, estimatedTotal: -1, depositPaid: -1 });
+    assert.deepEqual(resolveExtraColumns(["GUARANTEE_CODE", "deposit_paid"]), { guaranteeType: 0, estimatedTotal: -1, depositPaid: 1 }, "sinónimos");
+    assert.ok(RESERVATION_IMPORT_EXTRA_COLUMNS.guaranteeType.includes("garantia"));
+  });
+
+  it("extraOf: garantía en mayúsculas (≤ 20), estimado solo con si/1/true, depósito numérico > 0; sin nada → undefined", () => {
+    const index = { guaranteeType: 0, estimatedTotal: 1, depositPaid: 2 };
+    assert.deepEqual(extraOf([" dp-rec ", "si", "150,50"], index), { guaranteeType: "DP-REC", totalEstimated: true, depositPaid: 150.5 });
+    assert.deepEqual(extraOf(["cc", "no", "0"], index), { guaranteeType: "CC" });
+    assert.deepEqual(extraOf(["", "1", "abc"], index), { totalEstimated: true });
+    assert.equal(extraOf(["", "", ""], index), undefined);
+    assert.equal(extraOf(["4P"], { guaranteeType: -1, estimatedTotal: -1, depositPaid: -1 }), undefined, "sin columnas extra nada se lee");
+    assert.equal(extraOf(["x".repeat(30), "", ""], index)!.guaranteeType!.length, 20);
+  });
+
+  it("buildCreateReservationInput: `extra` → guaranteeType y depositPaid; totalSource quoted → priceSource quoted; sin extra nada cambia", () => {
+    const withExtra = buildCreateReservationInput({ context, propertyId: "prop_test", importId: "imp_1", row: normalizedRow({ totalSource: "quoted" }), extra: { guaranteeType: "CC", depositPaid: 40 }, correlationId: "corr_1" });
+    assert.equal(withExtra.guaranteeType, "CC");
+    assert.equal(withExtra.depositPaid, 40);
+    assert.equal(withExtra.priceSource, "quoted", "importe estimado tarifa × noches = cotizado, no exacto del fichero");
+    assert.equal(withExtra.depositAmount, 50, "`deposito` (solicitado) sigue viniendo del campo canónico");
+    const without = buildCreateReservationInput({ context, propertyId: "prop_test", importId: "imp_1", row: normalizedRow(), correlationId: "corr_1" });
+    assert.equal("guaranteeType" in without, false);
+    assert.equal("depositPaid" in without, false);
+    assert.equal("priceSource" in without, false, "total exacto del fichero: price_source por defecto (file)");
+    const onlyEstimated = buildCreateReservationInput({ context, propertyId: "prop_test", importId: "imp_1", row: normalizedRow(), extra: { totalEstimated: true }, correlationId: "corr_1" });
+    assert.equal("guaranteeType" in onlyEstimated, false);
+    assert.equal("depositPaid" in onlyEstimated, false);
   });
 });

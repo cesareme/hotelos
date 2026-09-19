@@ -47,7 +47,8 @@ const CATALOGS: ReservationImportCatalogs = {
   ],
   defaultRatePlanId: "rp_bar",
   currency: "EUR",
-  businessDate: "2026-09-16", today: "2026-09-16"
+  businessDate: "2026-09-16", today: "2026-09-16",
+  timezone: "Europe/Madrid"
 };
 
 const FIELDS: readonly ReservationImportField[] = RESERVATION_IMPORT_FIELDS;
@@ -460,6 +461,17 @@ describe("normalizeTable · duplicados dentro del fichero y veredicto", () => {
   const csv = (...rows: string[]): string => [HEADER, ...rows].join("\n") + "\n";
   const table = (text: string, historico = false) => normalizeTable(parseCsvTable(text), null, CATALOGS, { historico });
 
+  it("Tanda 7d (FO-04): dos estancias CERRADAS solapadas en la misma habitación (cambio de habitación a mitad de estancia) no son ROOM_DUPLICATE_IN_FILE; cerrada + viva sí", () => {
+    // today = 2026-09-16: llegadas pasadas con salida ≤ hoy y «histórico» → historical.
+    const closedPair = table(csv("H1;2026-08-10;2026-08-17;DBL;111;Prueba;Inventado;;", "H2;2026-08-11;2026-08-13;DBL;111;Ejemplo;Probando;;"), true);
+    assert.deepEqual(closedPair.rows.map((row) => row.status), ["warning", "warning"], "las dos históricas (aviso HISTORICAL) conservan la habitación");
+    assert.ok(closedPair.rows.every((row) => row.normalized?.historical === true && row.normalized.roomId));
+    assert.ok(!closedPair.rows.some((row) => row.issues.some((issue) => issue.code === "RESERVATION_IMPORT_ROW_ROOM_DUPLICATE_IN_FILE")));
+    // Dos VIVAS solapadas (futuras) siguen siendo un choque: la regla solo se relaja cuando LAS DOS son cerradas.
+    const livePair = table(csv("L1;2026-10-10;2026-10-17;DBL;111;Prueba;Inventado;;", "L2;2026-10-11;2026-10-13;DBL;111;Ejemplo;Probando;;"), true);
+    assert.deepEqual(codes(livePair.rows[1]!), ["RESERVATION_IMPORT_ROW_ROOM_DUPLICATE_IN_FILE"]);
+  });
+
   it("habitación repetida con noches solapadas → ROOM_DUPLICATE_IN_FILE (error) en la fila posterior; sin solape → nada", () => {
     const overlapping = table(csv("A;2026-10-12;2026-10-15;DBL;111;Lucía;Ferreiro;;", "B;2026-10-14;2026-10-16;DBL;111;Marek;Nowak;;"));
     assert.deepEqual(overlapping.rows.map((row) => row.status), ["valid", "error"]);
@@ -652,7 +664,8 @@ describe("plantilla oficial (diseño §2.4) · ida y vuelta CSV → XLSX", () =>
     rooms: [{ id: "room_111", number: "111", roomTypeId: "rt_dbl" }],
     defaultRatePlanId: "rp_bar",
     currency: "EUR",
-    businessDate: "2026-09-16", today: "2026-09-16"
+    businessDate: "2026-09-16", today: "2026-09-16",
+    timezone: "Europe/Madrid"
   };
 
   it("las dos filas de ejemplo son válidas sin incidencias y el hash coincide leído desde el .xlsx equivalente", () => {
@@ -780,6 +793,68 @@ describe("normalizeRow · modo sync (Tanda 7b)", () => {
     assert.ok(!codes(create).includes("RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE"));
     assert.ok(create.normalized);
     for (const issue of missing.issues) assert.doesNotMatch(issue.message, /Ferreiro|example/);
+  });
+
+  // ---- Tanda 7d · carga real OPERA: frontera de «llegada pasada» = min(business date del corte, hoy) ----
+  describe("cutBusinessDate (Tanda 7d): destino confirmed con llegada en [corte, hoy)", () => {
+    const TODAY_19: ReservationImportCatalogs = { ...CATALOGS, businessDate: "2026-09-19", today: "2026-09-19" };
+    function cut(overrides: Overrides, options: Partial<typeof SYNC> & { cutBusinessDate?: string } = {}) {
+      const cells = cellsOf(overrides);
+      return normalizeRow({ rowNumber: 1, cells, kinds: cells.map((cell) => (cell === "" ? "empty" : "string")) }, FIELDS, TODAY_19, { ...SYNC, cutBusinessDate: "2026-09-18", ...options });
+    }
+
+    it("RESERVED con llegada 2026-09-18 (corte 18, hoy 19) → sin PAST_ARRIVAL, destino confirmed, estado confirmada", () => {
+      const result = cut({ estado: "RESERVED", llegada: "2026-09-18", salida: "2026-09-20" });
+      assert.ok(!codes(result).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+      assert.equal(result.normalized?.targetStatus, "confirmed");
+      assert.equal(result.normalized?.estado, "confirmada");
+      assert.equal(result.normalized?.historical, false);
+      assert.equal(result.normalized?.inHouse, undefined);
+      assert.equal(rowStatusFromIssues(result.issues), "valid");
+    });
+
+    it("RESERVED con llegada 2026-09-17 (anterior al corte) → PAST_ARRIVAL con la frontera en details", () => {
+      const result = cut({ estado: "RESERVED", llegada: "2026-09-17", salida: "2026-09-20" });
+      assert.ok(codes(result).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+      assert.equal(result.normalized, undefined);
+      const issue = result.issues.find((candidate) => candidate.code === "RESERVATION_IMPORT_ROW_PAST_ARRIVAL")!;
+      assert.equal(issue.details?.frontier, "2026-09-18");
+      assert.equal(issue.details?.today, "2026-09-19");
+      assert.match(issue.message, /2026-09-18/);
+    });
+
+    it("en create la llegada 2026-09-18 sigue siendo PAST_ARRIVAL (la frontera de create es hoy, sin cutBusinessDate)", () => {
+      const cells = cellsOf({ llegada: "2026-09-18", salida: "2026-09-20" });
+      const created = normalizeRow({ rowNumber: 1, cells, kinds: cells.map((cell) => (cell === "" ? "empty" : "string")) }, FIELDS, TODAY_19, { historico: false, splitName: false, cutBusinessDate: "2026-09-18" });
+      assert.ok(codes(created).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"), "sin mode sync la opción no adelanta la frontera");
+      const issue = created.issues.find((candidate) => candidate.code === "RESERVATION_IMPORT_ROW_PAST_ARRIVAL")!;
+      assert.equal(issue.details?.frontier, "2026-09-19");
+      assert.match(issue.message, /anterior a hoy \(2026-09-19\)/);
+    });
+
+    it("cutBusinessDate posterior a hoy no adelanta la frontera (sigue siendo hoy); sin cutBusinessDate, regla de siempre", () => {
+      const later = cut({ estado: "RESERVED", llegada: "2026-09-18", salida: "2026-09-20" }, { cutBusinessDate: "2026-09-25" });
+      assert.ok(codes(later).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+      assert.equal(later.issues.find((candidate) => candidate.code === "RESERVATION_IMPORT_ROW_PAST_ARRIVAL")?.details?.frontier, "2026-09-19");
+      const today = cut({ estado: "RESERVED", llegada: "2026-09-19", salida: "2026-09-20" }, { cutBusinessDate: "2026-09-25" });
+      assert.ok(!codes(today).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+      const none = cut({ estado: "RESERVED", llegada: "2026-09-18", salida: "2026-09-20" }, { cutBusinessDate: undefined });
+      assert.ok(codes(none).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+      // Los destinos con frontera relajada no cambian: CHECKED IN con llegada 17 sigue siendo inHouse.
+      const inHouse = cut({ estado: "CHECKED IN", llegada: "2026-09-17", salida: "2026-09-20" });
+      assert.equal(inHouse.normalized?.inHouse, true);
+    });
+
+    it("normalizeTable propaga cutBusinessDate a las filas", () => {
+      const header = ["referencia_externa", "llegada", "salida", "tipo_habitacion", "nombre", "apellidos", "estado"];
+      const rows = [["OP-1", "2026-09-18", "2026-09-20", "DBL", "Lucía", "Ferreiro", "RESERVED"]];
+      const parsed = { header, rows: rows.map((cells, index) => ({ rowNumber: index + 1, line: index + 2, cells, kinds: cells.map(() => "string" as const) })) };
+      const withCut = normalizeTable(parsed, null, TODAY_19, { historico: false, mode: "sync", statusMap: OPERA_CLOUD_STATUS_MAP, cutBusinessDate: "2026-09-18" });
+      assert.equal(withCut.rows[0]!.status, "valid");
+      assert.equal(withCut.rows[0]!.normalized?.targetStatus, "confirmed");
+      const withoutCut = normalizeTable(parsed, null, TODAY_19, { historico: false, mode: "sync", statusMap: OPERA_CLOUD_STATUS_MAP });
+      assert.equal(withoutCut.rows[0]!.status, "error");
+    });
   });
 
   it("normalizeTable con mode sync propaga targetStatus e inHouse; en create no existe targetStatus y los sinónimos de estado siguen mandando", () => {
