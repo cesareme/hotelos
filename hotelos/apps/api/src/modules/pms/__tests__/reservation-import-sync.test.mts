@@ -114,7 +114,8 @@ const CATALOGS: ReservationImportCatalogs = {
   defaultRatePlanId: "rp_bar",
   currency: "EUR",
   businessDate: "2026-09-17",
-  today: "2026-09-17"
+  today: "2026-09-17",
+  timezone: "Europe/Madrid"
 };
 
 describe("resolveProfileMapping · perfil OPERA Cloud", () => {
@@ -216,6 +217,19 @@ describe("resolveSyncTargetStatus · estados OPERA (diseño §4.1)", () => {
     assert.equal(resolveSyncTargetStatus("Reserved", { reserved: "draft" as ReservationSyncTargetStatus }), null, "valor fuera del catálogo → null");
     assert.equal(foldStatusLiteral(" Checked  In "), "checked_in");
     assert.equal(foldStatusLiteral("NO SHOW"), "no_show");
+  });
+
+  it("sync sin perfil resuelve los literales RESV_STATUS reales (Tanda 7d: statusMap por defecto = OPERA_CLOUD_PROFILE.statusMap)", () => {
+    // El servicio, sin `profile`, ya no arranca con `{}`: hereda el diccionario del perfil OPERA Cloud.
+    const statusMap = OPERA_CLOUD_PROFILE.statusMap;
+    assert.equal(resolveSyncTargetStatus("CHECKED OUT", statusMap), "checked_out");
+    assert.equal(resolveSyncTargetStatus("CHECKED IN", statusMap), "checked_in");
+    assert.equal(resolveSyncTargetStatus("RESERVED", statusMap), "confirmed");
+    assert.equal(resolveSyncTargetStatus("NO SHOW", statusMap), "no_show");
+    assert.equal(resolveSyncTargetStatus("CANCELLED", statusMap), "cancelled");
+    assert.equal(resolveSyncTargetStatus("WAITLIST", statusMap), "skip");
+    assert.equal(resolveSyncTargetStatus("", statusMap), null);
+    assert.equal(statusMap, OPERA_CLOUD_STATUS_MAP, "el perfil expone el mismo diccionario");
   });
 });
 

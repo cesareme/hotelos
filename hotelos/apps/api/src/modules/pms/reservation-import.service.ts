@@ -207,7 +207,6 @@ type CreateReservationInput = Parameters<typeof createReservation>[0];
 
 /** Catálogos de la propiedad ya cargados (normalización + planificador + DTO de la preview). */
 type LoadedCatalogs = ReservationImportCatalogs & {
-  timezone: string;
   inventory: AvailabilityInventory[];
   wire: ReservationImportCatalog;
 };
@@ -229,10 +228,60 @@ type AnalysisSync = {
   statusMap: PmsShadowStatusMap;
 };
 
+/**
+ * Tanda 7d (carga real OPERA, FO-02 / FO-03 / FO-07): columnas EXTRA del fichero sin campo canónico, reconocidas
+ * por NOMBRE de cabecera (case-insensitive) y solo aplicadas al crear la reserva:
+ *   · `garantia` → `guarantee_type` (código de garantía del PMS de origen: CC, 4P, 6P, DB, PD, DP, DP-REC, VC, DG…);
+ *   · `importe_estimado` («si» / «1» / «true») → el importe del fichero es una estimación (tarifa × noches):
+ *     `totalSource = quoted` (price_source `quoted`), cuenta como cotizado en los totales y NUNCA pisa el total
+ *     exacto de una reserva enlazada (diffFields solo compara importes `file`);
+ *   · `deposito_pagado` → `deposit_paid` (importe ya cobrado; `deposito` sigue siendo el depósito solicitado).
+ * Una reserva enlazada no actualiza estos campos (ReservationShadowPatch no los admite).
+ */
+export const RESERVATION_IMPORT_EXTRA_COLUMNS = Object.freeze({ guaranteeType: ["garantia", "guarantee_code", "garantia_codigo"], estimatedTotal: ["importe_estimado", "total_estimado"], depositPaid: ["deposito_pagado", "deposit_paid"] });
+
+export type ReservationImportExtraIndex = { guaranteeType: number; estimatedTotal: number; depositPaid: number };
+
+export type ReservationImportExtra = { guaranteeType?: string; totalEstimated?: boolean; depositPaid?: number };
+
+/** Índice (−1 = ausente) de cada columna extra en la cabecera; puro. */
+export function resolveExtraColumns(header: readonly string[]): ReservationImportExtraIndex {
+  const normalized = header.map((column) => column.trim().toLowerCase());
+  const find = (names: readonly string[]): number => {
+    for (const name of names) {
+      const index = normalized.indexOf(name);
+      if (index >= 0) return index;
+    }
+    return -1;
+  };
+  return { guaranteeType: find(RESERVATION_IMPORT_EXTRA_COLUMNS.guaranteeType), estimatedTotal: find(RESERVATION_IMPORT_EXTRA_COLUMNS.estimatedTotal), depositPaid: find(RESERVATION_IMPORT_EXTRA_COLUMNS.depositPaid) };
+}
+
+/** Nombres de cabecera reconocidos como columnas extra (para retirarlos del aviso «columnas sin mapear»). */
+export function extraColumnNames(header: readonly string[], index: ReservationImportExtraIndex): string[] {
+  return [index.guaranteeType, index.estimatedTotal, index.depositPaid].filter((position) => position >= 0).map((position) => header[position] ?? "");
+}
+
+const ESTIMATED_TRUE = /^(si|sí|s|1|true|yes|x)$/i;
+
+/** Valores extra de una fila (celdas recortadas; garantía en mayúsculas ≤ 20 caracteres; depósito numérico > 0). Puro. */
+export function extraOf(cells: readonly string[], index: ReservationImportExtraIndex): ReservationImportExtra | undefined {
+  const cell = (position: number): string => (position >= 0 ? (cells[position] ?? "").trim() : "");
+  const out: ReservationImportExtra = {};
+  const guarantee = cell(index.guaranteeType).toUpperCase().slice(0, 20);
+  if (guarantee !== "") out.guaranteeType = guarantee;
+  if (ESTIMATED_TRUE.test(cell(index.estimatedTotal))) out.totalEstimated = true;
+  const deposit = Number(cell(index.depositPaid).replace(/\s/g, "").replace(",", "."));
+  if (Number.isFinite(deposit) && deposit > 0) out.depositPaid = Math.round(deposit * 100) / 100;
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
 /** Fila analizada: la fila normalizada de L1 más lo que solo la BD sabe. */
 type AnalysedRow = NormalizedTableRow & {
   /** Valores personales de la fila (`personalValuesOf`): lo único que `stripRowValues` borra de un mensaje (T7-FUN-02). */
   personalValues: string[];
+  /** Tanda 7d: columnas extra (`garantia`, `importe_estimado`, `deposito_pagado`) de la fila, si el fichero las trae. */
+  extra?: ReservationImportExtra;
   /** Huésped existente hallado en la preview (documento > e-mail); el commit lo vuelve a resolver fila a fila. */
   guestId?: string;
   guestReuse: ReservationImportGuestReuse | null;
@@ -338,6 +387,45 @@ function money(value: Prisma.Decimal | string | number | null | undefined): Mone
 
 function label(field: ReservationImportField): string {
   return `«${RESERVATION_IMPORT_LABELS_ES[field]}»`;
+}
+
+/**
+ * Tanda 7d · carga real OPERA: instante UTC de «<llegada> a las 15:00» en la zona
+ * horaria de la propiedad (misma regla que `Stay.checkinAt` de una reserva
+ * histórica en createReservation, pms.service.ts). Implementación local con
+ * Intl (`formatToParts`, `hourCycle: "h23"`): se calcula el desfase de la zona en
+ * ese instante y, si la zona no es válida, se toma UTC. Puro; exportado para los tests.
+ */
+export function arrivalCheckInAt(arrivalDate: IsoDate, timezone: string): Date {
+  const [year, month, day] = arrivalDate.split("-").map(Number) as [number, number, number];
+  const guess = Date.UTC(year, month - 1, day, 15, 0, 0, 0);
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    }).formatToParts(new Date(guess));
+    const part = (type: string): number => Number(parts.find((p) => p.type === type)?.value ?? "0");
+    const wallAsUtc = Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"), part("second"));
+    return new Date(guess - (wallAsUtc - guess));
+  } catch {
+    return new Date(guess);
+  }
+}
+
+/**
+ * Tanda 7d: tras un check-in sombra (transición `check_in`), `checkInReservation`
+ * ha creado la `Stay` con `checkinAt = ahora`; en una carga de estancias ya en
+ * casa el instante real es la llegada a las 15:00 hora local del hotel.
+ * `check_in_and_out` no pasa por aquí (las CHECKED OUT nacen históricas).
+ */
+async function fixStayCheckInAt(reservationId: string, arrivalDate: IsoDate, timezone: string): Promise<void> {
+  await prisma.stay.updateMany({ where: { reservationId, status: "in_house" }, data: { checkinAt: arrivalCheckInAt(arrivalDate, timezone) } });
 }
 
 function severityOf(code: ReservationImportRowCode): "error" | "skipped" | "warning" {
@@ -661,6 +749,10 @@ async function annotatePossibleDuplicates(rows: AnalysedRow[], propertyId: strin
 async function annotateRooms(rows: AnalysedRow[], propertyId: string): Promise<void> {
   for (const row of rows) {
     if (!isPlanned(row) || !row.normalized.roomId) continue;
+    // Tanda 7d (FO-04): una estancia cerrada es historia: su habitación no tiene que estar «libre» hoy (la
+    // reserva nace checked_out con su Stay cerrada y no consume inventario); canAssignRoom la rechazaría si la
+    // habitación está ocupada ahora por otro huésped.
+    if (row.normalized.historical) continue;
     // Una reserva alojada no cambia de habitación desde el corte (SYNC_ROOM_MOVE_IGNORED): no hay nada que validar.
     if (row.sync?.link && !row.sync.reactivate && row.sync.link.reservation.status === "checked_in") continue;
     const validation = await canAssignRoom({
@@ -900,7 +992,11 @@ export async function analyse(input: { context: UserContext; propertyId: string;
     if (!isValidIsoDate(options.businessDate)) {
       return fail("RESERVATION_IMPORT_SYNC_REQUIRES_FEED", "businessDate debe ser una fecha real con el formato AAAA-MM-DD.", { businessDate: options.businessDate });
     }
-    syncContext = { feed: options.feed, businessDate: options.businessDate, horizonDays: options.horizonDays ?? RESERVATION_IMPORT_SYNC_DEFAULT_HORIZON_DAYS, profile: options.profile ?? null, statusMap: {} };
+    // Tanda 7d (carga real OPERA): sin perfil, `sync` hereda el diccionario de estados de OPERA Cloud
+    // (los literales reales de RESV_STATUS «CHECKED OUT», «CHECKED IN», «RESERVED», «NO SHOW», «CANCELLED»
+    // → checked_out / checked_in / confirmed / no_show / cancelled vía foldValue + resolveSyncTargetStatus).
+    // Antes era `{}` y toda fila salía INVALID_STATUS; también afecta a la ruta HTTP con mode sync sin profile.
+    syncContext = { feed: options.feed, businessDate: options.businessDate, horizonDays: options.horizonDays ?? RESERVATION_IMPORT_SYNC_DEFAULT_HORIZON_DAYS, profile: options.profile ?? null, statusMap: OPERA_CLOUD_PROFILE.statusMap };
   }
   if (body.headerOverride !== undefined) {
     try {
@@ -968,9 +1064,14 @@ export async function analyse(input: { context: UserContext; propertyId: string;
     if (strict) throw importBadRequest("RESERVATION_IMPORT_MAPPING_INCOMPLETE", message, { missing: applied.missingRequired });
     blockers.push({ code: "RESERVATION_IMPORT_MAPPING_INCOMPLETE", message, details: { missing: applied.missingRequired } });
   }
+  // Tanda 7d: columnas extra sin campo canónico (garantía, importe estimado, depósito pagado) reconocidas por nombre.
+  const extraIndex = resolveExtraColumns(parsed.header);
+  const extraNames = new Set(extraColumnNames(parsed.header, extraIndex));
+  const ignoredColumns = applied.unmappedColumns.filter((column) => !extraNames.has(column));
+  if (extraNames.size > 0) warnings.push(`${extraNames.size} columna(s) extra reconocida(s): ${[...extraNames].map((column) => `«${column}»`).join(", ")} (garantía, importe estimado y depósito pagado se aplican al crear la reserva).`);
   // Con perfil, las columnas ignoradas lo son por diseño (PII de tarjeta, descuentos…): sin aviso.
-  if (applied.unmappedColumns.length > 0 && !profileApplied) {
-    warnings.push(`${applied.unmappedColumns.length} columna(s) del fichero sin mapear se ignoran: ${applied.unmappedColumns.map((column) => `«${column}»`).join(", ")}.`);
+  if (ignoredColumns.length > 0 && !profileApplied) {
+    warnings.push(`${ignoredColumns.length} columna(s) del fichero sin mapear se ignoran: ${ignoredColumns.map((column) => `«${column}»`).join(", ")}.`);
   }
 
   // Fecha de negocio por detrás del calendario (días sin cerrar): se avisa, pero la
@@ -985,12 +1086,20 @@ export async function analyse(input: { context: UserContext; propertyId: string;
   if (syncContext) {
     tableOptions.mode = "sync";
     tableOptions.statusMap = syncContext.statusMap;
+    // Tanda 7d: la frontera de «llegada pasada» de una fila confirmed en `sync` es min(business date del corte, hoy).
+    tableOptions.cutBusinessDate = syncContext.businessDate;
   }
   const table = normalizeTable(parsed, mapping, catalogs, tableOptions);
   const referenceIndex = table.mappingByIndex.indexOf("referencia_externa");
   const rows: AnalysedRow[] = table.rows.map((row) => {
     const rawReference = referenceIndex >= 0 ? (row.cells[referenceIndex] ?? "").trim() : "";
-    return { ...row, issues: [...row.issues], personalValues: personalValuesOf(row.cells, table.mappingByIndex), guestReuse: null, ...(rawReference ? { rawReference } : {}) };
+    const extra = extraOf(row.cells, extraIndex);
+    // Importe estimado (tarifa × noches): cotizado, no exacto → `quoted` (price_source) y fuera del diff de importes.
+    if (extra?.totalEstimated && row.normalized && row.normalized.totalSource === "file") {
+      row.normalized.totalSource = "quoted";
+      estimatedRows.add(row.rowNumber);
+    }
+    return { ...row, issues: [...row.issues], personalValues: personalValuesOf(row.cells, table.mappingByIndex), guestReuse: null, ...(rawReference ? { rawReference } : {}), ...(extra ? { extra } : {}) };
   });
   if (profileIssues.length > 0 || rateFirstNightOf.size > 0) {
     const byRow = new Map(rows.map((row) => [row.rowNumber, row] as const));
@@ -1351,6 +1460,8 @@ export function buildCreateReservationInput(input: {
   row: NormalizedReservationRow;
   guestId?: string | null;
   allowOverbooking?: boolean;
+  /** Tanda 7d: columnas extra del fichero (`garantia`, `deposito_pagado`), si las trae. */
+  extra?: ReservationImportExtra;
   correlationId: string;
 }): CreateReservationInput {
   const { row } = input;
@@ -1394,6 +1505,9 @@ export function buildCreateReservationInput(input: {
   }
   if (row.paymentMethod) out.paymentMethod = row.paymentMethod;
   if (row.depositAmount !== undefined) out.depositAmount = Number(row.depositAmount);
+  // Tanda 7d: garantía y depósito pagado del PMS de origen (columnas extra), solo al crear.
+  if (input.extra?.guaranteeType) out.guaranteeType = input.extra.guaranteeType;
+  if (input.extra?.depositPaid !== undefined) out.depositPaid = input.extra.depositPaid;
   if (row.estado === "tentativa" && !row.historical) {
     out.internalNotes = `Importada como tentativa: confirmar con el cliente (lote ${input.importId})`;
   }
@@ -1548,7 +1662,7 @@ function shadowPatchOf(normalized: NormalizedReservationRow, diff: readonly stri
  * POST /reservations/:id/check-out de server.ts: solo si existe folio y
  * |balanceDue| < 0,005; un fallo del cierre no deshace el check-out (se registra).
  */
-async function shadowCheckOut(input: { context: UserContext; reservationId: string; correlationId: string }): Promise<void> {
+export async function shadowCheckOut(input: { context: UserContext; reservationId: string; correlationId: string }): Promise<void> {
   const primaryBefore = await findReservationFolio(input.reservationId);
   await checkOutReservationDetailed({ context: input.context, reservationId: input.reservationId, acknowledgeBalance: true, correlationId: input.correlationId });
   if (primaryBefore && Math.abs(primaryBefore.balanceDue) < 0.005) {
@@ -1558,6 +1672,25 @@ async function shadowCheckOut(input: { context: UserContext; reservationId: stri
       const message = error instanceof Error ? error.message : String(error);
       console.error(`${LOG} shadow check-out of reservation ${input.reservationId}: primary folio ${primaryBefore.folio.id} could not be closed (correlation ${input.correlationId}): ${message}`);
     }
+  }
+}
+
+/**
+ * Tanda 7d (OC-06 / FO-10): tras una cancelación o un no-show sombra el folio primario queda `open` con saldo 0 (la
+ * cancelación nativa del producto lo cierra; el paso close_settled_folios del night audit también). Se cierra aquí
+ * con la misma regla que el check-out sombra: solo si existe y |balanceDue| < 0,005; un fallo no deshace la
+ * transición (se registra).
+ */
+export async function closeSettledFolio(input: { context: UserContext; reservationId: string; correlationId: string }): Promise<boolean> {
+  const primary = await findReservationFolio(input.reservationId);
+  if (!primary || primary.folio.status !== "open" || Math.abs(primary.balanceDue) >= 0.005) return false;
+  try {
+    await closeFolio({ context: input.context, folioId: primary.folio.id, correlationId: input.correlationId });
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`${LOG} settled folio ${primary.folio.id} of reservation ${input.reservationId} could not be closed after cancel / no-show (correlation ${input.correlationId}): ${message}`);
+    return false;
   }
 }
 
@@ -1587,9 +1720,11 @@ async function applySyncTransition(input: {
   switch (input.transition) {
     case "cancel":
       await transitionReservation({ context, reservationId, status: "cancelled", reason: `Cancelada en OPERA · ${businessDate}`, correlationId });
+      await closeSettledFolio({ context, reservationId, correlationId });
       return;
     case "no_show":
       await transitionReservation({ context, reservationId, status: "no_show", reason: `No-show en OPERA · ${businessDate}`, correlationId });
+      await closeSettledFolio({ context, reservationId, correlationId });
       return;
     case "check_in":
       await checkIn();
@@ -1639,7 +1774,7 @@ async function upsertShadowLink(input: { context: UserContext; propertyId: strin
 }
 
 /** Fila enlazada (update / transition / unchanged): actualización sombra, transición y refresco del enlace. */
-async function commitSyncLinkedRow(params: { context: UserContext; importId: string; row: AnalysedRow & { normalized: NormalizedReservationRow; sync: SyncPlan }; sync: AnalysisSync; base: RowOutcome; correlationId: string }): Promise<RowOutcome> {
+async function commitSyncLinkedRow(params: { context: UserContext; importId: string; row: AnalysedRow & { normalized: NormalizedReservationRow; sync: SyncPlan }; sync: AnalysisSync; base: RowOutcome; correlationId: string; timezone: string }): Promise<RowOutcome> {
   const { row, importId, context, correlationId, base } = params;
   const n = row.rowNumber;
   const plan = row.sync;
@@ -1712,6 +1847,9 @@ async function commitSyncLinkedRow(params: { context: UserContext; importId: str
     }
   }
 
+  // Tanda 7d: check-in sombra de una reserva enlazada → la Stay empieza a la llegada 15:00 hora local.
+  if (transitioned && plan.transition === "check_in") await fixStayCheckInAt(reservation.id, row.normalized.arrivalDate, params.timezone);
+
   // SC-08: si nada se aplicó (todo el diff eran campos ignorados en casa) y no hubo transición, la fila
   // es `unchanged` y el enlace NO memoriza el hash nuevo: la discrepancia con OPERA sigue visible en la
   // preview de los cortes siguientes en vez de darse por sincronizada.
@@ -1731,7 +1869,7 @@ async function commitSyncLinkedRow(params: { context: UserContext; importId: str
   return { ...base, outcome: transitioned ? "transitioned" : "updated", reservationCode: reservation.code, ...(syncDiff.length > 0 ? { syncDiff: [...syncDiff] } : {}) };
 }
 
-async function commitRow(params: { context: UserContext; propertyId: string; importId: string; row: AnalysedRow; options: ReservationImportOptions; correlationId: string; sync?: AnalysisSync }): Promise<RowOutcome> {
+async function commitRow(params: { context: UserContext; propertyId: string; importId: string; row: AnalysedRow; options: ReservationImportOptions; correlationId: string; timezone: string; sync?: AnalysisSync }): Promise<RowOutcome> {
   const { row, importId, context, correlationId } = params;
   const n = row.rowNumber;
   const warnings = row.issues.filter((issue) => severityOf(issue.code) === "warning");
@@ -1757,7 +1895,7 @@ async function commitRow(params: { context: UserContext; propertyId: string; imp
   const normalized = row.normalized;
   const plan = params.sync && row.sync ? row.sync : null;
   if (params.sync && plan && plan.action !== "create") {
-    return commitSyncLinkedRow({ context, importId, row: row as AnalysedRow & { normalized: NormalizedReservationRow; sync: SyncPlan }, sync: params.sync, base, correlationId });
+    return commitSyncLinkedRow({ context, importId, row: row as AnalysedRow & { normalized: NormalizedReservationRow; sync: SyncPlan }, sync: params.sync, base, correlationId, timezone: params.timezone });
   }
   // Un destino checked_in / checked_out asigna la habitación en el propio check-in (validación bajo lock): sin assignRoom previo.
   const roomAssignedByCheckIn = plan?.transition === "check_in" || plan?.transition === "check_in_and_out";
@@ -1776,6 +1914,7 @@ async function commitRow(params: { context: UserContext; propertyId: string; imp
         // agotado entre el análisis y este momento (createReservation solo registra
         // `overbooking` en la auditoría cuando de verdad excede el cupo).
         allowOverbooking: params.options.permitirOverbooking,
+        ...(row.extra ? { extra: row.extra } : {}),
         correlationId
       })
     );
@@ -1815,9 +1954,12 @@ async function commitRow(params: { context: UserContext; propertyId: string; imp
           };
         }
         await prisma.pmsShadowLink.update({ where: { reservationId: created.id }, data: { lastStatus: plan.targetStatus } });
+        // Tanda 7d: estancia ya en casa según OPERA → Stay.checkinAt = llegada 15:00 hora local (no «ahora»).
+        if (plan.transition === "check_in") await fixStayCheckInAt(created.id, normalized.arrivalDate, params.timezone);
       }
     } else if (!normalized.historical && normalized.estado === "cancelada") {
       await transitionReservation({ context, reservationId: created.id, status: "cancelled", reason: `Importada como cancelada (lote ${importId})`, correlationId });
+      await closeSettledFolio({ context, reservationId: created.id, correlationId });
     }
     return { ...base, outcome: "created", reservationId: created.id, reservationCode: created.code, totalAmount: normalized.totalAmount, warnings };
   } catch (error) {
@@ -1909,7 +2051,7 @@ export async function importReservations(input: {
     pending = [];
   };
   for (const row of analysis.rows) {
-    const outcome = await commitRow({ context, propertyId, importId, row, options: analysis.options, correlationId, ...(analysis.sync ? { sync: analysis.sync } : {}) });
+    const outcome = await commitRow({ context, propertyId, importId, row, options: analysis.options, correlationId, timezone: analysis.catalogs.timezone, ...(analysis.sync ? { sync: analysis.sync } : {}) });
     outcomes.push(outcome);
     pending.push(outcome);
     if (pending.length >= RESERVATION_IMPORT_ROW_BATCH_SIZE) await flush();

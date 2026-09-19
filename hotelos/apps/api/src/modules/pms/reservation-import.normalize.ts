@@ -132,6 +132,8 @@ export type ReservationImportCatalogs = {
   businessDate: IsoDate;
   /** Hoy en la zona horaria de la propiedad: frontera de «llegada pasada», la misma que la guarda `historical` de createReservation (T7-FUN-01). */
   today: IsoDate;
+  /** Zona horaria IANA de la propiedad (Tanda 7d: `Stay.checkinAt` de un check-in sombra = llegada 15:00 hora local). */
+  timezone: string;
 };
 
 export type NormalizeRowOptions = {
@@ -143,6 +145,12 @@ export type NormalizeRowOptions = {
   mode?: ReservationImportMode;
   /** Diccionario literal OPERA plegado → estado destino (perfil); vacío en `sync` → todo estado es INVALID_STATUS. */
   statusMap?: PmsShadowStatusMap;
+  /**
+   * Tanda 7d (carga real OPERA): business date del corte. En `sync`, una fila con destino `confirmed`
+   * cuya llegada cae en [cutBusinessDate, hoy) NO es «llegada pasada» (OPERA la tenía RESERVED en el corte;
+   * el check-in lo registra recepción). Solo adelanta la frontera (cutBusinessDate < hoy); nunca la atrasa.
+   */
+  cutBusinessDate?: IsoDate;
 };
 
 /** Opciones de `normalizeTable` (las de fila menos `splitName`, que calcula `applyMapping`). */
@@ -150,6 +158,7 @@ export type NormalizeTableOptions = {
   historico: boolean;
   mode?: ReservationImportMode;
   statusMap?: PmsShadowStatusMap;
+  cutBusinessDate?: IsoDate;
 };
 
 export type NormalizeRowResult = {
@@ -688,10 +697,14 @@ export function normalizeRow(
       err("RESERVATION_IMPORT_ROW_FAR_FUTURE", `${label("llegada")} está a más de ${RESERVATION_IMPORT_FAR_FUTURE_DAYS} días de hoy: comprueba el año.`, "llegada");
     }
   } else if (arrivalDate && departureDate && nights !== null) {
-    if (arrivalDate < catalogs.today) {
+    // Tanda 7d: en `sync` (destino confirmed) la frontera es min(business date del corte, hoy): las llegadas del
+    // día del corte que OPERA aún tenía RESERVED se admiten confirmadas; en `create` la frontera sigue siendo hoy.
+    const frontier = options.mode === "sync" && options.cutBusinessDate && options.cutBusinessDate < catalogs.today ? options.cutBusinessDate : catalogs.today;
+    if (arrivalDate < frontier) {
       if (!options.historico) {
-        err("RESERVATION_IMPORT_ROW_PAST_ARRIVAL", `${label("llegada")} es anterior a hoy (${catalogs.today}): la auditoría nocturna la marcaría no-show con cargo. Activa «histórico» para cargarla como estancia cerrada.`, "llegada", {
-          today: catalogs.today
+        err("RESERVATION_IMPORT_ROW_PAST_ARRIVAL", `${label("llegada")} es anterior a ${frontier === catalogs.today ? "hoy" : "la fecha del corte"} (${frontier}): la auditoría nocturna la marcaría no-show con cargo. Activa «histórico» para cargarla como estancia cerrada.`, "llegada", {
+          today: catalogs.today,
+          frontier
         });
       } else if (departureDate <= catalogs.today) {
         historical = true;
@@ -1019,8 +1032,9 @@ export function normalizeTable(
   const rowOptions: NormalizeRowOptions = { historico: options.historico, splitName: applied.splitName };
   if (options.mode !== undefined) rowOptions.mode = options.mode;
   if (options.statusMap !== undefined) rowOptions.statusMap = options.statusMap;
+  if (options.cutBusinessDate !== undefined) rowOptions.cutBusinessDate = options.cutBusinessDate;
   const seenReferences = new Map<string, number>();
-  const seenRooms: Array<{ rowNumber: number; roomId: string; from: IsoDate; to: IsoDate }> = [];
+  const seenRooms: Array<{ rowNumber: number; roomId: string; from: IsoDate; to: IsoDate; historical: boolean }> = [];
   const seenGuests = new Map<string, number>();
 
   const rows: NormalizedTableRow[] = parsed.rows.map((row) => {
@@ -1037,10 +1051,12 @@ export function normalizeTable(
         } else seenReferences.set(key, row.rowNumber);
       }
       if (normalized.roomId) {
-        const clash = seenRooms.find((entry) => entry.roomId === normalized.roomId && overlaps(entry.from, entry.to, normalized.arrivalDate, normalized.departureDate));
+        // Tanda 7d (FO-04): dos estancias CERRADAS que se solapan en la misma habitación son historia (cambio de
+        // habitación a mitad de estancia en el PMS de origen), no un choque: solo cuenta el solape con una fila viva.
+        const clash = seenRooms.find((entry) => entry.roomId === normalized.roomId && overlaps(entry.from, entry.to, normalized.arrivalDate, normalized.departureDate) && !(entry.historical && normalized.historical));
         if (clash) {
           pushIssue(issues, row.rowNumber, "RESERVATION_IMPORT_ROW_ROOM_DUPLICATE_IN_FILE", `${label("habitacion")} ya asignada en la fila ${clash.rowNumber} con noches solapadas.`, "habitacion", { otherRow: clash.rowNumber });
-        } else seenRooms.push({ rowNumber: row.rowNumber, roomId: normalized.roomId, from: normalized.arrivalDate, to: normalized.departureDate });
+        } else seenRooms.push({ rowNumber: row.rowNumber, roomId: normalized.roomId, from: normalized.arrivalDate, to: normalized.departureDate, historical: normalized.historical });
       }
       const guestKey = `${guestKeyOf(normalized.guest)}|${normalized.arrivalDate}|${normalized.roomTypeId}`;
       const firstGuest = seenGuests.get(guestKey);
