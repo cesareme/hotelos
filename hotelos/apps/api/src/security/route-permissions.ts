@@ -50,6 +50,7 @@ import { ledgerImportRoutePermissions as ledgerImportRoutePermissionsAsWritten }
 // high / critical (aprobaciones, PIN, autorizaciones de supervisor) exigen su
 // clave DINÁMICA en el servicio (DYNAMIC_KEY_ROUTES del contract test).
 import { rbacRoutePermissions } from "../modules/rbac/route-permissions.partial.js";
+import { reputationRoutePermissions } from "../modules/reputation/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -170,6 +171,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...ledgerImportRoutePermissions,
   // RBAC por departamento (Tanda 8a · L1): 24 entradas, ver modules/rbac/route-permissions.partial.ts.
   ...rbacRoutePermissions,
+  // Reputación y reseñas (Tanda T8): 12 entradas, ver modules/reputation/route-permissions.partial.ts.
+  ...reputationRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },
@@ -392,7 +395,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/quality/properties/:propertyId/cases", permissions: ["quality_cases.manage"], riskLevel: "medium" },
   { method: "PATCH", path: "/quality/cases/:id", permissions: ["quality_cases.manage"], riskLevel: "medium" },
   { method: "POST", path: "/surveys/properties/:propertyId", permissions: ["surveys.manage"], riskLevel: "medium" },
-  { method: "POST", path: "/surveys/:id/responses", permissions: ["surveys.read"], riskLevel: "low" },
+  { method: "POST", path: "/surveys/:id/responses", permissions: ["surveys.manage"], riskLevel: "medium" },
   { method: "POST", path: "/energy/properties/:propertyId/meters", permissions: ["energy.manage"], riskLevel: "medium" },
   { method: "POST", path: "/energy/properties/:propertyId/readings", permissions: ["energy.manage"], riskLevel: "medium" },
   { method: "POST", path: "/sustainability/properties/:propertyId/actions", permissions: ["sustainability.report"], riskLevel: "medium" },

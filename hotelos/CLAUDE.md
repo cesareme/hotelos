@@ -113,7 +113,10 @@ paths para CI o referencias, recuerda el prefijo.
   rate-manager, audit, …)
 - `src/security/route-permissions.ts` — matriz de permisos RBAC
 - Schedulers integrados: SES (5min), pace (daily), allotment release
-  (daily), group cutoff (daily), mailbox poll (5min), VeriFactu queue
+  (daily), group cutoff (daily), mailbox poll (5min), VeriFactu queue,
+  PMS sombra (15min), reputación (24h · `REPUTATION_SYNC_*`, lease + advisory lock)
+- Apagado ordenado: SIGTERM/SIGINT → lib/shutdown.ts (schedulers → app.close →
+  flushAuditQueues → prisma.$disconnect; `SHUTDOWN_TIMEOUT_MS` 10 s; segunda señal sale ya)
 
 ### Compliance ES (packages/compliance/src)
 
@@ -286,7 +289,8 @@ Estado verificado (Tanda L2 · Persistencia y API + ronda de corrección 1,
 2026-09-18 18:20; working tree sin commit; :3000 sin reiniciar — sirve el código
 anterior a la tanda; informe `docs/audits/TANDA-L2-PERSISTENCIA-2026-09-18.md`):
 - manifiesto = rutas registradas: 935 (L2-02 retiró 82 rutas y añadió
-  `GET /admin/worker/job-runs`); `demo-store.ts` 3.987 → 3.605 líneas y 115 → 89
+  `GET /admin/worker/job-runs`) · tras la fusión T8 (2026-09-19): 948;
+  `demo-store.ts` 3.987 → 3.605 líneas y 115 → 89
   claves (26 retiradas sin lector); migración `20260918130000_persistencia_l2`
   (18 DROP + 2 CREATE → 274 tablas = 274 modelos)
 - typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · admin-web
@@ -479,6 +483,56 @@ package.json de HEAD): dejarlo fuera del commit; informe
   primer tick tras reiniciar el API (11 «sustituidas», 3 de partes aceptados
   descartadas, 1 inválida definitiva)
 
+Estado verificado (Tanda T8 · Reputación y reseñas + fusión E1/E2, 2026-09-19,
+main tras 9966c4f):
+- fusión cableada: las 12 rutas de `modules/reputation/route-permissions.partial.ts`
+  registradas en `server.ts` y en el manifiesto (+12 → 948); job diario del líder
+  (`reputation-sync.job.ts`, 24 h, lease + advisory lock por propiedad,
+  `REPUTATION_SYNC_DISABLED|INTERVAL_MS|RUN_AT_BOOT`); cola `reputation.maintenance`
+  del worker (5 colas; cron `15 4 * * *` Europe/Madrid); clasificador
+  `review_notification` en el buzón (`email-reservation.service.ts`); hook
+  `ReviewReceived` no-op documentado en `event-hooks.service.ts`; seed
+  `demo:seed-reputation` (no activa módulos; Faranda sin `reputation_quality` por
+  decisión del propietario)
+- IA: `draftReviewResponse` riskLevel high (`packages/ai-tools/src/registry.ts`) +
+  adaptador `modules/reputation/reputation-ai.core-adapter.ts` sobre ai-core
+  (siempre redactPii/restorePii), registrado en el arranque del API solo con
+  proveedor configurado; sin proveedor el borrador es `source: rules`
+- esquema: parche T8-L0 aplicado (migración `20260919124000_reputacion`;
+  `external_reference` nullable) + T8-L0b fase 1 (doble escritura columnas +
+  `topicsJson`, runs de fuente en tabla, menciones, `reviewId` en casos)
+- E1: `createId` → `<prefijo>_` + 16 hex (`aud_`/`evt_` incluidos); P2002 en los
+  persistidores se registra por pino (`setAuditLogger(app.log)` en server.ts; sin
+  logger, CLI/tests, línea JSON por console.error) y suma `auditPersistFailures`, expuesto
+  en `/health` `checks.audit`; runbook `docs/runbooks/auditoria-eventos.md` (rotura
+  de la cadena local del 2026-09-19 documentada, no reparada)
+- E2: coordinador de apagado `lib/shutdown.ts` (SIGTERM/SIGINT → schedulers →
+  `app.close` → `audit.flush` (`flushAuditQueues`) → `prisma.$disconnect`;
+  `SHUTDOWN_TIMEOUT_MS` 10 s con el plazo referenciado (sin `unref`: un paso
+  colgado sin handles vivos también sale con 1); segunda señal sale ya);
+  `docs/deployment.md` TimeoutStopSec / stop_grace_period ≥ 15 s
+- cifras de la puerta final (lote 3A-final, 2026-09-19): typecheck:all 15 PASS · 0 FAIL ·
+  1 SKIP · api unit 2.860 (2.859 pass · 0 fail · 1 skip `PMS_HF_REAL_CSV`; +2 casos del
+  corrector T8: plazo de apagado con temporizadores reales y logger de auditoría) · ai-core
+  119/119 · front 1.505/1.505 · contratos raíz 541/541 (+1: `QualityCaseUpdated`) · worker 34/34
+  · integración completa (`--test-concurrency=1`) 782 (775 pass · 0 fail · 7 skips
+  condicionales de entorno; `api-reference` qa#17, `l8-reputation-sync` y `l2-modulos-comercial`
+  ya corregidos en el árbol: la plantilla `admin` v3 lee huéspedes desde 2613f47) ·
+  `l8-reputation-routes` 13/13 con el cableado real (sin empuje del manifiesto; PATCH valida
+  `assignedUserId` contra la organización) ·
+  admin-web build OK · rbac:sync dry-run 250 claves · +0 · 0 stale · 46 plantillas · 0
+  behind · migraciones 18/18 + drift 0 · Cocoa 232 pantallas · 182 puntos · inlineStyles
+  647 = techo · rawTables 1 · contrato 18/18 · waves §6 al día · build-nav-tree al día (69 ·
+  100 · 205) · discoverability OK (16/20) · check-route-access OK (15 × 192) · env census
+  153/153 + contrato 9/9 · `:3911` healthy (`checks.audit` ok, schedulers y reputationSync
+  disabled por `RUN_SCHEDULERS=false`), SIGTERM → exit 0 en 24 ms
+- pendientes: reinicio de `:3000` (sirve código anterior a T8); `POST
+  /ai-operations/tools/sync` tras el reinicio (`draftReviewResponse` high);
+  verificación en navegador (bandeja, fuentes, dashboards Cocoa); T8-L0b fase 2
+  (lectura desde las columnas/tablas nuevas y retirada de la doble escritura);
+  T8-L5 OAuth Google Business (`GOOGLE_BUSINESS_*`); plantilla
+  `review_negative_received`; envío real de encuestas
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).
@@ -604,6 +658,15 @@ series FAC/REC. `demo:fix-identity` (`--apply --confirm <orgId>`) corrige la
 razón social / NIF de Faranda y el NIF de org_123 vía Prisma. Backup antes
 de `--apply` y reinicio del API después (espejos in-memory). Plan e
 inventario: `docs/audits/DEMO-DATASET-2026-09-14.md`.
+
+Reputación ficticia (Tanda T8): `corepack pnpm --filter @hotelos/api
+demo:seed-reputation -- --dry-run` (`src/scripts/seed-reputation-demo.ts`;
+`--apply --property prop_123 --reviews 90 --days 180 --seed 42` escribe fuentes
+demo, reseñas deterministas `demo:<seed>:<n>` y encuestas «(demo)», todo marcado
+`isDemo`, idempotente; `--purge --apply` borra SOLO filas `isDemo`; allowlist demo
+org_123 / prop_123 / prop_canary, fuera de ella `--allow-real --confirm
+<organizationId|propertyId>`; NO activa `reputation_quality` en ninguna
+propiedad; runbook `docs/runbooks/reputacion-reviews.md` §7).
 
 **Residuos esperados tras una limpieza:** `audit_events` y `event_stream` son
 cadenas hash GLOBALES (un solo génesis, enlaces que cruzan organizaciones):
@@ -1090,6 +1153,9 @@ Antes de tomar decisiones de producto, lee:
 - `deploy/README-REMOTE-DEV.md` — workflow remoto desde el Mac Pro (cliente único)
 - `deploy/CLAUDE-RESUME-CONTEXT.md` — versión larga de este archivo
 - `docs/pilots/FARANDA-LOS-TILOS-2026-09-14.md` + `docs/runbooks/pms-history-forecast-import.md` — piloto Faranda Los Tilos (2.ª propiedad real, provisionada e importada el 2026-09-14) y carga del History & Forecast del PMS: ficha, mapeo, salidas reales, readiness y hallazgos pendientes
+- `docs/audits/TANDA-8-REPUTACION-2026-09-19.md` — cierre de la Tanda T8 · Reputación y reseñas: bot diario honesto por fuente, índice 0-100, bandeja con borrador HITL, encuestas y casos, seed ficticio; mergeLines y decisiones del propietario
+- `docs/runbooks/reputacion-reviews.md` — operación del módulo de reputación: tick, estados de fuente, importación CSV, borrador y respuesta, seed/purga, puertas y degradaciones sin el parche T8-L0 (`docs/design/olas/T8-SCHEMA-PATCH.md`)
+- `docs/runbooks/auditoria-eventos.md` — ids de auditoría (16 hex desde la fusión T8), cadena hash, rotura del 2026-09-19 y vigilancia por /health checks.audit
 
 ## Primera tarea en cada sesión nueva
 

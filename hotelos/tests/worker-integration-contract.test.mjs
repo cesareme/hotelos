@@ -1,6 +1,6 @@
 // Contrato del worker (Tanda L2 · L2-07 · worker honesto).
 //
-// El worker ejecuta exactamente cuatro colas pg-boss reales y escribe un
+// El worker ejecuta exactamente cinco colas pg-boss reales y escribe un
 // WorkerJobRun por ejecución. El antiguo catálogo de 85 nombres sin
 // implementación, handleJob y sus siete handlers tipados sin productor
 // (ses_hospedajes.submit, invoice.compliance.check, messaging.send,
@@ -19,13 +19,14 @@ const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf
 const worker = read("apps/worker/src/index.ts");
 const scheduler = read("apps/worker/src/scheduler.ts");
 const jobRuns = read("apps/worker/src/jobs/job-runs.ts");
+const reputationMaintenanceJob = read("apps/worker/src/jobs/reputation-maintenance.job.ts");
 const workerPackage = JSON.parse(read("apps/worker/package.json"));
 const integrationsIndex = read("packages/integrations/src/index.ts");
 const schema = read("packages/database/prisma/schema.prisma");
 const deploymentDoc = read("docs/deployment.md");
 const compose = read("deploy/docker-compose.production.yml");
 
-const WORKER_QUEUES = ["notifications.scheduled", "notifications.retry", "notifications.sending-sweep", "webhooks.deliver"];
+const WORKER_QUEUES = ["notifications.scheduled", "notifications.retry", "notifications.sending-sweep", "webhooks.deliver", "reputation.maintenance"];
 const escape = (name) => name.replaceAll(".", "\\.");
 
 function walk(dir, out = []) {
@@ -52,11 +53,20 @@ describe("Worker integration contract", () => {
     assert.match(schema, /lastError\s+String\?/);
   });
 
-  it("runs exactly the four real pg-boss queues, each with boss.work and boss.schedule", () => {
+  it("runs exactly the five real pg-boss queues, each with boss.work and boss.schedule", () => {
     const union = scheduler.match(/export type JobQueueName =([\s\S]*?);/)?.[1] ?? "";
     const members = [...union.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
     assert.deepEqual(members, [...WORKER_QUEUES].sort());
     for (const queue of WORKER_QUEUES) {
+      if (queue === "reputation.maintenance") {
+        // Registrada por jobs/reputation-maintenance.job.ts (registerReputationMaintenanceQueue), con la misma forma.
+        assert.match(scheduler, /registerReputationMaintenanceQueue\(boss/, `${queue}: registrada desde scheduler.ts`);
+        assert.match(reputationMaintenanceJob, /const queue = REPUTATION_MAINTENANCE_QUEUE;/, `${queue}: nombre de la cola`);
+        assert.match(reputationMaintenanceJob, /boss\.work\(queue, \{ batchSize: 1 \}/, `${queue}: boss.work`);
+        assert.match(reputationMaintenanceJob, /boss\.schedule\(queue, options\.cron \?\? REPUTATION_MAINTENANCE_CRON/, `${queue}: boss.schedule`);
+        assert.match(reputationMaintenanceJob, /await withJobRun\(\{ jobName: queue, queueName: queue/, `${queue}: withJobRun`);
+        continue;
+      }
       assert.match(scheduler, new RegExp(`boss\\.work\\(\\s*"${escape(queue)}"`), `${queue}: boss.work`);
       assert.match(scheduler, new RegExp(`boss\\.schedule\\("${escape(queue)}", "[^"]+"`), `${queue}: boss.schedule`);
       assert.match(scheduler, new RegExp(`tick\\("${escape(queue)}"`), `${queue}: withJobRun`);

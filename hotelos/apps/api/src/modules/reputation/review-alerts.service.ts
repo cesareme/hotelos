@@ -124,6 +124,8 @@ export async function createCaseFromReview(input: CreateCaseFromReviewInput): Pr
       propertyId: input.propertyId,
       ...(row.reservationId ? { reservationId: row.reservationId } : {}),
       ...(row.guestId ? { guestId: row.guestId } : {}),
+      // T8-L0b fase 1: columna reviewId; el marcador `[reseña:<id>]` de la descripción se conserva.
+      reviewId: row.id,
       caseType: REVIEW_ALERT_CASE_TYPE,
       priority: effectiveScore < REVIEW_ALERT_URGENT_THRESHOLD ? "urgent" : "high",
       status: "open",

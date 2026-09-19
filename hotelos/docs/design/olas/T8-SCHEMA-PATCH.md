@@ -146,6 +146,12 @@ Notas: `externalReference` pasa de `String?` a `String` (NOT NULL); el SQL de §
 del `SET NOT NULL`. `authorRef?` del diseño §7 se omite a propósito (no lo usa ningún lote). Los dos índices
 existentes se conservan.
 
+> **Aplicado el 2026-09-19 con una desviación (fusión T8):** `external_reference` se queda **nullable** (`String?`) y la
+> migración `20260919124000_reputacion` omite el `SET NOT NULL` (las filas del motor genérico sin referencia no se
+> rellenan); el índice único `(property_id, source, external_reference)` admite por tanto varias filas con NULL. Ver la
+> cabecera de la migración, `docs/runbooks/reputacion-reviews.md` §9 y CLAUDE.md (bloque T8). Pendiente de decisión: backfill
+> `legacy:<id>` en el motor genérico + `SET NOT NULL` en una migración posterior.
+
 ### 1.3 `QualityCase` (sustituye `schema.prisma:1939-1959` del principal; :1937-1957 en el worktree)
 
 ```prisma
@@ -301,7 +307,9 @@ Contenido completo del fichero (cabecera al estilo de `20260918130000_persistenc
 -- y revisada a mano. Lo que emitió el generador está VERBATIM en §1-§4 (3 ALTER TABLE …
 -- ADD COLUMN, 3 CREATE TABLE, 8 CREATE INDEX / CREATE UNIQUE INDEX, 2 ADD FOREIGN KEY);
 -- reordenado a mano UN solo punto: `ALTER COLUMN "external_reference" SET NOT NULL`
--- va después del backfill de §5. Lo escrito a mano (DDL/DML que Prisma no declara y
+-- va después del backfill de §5. [APLICADO 2026-09-19 SIN ese SET NOT NULL: external_reference
+-- queda nullable; ver la nota de re-base de §1.2 y la cabecera de 20260919124000_reputacion.]
+-- Lo escrito a mano (DDL/DML que Prisma no declara y
 -- que `db:drift:check` ignora, igual que los DO $$ de 20260918130000) es:
 --   · §5 backfill desde los JSON que la Tanda T8 escribió antes del parche
 --     (guest_reviews.topics_json = ReviewMeta v1, review_sources.config_json =

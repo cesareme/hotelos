@@ -20,6 +20,7 @@
     "backfill:guest-register": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-guest-register.ts",
     "demo:refresh": "node --env-file-if-exists=../../.env --import tsx src/scripts/refresh-demo-dataset.ts",
     "demo:fix-identity": "node --env-file-if-exists=../../.env --import tsx src/scripts/fix-demo-legal-identity.ts",
+    "demo:seed-reputation": "node --env-file-if-exists=../../.env --import tsx src/scripts/seed-reputation-demo.ts",
     "channels:seed-sandbox": "node --env-file-if-exists=../../.env --import tsx src/scripts/seed-sandbox-channels.ts",
     "pilot:provision-property": "node --env-file-if-exists=../../.env --import tsx src/scripts/provision-pilot-property.ts",
     "structure:migrate-faranda-celuisma": "node --env-file-if-exists=../../.env --import tsx src/scripts/migrate-faranda-celuisma.ts",

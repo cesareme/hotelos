@@ -30,7 +30,7 @@ const demoStore = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", impo
 const aiTools = readFileSync(new URL("../packages/ai-tools/src/registry.ts", import.meta.url), "utf8");
 const toolNames = readFileSync(new URL("../packages/ai-tools/src/tool-names.ts", import.meta.url), "utf8");
 const worker = readFileSync(new URL("../apps/worker/src/index.ts", import.meta.url), "utf8");
-// Tanda L2 (L2-07 · worker honesto): the catalogue is the four pg-boss queues of scheduler.ts.
+// Tanda L2 (L2-07 · worker honesto): the catalogue is the five pg-boss queues of scheduler.ts (+ jobs/reputation-maintenance.job.ts).
 const workerScheduler = readFileSync(new URL("../apps/worker/src/scheduler.ts", import.meta.url), "utf8");
 // Tanda L2 (L2-03): recommendations are applied to the real rate grid by pricing.service.ts.
 const pricingService = readFileSync(new URL("../apps/api/src/modules/revenue/pricing.service.ts", import.meta.url), "utf8");

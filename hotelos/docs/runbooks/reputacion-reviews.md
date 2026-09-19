@@ -14,7 +14,7 @@ Fuente: diseño [`docs/design/REPUTACION-REVIEWS.md`](../design/REPUTACION-REVIE
 entorno `env.partial.ts`), dashboards `apps/api/src/modules/dashboards/{reputation,surveys,quality,general-manager,property-overview}.service.ts`,
 front `apps/admin-web/src/screens/operations/{ReputationDashboard,SurveysDashboard,QualityDashboard}.tsx` +
 `operations/reputation/*` + `services/reputationApi.ts`, seed ficticio `apps/api/src/scripts/seed-reputation-demo.ts`,
-job de mantenimiento del worker `apps/worker/src/jobs/reputation-maintenance.job.ts` (sin cablear). Rutas, cuerpos y
+job de mantenimiento del worker `apps/worker/src/jobs/reputation-maintenance.job.ts` (cola `reputation.maintenance`, cron `15 4 * * *`). Rutas, cuerpos y
 permisos: `docs/api-contracts.md` «Reputación y reseñas (Tanda T8)» (sección entregada en las mergeLines).
 
 **Todos los datos de este documento son ficticios**: hotel «Hotel Ejemplo», autores «Huésped A.», ids `grev_demo_…`.
@@ -205,11 +205,11 @@ Nunca escribe reseñas reales: dataset determinista (`seed-reputation-demo.datas
 fuentes `google_demo` (`unavailable`), `booking_demo` (`unavailable`) y `csv_demo` (`connected`), N reseñas
 (`demo:<seed>:<n>`, 40 % ya respondidas), 2 encuestas «… (demo)» con 30 respuestas y, si el módulo está activo, un
 tick que analiza y abre los casos `review_negative`. Marca todo con `isDemo` (`topicsJson.isDemo`, `configJson.isDemo`).
-**No activa el módulo** (solo avisa si está apagado). Desde `apps/api` (o `corepack pnpm --filter @hotelos/api demo:seed-reputation --`
-cuando el orquestador añada el script, mergeLine #12):
+**No activa el módulo** (solo avisa si está apagado). Desde `apps/api`, o con el script de paquete
+`corepack pnpm --filter @hotelos/api demo:seed-reputation -- <flags>` (existe desde el lote 1C de la fusión, 2026-09-19):
 
 ```bash
-cd ~/anfitorio-demo-wt-t8/hotelos/apps/api
+cd ~/anfitorio-demo/hotelos/apps/api
 # Plan sin escribir (por defecto) sobre prop_123
 node --env-file-if-exists=../../.env --import tsx src/scripts/seed-reputation-demo.ts --dry-run
 # Aplicar en prop_123 (allowlist demo: org_123 / prop_123 / prop_canary)
@@ -232,10 +232,10 @@ ficticios: ninguna reseña procede de un portal real.». La purga borra `guest_r
 empieza por `[reseña:<id demo>]`; las reseñas no demo y sus casos se conservan. Ejecutar los CLI con los API parados
 (cadena de auditoría en memoria, deuda 12(c)) o reiniciar el API después.
 
-## 8 · Puertas y comandos desde el worktree
+## 8 · Puertas y comandos desde el árbol principal
 
 ```bash
-cd ~/anfitorio-demo-wt-t8/hotelos
+cd ~/anfitorio-demo/hotelos
 node scripts/typecheck-all.mjs                                        # 15 PASS · 0 FAIL · 1 SKIP (guest-web)
 node --test tests/*.test.mjs                                          # contratos raíz (2 skips: pilots/*.csv fuera del repo)
 corepack pnpm --filter @hotelos/api test                              # unitarios api (incluye modules/reputation/__tests__ y scripts/__tests__)
@@ -258,24 +258,43 @@ manual: `cd apps/api && PORT=3908 RUN_SCHEDULERS=false RBAC_STRICT=true node --e
 (nunca :3000/:5173); `/health` debe decir `schedulers: disabled on this instance`; mátalo al terminar y comprueba
 `lsof -nP -iTCP:3908 -sTCP:LISTEN` vacío. Cifras del 19/09 en el informe de integración §3.
 
-## 9 · Degradaciones SIN el parche T8-L0 y qué desbloquea
+## 9 · Parche T8-L0 aplicado (2026-09-19): qué se materializa ya y qué sigue leyendo de JSON
 
-Hoy todo persiste en las tablas existentes (`review_sources`, `guest_reviews`, `surveys`, `survey_responses`,
-`quality_cases`, `ai_human_review_items`) usando `GuestReview.topicsJson` (`ReviewMeta v1`) y `ReviewSource.configJson`
-(`ReviewSourceConfig v1`). `detectSchemaPatch()` (`reputation-score.service.ts`) consulta `to_regclass` de
-`reputation_daily_scores`, `review_source_runs` y `review_category_mentions` cada 10 min y expone `schemaPatchApplied`
-(hoy `false`) en el snapshot del índice. Degradaciones documentadas:
+Migración `packages/database/prisma/migrations/20260919124000_reputacion/migration.sql` aplicada en local el 2026-09-19
+(`db:migrate:deploy` tras `pg_dump` previo; `db:drift:check` «No difference detected.»; `check-migrations-vs-schema` 277 tablas).
+Desviación respecto a `docs/design/olas/T8-SCHEMA-PATCH.md`: `guest_reviews.external_reference` se queda **nullable** (el motor
+genérico y `tests/integration/l2-motor-generico.test.mts` crean reseñas sin referencia; el índice único `(property_id, source,
+external_reference)` trata NULL como distinto y el store de T8 siempre escribe la referencia; la comprobación de 0 NULL del
+`DO $$` queda como salvaguarda del backfill `legacy:<id>`). `detectSchemaPatch()` (`reputation-score.service.ts`) devuelve ya
+`schemaPatchApplied: true` (caché 10 min tras el arranque).
 
-| Sin el parche | Consecuencia | Con el parche (`T8-SCHEMA-PATCH.md` §4) |
+**Activación T8-L0b · fase 1 = doble escritura.** El código sigue leyendo de `GuestReview.topicsJson` (`ReviewMeta v1`) y de
+`ReviewSource.configJson` (`ReviewSourceConfig v1`); cada escritura materializa además las columnas y tablas nuevas:
+
+| Escritura | Fichero | Columnas / tablas materializadas |
 |---|---|---|
-| Sin `@@unique([propertyId, source, externalReference])` | El upsert es `findFirst + create`: dos escritores concurrentes con la misma referencia podrían crear dos filas. Mitigación real: el tick, `POST …/sources/:id/sync` y `POST …/imports` toman el advisory lock por propiedad `reputation.sync:<propertyId>` (`reputation-lock.ts`); el segundo escritor recibe 409 `REPUTATION_SYNC_BUSY` (rutas) o salta la propiedad (`skipReason: lock`, tick) | Upsert atómico por la clave única; 0 duplicados garantizados |
-| Filtros de bandeja en JSON | Se cargan las **500** reseñas más recientes de la propiedad y se filtra/pagina en memoria; una propiedad con > 500 solo ve las 500 últimas en la bandeja | `where` SQL con el índice `[propertyId, status, slaTargetAt]` y paginación real |
-| Sin `reputation_daily_scores` | El índice se calcula al vuelo (últimos 365 días, ≤ 5.000 filas por propiedad) con caché de 60 s; `staleDays` siempre 0; sin histórico del índice ni comparativa entre hoteles materializada | Una fila por (propiedad, día, ventana), `trendDelta` real a 30 días, `staleDays`, ranking de organización |
-| Ejecuciones en ring buffer | `configJson.runs` guarda las **20** más recientes por fuente (`GET …/runs` las une en memoria) | Tabla `review_source_runs` con historial completo e índices |
-| Categorías en JSON | Filtro por categoría y «impacto por categoría» recorren `topicsJson.categories` en memoria | `review_category_mentions` con `@@unique([reviewId, category])` |
-| Estado de reseña y de fuente en JSON | `patchReviewMeta` es lee-modifica-escribe sobre `topicsJson` (carrera teórica entre dos PATCH simultáneos); `status` de la fuente sí es columna | Columnas y actualizaciones atómicas |
-| Sin `credentialsJson` | `hasCredentials` siempre `false`; Google no puede quedar autorizado (`pending`) | Credenciales cifradas con `encryptField` (`HOTELOS_FIELD_KEY`), nunca en `configJson` |
-| `QualityCase` sin `reviewId` | Enlace por `topicsJson.qualityCaseId` y marcador `[reseña:<id>]` en la descripción (el panel de calidad lo lee de ahí) | Columna `reviewId` indexada |
+| Alta y actualización de reseñas (`upsertReviewFromNormalized`) | `review-meta.store.ts` | `score10`, `rating_scale_max`, `source_id`, `source_mode`, `author_display_name`, `author_country`, `portal_url`, `body_complete`, `content_hash`, `status`, `sla_target_at`, `reply_capability`, `analysis_status`/`analysis_source`, `response_source`, `updated_at_source`; `topicsJson` se conserva. La carrera findFirst + create queda cerrada por el índice único: un `P2002` en el create relee la fila y sigue por la rama de actualización |
+| Parches de meta (`patchReviewMeta`: asignación, borrador, respuesta, análisis, purga) | `review-meta.store.ts` | `status`, `assigned_user_id`, `sla_target_at`, `draft_body`/`draft_source`/`draft_model`/`drafted_at`, `response_source`/`response_external_state`, `analysis_status`/`analysis_source`/`analyzed_at`/`summary`, `body_purged_at` (solo las claves presentes en el parche, derivadas de la meta ya fusionada) |
+| Ejecuciones del colector (`saveSourceRun`) | `review-meta.store.ts` | fila en `review_source_runs` (una por ejecución, sin límite) y `last_run_at`/`last_success_at`/`last_error`/`status`/`cursor_json`/`mode`/`display_name`/`retention_days`/`weight` de la fuente (cursor saneado: nunca tokens); el ring buffer `configJson.runs` (≤ 20) se conserva |
+| Análisis (`analyzePendingReviews`) | `reputation-sync.service.ts` | `review_category_mentions`: `deleteMany` + `createMany` por reseña a partir de la meta ya normalizada (`analysis_source` honesto) |
+| Casos por reseña negativa (`createCaseFromReview`) | `review-alerts.service.ts` | `quality_cases.review_id` (el marcador `[reseña:<id>]` de la descripción se conserva) |
+| Respuesta por la ruta del motor genérico (`POST /reputation/reviews/:id/respond`) | `advanced/advanced-record-store.ts` | `status = responded` junto a `responded_at` |
+| Purga por retención (`purgeExpiredBodies` del tick del API y `planReviewChange` del worker, mismo conjunto) | `review-meta.store.ts`, `apps/worker/src/jobs/reputation-maintenance.job.ts` | `body_purged_at`, `author_display_name = NULL`, `summary = NULL` y `review_category_mentions.snippet = NULL` (los fragmentos literales siguen la retención del cuerpo); cada purga marca `topicsJson.bodyPurgedAt` y la otra la salta |
+
+**Pendiente (fase 2): sigue leyendo de JSON o sin escribir.**
+
+| Qué | Hoy | Fase 2 |
+|---|---|---|
+| Filtros de bandeja (`review-inbox.service.ts`) | En memoria sobre las **500** reseñas más recientes de la propiedad | `where` SQL por `status`, `source_id`, `score10`, `assigned_user_id`, `sla_target_at` con el índice `[propertyId, status, slaTargetAt]`, categoría por `mentions`, paginación por cursor real |
+| `reputation_daily_scores` | Tabla vacía: índice al vuelo (últimos 365 días) con caché de 60 s, `staleDays` 0, sin `trendDelta` histórico ni ranking materializado | `upsertDailyScore` al final de cada tick y en las importaciones; `getReputationSnapshot` lee la fila del día |
+| `credentialsJson` / OAuth de Google (`review-sources.service.ts`) | `hasCredentials` siempre `false`; Google queda `unavailable` | Credenciales cifradas con `encryptField` (`HOTELOS_FIELD_KEY`), nunca en `configJson` |
+| Plazos del worker (`reputation-maintenance.job.ts`) | Decide por `topicsJson` (`bodyPurgedAt`, `slaTargetAt`, `status`) y recorta `configJson.runs` a 20; la purga ya escribe también las columnas (tabla anterior) | Decide por columnas y retención de `review_source_runs` por `started_at` |
+| `listSourceConfigs` y `GET …/runs` | Leen `configJson` (incluido `runs`) | Leen columnas y `review_source_runs` |
+| Alta de fuentes (`review-sources.service.ts`) | Solo `configJson`; `mode`/`display_name`/`weight`/`retention_days` quedan con el DEFAULT hasta la primera ejecución (`saveSourceRun` los rellena) | Escribe las columnas en el alta y en el PATCH |
+| `scoreOfRow` / panel de calidad | Meta (`score10`) y marcador `[reseña:<id>]` | `row.score10` y `quality_cases.review_id` |
+
+Los stubs de los tests unitarios no tienen `reviewSourceRun` ni `reviewCategoryMention`: el código usa siempre
+`db.reviewSourceRun?.` / `db.reviewCategoryMention?.`; los tests de integración `l8-*` ejercitan las tablas reales.
 
 Sin IA (`AI_PROVIDER_API_KEY` placeholder o L6a sin enganchar): análisis `dictionary`, borrador `rules`, `describe()` →
 `{ configured: false, provider: "none" }`; `POST …/draft` no exige `ai.tool.execute`. Nada de lo anterior cambia el
@@ -323,9 +342,14 @@ las rutas ya cableadas (retirar el `push`/`registerReputationRoutes` de `l8-repu
 mergeLines #2 y #6); para los usuarios reales, matriz de `GET /reputation/properties/<RA|LT>/inbox` y
 `GET /dashboards/general-manager?propertyId=` con `curl` sobre `:3908` y un token de `POST /auth/login`.
 
-## 12 · Migración propuesta (cuando el propietario decida el parche)
+## 12 · Migración aplicada (2026-09-19)
 
-`packages/database/prisma/migrations/20260919124000_reputacion/migration.sql` (patrón `2026091912xxxx_reputacion`,
-posterior a `20260919120000_operaciones_l5_backfill_parte_titular`; subir `xxxx` si L5 añade otra carpeta): bloque Prisma,
-SQL con backfill idempotente, comprobaciones `DO $$`, puertas y plan de activación en `docs/design/olas/T8-SCHEMA-PATCH.md`.
-Se aplica en el árbol principal con L5 fusionada; nunca desde el worktree (BD compartida).
+`packages/database/prisma/migrations/20260919124000_reputacion/migration.sql` (posterior a
+`20260919120000_operaciones_l5_backfill_parte_titular`): 3 `ALTER TABLE … ADD COLUMN` (`review_sources`, `guest_reviews`,
+`quality_cases`), 3 tablas nuevas (`review_source_runs`, `review_category_mentions`, `reputation_daily_scores`), 11 índices
+(4 únicos), 2 FK con borrado en cascada, backfill idempotente desde los JSON (§5 del SQL), comprobaciones `DO $$` de duplicados
+y de referencias vacías (§6) y `quality_cases.review_id` desde el marcador (§7). Sin `SET NOT NULL` sobre `external_reference`
+(ver §9). Aplicada en local desde el árbol principal con `pg_dump` previo (`~/anfitorio-demo/backups/hotelos-pre-t8-<fecha-hora>.dump`),
+`db:migrate:deploy`, `db:drift:check` sin diferencias y `db:generate`; sobre una BD sin reseñas previas el backfill no movió
+filas (0 `review_source_runs`, 0 `review_category_mentions`, 0 casos enlazados). Bloque Prisma, SQL completo y plan de
+activación en `docs/design/olas/T8-SCHEMA-PATCH.md`; estado real de la activación (fase 1 / fase 2) en §9.

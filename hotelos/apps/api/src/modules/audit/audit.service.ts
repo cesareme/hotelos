@@ -70,33 +70,101 @@ function isChainTip(record: { action?: string; eventType?: string }): boolean {
 let auditWriteChain: Promise<void> = Promise.resolve();
 let domainWriteChain: Promise<void> = Promise.resolve();
 
+// Persistidores inyectables (fusión T8 · E1): los tests sustituyen la escritura
+// en Prisma por una función que lanza (P2002) sin tocar la base de datos.
+type AuditPersistDeps = {
+  auditCreate: (data: Parameters<typeof prisma.auditEvent.create>[0]["data"]) => Promise<unknown>;
+  eventCreate: (data: Parameters<typeof prisma.eventStream.create>[0]["data"]) => Promise<unknown>;
+};
+
+const defaultPersistDeps: AuditPersistDeps = {
+  auditCreate: (data) => prisma.auditEvent.create({ data }),
+  eventCreate: (data) => prisma.eventStream.create({ data })
+};
+
+let persistDeps: AuditPersistDeps = defaultPersistDeps;
+
+/** Sustituye (total o parcialmente) los persistidores; `null` restaura los de Prisma. */
+export function setAuditPersistDepsForTests(deps: Partial<AuditPersistDeps> | null): void {
+  persistDeps = deps ? { ...defaultPersistDeps, ...deps } : defaultPersistDeps;
+}
+
+// Contador de fallos de persistencia desde el arranque (E1). El 2026-09-19 la
+// carga OPERA perdió 4 eventos por colisión de id (P2002) y solo quedó un
+// console.error suelto: ahora cada fallo suma aquí, deja un log JSON con
+// eventId/action/code y /health lo expone en `checks.audit` (ok=false si
+// failures > 0). Nunca se relanza: la cadena de escritura debe seguir.
+type AuditPersistError = { eventId: string; action: string; code: string; at: string };
+let auditPersistFailures = 0;
+let lastAuditPersistError: AuditPersistError | null = null;
+
+export function getAuditPersistStats(): { failures: number; lastError: AuditPersistError | null } {
+  return { failures: auditPersistFailures, lastError: lastAuditPersistError };
+}
+
+export function resetAuditPersistStatsForTests(): void {
+  auditPersistFailures = 0;
+  lastAuditPersistError = null;
+}
+
+/** Logger a nivel error con la forma de pino (`app.log`): `error(obj, msg)`. */
+export type AuditPersistLogger = { error(obj: Record<string, unknown>, msg: string): void };
+let auditLogger: AuditPersistLogger | null = null;
+
+/**
+ * Inyecta el logger del API (server.ts pasa `app.log` al construir Fastify) para
+ * que el fallo de persistencia salga por pino (nivel, transport, Sentry). Sin
+ * logger (CLI de scripts/, tests unitarios) se escribe la misma línea JSON por
+ * console.error. `null` retira el logger.
+ */
+export function setAuditLogger(log: AuditPersistLogger | null): void {
+  auditLogger = log;
+}
+
+function registerPersistFailure(stream: "audit" | "event", eventId: string, action: string, error: unknown): void {
+  // P2002 = violación de único (mismo criterio que describePrismaError en lib/http-error.ts).
+  const code =
+    error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "UNKNOWN";
+  const message = error instanceof Error ? error.message : String(error);
+  auditPersistFailures += 1;
+  lastAuditPersistError = { eventId, action, code, at: nowIso() };
+  const msg =
+    code === "P2002"
+      ? `[${stream}] persistencia fallida: id duplicado (P2002); evento perdido y cadena hash rota`
+      : `[${stream}] persistencia fallida`;
+  if (auditLogger) {
+    auditLogger.error({ eventId, action, code, error: message }, msg);
+    return;
+  }
+  console.error(JSON.stringify({ level: "error", msg, eventId, action, code, error: message }));
+}
+
 function queueAuditPersist(event: AuditEvent): void {
   auditWriteChain = auditWriteChain.then(async () => {
     try {
-      await prisma.auditEvent.create({
-        data: {
-          id: event.id,
-          organizationId: event.organizationId,
-          propertyId: event.propertyId ?? null,
-          actorUserId: event.actorUserId ?? null,
-          actorType: event.actorType,
-          action: event.action,
-          entityType: event.entityType,
-          entityId: event.entityId ?? null,
-          beforeJson: event.beforeJson === undefined ? undefined : (event.beforeJson as object),
-          afterJson: event.afterJson === undefined ? undefined : (event.afterJson as object),
-          ipAddress: event.ipAddress ?? null,
-          deviceId: event.deviceId ?? null,
-          correlationId: event.correlationId ?? null,
-          hashAlgorithm: event.hashAlgorithm,
-          previousHash: event.previousHash ?? null,
-          currentHash: event.currentHash,
-          createdAt: new Date(event.createdAt)
-        }
+      await persistDeps.auditCreate({
+        id: event.id,
+        organizationId: event.organizationId,
+        propertyId: event.propertyId ?? null,
+        actorUserId: event.actorUserId ?? null,
+        actorType: event.actorType,
+        action: event.action,
+        entityType: event.entityType,
+        entityId: event.entityId ?? null,
+        beforeJson: event.beforeJson === undefined ? undefined : (event.beforeJson as object),
+        afterJson: event.afterJson === undefined ? undefined : (event.afterJson as object),
+        ipAddress: event.ipAddress ?? null,
+        deviceId: event.deviceId ?? null,
+        correlationId: event.correlationId ?? null,
+        hashAlgorithm: event.hashAlgorithm,
+        previousHash: event.previousHash ?? null,
+        currentHash: event.currentHash,
+        createdAt: new Date(event.createdAt)
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[audit] failed to persist event ${event.id} (${event.action}): ${message}`);
+      registerPersistFailure("audit", event.id, event.action, error);
     }
   });
 }
@@ -104,27 +172,24 @@ function queueAuditPersist(event: AuditEvent): void {
 function queueDomainEventPersist(event: EventEnvelope): void {
   domainWriteChain = domainWriteChain.then(async () => {
     try {
-      await prisma.eventStream.create({
-        data: {
-          eventId: event.eventId,
-          organizationId: event.organizationId,
-          propertyId: event.propertyId,
-          eventType: event.eventType,
-          entityType: event.entityType,
-          entityId: event.entityId,
-          payload: (event.payload ?? {}) as object,
-          actorUserId: event.actorUserId ?? null,
-          actorType: event.actorType,
-          correlationId: event.correlationId,
-          hashAlgorithm: event.hashAlgorithm,
-          previousHash: event.previousHash ?? null,
-          currentHash: event.currentHash,
-          createdAt: new Date(event.createdAt)
-        }
+      await persistDeps.eventCreate({
+        eventId: event.eventId,
+        organizationId: event.organizationId,
+        propertyId: event.propertyId,
+        eventType: event.eventType,
+        entityType: event.entityType,
+        entityId: event.entityId,
+        payload: (event.payload ?? {}) as object,
+        actorUserId: event.actorUserId ?? null,
+        actorType: event.actorType,
+        correlationId: event.correlationId,
+        hashAlgorithm: event.hashAlgorithm,
+        previousHash: event.previousHash ?? null,
+        currentHash: event.currentHash,
+        createdAt: new Date(event.createdAt)
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[event] failed to persist ${event.eventId} (${event.eventType}): ${message}`);
+      registerPersistFailure("event", event.eventId, event.eventType, error);
     }
   });
 }

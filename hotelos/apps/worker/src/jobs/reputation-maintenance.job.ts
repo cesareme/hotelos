@@ -5,8 +5,10 @@
 //   1. Purga honesta del texto: reseñas con receivedAt anterior a la retención
 //      de su fuente (Google: 30 días como máximo, caché de contenido de Google
 //      Business Profile; resto: configJson.retentionDays o 730) y sin
-//      topicsJson.bodyPurgedAt → title/body/responseBody a null y
-//      topicsJson.bodyPurgedAt = ahora. Se conservan rating, score10,
+//      topicsJson.bodyPurgedAt → title/body/responseBody a null,
+//      topicsJson.bodyPurgedAt = ahora y, por columnas (T8-L0b fase 1),
+//      body_purged_at = ahora, author_display_name/summary a NULL y
+//      review_category_mentions.snippet a NULL. Se conservan rating, score10,
 //      categories, contentHash y el resto de la meta; se retiran los
 //      fragmentos literales de la reseña (categories[].snippet y
 //      analysis.summary) y el nombre del autor (topicsJson.authorDisplayName),
@@ -80,6 +82,12 @@ export type ReviewUpdateData = {
   title?: null;
   body?: null;
   responseBody?: null;
+  // Purga también por columnas (T8-L0b fase 1: mismo conjunto que purgeExpiredBodies
+  // del API, review-meta.store.ts). Sin bodyPurgedAt en columna la purga del API
+  // saltaría la fila por el JSON y las columnas quedarían con PII para siempre.
+  bodyPurgedAt?: Date;
+  authorDisplayName?: null;
+  summary?: null;
 };
 
 const SOURCE_SELECT = { id: true, propertyId: true, provider: true, configJson: true } as const;
@@ -97,6 +105,10 @@ export type ReputationMaintenanceDb = {
       orderBy: { createdAt: "asc" };
     }): Promise<ReviewRow[]>;
     update(args: { where: { id: string }; data: ReviewUpdateData }): Promise<unknown>;
+  };
+  /** Fragmentos literales materializados (review_category_mentions); opcional: los stubs no lo tienen. */
+  reviewCategoryMention?: {
+    updateMany(args: { where: { reviewId: string }; data: { snippet: null } }): Promise<unknown>;
   };
 };
 
@@ -258,6 +270,9 @@ export function planReviewChange(row: ReviewRow, retention: RetentionIndex, now:
     data.title = null;
     data.body = null;
     data.responseBody = null;
+    data.bodyPurgedAt = now;
+    data.authorDisplayName = null;
+    data.summary = null;
   }
   return { data, purged, overdue };
 }
@@ -299,7 +314,11 @@ async function maintainProperty(
     const change = planReviewChange(row, retention, now);
     if (change === null) continue;
     await db.guestReview.update({ where: { id: row.id }, data: change.data });
-    if (change.purged) purged += 1;
+    if (change.purged) {
+      // Los fragmentos literales de review_category_mentions siguen la retención del cuerpo.
+      await db.reviewCategoryMention?.updateMany({ where: { reviewId: row.id }, data: { snippet: null } });
+      purged += 1;
+    }
     if (change.overdue) overdue += 1;
   }
 

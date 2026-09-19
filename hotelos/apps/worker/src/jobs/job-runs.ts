@@ -6,7 +6,7 @@
 // (lastError) con finishedAt al terminar. Es la fuente de verdad de la pantalla
 // de jobs y del `lastRuns` que expone getWorkerHealth() (index.ts).
 //
-// Tenencia: las cuatro colas del worker son barridos globales (una sola consulta
+// Tenencia: las cinco colas del worker son barridos globales (una sola consulta
 // recorre todas las organizaciones), así que escriben organizationId = null y
 // propertyId = null. Un productor con ámbito (un job encolado por una
 // organización o un hotel concretos) debe pasar ambos identificadores.

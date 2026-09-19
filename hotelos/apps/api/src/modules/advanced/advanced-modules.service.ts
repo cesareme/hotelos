@@ -340,6 +340,7 @@ export const ADVANCED_AUDIT_EVENTS = [
   "ReviewResponseSent",
   "QualityCaseCreated",
   "QualityCaseResolved",
+  "QualityCaseUpdated",
   "SurveyCreated",
   "SurveyResponseReceived",
   "UtilityMeterCreated",

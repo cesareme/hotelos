@@ -69,6 +69,10 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.api
     restart: unless-stopped
+    # Apagado ordenado (fusión T8 · E2): el API detiene schedulers, cierra Fastify
+    # y desconecta Prisma al recibir SIGTERM (SHUTDOWN_TIMEOUT_MS, 10 s por defecto);
+    # dejar margen antes del SIGKILL de compose (por defecto 10 s).
+    stop_grace_period: 20s
     depends_on:
       postgres:
         condition: service_healthy

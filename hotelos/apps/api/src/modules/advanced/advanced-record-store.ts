@@ -847,7 +847,8 @@ async function respondGuestReview(scope: StoreScope, id: string, routeStatus: st
   // vale la idempotencia «mismo estado» de la máquina), la edición no existe.
   if (row.respondedAt) throw new ConflictError("La reseña ya tiene respuesta.", { code: INVALID_TRANSITION_CODE, entityType: "guest_review", from: "responded", to: target, allowed: [] });
   assertTransitionAllowed("guest_review", "pending", target);
-  const updated = await prisma.guestReview.update({ where: { id: row.id }, data: { responseBody: data.responseBody, respondedAt: new Date() }, select: REVIEW_SELECT });
+  // T8-L0 (reputación): la columna `status` acompaña a respondedAt para que coincida con la meta de topicsJson.
+  const updated = await prisma.guestReview.update({ where: { id: row.id }, data: { responseBody: data.responseBody, respondedAt: new Date(), status: "responded" }, select: REVIEW_SELECT });
   return reviewItem(updated);
 }
 

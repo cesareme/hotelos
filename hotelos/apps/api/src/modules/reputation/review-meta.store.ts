@@ -1,25 +1,30 @@
 // Reputación · Tanda T8 · lote T8-C — persistencia sobre las tablas EXISTENTES
 // (apps/api/src/modules/reputation/review-meta.store.ts).
 //
-// Mientras no se aplique el parche T8-L0 (docs/design/olas/T8-SCHEMA-PATCH.md)
-// GuestReview solo tiene las columnas de schema.prisma:1888-1909 y ReviewSource
-// las de :1876-1886 (id, propertyId, provider, status, configJson, createdAt).
-// Todo lo demás (score10, contentHash, estado de bandeja, categorías, borrador,
-// historial de ejecuciones…) vive en los JSON existentes con la forma tipada de
-// reputation-types.ts: GuestReview.topicsJson = ReviewMeta v1 y
-// ReviewSource.configJson = ReviewSourceConfig v1.
+// La fuente de verdad de lectura siguen siendo los JSON existentes con la forma
+// tipada de reputation-types.ts: GuestReview.topicsJson = ReviewMeta v1 y
+// ReviewSource.configJson = ReviewSourceConfig v1 (score10, contentHash, estado
+// de bandeja, categorías, borrador, historial de ejecuciones…).
+//
+// Parche T8-L0 APLICADO (migración 20260919124000_reputacion, 2026-09-19) y
+// activación T8-L0b FASE 1 = doble escritura: cada escritura de este fichero
+// materializa además las columnas nuevas de guest_reviews / review_sources y la
+// tabla review_source_runs; la lectura (bandeja, índice, listSourceConfigs,
+// purga del worker) sigue por los JSON hasta la fase 2. Los stubs de los tests
+// no tienen `reviewSourceRun` ni `reviewCategoryMention`: siempre con `?.`.
 //
 // Reglas del fichero:
 //   · `db` inyectable (ReputationDb; por defecto el prisma de @hotelos/database)
 //     para probar con stubs; sin variables de entorno; sin red;
-//   · CARRERA DOCUMENTADA: sin `@@unique([propertyId, source, externalReference])`
-//     (llega con T8-L0) el upsert es findFirst + create. Dos escritores
-//     concurrentes con la misma referencia podrían crear dos filas. Hoy el
-//     único escritor periódico es el tick del job (un solo líder por advisory
-//     lock, reputation-sync.job.ts) y la importación CSV corre dentro de una
-//     petición; la unicidad real la impone la migración de T8-L0;
-//   · patchReviewMeta es lee-modifica-escribe sobre topicsJson (misma carrera
-//     teórica; el parche añade columnas y actualizaciones atómicas);
+//   · CARRERA CERRADA: el upsert sigue siendo findFirst + create, pero el índice
+//     único `@@unique([propertyId, source, externalReference])` de T8-L0 hace
+//     que el segundo escritor concurrente reciba P2002 en el create; en ese caso
+//     se relee la fila y se sigue por la rama de actualización (nunca dos filas).
+//     Además el tick del job es un solo líder por advisory lock
+//     (reputation-sync.job.ts) y la importación CSV corre dentro de una petición;
+//   · patchReviewMeta es lee-modifica-escribe sobre topicsJson (carrera teórica
+//     entre dos PATCH simultáneos); las columnas equivalentes al parche se
+//     escriben en el mismo update;
 //   · la purga NUNCA borra filas: vacía title/body/authorDisplayName/responseBody,
 //     retira los fragmentos literales (snippets y resumen) y conserva nota,
 //     categorías, referencia externa y contentHash.
@@ -52,7 +57,7 @@ import { contentHash, externalReferenceFor, minimizeAuthorName, normalizeRatingO
  * `$transaction`, de ahí el Partial).
  */
 export type ReputationDb = Pick<typeof prisma, "guestReview" | "reviewSource" | "qualityCase" | "propertyModule" | "module" | "inboundEmail" | "property" | "$queryRaw"> &
-  Partial<Pick<typeof prisma, "$transaction" | "aiHumanReviewItem">>;
+  Partial<Pick<typeof prisma, "$transaction" | "aiHumanReviewItem" | "reviewSourceRun" | "reviewCategoryMention">>;
 
 export type GuestReviewRow = NonNullable<Awaited<ReturnType<typeof prisma.guestReview.findFirst>>>;
 export type ReviewSourceRow = NonNullable<Awaited<ReturnType<typeof prisma.reviewSource.findFirst>>>;
@@ -159,11 +164,14 @@ export async function upsertReviewFromNormalized(input: UpsertReviewInput): Prom
   const author = minimizeAuthorName(item.authorDisplayName);
   const language = item.language?.trim() || undefined;
 
-  // Carrera documentada en la cabecera: findFirst + create sin @@unique hasta T8-L0.
-  const existing = await db.guestReview.findFirst({ where: { propertyId, source, externalReference } });
+  const updatedAtSource = item.updatedAtSource ? toDate(item.updatedAtSource, now) : null;
+
+  // findFirst + create: la carrera la cierra el índice único de T8-L0 (P2002 → releer y actualizar).
+  let existing = await db.guestReview.findFirst({ where: { propertyId, source, externalReference } });
 
   if (!existing) {
     const responded = item.portalReply?.body ? toDate(item.portalReply.repliedAt, now) : null;
+    const slaTargetAt = slaTargetFor(receivedAt, score10);
     const metaInput: ReviewMetaInput = {
       score10,
       ratingRaw: item.ratingRaw,
@@ -176,31 +184,56 @@ export async function upsertReviewFromNormalized(input: UpsertReviewInput): Prom
       ...(item.portalUrl ? { portalUrl: item.portalUrl } : {}),
       bodyComplete: item.bodyComplete,
       status: responded ? "responded" : "new",
-      slaTargetAt: slaTargetFor(receivedAt, score10),
+      slaTargetAt,
       replyCapability: item.replyCapability,
       categories: [],
       analysis: { status: "pending", source: "none" },
       ...(responded ? { response: { source: "api" as const } } : {}),
       ...(input.isDemo ? { isDemo: true } : {})
     };
-    const created = await db.guestReview.create({
-      data: {
-        propertyId,
-        source,
-        rating: normalized ? normalized.score5 : null,
-        title: item.title ?? null,
-        body: item.body ?? null,
-        language: language ?? null,
-        sentiment,
-        topicsJson: asJson(writeReviewMeta(metaInput)),
-        externalReference,
-        receivedAt,
-        respondedAt: responded,
-        responseBody: responded ? (item.portalReply?.body ?? null) : null
-      }
-    });
-    const meta = readReviewMeta(created.topicsJson);
-    return { outcome: "created", id: created.id, externalReference, contentHash: hash, score10, meta };
+    try {
+      const created = await db.guestReview.create({
+        data: {
+          propertyId,
+          source,
+          rating: normalized ? normalized.score5 : null,
+          title: item.title ?? null,
+          body: item.body ?? null,
+          language: language ?? null,
+          sentiment,
+          topicsJson: asJson(writeReviewMeta(metaInput)),
+          externalReference,
+          receivedAt,
+          respondedAt: responded,
+          responseBody: responded ? (item.portalReply?.body ?? null) : null,
+          // T8-L0b fase 1: columnas en doble escritura con la meta (la lectura sigue por topicsJson).
+          score10,
+          ratingScaleMax: item.ratingScaleMax,
+          sourceId: input.sourceId ?? null,
+          sourceMode: input.sourceMode,
+          authorDisplayName: author ?? null,
+          authorCountry: item.authorCountry ?? null,
+          portalUrl: item.portalUrl ?? null,
+          bodyComplete: item.bodyComplete,
+          contentHash: hash,
+          status: responded ? "responded" : "new",
+          slaTargetAt: slaTargetAt ? new Date(slaTargetAt) : null,
+          replyCapability: item.replyCapability,
+          analysisStatus: "pending",
+          analysisSource: "none",
+          responseSource: responded ? "api" : null,
+          updatedAtSource
+        }
+      });
+      const meta = readReviewMeta(created.topicsJson);
+      return { outcome: "created", id: created.id, externalReference, contentHash: hash, score10, meta };
+    } catch (error) {
+      // Otro escritor creó la misma referencia entre el findFirst y el create (índice único de T8-L0):
+      // se relee la fila y se sigue por la rama de actualización.
+      if ((error as { code?: string }).code !== "P2002") throw error;
+      existing = await db.guestReview.findFirst({ where: { propertyId, source, externalReference } });
+      if (!existing) throw error;
+    }
   }
 
   const currentMeta = readReviewMeta(existing.topicsJson);
@@ -227,7 +260,15 @@ export async function upsertReviewFromNormalized(input: UpsertReviewInput): Prom
       rating: normalized ? normalized.score5 : null,
       ...(language ? { language } : {}),
       ...(sentiment ? { sentiment } : {}),
-      topicsJson: asJson(writeReviewMeta(nextMeta))
+      topicsJson: asJson(writeReviewMeta(nextMeta)),
+      // T8-L0b fase 1: columnas en doble escritura con la meta.
+      score10,
+      ratingScaleMax: item.ratingScaleMax,
+      ...(author ? { authorDisplayName: author } : {}),
+      bodyComplete: item.bodyComplete,
+      contentHash: hash,
+      analysisStatus: "pending",
+      ...(updatedAtSource ? { updatedAtSource } : {})
     }
   });
   const meta = readReviewMeta(updated.topicsJson);
@@ -256,7 +297,33 @@ export type PatchReviewMetaInput = {
 
 export type PatchReviewMetaResult = { row: GuestReviewRow; meta: ReviewMeta };
 
-/** Fusiona el parche sobre la meta actual y escribe topicsJson (404 si la fila no existe). */
+function isoToDate(value: string | undefined): Date | null {
+  return value ? new Date(value) : null;
+}
+
+/**
+ * Columnas de GuestReview equivalentes a las claves presentes en el parche de
+ * meta (T8-L0b fase 1, doble escritura): se derivan de la meta ya fusionada para
+ * que columna y JSON coincidan; las claves ausentes del parche no se tocan.
+ */
+function mirroredColumns(partial: ReviewMetaInput, merged: ReviewMeta) {
+  const has = (key: keyof ReviewMetaInput): boolean => Object.prototype.hasOwnProperty.call(partial, key);
+  return {
+    ...(has("status") ? { status: merged.status } : {}),
+    ...(has("assignedUserId") ? { assignedUserId: merged.assignedUserId ?? null } : {}),
+    ...(has("slaTargetAt") ? { slaTargetAt: isoToDate(merged.slaTargetAt) } : {}),
+    ...(has("draft")
+      ? { draftBody: merged.draft?.body ?? null, draftSource: merged.draft?.source ?? null, draftModel: merged.draft?.model ?? null, draftedAt: isoToDate(merged.draft?.draftedAt) }
+      : {}),
+    ...(has("response") ? { responseSource: merged.response?.source ?? null, responseExternalState: merged.response?.externalState ?? null } : {}),
+    ...(has("analysis")
+      ? { analysisStatus: merged.analysis.status, analysisSource: merged.analysis.source, analyzedAt: isoToDate(merged.analysis.analyzedAt), summary: merged.analysis.summary ?? null }
+      : {}),
+    ...(has("bodyPurgedAt") ? { bodyPurgedAt: isoToDate(merged.bodyPurgedAt) } : {})
+  };
+}
+
+/** Fusiona el parche sobre la meta actual y escribe topicsJson + columnas equivalentes (404 si la fila no existe). */
 export async function patchReviewMeta(input: PatchReviewMetaInput): Promise<PatchReviewMetaResult> {
   const db = input.db ?? prisma;
   const current = await db.guestReview.findFirst({ where: { id: input.id } });
@@ -268,6 +335,7 @@ export async function patchReviewMeta(input: PatchReviewMetaInput): Promise<Patc
     where: { id: current.id },
     data: {
       topicsJson: asJson(nextMeta),
+      ...mirroredColumns(partial, readReviewMeta(nextMeta)),
       ...(input.columns?.language !== undefined ? { language: input.columns.language } : {}),
       ...(input.columns?.sentiment !== undefined ? { sentiment: input.columns.sentiment } : {}),
       ...(input.columns?.respondedAt !== undefined ? { respondedAt: input.columns.respondedAt } : {}),
@@ -319,7 +387,9 @@ export type SaveSourceRunInput = {
 /**
  * Empuja la ejecución al ring buffer `configJson.runs` (≤ RUN_HISTORY_LIMIT, la
  * más reciente primero) y actualiza lastRunAt/lastSuccessAt/lastError y el
- * status de la fila. Devuelve la configuración resultante.
+ * status de la fila. Devuelve la configuración resultante. T8-L0b fase 1: las
+ * columnas de la fuente se escriben en el mismo update y la ejecución se inserta
+ * además en review_source_runs (la lectura de `GET …/runs` sigue por configJson).
  */
 export async function saveSourceRun(input: SaveSourceRunInput): Promise<{ row: ReviewSourceRow; config: ReviewSourceConfig }> {
   const db = input.db ?? prisma;
@@ -330,9 +400,44 @@ export async function saveSourceRun(input: SaveSourceRunInput): Promise<{ row: R
   if (input.cursor) next = { ...next, cursor: input.cursor };
   const status: ReviewSourceStatus = input.status ?? (input.run.status === "failed" ? "error" : statusOfRow(current));
   if (input.run.status === "skipped" && input.run.error) next = { ...next, lastError: input.run.error.slice(0, 500) };
+  const configJson = writeSourceConfig(next, current.provider);
+  // Columnas desde la configuración ya saneada (readCursor descarta claves de credenciales): nunca tokens en cursor_json.
+  const persisted = readSourceConfig(configJson, current.provider);
   const row = await db.reviewSource.update({
     where: { id: current.id },
-    data: { status, configJson: asJson(writeSourceConfig(next, current.provider)) }
+    data: {
+      status,
+      configJson: asJson(configJson),
+      // T8-L0b fase 1: columnas en doble escritura con la configuración.
+      mode: persisted.mode,
+      displayName: persisted.displayName,
+      retentionDays: persisted.retentionDays,
+      weight: persisted.weight,
+      lastRunAt: isoToDate(persisted.lastRunAt),
+      lastSuccessAt: isoToDate(persisted.lastSuccessAt),
+      lastError: persisted.lastError ?? null,
+      cursorJson: asJson(persisted.cursor ?? {})
+    }
+  });
+  await db.reviewSourceRun?.create({
+    data: {
+      id: input.run.id,
+      propertyId: current.propertyId,
+      sourceId: current.id,
+      provider: current.provider,
+      trigger: input.run.trigger,
+      status: input.run.status,
+      startedAt: toDate(input.run.startedAt, new Date()),
+      finishedAt: toDate(input.run.finishedAt, new Date()),
+      fetched: input.run.fetched,
+      created: input.run.created,
+      updated: input.run.updated,
+      unchanged: input.run.unchanged,
+      purged: input.run.purged,
+      lastError: input.run.error ?? null,
+      correlationId: input.run.correlationId,
+      resultJson: asJson({ ...input.run })
+    }
   });
   return { row, config: readSourceConfig(row.configJson, row.provider) };
 }
@@ -378,7 +483,8 @@ export type PurgeExpiredBodiesResult = { scanned: number; purged: number };
  * es anterior a la retención de su fuente (por `meta.sourceId`; si no, por
  * proveedor: Google 30 días, resto `configJson.retentionDays` o 730) y fija
  * `meta.bodyPurgedAt`. Conserva nota, categorías (sin snippet), referencia y
- * contentHash. Idempotente: una reseña ya purgada no se reescribe.
+ * contentHash; en review_category_mentions deja `snippet` a NULL (misma
+ * retención que el cuerpo). Idempotente: una reseña ya purgada no se reescribe.
  */
 export async function purgeExpiredBodies(input: PurgeExpiredBodiesInput): Promise<PurgeExpiredBodiesResult> {
   const db = input.db ?? prisma;
@@ -421,8 +527,11 @@ export async function purgeExpiredBodies(input: PurgeExpiredBodiesInput): Promis
     };
     await db.guestReview.update({
       where: { id: row.id },
-      data: { title: null, body: null, responseBody: null, topicsJson: asJson(writeReviewMeta(nextMeta)) }
+      // T8-L0b fase 1: bodyPurgedAt/authorDisplayName/summary también como columnas.
+      data: { title: null, body: null, responseBody: null, topicsJson: asJson(writeReviewMeta(nextMeta)), bodyPurgedAt: input.now, authorDisplayName: null, summary: null }
     });
+    // Los fragmentos literales materializados en review_category_mentions siguen la misma retención.
+    await db.reviewCategoryMention?.updateMany({ where: { reviewId: row.id }, data: { snippet: null } });
     purged += 1;
   }
   return { scanned: rows.length, purged };

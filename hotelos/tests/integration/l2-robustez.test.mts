@@ -69,7 +69,8 @@ const DEGRADED_DASHBOARDS = [
   "/dashboards/housekeeping-mobile",
   "/dashboards/channel-performance",
   "/dashboards/maintenance-mobile",
-  "/dashboards/surveys"
+  "/dashboards/surveys",
+  "/dashboards/reputation"
 ] as const;
 
 /** Tableros de dirección/finanzas: se informa (diagnóstico) cuando el receptionist los abre con las claves del manifiesto. */

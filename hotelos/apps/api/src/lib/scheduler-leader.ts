@@ -1,9 +1,9 @@
 /**
  * Scheduler leadership gate (audit 2026-06 · #13 · HA) + lease (Tanda L2 · L2-02).
  *
- * The eight in-process schedulers of server.ts (SES Hospedajes, VeriFactu,
+ * The nine in-process schedulers of server.ts (SES Hospedajes, VeriFactu,
  * channel drain, revenue pace, allotment release, group cut-off, mailbox poll,
- * PMS shadow) MUST run on exactly ONE instance. With more than one replica,
+ * PMS shadow, reputation sync) MUST run on exactly ONE instance. With more than one replica,
  * every replica would fire every scheduler, producing DUPLICATE SES /
  * VeriFactu submissions to the AEAT — which is sanctionable — and duplicate
  * inventory releases.

@@ -36,11 +36,12 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 const escape = (name: string): string => name.replaceAll(".", "\\.");
 
 describe("catálogo honesto del worker", () => {
-  it("declara exactamente las cuatro colas pg-boss reales", () => {
+  it("declara exactamente las cinco colas pg-boss reales", () => {
     assert.deepEqual([...JOB_QUEUES].sort(), [
       "notifications.retry",
       "notifications.scheduled",
       "notifications.sending-sweep",
+      "reputation.maintenance",
       "webhooks.deliver"
     ]);
     // modelo303.aggregate solo aparece en el boss.unschedule que limpia crons huérfanos.
@@ -50,6 +51,7 @@ describe("catálogo honesto del worker", () => {
 
   it("cada cola tiene boss.work, boss.schedule y corre dentro de withJobRun", () => {
     for (const queue of JOB_QUEUES) {
+      if (queue === "reputation.maintenance") continue; // registrada por jobs/reputation-maintenance.job.ts (probada en jobs/__tests__/reputation-maintenance.job.test.ts)
       assert.match(schedulerSource, new RegExp(`boss\\.work\\(\\s*"${escape(queue)}"`), `${queue}: boss.work`);
       assert.match(schedulerSource, new RegExp(`boss\\.schedule\\("${escape(queue)}", "[^"]+"`), `${queue}: boss.schedule`);
       assert.match(schedulerSource, new RegExp(`tick\\("${escape(queue)}"`), `${queue}: tick → withJobRun`);

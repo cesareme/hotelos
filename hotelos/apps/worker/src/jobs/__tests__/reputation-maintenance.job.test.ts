@@ -1,8 +1,9 @@
 // Test unitario de jobs/reputation-maintenance.job.ts (Tanda T8 · lote T8-F).
 //
 // Sin base de datos: un cliente en memoria con findMany/update que registran
-// cada llamada (no tiene deleteMany ni updateMany: si el job los usara,
-// fallaría) y, para el tick de pg-boss, los métodos de prisma.workerJobRun
+// cada llamada (guestReview no tiene deleteMany ni updateMany: si el job los
+// usara, fallaría; reviewCategoryMention solo expone el updateMany de la purga
+// de snippets) y, para el tick de pg-boss, los métodos de prisma.workerJobRun
 // sustituidos sobre el singleton como hace catalog.test.ts con findMany.
 //
 // Vive en src/jobs/__tests__/ porque tests/worker-integration-contract.test.mjs
@@ -46,6 +47,10 @@ type ReviewRecord = {
   respondedAt: Date | null;
   topicsJson: JsonRecord;
   createdAt: Date;
+  // Columnas de T8-L0b fase 1 que la purga también debe vaciar/fijar.
+  authorDisplayName: string | null;
+  summary: string | null;
+  bodyPurgedAt: Date | null;
 };
 
 type ReviewWhere = { propertyId: string; receivedAt?: { lt: Date }; respondedAt?: null };
@@ -55,6 +60,7 @@ type Calls = {
   sourceUpdate: Array<{ where: { id: string }; data: { configJson: unknown } }>;
   reviewFindMany: ReviewWhere[];
   reviewUpdate: Array<{ where: { id: string }; data: ReviewUpdateData }>;
+  mentionUpdateMany: Array<{ where: { reviewId: string }; data: { snippet: null } }>;
 };
 
 type MemoryDb = { db: ReputationMaintenanceDb; calls: Calls; sources: Map<string, SourceRecord>; reviews: Map<string, ReviewRecord> };
@@ -83,6 +89,9 @@ function review(overrides: Partial<ReviewRecord> & { id: string; propertyId: str
     respondedAt: null,
     topicsJson: { v: 1, score10: 9, contentHash: `hash-${overrides.id}`, status: "new", categories: [] },
     createdAt: new Date(NOW.getTime() - 1_000_000 + sequence),
+    authorDisplayName: null,
+    summary: null,
+    bodyPurgedAt: null,
     ...overrides
   };
 }
@@ -90,7 +99,7 @@ function review(overrides: Partial<ReviewRecord> & { id: string; propertyId: str
 function memoryDb(sources: SourceRecord[], reviews: ReviewRecord[]): MemoryDb {
   const sourceMap = new Map(sources.map((row) => [row.id, row]));
   const reviewMap = new Map(reviews.map((row) => [row.id, row]));
-  const calls: Calls = { sourceFindMany: 0, sourceUpdate: [], reviewFindMany: [], reviewUpdate: [] };
+  const calls: Calls = { sourceFindMany: 0, sourceUpdate: [], reviewFindMany: [], reviewUpdate: [], mentionUpdateMany: [] };
   const db: ReputationMaintenanceDb = {
     reviewSource: {
       async findMany() {
@@ -124,8 +133,17 @@ function memoryDb(sources: SourceRecord[], reviews: ReviewRecord[]): MemoryDb {
         if ("title" in args.data) row.title = null;
         if ("body" in args.data) row.body = null;
         if ("responseBody" in args.data) row.responseBody = null;
+        if ("authorDisplayName" in args.data) row.authorDisplayName = null;
+        if ("summary" in args.data) row.summary = null;
+        if (args.data.bodyPurgedAt !== undefined) row.bodyPurgedAt = args.data.bodyPurgedAt;
         row.topicsJson = clone(args.data.topicsJson) as JsonRecord;
         return row;
+      }
+    },
+    reviewCategoryMention: {
+      async updateMany(args) {
+        calls.mentionUpdateMany.push(clone(args));
+        return { count: 0 };
       }
     }
   };
@@ -207,6 +225,9 @@ describe("runReputationMaintenance · purga honesta por retención de la fuente"
     assert.equal(purged.title, null);
     assert.equal(purged.body, null);
     assert.equal(purged.responseBody, null);
+    assert.equal(purged.authorDisplayName, null, "la columna author_display_name también se vacía");
+    assert.equal(purged.summary, null, "la columna summary también se vacía");
+    assert.equal(purged.bodyPurgedAt?.toISOString(), NOW.toISOString(), "body_purged_at en columna: purgeExpiredBodies del API no reescribe la fila");
     assert.equal(purged.rating, 4.5);
     assert.equal(purged.topicsJson.score10, 9.2);
     assert.equal(purged.topicsJson.contentHash, "hash-g-old");
@@ -216,6 +237,12 @@ describe("runReputationMaintenance · purga honesta por retención de la fuente"
     assert.deepEqual(purged.topicsJson.categories, [{ category: "limpieza", sentiment: 1, confidence: 0.9, source: "dictionary" }], "categoría conservada sin el fragmento literal");
     assert.deepEqual(purged.topicsJson.analysis, { status: "done", source: "dictionary", analyzedAt: "2026-08-06T10:00:00.000Z" }, "análisis conservado sin el resumen");
 
+    assert.deepEqual(
+      memory.calls.mentionUpdateMany.map((call) => call.where.reviewId).sort(),
+      ["c-old800", "d-old", "g-old"],
+      "cada reseña purgada deja snippet = null en review_category_mentions"
+    );
+    for (const call of memory.calls.mentionUpdateMany) assert.deepEqual(call.data, { snippet: null });
     for (const id of ["g-recent", "g-purged", "g-nodate", "g-by-sourceid", "c-old45"]) {
       const untouched = memory.reviews.get(id);
       assert.ok(untouched);

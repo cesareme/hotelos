@@ -289,7 +289,7 @@ export function registerReputationRoutes(app: FastifyInstance, options: Reputati
         else unchanged += 1;
       }
 
-      const analyzed = await analyzePendingReviews({ db: prisma, propertyId, ai: ai(), budget: Math.min(parsed.rows.length, IMPORT_MAX_ANALYSIS), now, log, correlationId });
+      const analyzed = await analyzePendingReviews({ db: prisma, propertyId, ai: ai(), budget: Math.min(parsed.rows.length, IMPORT_MAX_ANALYSIS), now, log, correlationId, organizationId });
       const casesOpened = await raiseReviewAlerts({ db: prisma, organizationId, propertyId, now, correlationId, defaultOwnerUserId: await defaultOwnerFor(propertyId), log });
 
       const invalid = parsed.invalid.length;
@@ -396,6 +396,10 @@ export function registerReputationRoutes(app: FastifyInstance, options: Reputati
     const propertyId = await assertPropertyEntityAccess(request, { entity: "guestReview", id });
     requireReputationModule(propertyId);
     const body = parseOr400(ReviewPatchSchema, request.body ?? {}, "body");
+    if (body.assignedUserId) {
+      const assignee = await prisma.user.findFirst({ where: { id: body.assignedUserId, organizationId: request.userContext.organizationId }, select: { id: true } });
+      if (!assignee) throw new BadRequestError("assignedUserId no corresponde a un usuario de la organización.");
+    }
     return patchReview({ id, propertyId, patch: body, actor: actorOf(request, createId("corr")) });
   });
 

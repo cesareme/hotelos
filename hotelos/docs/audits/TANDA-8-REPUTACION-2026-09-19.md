@@ -554,3 +554,148 @@ Puerta final tras la fusión (árbol principal, BD en reposo): `node scripts/typ
   §11 verificación y §12 migración), `docs/design/olas/T8-SCHEMA-PATCH.md` (re-basado: migración `20260919124000_reputacion`,
   anclas del principal), `docs/design/olas/T8-MERGE-LINES.md` (nota de re-base). Suite temporal borrada. Ningún fichero
   prohibido tocado; `pnpm-lock.yaml` sin tocar.
+
+## 12. Fusión en main 2026-09-19 (bloque «§9 Fusión en main» del encargo; numerado 12 porque el §9 ya existe)
+
+Estado al cierre: `main` = `9966c4f` (Merge branch 'tanda-t8') + árbol de trabajo SIN commit con el cableado completo
+de T8-MERGE-LINES, el parche de esquema T8-L0 + T8-L0b fase 1, los extras E1 (ids de auditoría) y E2 (apagado ordenado),
+la ronda de hallazgos de la fusión y su corrección. Lotes: T8-1B-worker, 1C-correo-hooks-seed-pkg, 1D-ia,
+1E-auditoria-e1, 2A-server-e2, 2B-permisos-env, 2C-esquema-t8l0b, 2D-docs, 3A-final, ronda de hallazgos (fidelidad,
+seguridad-datos, extras-y-regresiones), corrección, dos rondas de puertas y esta verificación (integrador de la fusión).
+
+### 12.1 Ficheros tocados (`git status` en el árbol principal, sin `git add`)
+
+- **61 entradas**: 52 ` M` (**+1.549 / −299**) + 9 `??` (**1.629 líneas nuevas**). `pnpm-lock.yaml` sigue ` M` por el drift
+  previo (mtime 04:08, anterior a la fusión): **excluido** de esta fusión, sin tocar; ninguna dependencia nueva.
+- API (`apps/api/src`): `server.ts` (imports T8, `registerReputationRoutes(app, { collectorOptions… })`, guarda
+  `assertDraftPublishable` en `POST …/respond`, `surveys.manage` en `POST /surveys/:id/responses`,
+  `QualityCaseUpdated|QualityCaseResolved` en `PATCH /quality/cases/:id`, `/health` `checks.reputationSync` + `checks.audit`,
+  `setReputationAiPort(createAiCoreReputationPort())` solo con proveedor, `setAuditLogger(app.log.child(...))`, coordinador
+  de apagado con pasos `prisma` → `audit.flush` → `fastify` (LIFO) + `channel.drain`/`pms-shadow.job`/`reputation.sync.job`);
+  `lib/env.ts`, `lib/ids.ts`, `lib/scheduler-leader.ts`, `lib/shutdown.ts` (nuevo), `security/route-permissions.ts`,
+  `modules/advanced/{advanced-modules.service,advanced-record-store}.ts`, `modules/audit/audit.service.ts`,
+  `modules/developer/api-reference.service.ts`, `modules/integrations/email/email-reservation.service.ts`,
+  `modules/notifications/event-hooks.service.ts`, `modules/reputation/{reputation.routes,reputation-ai.port,
+  reputation-sync.service,reputation-score.service,review-alerts.service,review-draft.service,review-meta.store}.ts`,
+  `modules/reputation/reputation-ai.core-adapter.ts` (nuevo); tests nuevos `lib/__tests__/{ids,shutdown}.test.mts`,
+  `modules/audit/__tests__/audit-persist.test.mts`, `modules/reputation/__tests__/reputation-ai-core-adapter.test.mts`;
+  tests tocados `pms-shadow-routes.test.mts`, `review-meta-store.test.mts`; `apps/api/package.json` (`demo:seed-reputation`).
+- Worker: `scheduler.ts` (5.ª cola `reputation.maintenance`, `15 4 * * *` Europe/Madrid), `index.ts`, `jobs/job-runs.ts`,
+  `jobs/reputation-maintenance.job.ts` (+ purga por columnas y `review_category_mentions.snippet`), tests `catalog.test.ts`
+  y `jobs/__tests__/reputation-maintenance.job.test.ts`.
+- Paquetes: `packages/ai-tools/src/registry.ts` (`draftReviewResponse` → `high`), `packages/database/prisma/schema.prisma`
+  (+3 hunks T8), `prisma/seed.ts` (`demoReviewId`), migración nueva `prisma/migrations/20260919124000_reputacion/` (344 l.).
+- Configuración y despliegue: `.env.example`, `deploy/.env.production.example`, `scripts/env-contract.json` (censo 153/153,
+  +7 variables: `GOOGLE_BUSINESS_*` ×3, `REPUTATION_SYNC_*` ×3, `SHUTDOWN_TIMEOUT_MS`), `deploy/docker-compose.production.yml`
+  (`stop_grace_period: 20s`), `apps/admin-web/.discoverability-whitelist.json` (+6 cajones/diálogos de reputación).
+- Docs: `CLAUDE.md`, `docs/api-contracts.md` (sección T8 + 948 entradas), `docs/deployment.md`, `docs/runbooks/
+  reputacion-reviews.md`, `docs/runbooks/auditoria-eventos.md` (nuevo), `docs/design/olas/T8-SCHEMA-PATCH.md`,
+  `docs/design/{COCOA-22-MIGRACION.md,cocoa-22-inventory.json}`, este informe (§12).
+- Tests raíz: `advanced-modules-contract`, `ai-onboarding-migration-contract`, `cocoa-22-contract`,
+  `revenue-channel-manager-contract`, `revenue-history-forecast-contract`, `worker-integration-contract`; integración:
+  `l2-modulos-comercial`, `l2-robustez`, `l8-reputation-routes`, `l8-reputation-sync`, `t8-email-review-notification` (nuevo).
+- Fuera del repo: `~/anfitorio-demo/pilots/screens-inventory.csv` filas 32/38/39 (lote 3A).
+- Sin lote declarado (correcciones de puertas en el árbol, revisadas aquí): `.discoverability-whitelist.json`,
+  `api-reference.service.ts` (+5: `sources`, `draft`, `quality-case`), `reputation-score.service.ts` (solo comentario de
+  cabecera: `schemaPatchApplied` true), `l2-modulos-comercial.test.mts` (GET /guests 200 con la plantilla `admin` v3) y
+  `l8-reputation-sync.test.mts` (`schemaPatchApplied` true).
+
+### 12.2 Puertas (ronda final sobre el árbol corregido, 14/14 verdes)
+
+| # | Puerta | Resultado |
+|---|---|---|
+| 1 | `node scripts/typecheck-all.mjs` | 16 workspaces · **15 PASS · 0 FAIL · 1 SKIP** (apps/guest-web, deuda documentada) · 21,9 s |
+| 2 | `corepack pnpm --filter @hotelos/api test` | **2.860 tests · 2.859 pass · 0 fail · 1 skip** (`PMS_HF_REAL_CSV`) · 821 suites · 13,5 s (línea base pre-T8: 2.483) |
+| 3 | `corepack pnpm --filter @hotelos/ai-core test` | **119/119** |
+| 4 | Front admin-web (114 ficheros `__tests__/*.test.mts`) | **1.505/1.505** · 422 suites |
+| 5 | `node --test tests/*.test.mjs` | **541/541** · 113 suites (+1 sobre 540: `QualityCaseUpdated`) |
+| 6 | `node scripts/check-discoverability.mjs` | 232 pantallas · 192/192 URLs · 0 literales · placeholder 16/20 · exit 0 |
+| 7 | `node scripts/build-nav-tree.mjs --check` | al día · 69 ítems · 100 pestañas · 205 rutas legacy |
+| 8 | `node scripts/check-route-access.mjs` | OK · 15 tokens × 192 URLs · 12 módulos gateados |
+| 9 | Cocoa 22 inventario + waves `--write`/`--check` + contrato | 232 pantallas · 182 puntos · inlineStyles **647 = techo** · §6 al día · contrato 18/18 |
+| 10 | `corepack pnpm --filter @hotelos/admin-web build` | OK · 938 módulos · 2,82 s · 3 avisos «Circular chunk» preexistentes |
+| 11 | Integración completa (`--test-concurrency=1`, 60 ficheros) | **782 tests · 775 pass · 0 fail · 7 skips** condicionales de entorno · 137 s · 0 líneas level 50 |
+| 12 | `corepack pnpm --filter @hotelos/worker test` | **34/34** · 9 suites |
+| 13 | `rbac:sync -- --dry-run` | 250 claves (249 org + 1 platform) · +0 · 0 stale · 69 roles siguiendo plantilla · versión 3 · 0 behind |
+| 14 | `db:migrate:status` + `db:drift:check` + `check-migrations-vs-schema` | **18 migraciones · «Database schema is up to date!» · «No difference detected.» · 277 tablas / 38 enums OK** |
+
+Ronda previa (antes de la corrección): también 14/14; el lote 3A había medido 1 fallo unitario (`api-reference` qa#17) y
+3 de integración (`l8-reputation-sync` ×2, `l2-modulos-comercial`), ya corregidos en el árbol antes de esa ronda previa (por eso ambas rondas dan 0 fallos).
+
+### 12.3 Verificación funcional del integrador de la fusión (app.inject, tenant aislado, `RBAC_STRICT`)
+
+Suite temporal `tests/integration/l8-t8-fusion-temp.test.mts` (borrada tras la ejecución; log
+`scratchpad/fusion-temp-test.log`): `buildApiServer()` **sin registro local ni empuje del manifiesto** (las 12 rutas
+las sirve el API tal cual), dos organizaciones aisladas `org_l2_f…`/`org_l2_g…` con `reputation_quality` solo en el hotel A
+de cada una, usuarios `manager` (plantilla, hoteles A y B de la organización A), `receptionist` del helper y `manager` de la
+organización B. **6 pasos · 5 pass · 1 fallo propio del filtro de recuento** (contaba también `GET /reputation/properties/
+:propertyId/reviews` del motor: el manifiesto tiene 14 entradas `/reputation/*` = 12 nuevas + 2 del motor, 948 en total;
+el recuento exacto lo pina `reputation-routes.test.mts` «registra exactamente 12 rutas…» 8/8) · 3,3 s.
+
+| Ruta | Evidencia |
+|---|---|
+| `GET …/inbox` | vacía 200 `{ items: [], nextCursor: null, total: 0 }`; con datos 200 `total 10`, `sentiment=negative&responded=0` → 3; hotel sin módulo **403** «El módulo reputation_quality no está activado…»; propiedad de otra organización **404** |
+| `GET …/sources` | 200 (receptionist) `["csv","google"]` |
+| `POST …/sources` | csv **201 connected**; google **201 unavailable** «Google Business Profile: sin credenciales (GOOGLE_BUSINESS_CLIENT_ID)»; receptionist **403** (`reputation.respond`) |
+| `GET …/runs` | 200 · 4 ejecuciones (2 import + 2 manual) · `?sourceId=<google>&limit=1` → 1 |
+| `POST …/imports` | 10 filas ficticias (escala 5): **201 created 10 / duplicates 0**; repetición 201 **created 0 / duplicates 10**; receptionist 403; 3 casos `review_negative` (< 6/10) |
+| `PATCH …/sources/:id` | 200 `weight 1,5`, `displayName "CSV mensual"`; de otra organización **404** |
+| `DELETE …/sources/:id` | 200 `status disabled` (fila conservada: 2 fuentes); receptionist 403; sync de la desactivada **409 `REVIEW_SOURCE_DISABLED`** |
+| `POST …/sources/:id/sync` | csv 200 `run completed · fetched 0`; google 200 `run skipped`; receptionist 403 |
+| `GET /reputation/reviews/:id` | 200 `analysis done · dictionary`; manager de otra organización **404** «Reseña no encontrada.» |
+| `PATCH /reputation/reviews/:id` | `assignedUserId` de otro tenant → **400** «assignedUserId no corresponde a un usuario de la organización.» (SEC-T8-04); propio → 200 `assigned`; receptionist 403 |
+| `POST /reputation/reviews/:id/draft` | **201 `source rules`, `requiresHumanReview true`, 66 palabras**, `reviewItemId` (sin proveedor de IA el adaptador no se registra); receptionist 403 |
+| `POST /reputation/reviews/:id/quality-case` | **201** `review_negative · open`; segunda → **409 `QUALITY_CASE_ALREADY_LINKED`** |
+| `/health` (app.inject) | 200 `healthy`; claves `ai, audit, database, env, redis, reputationSync, schedulers, sentry, sesHospedajes, verifactu`; `checks.ai` ok «provider=none … reason=not_configured»; `checks.audit` ok «0 fallos de persistencia desde el arranque» |
+| Columnas T8-L0b fase 1 | `guest_reviews`: `score10 3`, `external_reference f-04`, `status new`, `source_id`, `analysis_source dictionary`; `review_category_mentions` **21**; `review_source_runs` **2**; `reputation_daily_scores` 0 (fase 2) |
+| Auditoría (tras `flushAuditQueues`) | `ReviewsImported 2`, `ReviewUpdated 1`, `QualityCaseCreated 1`, `ReviewSourceSynced 2`, `ReviewSourceUpdated 1`, `ReviewSourceDisabled 1`; todos los ids `aud_` + **16 hex** (E1) |
+| Cierre | `cleanupTenant` ×2 → 0 organizaciones aisladas; **invariantes de Faranda idénticas** antes y después |
+
+Además: `tests/integration/l8-reputation-routes.test.mts` **13/13** (3,1 s) con el cableado real.
+
+### 12.4 Instancia propia `:3911` (`PORT=3911 RUN_SCHEDULERS=false TENANT_BOOTSTRAP_SKIP=true`, desde `apps/api`)
+
+- Arranque 1 (pid 46898, `.env` local con `HOTELOS_ALLOW_DEMO_AUTH=true`): `/health` listo en 2 s → 200 `healthy`,
+  `checks.ai` ok (`provider=none`), `checks.audit` ok «0 fallos de persistencia desde el arranque», `checks.reputationSync`
+  y `checks.schedulers` «disabled on this instance (RUN_SCHEDULERS=false)»; `GET /reputation/properties/prop_123/inbox` sin
+  token → 200 (super-usuario demo del `.env`), token inválido → **401**, `…/dashboard` (ruta retirada) → 404.
+- Arranque 2 (pid 47113, `HOTELOS_ALLOW_DEMO_AUTH=false`): health idéntico; inbox sin token → **401**; sources con token
+  inválido → **401**.
+- Apagado (E2): `kill -TERM` → «[shutdown] señal recibida: apagado ordenado» `steps ["fastify","audit.flush","prisma"]` →
+  «[shutdown] completado» → **exit 0 en 24 ms** (ambas instancias); 0 líneas level 50; `:3911` libre después; `:3000`
+  (pids 12157 y 4986) intactos.
+
+### 12.5 Migración y copia previa
+
+- Copia previa: `~/anfitorio-demo/backups/hotelos-pre-t8-20260919-063203.dump` (**72.595.384 bytes**, `pg_dump -Fc`).
+- `db:migrate:status` → **18 migraciones · «Database schema is up to date!»** (última `20260919124000_reputacion`);
+  `db:drift:check` → **«No difference detected.»**; `check-migrations-vs-schema` → 277 tablas / 38 enums OK.
+- `external_reference` queda **nullable** (decisión 2C: motor genérico/tests l2; el índice único admite NULL); 19 sentencias
+  DDL idénticas al `migrate diff` de control.
+
+### 12.6 Hallazgos de la revisión de la fusión
+
+- **Confirmados (10 → 8 únicos)**: F1 `QualityCaseUpdated` no aplicado; F2 = SEC-T8-01 importación CSV sin
+  `organizationId` (IA caía a reglas `context_required`); F3 = SEC-T8-03 purga del worker sin columnas
+  (`author_display_name`/`summary`/`body_purged_at`); SEC-T8-02 `review_category_mentions.snippet` fuera de la retención;
+  SEC-T8-04 `assignedUserId` sin validar contra la organización; E2-01 apagado sin `flushAuditQueues`; E2-02 `timer.unref`
+  dejaba salir con 0 un paso colgado; DOC-01 cifras de CLAUDE.md no reproducibles. **Refutados: 0.**
+- **Corregidos (13, todos con test)**: los 8 anteriores + F4 (nota de re-base en T8-SCHEMA-PATCH), F5 («5 colas», 34 casos
+  en api-contracts), F7 («cinco» en `job-runs.ts` y 3 contratos raíz; título de `l8-reputation-routes`), F8 = SEC-T8-05 =
+  E1-01 (`setAuditLogger` por pino), TEST-01 (`worker-integration-contract` aserta el job en vez de `continue`).
+- **No corregidos (2, decisión)**: SEC-T8-07 plantilla `admin` con `guests.read` (commit 2613f47, anterior a T8; decisión
+  del propietario) y `catalog.test.ts:54` conserva su `continue` (respaldado por `reputation-maintenance.job.test.ts`).
+
+### 12.7 Pendientes tras la fusión
+
+- Orquestador: reiniciar `:3000` (pid 12157; sirve código anterior a T8/E1/E2 — nunca el 4986); `POST
+  /ai-operations/tools/sync` (riskLevel high de `draftReviewResponse`); recorrido en navegador (bandeja, fuentes, dashboards
+  Cocoa); decisión de activar `reputation_quality` en Faranda (no activado); seed ficticio opcional
+  (`demo:seed-reputation -- --apply --property prop_123`, con el API parado o reinicio después); `worker` reiniciado →
+  `SELECT name, cron FROM pgboss.schedule` debe dar 5 filas.
+- Fase 2 de T8-L0b (runbook `reputacion-reviews.md` §9): visto en 12.3, `PATCH …/sources/:id` escribe solo `configJson`
+  (columnas `weight 1` / `display_name "Importación manual"` tras el PATCH a 1,5 / «CSV mensual»; se rellenan en la
+  siguiente ejecución por `saveSourceRun`); `reputation_daily_scores` vacía; bandeja filtrando en memoria; OAuth de Google
+  (T8-L5).
+- Con IA configurada, `POST /ai-operations/tools/run` de `draftReviewResponse` pasa a modo `confirm` en organizaciones con
+  la política `human_review_for_high_risk` activa (`ai.high_risk.confirm`); la ruta propia `POST …/draft` no cambia.

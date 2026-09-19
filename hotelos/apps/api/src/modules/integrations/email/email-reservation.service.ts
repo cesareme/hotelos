@@ -18,6 +18,9 @@ import { BadRequestError, ConflictError, NotFoundError } from "../../../lib/http
 import { parseReservationRequest } from "../../pms/reservation-agent.service.js";
 import { createReservation } from "../../pms/pms.service.js";
 import { enqueueReview, approveReview, rejectReview } from "../../ai-operations/human-review.service.js";
+// Reputación (Tanda T8): un correo de notificación de reseña no es una reserva
+// (modules/reputation/review-email.parser.ts, clasificador puro sin red).
+import { classifyInboundEmail } from "../../reputation/review-email.parser.js";
 // OPERA Cloud · modo sombra (Tanda 7b · L3): un buzón con propósito `pms_shadow`
 // entrega cada adjunto (.csv/.txt/.xml/.xlsx ≤ 5 MiB) al ingest del modo sombra en
 // vez de extraer una reserva con IA; el HITL no interviene y el adjunto no se guarda.
@@ -376,6 +379,18 @@ async function processNormalizedEmail(input: { context: UserContext; connection:
     snippet,
     detectedSource
   };
+
+  // Reputación (Tanda T8): TripAdvisor, HolidayCheck, Google y los correos de
+  // Booking/Expedia cuyo asunto habla de una reseña quedan en `review_notification`
+  // (los lee el colector `email` del tick diario: REPUTATION_SYNC_EMAIL_STATUSES) y
+  // NO entran en el HITL email_reservation como reserva falsa.
+  if (classifyInboundEmail({ messageId: email.messageId, fromAddress: email.from, subject: email.subject, snippet, bodyText: email.bodyText, receivedAt: email.receivedAt ?? null }) === "review_notification") {
+    return prisma.inboundEmail.upsert({
+      where: { connectionId_messageId: { connectionId: connection.id, messageId: email.messageId } },
+      create: { ...base, status: "review_notification" },
+      update: { status: "review_notification", snippet, detectedSource }
+    });
+  }
 
   if (!looksLikeBooking(email)) {
     return prisma.inboundEmail.upsert({

@@ -108,6 +108,11 @@ describe("Advanced ehotelOS modules foundation", () => {
     }
   });
 
+  it("PATCH /quality/cases/:id audits QualityCaseUpdated unless the status is resolved|closed (T8F-04)", () => {
+    assert.match(advancedService, /"QualityCaseResolved",\s*\n\s*"QualityCaseUpdated",/);
+    assert.match(server, /auditAction: \["resolved", "closed"\]\.includes\([^\n]*\) \? "QualityCaseResolved" : "QualityCaseUpdated"/);
+  });
+
   it("exposes advanced API namespaces with route permissions for mutations", () => {
     // Tanda L2 (L2-01): the duplicated / memory-only legs that L2-02 retires
     // (/revenue/…/dashboard, /crm/profiles/:id/merge, /guest-portal/session/

@@ -15,7 +15,7 @@
 | Adopción de un VPS existente | `deploy/scripts/vps-inventory.sh` + `install-from-scratch.sh --adopt` |
 | Runtime | tsx (`node --import tsx src/server.ts`); `pnpm install --frozen-lockfile` sin `--prod` |
 | Esquema | `pnpm db:adopt-baseline -- --apply` → `pnpm db:migrate:deploy` → `pnpm db:drift:check` (nunca `db push`) |
-| Worker | pg-boss, 4 colas (`notifications.scheduled`, `notifications.retry`, `notifications.sending-sweep`, `webhooks.deliver`), un run por ejecución en `worker_job_runs` con retención por cola (`WORKER_JOB_RUN_RETENTION_DAYS`, 7 días; fallidos 4×), `RUN_SCHEDULERS=false`; los schedulers viven en el API |
+| Worker | pg-boss, 5 colas (`notifications.scheduled`, `notifications.retry`, `notifications.sending-sweep`, `webhooks.deliver`, `reputation.maintenance`), un run por ejecución en `worker_job_runs` con retención por cola (`WORKER_JOB_RUN_RETENTION_DAYS`, 7 días; fallidos 4×), `RUN_SCHEDULERS=false`; los schedulers viven en el API |
 | CI | `.github/workflows/ci.yml` en la **raíz git** (typecheck:all, contract tests, integración con `migrate deploy`, fresh-install + smoke, build web, imágenes pnpm) |
 | Deploy por SSH | `.github/workflows/deploy.yml` (raíz git) → `deploy.sh --role production-native --pull --yes` |
 
@@ -28,7 +28,7 @@
 
 ## Worker (pg-boss)
 
-El worker (`apps/worker`, `node --import tsx src/index.ts`) ejecuta exactamente **cuatro colas pg-boss**
+El worker (`apps/worker`, `node --import tsx src/index.ts`) ejecuta exactamente **cinco colas pg-boss**
 (esquema `pgboss` de la misma base de datos; `boss.start()` lo crea en el primer arranque). Cada cola la
 lanza un cron y cada tick lo consume una sola instancia:
 
@@ -38,6 +38,7 @@ lanza un cron y cada tick lo consume una sola instancia:
 | `notifications.retry` | `*/5 * * * *` | Devuelve a `queued` las entregas `failed` con intentos restantes (backoff exponencial). |
 | `notifications.sending-sweep` | `*/10 * * * *` | Rescata entregas atascadas en `sending` más de 15 minutos. |
 | `webhooks.deliver` | `*/1 * * * *` | Entrega `WebhookDelivery` pendientes/reintentables con firma HMAC-SHA256 (cola crítica: si su setup falla, el worker sale con código 1). |
+| `reputation.maintenance` | `15 4 * * *` | Reputación (Tanda T8): retira el texto de las reseñas que superan la retención de su fuente (Google 30 días; resto `retentionDays` o 730), marca fuera de plazo las abiertas con `slaTargetAt` vencido y recorta el historial de ejecuciones por fuente a 20. Nunca borra filas. |
 
 **Un run por ejecución.** Cada tick escribe **una fila** en `worker_job_runs` (modelo `WorkerJobRun`,
 `apps/worker/src/jobs/job-runs.ts`): `status=running` con `attempts=1`, `started_at` y `payload_json` al
@@ -63,8 +64,34 @@ tabla la comparte `treasury.sepa_remittance` (remesas SEPA del API): toda lectur
 - **Tests.** `corepack pnpm --filter @hotelos/worker test` (`node --test` sobre `src/**/__tests__/*.test.ts`,
   sin base de datos: catálogo, runs y despachador de notificaciones).
 - **Comprobación en local.** `SELECT job_name, status, count(*) FROM worker_job_runs GROUP BY 1, 2;` y
-  `SELECT name, cron FROM pgboss.schedule;` (4 filas). Hasta la Tanda L2 el esquema se llamaba `pg_boss` y
+  `SELECT name, cron FROM pgboss.schedule;` (5 filas). Hasta la Tanda L2 el esquema se llamaba `pg_boss` y
   Postgres lo rechazaba (SQLSTATE 42939, prefijo `pg_` reservado): el worker nunca había llegado a arrancar.
+
+## Apagado ordenado del API (SIGTERM/SIGINT)
+
+- **Coordinador único.** `apps/api/src/lib/shutdown.ts` (`createShutdownController`), instalado en
+  `server.ts` justo después de `app.listen` para `SIGTERM` y `SIGINT` (`process.on`, un manejador por
+  señal). Los schedulers in-process (`channel.drain`, `pms-shadow.job`, `reputation.sync.job`) se
+  registran en él en vez de con `process.once`.
+- **Orden.** Los pasos se ejecutan en orden inverso al registro: primero se detienen los schedulers,
+  después `app.close()` (Fastify deja de aceptar conexiones y termina las peticiones en curso), después
+  `audit.flush` (`flushAuditQueues()`: vacía las colas de persistencia de `audit_events`/`event_stream`, que son
+  fire-and-forget, para no perder los eventos sellados por las últimas peticiones) y por último
+  `prisma.$disconnect()`; al acabar el proceso sale con código 0. Un paso que falla se registra
+  (`[shutdown] paso fallido`) y no bloquea a los demás.
+- **Plazo.** `SHUTDOWN_TIMEOUT_MS` (por defecto 10 000 ms): si los pasos no han terminado, warn
+  `[shutdown] plazo agotado` y salida con código 1. Una segunda señal durante el apagado sale con código 1 de
+  inmediato.
+- **Antes.** Cada scheduler registraba su propio `process.once(signal, …)` que solo paraba su temporizador;
+  con un manejador presente Node retira la salida por defecto y el API ignoraba `SIGTERM` (el 2026-09-19
+  hubo que matarlo con `SIGKILL`).
+- **Supervisor.** Conceder al menos 15 s antes de `SIGKILL`: en systemd `TimeoutStopSec` ≥ 15 s
+  (`deploy/systemd/anfitorio-api.service` ya lleva `TimeoutStopSec=30` y `KillSignal=SIGTERM`) y en compose
+  `stop_grace_period` ≥ 15 s en el servicio `api` (`deploy/docker-compose.production.yml`: `20s`). El worker
+  no cambia (pg-boss ya gestiona su parada).
+- **Comprobación en local.** Arrancar una instancia propia (`PORT=3911 RUN_SCHEDULERS=false
+  TENANT_BOOTSTRAP_SKIP=true node --import tsx src/server.ts` desde `apps/api`), `kill -TERM <pid>` y
+  verificar en el log `[shutdown] completado` y código de salida 0 en menos de 10 s.
 
 ## Release Gate (observabilidad)
 

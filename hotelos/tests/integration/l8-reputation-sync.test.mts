@@ -125,11 +125,12 @@ describe("L8 · reputación · sincronización sobre tablas existentes (tenant a
     assert.equal(await prisma.organization.count({ where: { id: tenant.organizationId } }), 0, "la organización aislada de esta suite debe desaparecer");
   });
 
-  it("snapshot: no_sources en A sin fuentes; module_off en B (sin módulo); schemaPatchApplied false", async () => {
+  it("snapshot: no_sources en A sin fuentes; module_off en B (sin módulo); schemaPatchApplied true (migración 20260919124000_reputacion)", async () => {
     const a = await getReputationSnapshot({ propertyId: tenant.propertyA, now: NOW, skipCache: true });
     assert.equal(a.status, "no_sources");
     assert.equal(a.sourcesTotal, 0);
-    assert.equal(a.schemaPatchApplied, false);
+    // T8-L0b: las 3 tablas que sondea detectSchemaPatch existen desde la migración 20260919124000_reputacion.
+    assert.equal(a.schemaPatchApplied, true);
     assert.equal(a.staleDays, 0);
     const b = await getReputationSnapshot({ propertyId: tenant.propertyB, now: NOW, skipCache: true });
     assert.equal(b.status, "module_off");
@@ -306,7 +307,7 @@ describe("L8 · reputación · sincronización sobre tablas existentes (tenant a
     assert.equal(a.sourcesTotal, 3);
     assert.equal(a.reviewCount365, 20);
     assert.equal(a.index365.reviewCount, 20);
-    assert.equal(a.schemaPatchApplied, false);
+    assert.equal(a.schemaPatchApplied, true);
     assert.deepEqual(a.degraded, []);
     // Hace 30 días no había ninguna reseña: sin tendencia (null), nunca una excepción.
     assert.equal(a.trendDelta, null);

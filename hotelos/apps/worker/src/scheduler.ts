@@ -2,6 +2,7 @@ import PgBoss from "pg-boss";
 import { pruneJobRuns, withJobRun } from "./jobs/job-runs.js";
 import { runFailedRetries, runScheduledNotifications, runStuckSendingSweep } from "./jobs/notification-dispatcher.job.js";
 import { runWebhookDeliveries } from "./jobs/webhook-delivery.job.js";
+import { registerReputationMaintenanceQueue } from "./jobs/reputation-maintenance.job.js";
 
 // Postgres-backed job runtime. pg-boss reuses the same Postgres instance as
 // the application data and stores its queue tables under a separate schema
@@ -41,7 +42,8 @@ export type JobQueueName =
   | "notifications.scheduled"
   | "notifications.retry"
   | "notifications.sending-sweep"
-  | "webhooks.deliver";
+  | "webhooks.deliver"
+  | "reputation.maintenance";
 
 /**
  * Catálogo real del worker (L2-07): cada cola tiene más abajo un boss.work y un
@@ -52,7 +54,8 @@ export const JOB_QUEUES: readonly JobQueueName[] = [
   "notifications.scheduled",
   "notifications.retry",
   "notifications.sending-sweep",
-  "webhooks.deliver"
+  "webhooks.deliver",
+  "reputation.maintenance"
 ];
 
 // QC-06: queues whose setup (queue creation + cron) MUST succeed for the
@@ -228,6 +231,10 @@ export async function startScheduler(): Promise<PgBoss> {
     "schedule:notifications.sending-sweep",
     boss.schedule("notifications.sending-sweep", "*/10 * * * *", {}, { tz: "Europe/Madrid" })
   );
+  // Reputación (Tanda T8 · T8-F): purga del texto por retención (Google 30 d, resto
+  // configJson.retentionDays o 730), plazos de respuesta vencidos y recorte del
+  // historial de ejecuciones; un WorkerJobRun por tick vía withJobRun.
+  await track("register:reputation.maintenance", registerReputationMaintenanceQueue(boss, {}));
   // A schedule left behind by older deployments would keep publishing jobs
   // nobody consumes; drop it explicitly (idempotent, non-critical).
   await track("unschedule:verifactu.retry", boss.unschedule("verifactu.retry"));

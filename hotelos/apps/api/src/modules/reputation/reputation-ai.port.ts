@@ -4,8 +4,11 @@
 // Reglas del fichero:
 //   · solo la interfaz, sus tipos y el registro singleton: sin Prisma, sin
 //     variables de entorno, sin red, sin proveedor de IA;
-//   · L6a engancha ai-core aquí (setReputationAiPort con una implementación
-//     que llame a `structured`/`classify`/`complete` con `redactPii`); por
+//   · la fusión T8 engancha ai-core aquí: reputation-ai.core-adapter.ts
+//     (createAiCoreReputationPort, registrado con setReputationAiPort en el
+//     arranque del API solo si isLlmConfigured()) llama a `structured`/
+//     `complete` con `redactPii`/`restorePii` y recibe la organización en
+//     `context` (ai-core la exige; sin ella cae a las reglas); por
 //     defecto se usa RulesReputationAi (diccionario + plantillas, etiqueta
 //     honesta `dictionary`/`rules`, `configured: false`, `provider: "none"`);
 //   · cualquier implementación debe enmascarar el texto antes de enviarlo a
@@ -25,6 +28,18 @@ export type ReputationAiDescription = {
   model?: string;
 };
 
+/**
+ * Contexto que ai-core exige en cada llamada (presupuesto y límite por
+ * organización, telemetría). Lo rellena el llamador (tick, importación,
+ * borrador); RulesReputationAi lo ignora.
+ */
+export type ReputationAiContext = {
+  organizationId: string;
+  propertyId?: string;
+  userId?: string;
+  correlationId?: string;
+};
+
 export type AnalyzeReviewInput = {
   text: string;
   title?: string;
@@ -42,6 +57,8 @@ export type AnalyzeReviewInput = {
     comfort?: number | null;
     wifi?: number | null;
   };
+  /** Contexto para ai-core (presupuesto, límite por organización, telemetría); sin él el adaptador cae a las reglas. */
+  context?: ReputationAiContext;
 };
 
 export type AnalyzeReviewOutput = {
@@ -69,6 +86,8 @@ export type DraftResponseInput = {
   tone?: ResponseTone;
   /** Firma alternativa; por defecto «Dirección de <hotelName>». */
   signature?: string;
+  /** Contexto para ai-core (presupuesto, límite por organización, telemetría); sin él el adaptador cae a las reglas. */
+  context?: ReputationAiContext;
 };
 
 export type DraftResponseOutput = {
@@ -93,7 +112,7 @@ export function getReputationAiPort(): ReputationAiPort {
   return current;
 }
 
-/** Registra el puerto (L6a engancha ai-core aquí); `null` vuelve al respaldo por reglas. */
+/** Registra el puerto (fusión T8: reputation-ai.core-adapter.ts en el arranque del API); `null` vuelve al respaldo por reglas. */
 export function setReputationAiPort(port: ReputationAiPort | null): void {
   current = port;
 }

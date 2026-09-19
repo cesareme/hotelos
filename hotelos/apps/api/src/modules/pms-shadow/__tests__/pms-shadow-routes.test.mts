@@ -133,7 +133,7 @@ describe("pms-shadow — partial de permisos de las rutas", () => {
     assert.match(server, /import \{ startPmsShadowJob \} from "\.\/modules\/pms-shadow\/pms-shadow\.job\.js";/);
     assert.match(server, /if \(schedulerLeader && process\.env\.PMS_SHADOW_JOB_DISABLED !== "true"\) \{/, "job bajo el líder");
     assert.match(server, /startPmsShadowJob\(\{ log: app\.log, intervalMs: Number\(process\.env\.PMS_SHADOW_JOB_INTERVAL_MS \?\? 15 \* 60 \* 1000\) \}\)/);
-    assert.match(server, /process\.once\("SIGTERM", job\.stop\);/);
+    assert.match(server, /shutdown\.register\("pms-shadow\.job", job\.stop\);/);
     assert.match(server, /parseOr400\(CreateEmailConnectionSchema, request\.body \?\? \{\}, "body"\)/, "POST …/email/connections valida el cuerpo strict");
 
     const tenancy = read("../../../lib/tenancy.ts");

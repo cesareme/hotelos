@@ -41,7 +41,7 @@ describe("AI Onboarding & Migration module", () => {
     // Tanda L2 · L2-07 (worker honesto): el catálogo scaffold de jobs de
     // apps/worker/src/index.ts (85 nombres que respondían «completed» sin hacer
     // nada, 10 de ellos de onboarding) se retiró; el worker solo declara sus
-    // cuatro colas pg-boss reales, así que aquí ya no se pinnean nombres de jobs.
+    // cinco colas pg-boss reales, así que aquí ya no se pinnean nombres de jobs.
   });
 
   it("creates canonical onboarding schemas, connector interfaces and onboarding agents", () => {

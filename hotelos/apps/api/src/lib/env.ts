@@ -20,6 +20,7 @@
 import { CHANNEL_MANAGER_ENV_CONTRACT } from "../modules/channel-manager/env.partial.js";
 import { PAYMENTS_ENV_CONTRACT } from "../modules/payments/env.partial.js";
 import { PMS_SHADOW_ENV_CONTRACT } from "../modules/pms-shadow/env.partial.js";
+import { REPUTATION_ENV_CONTRACT } from "../modules/reputation/env.partial.js";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import { isValidSpanishTaxId, resolveVerifactuCredentials, resolveVerifactuSoftware } from "@hotelos/compliance";
@@ -179,6 +180,14 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     default: "true",
     example: "true",
     doc: "Interruptor de la estructura societaria (Tanda 6b: Sociedad → Centros de trabajo). Con false el API se comporta como hotel individual: sin ámbito «Sociedad», sin oficina central en el switcher y las rutas /legal-entities y /organizations/me/structure responden 404. Las tablas, el backfill (backfill-legal-structure.ts) y resolveLegalIdentity no dependen de él."
+  },
+  SHUTDOWN_TIMEOUT_MS: {
+    section: "Proceso",
+    format: "int",
+    min: 1000,
+    max: 120_000,
+    default: "10000",
+    doc: "Plazo (ms) del apagado ordenado tras SIGTERM/SIGINT (lib/shutdown.ts, cableado tras app.listen): detiene los schedulers, cierra Fastify y desconecta Prisma; si no termina a tiempo avisa y sale con código 1; una segunda señal sale de inmediato. Alinea TimeoutStopSec / stop_grace_period del supervisor con margen (≥ 15 s)."
   },
 
   // ------------------------------------------------------------ BD y colas
@@ -694,7 +703,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     ...BOOL,
     default: "true",
     example: "true",
-    doc: "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón, modo sombra OPERA). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false)."
+    doc: "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón, modo sombra OPERA, reputación). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false)."
   },
   SES_SCHEDULER_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva el envío periódico de partes SES." },
   SES_SCHEDULER_INTERVAL_MS: { section: "Schedulers", ...INTERVAL, default: "300000", doc: "Periodo del scheduler SES (ms)." },
@@ -760,6 +769,11 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   // OPERA Cloud · modo sombra (Tanda 7b · L3): job del líder (PMS_SHADOW_JOB_DISABLED,
   // PMS_SHADOW_JOB_INTERVAL_MS) en modules/pms-shadow/env.partial.ts.
   ...PMS_SHADOW_ENV_CONTRACT,
+  // Reputación y reseñas (Tanda T8): job diario del líder (REPUTATION_SYNC_DISABLED,
+  // REPUTATION_SYNC_INTERVAL_MS, REPUTATION_SYNC_RUN_AT_BOOT · sección Schedulers) y OAuth
+  // de Google Business Profile (GOOGLE_BUSINESS_CLIENT_ID/SECRET/REDIRECT_URI · sección OTA)
+  // en modules/reputation/env.partial.ts.
+  ...REPUTATION_ENV_CONTRACT,
 
   // ---------------------------------------------------------------- Wallet
   APPLE_WALLET_PASS_TYPE_ID: { section: "Wallet", format: "string", default: "pass.com.hotelos.roomkey", doc: "Pass Type ID de las llaves móviles en Apple Wallet." },

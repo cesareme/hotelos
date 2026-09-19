@@ -14,8 +14,8 @@
  *
  * Usuarios (plantillas T8a): owner (lectura de organización), manager
  * (Dirección de hotel en A: escrituras comerciales), receptionist (solo A),
- * accountant, systems (plantilla admin: developer.manage_webhooks, sin
- * guests.read ni crm.read), auditor (única plantilla sin ai.tool.execute) y,
+ * accountant, systems (plantilla admin: developer.manage_webhooks y, desde
+ * las plantillas v3 de 2613f47, guests.read; sin crm.read), auditor (única plantilla sin ai.tool.execute) y,
  * en B, owner / manager / receptionist / systems. El detalle del motor
  * genérico (advanced) está en l2-motor-generico.test.mts (L2-03): aquí solo
  * humo de lectura con `items`.
@@ -208,8 +208,9 @@ describe("L2-08 · guests: perfiles de huésped con ámbito de organización", (
     assert.equal(detail.body.guest?.id ?? detail.body.id, guestId, detail.raw.slice(0, 200));
   });
 
-  it("(2) 403 sin clave: sistemas (plantilla admin) no lee huéspedes (guests.read) y contabilidad no los crea (guests.manage)", async () => {
-    expect403(await call("GET", "/guests", systems, { propertyId: A.propertyA }), "guests.read");
+  it("(2) sistemas (plantilla admin v3) lee huéspedes (guests.read, 2613f47: Live Timeline pinta nombres para todos los perfiles); 403 sin clave: contabilidad no los crea (guests.manage)", async () => {
+    const list = await call("GET", "/guests", systems, { propertyId: A.propertyA });
+    assert.equal(list.status, 200, list.raw.slice(0, 300));
     expect403(await call("POST", "/guests", accountant, { propertyId: A.propertyA, payload: { firstName: "Intruso" } }), "guests.manage");
   });
 

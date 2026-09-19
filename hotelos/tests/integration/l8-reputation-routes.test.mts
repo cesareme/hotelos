@@ -2,13 +2,12 @@
  * Tanda T8 · lote T8-D — rutas de reputación por app.inject sobre las tablas
  * existentes (Postgres real, tenant aislado de helpers/l2-tenant.mts).
  *
- * buildApiServer() (server.ts:1054) devuelve la app SIN llamar a app.ready()
- * y findRoutePermission (route-permissions.ts:1257) hace .find sobre el array
- * exportado en vivo: este test empuja las 12 entradas del partial al
- * manifiesto (routePermissionManifest.push) y registra las rutas
- * (registerReputationRoutes(app)) ANTES del primer inject, y las retira al
- * terminar (splice). Hasta que el integrador aplique las mergeLines de
- * server.ts / route-permissions.ts, así se prueban las rutas de verdad.
+ * Cableado real desde la fusión T8 (2026-09-19): buildApiServer() registra
+ * las 12 rutas de reputación (registerReputationRoutes en server.ts) y
+ * security/route-permissions.ts lleva las 12 entradas del partial en el
+ * manifiesto, así que este test ya no empuja nada al arrancar ni retira
+ * nada al terminar: prueba las rutas tal como las sirve el API. El `after`
+ * comprueba que el manifiesto sigue cableado.
  *
  * Dos organizaciones aisladas: A con reputation_quality (+ guest_experience,
  * ai_concierge: enableModules inserta property_modules sin pasar por la
@@ -34,8 +33,6 @@ type FarandaInvariants = Awaited<ReturnType<typeof farandaInvariants>>;
 const { prisma, hashPassword } = await import("@hotelos/database");
 const { buildApiServer } = await import("../../apps/api/src/server.js");
 const { routePermissionManifest } = await import("../../apps/api/src/security/route-permissions.js");
-const { reputationRoutePermissions } = await import("../../apps/api/src/modules/reputation/route-permissions.partial.js");
-const { registerReputationRoutes } = await import("../../apps/api/src/modules/reputation/reputation.routes.js");
 const { flushAuditQueues } = await import("../../apps/api/src/modules/audit/audit.service.js");
 const { resetRbacScopeCacheForTests } = await import("../../apps/api/src/lib/rbac-scope.js");
 const { readReviewMeta, SCORE10_NEGATIVE } = await import("../../apps/api/src/modules/reputation/reputation-types.js");
@@ -112,22 +109,19 @@ let manager: Session;
 let managerId = "";
 let receptionist: Session;
 let managerB: Session;
+let managerBId = "";
 let invariantsBefore: FarandaInvariants;
-let manifestStart = -1;
 let csvSourceId = "";
 let googleSourceId = "";
 let negativeReviewId = "";
 let positiveReviewId = "";
 let draftReviewItemId = "";
 
-describe("L8 · reputación · rutas por app.inject (tenant aislado, manifiesto empujado en vivo)", () => {
+describe("L8 · reputación · rutas por app.inject (tenant aislado, manifiesto cableado en security/route-permissions.ts)", () => {
   before(async () => {
     invariantsBefore = await farandaInvariants();
     app = await buildApiServer();
-    // Cableado que hará el integrador (mergeLines): manifiesto + registro, antes del primer inject.
-    manifestStart = routePermissionManifest.length;
-    routePermissionManifest.push(...reputationRoutePermissions);
-    registerReputationRoutes(app);
+    // Cableado real (fusión T8): manifiesto en security/route-permissions.ts y rutas registradas en buildApiServer.
     A = await createIsolatedTenant(`r${newRunId()}`);
     B = await createIsolatedTenant(`s${newRunId()}`);
     await enableModules(A.propertyA, ["guest_experience", "ai_concierge", "reputation_quality"]);
@@ -137,6 +131,7 @@ describe("L8 · reputación · rutas por app.inject (tenant aislado, manifiesto 
     const managerUser = await addUser(A, "manager", "manager", [A.propertyA, A.propertyB]);
     const managerBUser = await addUser(B, "manager", "manager", [B.propertyA]);
     managerId = managerUser.id;
+    managerBId = managerBUser.id;
     await strict(async () => {
       manager = await loginOrThrow(app, managerUser.email, A.password);
       receptionist = await loginOrThrow(app, A.users.receptionist.email, A.password);
@@ -149,11 +144,10 @@ describe("L8 · reputación · rutas por app.inject (tenant aislado, manifiesto 
       if (A) await cleanupTenant(A.organizationId);
       if (B) await cleanupTenant(B.organizationId);
     } finally {
-      if (manifestStart >= 0) routePermissionManifest.splice(manifestStart, reputationRoutePermissions.length);
       invalidateReputationCache();
       await app?.close();
     }
-    assert.equal(routePermissionManifest.some((entry) => entry.path.startsWith("/reputation/properties/:propertyId/inbox")), false, "manifiesto restaurado");
+    assert.equal(routePermissionManifest.some((entry) => entry.path === "/reputation/properties/:propertyId/inbox"), true, "manifiesto cableado (security/route-permissions.ts)");
     assert.deepEqual(await farandaInvariants(), invariantsBefore, "Faranda debe quedar idéntica");
     // Comprobación local a esta suite: las suites hermanas l8-* crean y borran sus propias organizaciones en paralelo
     // (node --test sin --test-concurrency=1), así que el recuento global de org_l2_* no es un invariante de esta suite.
@@ -316,11 +310,18 @@ describe("L8 · reputación · rutas por app.inject (tenant aislado, manifiesto 
       assert.equal(foreignPatch.status, 404);
     }));
 
-  it("PATCH: transición inválida → 409 INVALID_TRANSITION; responsable → assigned (200, auditado); clave desconocida → 400; receptionist → 403", async () =>
+  it("PATCH: transición inválida → 409 INVALID_TRANSITION; responsable ajeno/inexistente → 400; responsable → assigned (200, auditado); clave desconocida → 400; receptionist → 403", async () =>
     strict(async () => {
       const invalid = await call(app, "PATCH", `/reputation/reviews/${positiveReviewId}`, manager, A.propertyA, { status: "closed" });
       assert.equal(invalid.status, 409, JSON.stringify(invalid.body));
       assert.equal(detailsCode(invalid), "INVALID_TRANSITION");
+      // SEC-T8-04: el responsable se valida contra la organización (usuario de otro tenant o inexistente → 400, nada persistido).
+      for (const foreignUserId of [managerBId, "usr_inexistente_l8"]) {
+        const foreignAssignee = await call(app, "PATCH", `/reputation/reviews/${positiveReviewId}`, manager, A.propertyA, { assignedUserId: foreignUserId });
+        assert.equal(foreignAssignee.status, 400, JSON.stringify(foreignAssignee.body));
+        assert.equal(foreignAssignee.body.message, "assignedUserId no corresponde a un usuario de la organización.");
+      }
+      assert.equal(readReviewMeta((await prisma.guestReview.findUniqueOrThrow({ where: { id: positiveReviewId } })).topicsJson).status, "new");
       const assigned = await call(app, "PATCH", `/reputation/reviews/${positiveReviewId}`, manager, A.propertyA, { assignedUserId: managerId });
       assert.equal(assigned.status, 200, JSON.stringify(assigned.body));
       assert.equal(assigned.body.status, "assigned");

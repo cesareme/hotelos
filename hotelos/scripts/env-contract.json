@@ -560,6 +560,37 @@
         "apps/api/src/modules/integrations/email/email-reservation.service.ts"
       ]
     },
+    "GOOGLE_BUSINESS_CLIENT_ID": {
+      "section": "OTA",
+      "format": "string",
+      "severity": "warn",
+      "doc": "Google Business Profile: OAuth business.manage; sin ellas la fuente queda unavailable. Id de cliente OAuth del proyecto Cloud del producto.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "GOOGLE_BUSINESS_CLIENT_SECRET": {
+      "section": "OTA",
+      "format": "string",
+      "severity": "warn",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Google Business Profile: OAuth business.manage; sin ellas la fuente queda unavailable. Secreto de cliente OAuth (nunca en configJson de la fuente).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "GOOGLE_BUSINESS_REDIRECT_URI": {
+      "section": "OTA",
+      "format": "url",
+      "severity": "warn",
+      "httpsInProduction": true,
+      "doc": "Google Business Profile: OAuth business.manage; sin ellas la fuente queda unavailable. URI de retorno registrada en la consola de Google; la usará el callback OAuth del lote T8-L5 (hoy no existe ninguna ruta de autorización).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
     "GOOGLE_WALLET_ISSUER_ID": {
       "section": "Wallet",
       "format": "string",
@@ -1010,12 +1041,41 @@
         "apps/api/src/modules/payments/psp/redsys.adapter.ts"
       ]
     },
+    "REPUTATION_SYNC_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el job diario de reputación (sincronización de reseñas, análisis, alertas y purga). Solo actúa en el líder (RUN_SCHEDULERS).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "REPUTATION_SYNC_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 60000,
+      "max": 604800000,
+      "default": "86400000",
+      "doc": "Periodo del job de reputación (ms); por defecto 24 horas (mínimo 1 minuto, máximo 7 días).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "REPUTATION_SYNC_RUN_AT_BOOT": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "true",
+      "doc": "true ejecuta una vuelta del job de reputación al arrancar el líder (además del periodo); false espera al primer intervalo.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
     "RUN_SCHEDULERS": {
       "section": "Schedulers",
       "format": "bool",
       "default": "true",
       "example": "true",
-      "doc": "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón, modo sombra OPERA). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false).",
+      "doc": "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón, modo sombra OPERA, reputación). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false).",
       "readBy": [
         "apps/api/src/lib/scheduler-leader.ts",
         "apps/api/src/modules/pms-shadow/pms-shadow.job.ts"
@@ -1271,6 +1331,17 @@
       "max": 86400000,
       "default": "300000",
       "doc": "Periodo del scheduler SES (ms).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "SHUTDOWN_TIMEOUT_MS": {
+      "section": "Proceso",
+      "format": "int",
+      "min": 1000,
+      "max": 120000,
+      "default": "10000",
+      "doc": "Plazo (ms) del apagado ordenado tras SIGTERM/SIGINT (lib/shutdown.ts, cableado tras app.listen): detiene los schedulers, cierra Fastify y desconecta Prisma; si no termina a tiempo avisa y sale con código 1; una segunda señal sale de inmediato. Alinea TimeoutStopSec / stop_grace_period del supervisor con margen (≥ 15 s).",
       "readBy": [
         "apps/api/src/server.ts"
       ]

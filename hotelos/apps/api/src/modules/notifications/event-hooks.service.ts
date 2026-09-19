@@ -63,6 +63,14 @@ async function handleEvent(event: EventEnvelope): Promise<void> {
     case "GuestPortalSignInRequested":
       await handleGuestPortalSignInRequested(event);
       return;
+    case "ReviewReceived":
+      // Reputación (Tanda T8): review-alerts.service.ts emite el evento al abrir un
+      // caso review_negative (payload { score10, source, negative, qualityCaseId }).
+      // No existe la plantilla `review_negative_received` ni el destinatario por
+      // hotel (PropertyModule.configurationJson.reputation.defaultOwnerUserId):
+      // hasta que el seed cree la plantilla y el propietario decida el canal, no se
+      // despacha nada (el caso de calidad y la auditoría ya avisan en la bandeja).
+      return;
     default:
       return;
   }

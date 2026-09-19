@@ -21,8 +21,9 @@
 //   4. análisis acotado (maxAnalysisPerTick por PROPIEDAD y tick, no global:
 //      con varios centros ninguno agota el cupo de los demás): reseñas con
 //      meta.analysis.status `pending` → ai.analyzeReview con el texto
-//      enmascarado (maskReviewForLlm); etiqueta honesta: RulesReputationAi
-//      devuelve `dictionary`;
+//      enmascarado (maskReviewForLlm) y `context.organizationId` (ai-core lo
+//      exige; reputation-ai.core-adapter.ts); etiqueta honesta:
+//      RulesReputationAi devuelve `dictionary`;
 //   5. alertas: score10 < 6 sin caso → createCaseFromReview
 //      (review-alerts.service.ts) + ReviewReceived;
 //   6. saveSourceRun con contadores (ring buffer ≤ 20 en configJson.runs);
@@ -335,8 +336,8 @@ async function syncSource(input: {
   return { run: asDto(run), fetched: collected.length, created, updated, unchanged, ...(partialError ? { error: partialError } : {}) };
 }
 
-/** Análisis acotado de las reseñas pendientes de una propiedad; devuelve cuántas se analizaron. */
-export async function analyzePendingReviews(input: { db: ReputationDb; propertyId: string; ai: ReputationAiPort; budget: number; now: Date; log: ReputationSyncLogger; correlationId: string }): Promise<number> {
+/** Análisis acotado de las reseñas pendientes de una propiedad; devuelve cuántas se analizaron. Con `organizationId` el puerto recibe el contexto que ai-core exige. */
+export async function analyzePendingReviews(input: { db: ReputationDb; propertyId: string; ai: ReputationAiPort; budget: number; now: Date; log: ReputationSyncLogger; correlationId: string; organizationId?: string }): Promise<number> {
   if (input.budget <= 0) return 0;
   const rows = await input.db.guestReview.findMany({
     where: { propertyId: input.propertyId, topicsJson: { path: ["analysis", "status"], equals: "pending" } },
@@ -353,9 +354,10 @@ export async function analyzePendingReviews(input: { db: ReputationDb; propertyI
         text: maskReviewForLlm(row.body ?? "", { extraNames }).masked,
         ...(row.title ? { title: maskReviewForLlm(row.title, { extraNames }).masked } : {}),
         ...(row.language ? { language: row.language } : {}),
-        score10: scoreOfRow(row, meta)
+        score10: scoreOfRow(row, meta),
+        ...(input.organizationId ? { context: { organizationId: input.organizationId, propertyId: input.propertyId, correlationId: input.correlationId } } : {})
       });
-      await patchReviewMeta({
+      const patched = await patchReviewMeta({
         db: input.db,
         id: row.id,
         patch: {
@@ -364,6 +366,23 @@ export async function analyzePendingReviews(input: { db: ReputationDb; propertyI
         },
         columns: { language: output.language, sentiment: output.sentiment }
       });
+      // T8-L0b fase 1: menciones materializadas en review_category_mentions a partir de la meta
+      // ya normalizada (la lectura sigue por topicsJson.categories); los stubs no tienen el delegado.
+      await input.db.reviewCategoryMention?.deleteMany({ where: { reviewId: row.id } });
+      if (patched.meta.categories.length > 0) {
+        await input.db.reviewCategoryMention?.createMany({
+          data: patched.meta.categories.map((mention) => ({
+            reviewId: row.id,
+            propertyId: input.propertyId,
+            category: mention.category,
+            sentiment: mention.sentiment,
+            confidence: mention.confidence,
+            snippet: mention.snippet ?? null,
+            analysisSource: mention.source
+          })),
+          skipDuplicates: true
+        });
+      }
       analyzed += 1;
     } catch (error) {
       const message = errorMessage(error);
@@ -527,7 +546,7 @@ export async function runReputationSync(options: RunReputationSyncOptions = {}):
         }
       }
 
-      const analyzed = await analyzePendingReviews({ db, propertyId, ai, budget: analysisBudget, now, log, correlationId });
+      const analyzed = await analyzePendingReviews({ db, propertyId, ai, budget: analysisBudget, now, log, correlationId, organizationId: property.organizationId });
       perProperty.analyzed = analyzed;
       summary.analyzed += analyzed;
 

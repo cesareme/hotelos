@@ -149,7 +149,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   advancedTool("answerGuestPortalQuestion", "guest_self_service", "guest_self_service.read", "low"),
   advancedTool("issueDigitalKeyRequest", "guest_self_service", "digital_key.configure", "critical", true),
   advancedTool("analyzeReviewSentiment", "reputation_quality", "reputation.read", "low", false, "read"),
-  advancedTool("draftReviewResponse", "reputation_quality", "reputation.respond", "medium", true, "read"),
+  advancedTool("draftReviewResponse", "reputation_quality", "reputation.respond", "high", true, "read"),
   advancedTool("detectQualityTrends", "reputation_quality", "quality_cases.read", "low"),
   advancedTool("createRecoveryCase", "reputation_quality", "quality_cases.manage", "medium", true),
   advancedTool("detectEnergyAnomalies", "energy_sustainability", "energy.read", "low"),

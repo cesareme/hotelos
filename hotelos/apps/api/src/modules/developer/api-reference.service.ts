@@ -234,6 +234,8 @@ export const SEGMENT_LABELS: Record<string, string> = {
   surveys: "la encuesta",
   reviews: "la reseña",
   review: "la revisión",
+  // Reputación (Tanda T8): /reputation/properties/:propertyId/sources[/:id[/sync]].
+  sources: "la fuente de reseñas",
   responses: "la respuesta",
   shifts: "el turno",
   absences: "la ausencia",
@@ -637,6 +639,9 @@ export const ACTION_LABELS: Record<string, string> = {
   "ai-parse": "Interpretar con IA.",
   "ai-draft": "Redactar un borrador con IA.",
   "ai-draft-response": "Generar una respuesta con IA.",
+  // Reputación (Tanda T8): POST /reputation/reviews/:id/draft y …/quality-case.
+  draft: "Redactar un borrador de respuesta a",
+  "quality-case": "Abrir un caso de calidad desde",
   query: "Consultar",
   edit: "Editar",
   publish: "Publicar",

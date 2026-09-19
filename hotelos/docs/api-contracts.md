@@ -461,9 +461,48 @@ Back Office routes are permission-protected by `backoffice.access`, `property.co
 
 Rutas de Back Office retiradas en la Tanda L2 (L2-02, memoria sin consumidor; responden 404): `POST …/map-positions`, `GET …/property-map/export`, `POST …/imports/property-map/preview`, `POST …/imports/property-map/commit`, `GET …/modules/:moduleCode/health`, `GET|POST …/ai/suggestions`, `POST …/ai/suggestions/:suggestionId/apply`, `POST|GET …/qr-codes` y `POST …/qr-codes/bulk`. Las sugerencias IA de Back Office (vista previa + confirmación) se reconstruirán sobre el asistente único de L6 con `ai_tool_calls`; hasta entonces no existe ruta.
 
+## Reputación y reseñas (Tanda T8 · 2026-09-19)
+
+Fuente: `docs/design/REPUTACION-REVIEWS.md`; código `apps/api/src/modules/reputation/*` (rutas `reputation.routes.ts`,
+manifiesto `route-permissions.partial.ts`, esquemas `schemas/reputation.schemas.ts`); runbook
+`docs/runbooks/reputacion-reviews.md`. Requisito: módulo `reputation_quality` activado en la propiedad (403 «El módulo
+reputation_quality no está activado en esta propiedad.»); ámbito por `:propertyId` (404 opaco fuera del ámbito) y, en las
+rutas de reseña por id, la propiedad de la FILA (`assertPropertyEntityAccess(guestReview)`). Sin claves nuevas:
+`reputation.read` lee, `reputation.respond` escribe (reseñas **y** fuentes: no existe `reputation.manage`),
+`quality_cases.manage` abre casos. Las 8 rutas del motor genérico (`GET /reputation/properties/:propertyId/reviews`,
+`POST /reputation/reviews/:id/respond {responseBody}` (una sola vez; 409 «La reseña ya tiene respuesta.»), casos y
+encuestas) siguen en `server.ts` sin cambios; ninguna ruta termina en `/dashboard`.
+
+| Método y ruta | Permiso · riesgo | Cuerpo / consulta | Respuesta |
+|---|---|---|---|
+| `GET /reputation/properties/:propertyId/inbox` | `reputation.read` · medium | `?status=&source=&minScore=&maxScore=&category=&language=&sentiment=&responded=&overdue=&assignedUserId=&limit=(25, máx. 100)&cursor=&envelope=` | regla de compatibilidad de L2: array `ReviewInboxItem[]` salvo `?envelope=1` o `?cursor=` → `{ items, nextCursor, total }`; siempre cabeceras `X-Total-Count`/`X-Next-Cursor`; `status` es el efectivo (una fila con `respondedAt` se lee `responded`); filtros en memoria sobre las 500 más recientes hasta el parche T8-L0 |
+| `GET /reputation/reviews/:id` | `reputation.read` · medium | — | `ReviewDetail` (nota sobre 10, categorías, estado efectivo, borrador + `draftReviewStatus` = estado vivo del ítem HITL `pending\|approved\|rejected\|escalated\|null`, plazo; nunca el texto si está purgado) |
+| `PATCH /reputation/reviews/:id` | `reputation.respond` · high | `{ status?, assignedUserId?, slaTargetAt?, responseSource?, responseExternalState?, publish? }` (`.strict`, ≥ 1 clave); máquina `new → assigned → drafted → responded → closed` (+ `ignored` desde new/assigned) evaluada sobre el estado efectivo (una fila ya respondida por POST …/respond se reconcilia a `responded` en el propio PATCH y su ítem HITL pendiente se aprueba) | `ReviewDetail`; 409 `INVALID_TRANSITION`; 409 `REVIEW_NOT_REPLYABLE` si `publish` sin capacidad de respuesta; **nunca** escribe `responseBody` |
+| `POST /reputation/reviews/:id/draft` | `reputation.respond` (+ `ai.tool.execute` solo con IA configurada) · high | `{ tone?: cordial\|formal\|breve, language? }` | 201 `ReviewDraftResult` (`requiresHumanReview: true`, ítem HITL `review_response`, `source: ai\|rules`); un solo ítem pendiente por reseña (el anterior se rechaza como «sustituido»); 409 `INVALID_TRANSITION` desde responded/closed/ignored |
+| `POST /reputation/reviews/:id/quality-case` | `quality_cases.manage` + `reputation.read` · medium | `{ priority?, ownerUserId?, slaTargetAt?, title? }` | 201 `QualityCase` + `reviewId`; 409 `QUALITY_CASE_ALREADY_LINKED` |
+| `GET /reputation/properties/:propertyId/sources` | `reputation.read` · low | `?includeDisabled=1` | `ReviewSourceDto[]` (estado honesto `pending\|connected\|degraded\|error\|disabled\|unavailable`, `lastError`, `runs` ≤ 20; nunca credenciales) |
+| `POST /reputation/properties/:propertyId/sources` | `reputation.respond` · high | `{ provider, mode?, displayName?, weight? (0,1-2), retentionDays? (1-3650), externalLocationId?, externalAccountId?, isDemo? }` (`.strict`) | 201 `ReviewSourceDto`; 400 `REVIEW_SOURCE_CREDENTIALS_IN_CONFIG` si el cuerpo trae claves de credenciales |
+| `PATCH /reputation/properties/:propertyId/sources/:id` | `reputation.respond` · high | `{ mode?, displayName?, weight?, retentionDays?, externalLocationId?, externalAccountId?, enabled? }` | `ReviewSourceDto` (estado recalculado por el colector) |
+| `DELETE /reputation/properties/:propertyId/sources/:id` | `reputation.respond` · high | — | `ReviewSourceDto` con `status: disabled` (baja lógica; nunca borra) |
+| `POST /reputation/properties/:propertyId/sources/:id/sync` | `reputation.respond` · high | — | `{ run, summary }` (tick manual de esa fuente bajo el advisory lock por propiedad; `run.status` `completed\|partial\|failed\|skipped`; 409 `REVIEW_SOURCE_DISABLED`; 409 `REPUTATION_SYNC_BUSY` si el tick diario u otra importación tienen el lock) |
+| `GET /reputation/properties/:propertyId/runs` | `reputation.read` · low | `?limit=(50)&sourceId=` | `ReviewSourceRunDto[]` (todas las fuentes, las más recientes primero) |
+| `POST /reputation/properties/:propertyId/imports` | `reputation.respond` · high | `{ source, scaleMax?, sourceId?, fileName?, contentBase64 \| rows[] }` (XOR; ≤ 4 MiB, ≤ 5.000 filas, 10/min); columnas `external_id, date, rating, scale_max, title, body, language, author, country, url` (alias en `review-csv.parser.ts:30-73`) | 201 `ImportResult { created, updated, duplicates, invalid[], total, sourceId, correlationId }` (bajo el advisory lock por propiedad); 400 `REVIEW_IMPORT_INVALID`; 409 `REPUTATION_SYNC_BUSY` si el tick u otra importación tienen el lock |
+
+Errores tipados (`REPUTATION_ERROR_CODES`): `REVIEW_SOURCE_UNAVAILABLE`, `REVIEW_SOURCE_NOT_AUTHORIZED`,
+`REVIEW_NOT_REPLYABLE`, `REVIEW_IMPORT_INVALID`, `REVIEW_IMPORT_DUPLICATE`, `REPUTATION_INSUFFICIENT_DATA`,
+`REVIEW_ALREADY_RESPONDED`, `INVALID_TRANSITION`, `REPUTATION_SYNC_BUSY`, `REVIEW_DRAFT_REJECTED`. Auditoría: `ReviewUpdated`, `ReviewResponseDrafted`,
+`ReviewSourceCreated/Updated/Disabled/Synced`, `ReviewsImported`, `ReviewReceived`, `QualityCaseCreated`.
+Dashboards (contratos aditivos, `analytics.read`): `GET /dashboards/reputation` (+ `status`, `index30/90/365`,
+`distribution`, `bySource`, `categories`, `inbox`, `degraded[]`), `GET /dashboards/general-manager` (+ `reputationIndex`;
+el bloque `reputation` de L2 no cambia), `GET /dashboards/surveys` (NPS real) y `GET /dashboards/quality`
+(`kpis.fromReviews`, `recentCases[].reviewId`). Variables: `REPUTATION_SYNC_DISABLED`, `REPUTATION_SYNC_INTERVAL_MS`
+(24 h), `REPUTATION_SYNC_RUN_AT_BOOT`, `GOOGLE_BUSINESS_CLIENT_ID/SECRET/REDIRECT_URI`.
+
+**Cambios de la fusión (2026-09-19):** `POST /surveys/:id/responses` pasa a `surveys.manage` · medium (T8F-04); `PATCH /quality/cases/:id` audita `QualityCaseUpdated` salvo `resolved|closed` → `QualityCaseResolved`; `POST /reputation/reviews/:id/respond` responde 409 `REVIEW_DRAFT_REJECTED` si el texto es el borrador rechazado en revisión humana (HP-01); `GET /health` añade `checks.reputationSync` y `checks.audit` (fallos de persistencia de auditoría desde el arranque; `ok=false` → `degraded`); el apagado por SIGTERM/SIGINT es ordenado (`SHUTDOWN_TIMEOUT_MS`, `docs/deployment.md`).
+
 ## Tanda L2 · Persistencia y API (2026-09-18)
 
-Fuente: `docs/audits/TANDA-5-PLAN-2026-09-15.md` §3 fila L2. Principio: funcional = persiste en Postgres, responde 2xx/4xx tipado y lo que la pantalla ofrece existe en el API. Toda consulta filtra por `organizationId` y, en recursos de hotel, por `propertyId` dentro del ámbito del usuario; fuera del ámbito → 404 opaco «Propiedad no encontrada.»; sin clave → 403 «No tienes permiso para realizar esta acción (requiere: …)». El manifiesto tiene **935 entradas** = rutas registradas (`tests/api-route-permissions-contract.test.mjs`).
+Fuente: `docs/audits/TANDA-5-PLAN-2026-09-15.md` §3 fila L2. Principio: funcional = persiste en Postgres, responde 2xx/4xx tipado y lo que la pantalla ofrece existe en el API. Toda consulta filtra por `organizationId` y, en recursos de hotel, por `propertyId` dentro del ámbito del usuario; fuera del ámbito → 404 opaco «Propiedad no encontrada.»; sin clave → 403 «No tienes permiso para realizar esta acción (requiere: …)». El manifiesto tiene **948 entradas** = rutas registradas (`tests/api-route-permissions-contract.test.mjs`).
 
 ### Rutas retiradas (82, L2-02; todas responden 404 «Not Found», nunca el 403 del manifiesto)
 
@@ -499,7 +538,7 @@ Consumidores: ningún front (`apps/admin-web`, `apps/guest-web`, `apps/mobile`, 
 - `GET /admin/worker/job-runs` (`admin.tenants.manage` **y** `requirePlatformAdmin`): ejecuciones durables del worker (`worker_job_runs`, con `organizationId` / `propertyId` opcionales desde L2-04), filtros `?jobName`, `?status`, `?limit` (50, máx. 200; query `.strict()`), respuesta `{ items, total, limit }` + `X-Total-Count`. Un administrador de organización (plantilla `admin`) recibe 403.
 - Líder de schedulers: una sola instancia ejecuta los schedulers (`RUN_SCHEDULERS=true`) y la sostiene un lease en `scheduler_leases` (`lib/scheduler-leader.ts`); `GET /health` lo expone en `checks.schedulers` (`leader (RUN_SCHEDULERS · lease held by this|another instance)` / `no live lease` / `disabled on this instance`) y en `schedulers: { leader, held, thisInstance, expiresAt }` sin adquirirlo nunca. `/health` es pública: el `holder_id` del lease (`hostname:pid` del líder) no se expone (corrector L2, SEC-L2-06).
 - Retención de `worker_job_runs` (corrector L2, DP-06): cada tick escribe un run aunque no haya trabajo (≈3.300 filas/día con los cuatro crons); tras cada tick, como mucho una vez por hora y por cola, el worker borra por `jobName` los runs `completed` de más de `WORKER_JOB_RUN_RETENTION_DAYS` (7) días y los `failed` de más de 4× esa retención (`jobs/job-runs.ts · pruneJobRuns`); nunca toca otro `jobName` (las remesas SEPA `treasury.sepa_remittance` comparten la tabla) ni los runs `running`.
-- Worker (`apps/worker`, pg-boss con `schema: "pgboss"`): 4 colas reales — `notifications.scheduled`, `notifications.retry`, `notifications.sending-sweep`, `webhooks.deliver` — y cada ejecución escribe `worker_job_runs`; el catálogo de 88 nombres «completed sin hacer nada» se retiró. `corepack pnpm --filter @hotelos/worker test` (18 casos).
+- Worker (`apps/worker`, pg-boss con `schema: "pgboss"`): 5 colas reales — `notifications.scheduled`, `notifications.retry`, `notifications.sending-sweep`, `webhooks.deliver`, `reputation.maintenance` (fusión T8, `jobs/reputation-maintenance.job.ts`) — y cada ejecución escribe `worker_job_runs`; el catálogo de 88 nombres «completed sin hacer nada» se retiró. `corepack pnpm --filter @hotelos/worker test` (34 casos).
 
 ### Tablas (L2-01, migración `20260918130000_persistencia_l2`)
 

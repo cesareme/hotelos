@@ -1309,7 +1309,7 @@ model InboundEmail {
   receivedAt    DateTime? @map("received_at")
   snippet       String?
   detectedSource String?  @map("detected_source") // booking_com | expedia | airbnb | direct | unknown
-  status        String    @default("received") // received | ignored | review | reservation_created | error
+  status        String    @default("received") // received | ignored | review | reservation_created | error | review_notification
   parseSource   String?   @map("parse_source") // ai | rules | none
   confidence    Decimal?  @db.Decimal(5, 2)
   draftJson     Json      @default("{}") @map("draft_json")
@@ -1875,38 +1875,102 @@ model UpsellImpression {
   @@map("upsell_impressions")
 }
 
+/// Fuente de reseñas de una propiedad (Tanda T8 · parche T8-L0). Antes del parche todo lo que no fuera
+/// id/propertyId/provider/status/configJson/createdAt vivía en configJson (ReviewSourceConfig v1,
+/// apps/api/src/modules/reputation/reputation-types.ts); configJson se conserva para el cursor libre del colector.
 model ReviewSource {
-  id         String   @id @default(cuid())
-  propertyId String   @map("property_id")
-  provider   String
-  status     String   @default("connected")
-  configJson Json     @default("{}") @map("config_json")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id                 String            @id @default(cuid())
+  propertyId         String            @map("property_id")
+  /// google · booking · expedia · tripadvisor · holidaycheck · csv · email · demo (REVIEW_PROVIDERS); sufijo `_demo` en fuentes de demostración.
+  provider           String
+  /// pending · connected · degraded · error · disabled · unavailable (REVIEW_SOURCE_STATUSES).
+  status             String            @default("pending")
+  /// api · email · csv · manual · demo (REVIEW_SOURCE_MODES).
+  mode               String            @default("manual")
+  displayName        String            @default("") @map("display_name")
+  externalAccountId  String?           @map("external_account_id")
+  externalLocationId String?           @map("external_location_id")
+  /// Sobre cifrado (formato v1.{iv}.{ct}.{tag}) producido por encryptField (apps/api/src/lib/crypto.service.ts) sobre el JSON de credenciales; NUNCA en configJson.
+  credentialsJson    String?           @map("credentials_json")
+  emailConnectionId  String?           @map("email_connection_id")
+  retentionDays      Int               @default(730) @map("retention_days")
+  weight             Decimal           @default(1) @db.Decimal(3, 2)
+  capabilitiesJson   Json              @default("{}") @map("capabilities_json")
+  lastRunAt          DateTime?         @map("last_run_at")
+  lastSuccessAt      DateTime?         @map("last_success_at")
+  lastError          String?           @map("last_error")
+  cursorJson         Json              @default("{}") @map("cursor_json")
+  configJson         Json              @default("{}") @map("config_json")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @default(now()) @updatedAt @map("updated_at")
+  runs               ReviewSourceRun[]
 
+  @@unique([propertyId, provider, externalLocationId])
   @@index([propertyId, provider])
   @@map("review_sources")
 }
 
+/// Reseña de un portal (Tanda T8 · parche T8-L0). `rating` conserva la nota original; `score10` es la nota
+/// normalizada sobre 10 (review-normalize.ts). topicsJson (ReviewMeta v1) se conserva: categorías y análisis
+/// también se materializan en review_category_mentions.
 model GuestReview {
-  id                String    @id @default(cuid())
-  propertyId        String    @map("property_id")
-  reservationId     String?   @map("reservation_id")
-  guestId           String?   @map("guest_id")
-  source            String
-  rating            Decimal?  @db.Decimal(3, 2)
-  title             String?
-  body              String?
-  language          String?
-  sentiment         String?
-  topicsJson        Json      @default("{}") @map("topics_json")
-  externalReference String?   @map("external_reference")
-  receivedAt        DateTime? @map("received_at")
-  respondedAt       DateTime? @map("responded_at")
-  responseBody      String?   @map("response_body")
-  createdAt         DateTime  @default(now()) @map("created_at")
+  id                    String                  @id @default(cuid())
+  propertyId            String                  @map("property_id")
+  reservationId         String?                 @map("reservation_id")
+  guestId               String?                 @map("guest_id")
+  source                String
+  sourceId              String?                 @map("source_id")
+  /// api · email · csv · manual · demo (REVIEW_SOURCE_MODES).
+  sourceMode            String                  @default("manual") @map("source_mode")
+  rating                Decimal?                @db.Decimal(3, 2)
+  ratingScaleMax        Decimal?                @map("rating_scale_max") @db.Decimal(4, 2)
+  score10               Decimal?                @db.Decimal(4, 2)
+  title                 String?
+  body                  String?
+  bodyComplete          Boolean                 @default(true) @map("body_complete")
+  language              String?
+  sentiment             String?
+  authorDisplayName     String?                 @map("author_display_name")
+  authorCountry         String?                 @map("author_country")
+  portalUrl             String?                 @map("portal_url")
+  topicsJson            Json                    @default("{}") @map("topics_json")
+  /// Referencia externa del portal; nullable porque el motor genérico (POST del motor y tests l2) no la escribe: el índice único (propertyId, source, externalReference) trata NULL como distinto.
+  externalReference     String?                 @map("external_reference")
+  contentHash           String                  @default("") @map("content_hash")
+  receivedAt            DateTime?               @map("received_at")
+  updatedAtSource       DateTime?               @map("updated_at_source")
+  deletedAtSource       DateTime?               @map("deleted_at_source")
+  bodyPurgedAt          DateTime?               @map("body_purged_at")
+  /// new · assigned · drafted · responded · closed · ignored (REVIEW_STATUSES).
+  status                String                  @default("new")
+  assignedUserId        String?                 @map("assigned_user_id")
+  slaTargetAt           DateTime?               @map("sla_target_at")
+  replyCapability       Boolean                 @default(false) @map("reply_capability")
+  draftBody             String?                 @map("draft_body")
+  /// ai · rules
+  draftSource           String?                 @map("draft_source")
+  draftModel            String?                 @map("draft_model")
+  draftedAt             DateTime?               @map("drafted_at")
+  respondedAt           DateTime?               @map("responded_at")
+  responseBody          String?                 @map("response_body")
+  /// api · manual
+  responseSource        String?                 @map("response_source")
+  responseExternalState String?                 @map("response_external_state")
+  /// pending · done · failed (ANALYSIS_STATUSES).
+  analysisStatus        String                  @default("pending") @map("analysis_status")
+  /// llm · dictionary · portal_subscore · none (ANALYSIS_SOURCES).
+  analysisSource        String?                 @map("analysis_source")
+  analyzedAt            DateTime?               @map("analyzed_at")
+  summary               String?
+  createdAt             DateTime                @default(now()) @map("created_at")
+  updatedAt             DateTime                @default(now()) @updatedAt @map("updated_at")
+  mentions              ReviewCategoryMention[]
 
+  @@unique([propertyId, source, externalReference])
   @@index([propertyId, rating, createdAt])
   @@index([propertyId, respondedAt])
+  @@index([propertyId, receivedAt])
+  @@index([propertyId, status, slaTargetAt])
   @@map("guest_reviews")
 }
 
@@ -1937,25 +2001,112 @@ model SurveyResponse {
 }
 
 model QualityCase {
-  id            String    @id @default(cuid())
-  propertyId    String    @map("property_id")
-  reservationId String?   @map("reservation_id")
-  guestId       String?   @map("guest_id")
-  roomId        String?   @map("room_id")
-  caseType      String    @map("case_type")
-  priority      String    @default("normal")
-  status        String    @default("open")
-  title         String
-  description   String?
-  ownerUserId   String?   @map("owner_user_id")
-  slaTargetAt   DateTime? @map("sla_target_at")
-  rootCause     String?   @map("root_cause")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  resolvedAt    DateTime? @map("resolved_at")
+  id               String    @id @default(cuid())
+  propertyId       String    @map("property_id")
+  reservationId    String?   @map("reservation_id")
+  guestId          String?   @map("guest_id")
+  roomId           String?   @map("room_id")
+  /// Reseña que abrió el caso (review_negative); referencia blanda, como reservationId/guestId.
+  reviewId         String?   @map("review_id")
+  surveyResponseId String?   @map("survey_response_id")
+  caseType         String    @map("case_type")
+  priority         String    @default("normal")
+  status           String    @default("open")
+  title            String
+  description      String?
+  ownerUserId      String?   @map("owner_user_id")
+  assignedAt       DateTime? @map("assigned_at")
+  slaTargetAt      DateTime? @map("sla_target_at")
+  rootCause        String?   @map("root_cause")
+  closedBy         String?   @map("closed_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
+  resolvedAt       DateTime? @map("resolved_at")
 
   @@index([propertyId, status, priority])
   @@index([propertyId, slaTargetAt])
+  @@index([propertyId, reviewId])
   @@map("quality_cases")
+}
+
+/// Ejecución de un colector sobre una fuente (Tanda T8 · parche T8-L0). Antes del parche: ring buffer
+/// configJson.runs (RUN_HISTORY_LIMIT = 20). FK con borrado en cascada: sin fuente no hay ejecuciones.
+model ReviewSourceRun {
+  id            String       @id @default(cuid())
+  propertyId    String       @map("property_id")
+  sourceId      String       @map("source_id")
+  provider      String
+  /// scheduler · manual · import (REVIEW_SOURCE_RUN_TRIGGERS).
+  trigger       String
+  /// completed · partial · failed · skipped (REVIEW_SOURCE_RUN_STATUSES).
+  status        String       @default("completed")
+  startedAt     DateTime     @map("started_at")
+  finishedAt    DateTime?    @map("finished_at")
+  fetched       Int          @default(0)
+  created       Int          @default(0)
+  updated       Int          @default(0)
+  unchanged     Int          @default(0)
+  purged        Int          @default(0)
+  lastError     String?      @map("last_error")
+  correlationId String       @default("") @map("correlation_id")
+  resultJson    Json         @default("{}") @map("result_json")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  source        ReviewSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, startedAt])
+  @@index([sourceId, startedAt])
+  @@map("review_source_runs")
+}
+
+/// Mención de una categoría en una reseña (Tanda T8 · parche T8-L0): una de las 12 REVIEW_CATEGORIES,
+/// sentimiento −1/0/+1, confianza 0-1 y fragmento ≤ 160 caracteres. Antes del parche: topicsJson.categories[].
+model ReviewCategoryMention {
+  id             String      @id @default(cuid())
+  reviewId       String      @map("review_id")
+  propertyId     String      @map("property_id")
+  /// limpieza · habitacion · personal · desayuno · restauracion · ubicacion · precio_valor · instalaciones · ruido · wifi · recepcion_checkin · mantenimiento.
+  category       String
+  sentiment      Int         @default(0)
+  confidence     Decimal     @default(0) @db.Decimal(3, 2)
+  snippet        String?
+  /// llm · dictionary · portal_subscore · none (ANALYSIS_SOURCES).
+  analysisSource String      @default("dictionary") @map("analysis_source")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  review         GuestReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, category])
+  @@index([propertyId, category, createdAt])
+  @@map("review_category_mentions")
+}
+
+/// Índice de reputación materializado (Tanda T8 · parche T8-L0): una fila por (propiedad, día, ventana 30/90/365).
+/// Antes del parche el índice se calcula al vuelo con caché de 60 s (reputation-score.service.ts) y staleDays = 0.
+model ReputationDailyScore {
+  id                  String   @id @default(cuid())
+  propertyId          String   @map("property_id")
+  scoreDate           DateTime @map("score_date") @db.Date
+  windowDays          Int      @map("window_days")
+  /// ok · insufficient · no_reviews · no_sources · module_off (REPUTATION_INDEX_STATUSES).
+  status              String   @default("ok")
+  /// 0-100 con un decimal; null salvo status ok.
+  indexValue          Decimal? @map("index_value") @db.Decimal(5, 1)
+  reviewCount         Int      @default(0) @map("review_count")
+  /// ReputationIndexBySource[] ({ provider, count, avg10, weightShare }).
+  sourceBreakdownJson Json     @default("[]") @map("source_breakdown_json")
+  /// ReputationCategoryImpact[] ({ category, mentions, negativeMentions, impact }).
+  categoryImpactJson  Json     @default("[]") @map("category_impact_json")
+  responseRatePct     Decimal? @map("response_rate_pct") @db.Decimal(5, 2)
+  medianResponseHours Decimal? @map("median_response_hours") @db.Decimal(8, 2)
+  trendDelta          Decimal? @map("trend_delta") @db.Decimal(5, 1)
+  orgAverage          Decimal? @map("org_average") @db.Decimal(5, 1)
+  orgRank             Int?     @map("org_rank")
+  orgSize             Int?     @map("org_size")
+  computedAt          DateTime @default(now()) @map("computed_at")
+  correlationId       String?  @map("correlation_id")
+
+  @@unique([propertyId, scoreDate, windowDays])
+  @@index([scoreDate, windowDays])
+  @@map("reputation_daily_scores")
 }
 
 model UtilityMeter {

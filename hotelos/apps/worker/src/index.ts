@@ -25,9 +25,9 @@ import { getFailedSchedules, JOB_QUEUES, startScheduler } from "./scheduler.js";
 
 // Worker honesto (Tanda L2 · L2-07).
 //
-// Este proceso ejecuta EXCLUSIVAMENTE las cuatro colas pg-boss declaradas en
+// Este proceso ejecuta EXCLUSIVAMENTE las cinco colas pg-boss declaradas en
 // scheduler.ts (JOB_QUEUES): notifications.scheduled, notifications.retry,
-// notifications.sending-sweep y webhooks.deliver. Cada ejecución escribe un
+// notifications.sending-sweep, webhooks.deliver y reputation.maintenance. Cada ejecución escribe un
 // WorkerJobRun (jobs/job-runs.ts) con status running → completed | failed.
 //
 // Responsabilidades que SIGUEN en el API como schedulers in-process (una sola
@@ -41,6 +41,7 @@ import { getFailedSchedules, JOB_QUEUES, startScheduler } from "./scheduler.js";
 //   - Mailbox: sondeo del buzón de entrada.
 //   - PMS sombra: sincronización con el PMS de origen (OPERA sombra).
 //   - Drain del channel manager: vaciado de la cola de sincronización.
+//   - Reputación: sincronización diaria de reseñas, análisis, alertas y purga (REPUTATION_SYNC_*).
 //
 // Retirado aquí en L2-07: el catálogo de 85 nombres de job sin implementación
 // (respondían «completed» sin hacer nada), handleJob y sus siete handlers

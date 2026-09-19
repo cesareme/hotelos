@@ -3,9 +3,10 @@
 //
 // Patrón de messaging.service.ts:285-384 (createAiReplyDraft) SIN importar
 // lib/llm.ts: la IA entra por ReputationAiPort (reputation-ai.port.ts; por
-// defecto RulesReputationAi = plantillas con etiqueta honesta `rules`, y L6a
-// engancha ai-core con setReputationAiPort). El texto de la reseña pasa por
-// maskReviewForLlm antes de llegar al puerto.
+// defecto RulesReputationAi = plantillas con etiqueta honesta `rules`; la
+// fusión T8 engancha ai-core con setReputationAiPort(createAiCoreReputationPort())
+// en el arranque del API). El texto de la reseña pasa por maskReviewForLlm
+// antes de llegar al puerto, con el contexto de organización que ai-core exige.
 //
 // Flujo: requirePermissions(reputation.respond) [+ ai.tool.execute solo si el
 // puerto está configurado] → borrador → meta.draft {body, source, model,
@@ -201,7 +202,9 @@ export async function createReviewDraft(input: CreateReviewDraftInput): Promise<
     ...(row.title ? { title: maskReviewForLlm(row.title, { extraNames }).masked } : {}),
     ...(row.body ? { body: maskReviewForLlm(row.body, { extraNames }).masked } : {}),
     hotelName,
-    ...(input.tone ? { tone: input.tone } : {})
+    ...(input.tone ? { tone: input.tone } : {}),
+    // Contexto que ai-core exige (presupuesto y límite por organización, telemetría); las reglas lo ignoran.
+    context: { organizationId: input.context.organizationId, propertyId: input.propertyId, userId: input.context.userId, correlationId: input.correlationId }
   };
 
   const startedAt = Date.now();

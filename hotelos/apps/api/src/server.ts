@@ -105,6 +105,17 @@ import { registerReservationImportRoutes } from "./modules/pms/reservation-impor
 import { registerPmsShadowRoutes } from "./modules/pms-shadow/pms-shadow.routes.js";
 import { registerLedgerImportRoutes } from "./modules/accounting/ledger-import.routes.js";
 import { startPmsShadowJob } from "./modules/pms-shadow/pms-shadow.job.js";
+// Reputación y reseñas (Tanda T8): /reputation/properties/:propertyId/{inbox,sources,runs,imports,
+// sources/:id,sources/:id/sync} y /reputation/reviews/:id{,/draft,/quality-case}
+// (modules/reputation/reputation.routes.ts; permisos en modules/reputation/route-permissions.partial.ts);
+// job diario del líder (modules/reputation/reputation-sync.job.ts) en el bloque de schedulers.
+import { registerReputationRoutes } from "./modules/reputation/reputation.routes.js";
+import { reputationSyncIntervalMs, startReputationSyncJob } from "./modules/reputation/reputation-sync.job.js";
+import { assertDraftPublishable } from "./modules/reputation/review-draft.service.js";
+import { setReputationAiPort } from "./modules/reputation/reputation-ai.port.js";
+import { createAiCoreReputationPort } from "./modules/reputation/reputation-ai.core-adapter.js";
+import { isLlmConfigured } from "./lib/llm.js";
+import { createShutdownController } from "./lib/shutdown.js";
 import { CreateEmailConnectionSchema } from "./schemas/email-connections.schemas.js";
 import { parseOr400 } from "./modules/rate-manager/rate-grid.schemas.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
@@ -180,7 +191,7 @@ import {
   submitPreCheckIn as guestPortalSubmitPreCheckIn,
   submitServiceRequest as guestPortalSubmitServiceRequest
 } from "./modules/guest-portal/guest-portal.service.js";
-import { hydrateAuditChainFromPostgres, recordAuditEvent, verifyAuditIntegrity, verifyDomainEventIntegrity } from "./modules/audit/audit.service.js";
+import { flushAuditQueues, getAuditPersistStats, hydrateAuditChainFromPostgres, recordAuditEvent, setAuditLogger, verifyAuditIntegrity, verifyDomainEventIntegrity } from "./modules/audit/audit.service.js";
 import { closeFiscalPeriod, listFiscalPeriods, openFiscalPeriod, reopenFiscalPeriod } from "./modules/accounting/fiscal-period.service.js";
 import {
   closeFiscalYear,
@@ -1080,6 +1091,8 @@ export async function buildApiServer() {
   void initSentry();
 
   const app = Fastify({ logger: true });
+  // E1: el fallo de persistencia de auditoría (P2002…) sale por pino, no por console.error.
+  setAuditLogger(app.log.child({ module: "audit" }));
 
   // Global error handler: map known errors to the right status code and a
   // clean JSON body. Previously service-level `throw new Error(...)` surfaced
@@ -1713,6 +1726,15 @@ export async function buildApiServer() {
           : "leader (RUN_SCHEDULERS · no live lease)"
         : "disabled on this instance (RUN_SCHEDULERS=false)"
     };
+    // Reputación (Tanda T8): el job diario corre solo en el líder; REPUTATION_SYNC_DISABLED lo apaga.
+    checks.reputationSync = {
+      ok: true,
+      message: !schedulerLeader
+        ? "disabled on this instance (RUN_SCHEDULERS=false)"
+        : process.env.REPUTATION_SYNC_DISABLED === "true"
+          ? "disabled (REPUTATION_SYNC_DISABLED=true)"
+          : `enabled (every ${Math.round(reputationSyncIntervalMs(Number(process.env.REPUTATION_SYNC_INTERVAL_MS ?? 86_400_000)) / 3_600_000)} h · lease + advisory lock)`
+    };
 
     // env (Tanda 4 · rutas-cors): the same contract assertEnv enforced at boot
     // (lib/env.ts). `ok === false` can only happen outside production (there
@@ -1727,6 +1749,12 @@ export async function buildApiServer() {
       message: envCheck.ok
         ? `ok (${envCheck.warnings} avisos)`
         : `${envReport.errors.length} errores de configuración (${envCheck.warnings} avisos)`
+    };
+    // Auditoría (fusión T8 · E1): fallos de persistencia de audit_events/event_stream desde el arranque (colisiones P2002 de ids cortos, BD caída…): ok=false → degraded.
+    const auditStats = getAuditPersistStats();
+    checks.audit = {
+      ok: auditStats.failures === 0,
+      message: auditStats.failures === 0 ? "ok (0 fallos de persistencia desde el arranque)" : `${auditStats.failures} eventos sin persistir desde el arranque (último: ${auditStats.lastError?.code ?? "?"} · ${auditStats.lastError?.action ?? "?"})`
     };
 
     const allOk = Object.values(checks).every((check) => check.ok);
@@ -2881,6 +2909,16 @@ export async function buildApiServer() {
   // cuentas y analítico, plantilla canónica, reconciliación y reverso
   // (/accounting/ledger-imports* y /accounting/ledger-imports/reconciliation*).
   registerLedgerImportRoutes(app);
+  // Reputación y reseñas (Tanda T8 · T8-D): bandeja, detalle/PATCH/borrador/caso de
+  // una reseña, fuentes, sincronización manual, ejecuciones e importación CSV
+  // (/reputation/properties/:propertyId/* y /reputation/reviews/:id/*).
+  registerReputationRoutes(app, {
+    collectorOptions: {
+      ...(process.env.GOOGLE_BUSINESS_CLIENT_ID ? { googleClientId: process.env.GOOGLE_BUSINESS_CLIENT_ID } : {}),
+      ...(process.env.GOOGLE_BUSINESS_CLIENT_SECRET ? { googleClientSecret: process.env.GOOGLE_BUSINESS_CLIENT_SECRET } : {}),
+      ...(process.env.GOOGLE_BUSINESS_REDIRECT_URI ? { googleRedirectUri: process.env.GOOGLE_BUSINESS_REDIRECT_URI } : {})
+    }
+  }); // Reputación y reseñas (Tanda T8)
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to
@@ -3261,6 +3299,8 @@ export async function buildApiServer() {
   });
   app.post("/reputation/reviews/:id/respond", async (request) => {
     const propertyId = await assertPropertyEntityAccess(request, { entity: "guestReview", id: (request.params as { id: string }).id });
+    // Reputación (Tanda T8): 409 REVIEW_DRAFT_REJECTED si el texto es el borrador cuyo ítem HITL fue rechazado (texto editado → pasa).
+    await assertDraftPublishable({ reviewId: (request.params as { id: string }).id, responseBody: (request.body as { responseBody?: string; body?: string } | null)?.responseBody ?? (request.body as { body?: string } | null)?.body });
     return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "guest_review", entityId: (request.params as { id: string }).id, status: "responded", auditAction: "ReviewResponseSent", requiredPermissions: ["reputation.respond"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.get("/quality/properties/:propertyId/cases", async (request, reply) => {
@@ -3272,7 +3312,7 @@ export async function buildApiServer() {
   app.post("/quality/properties/:propertyId/cases", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "reputation_quality", entityType: "quality_case", auditAction: "QualityCaseCreated", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.patch("/quality/cases/:id", async (request) => {
     const propertyId = await assertPropertyEntityAccess(request, { entity: "qualityCase", id: (request.params as { id: string }).id });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "quality_case", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "QualityCaseResolved", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "quality_case", entityId: (request.params as { id: string }).id, status: "updated", auditAction: ["resolved", "closed"].includes(String((request.body as { status?: string } | null)?.status ?? "")) ? "QualityCaseResolved" : "QualityCaseUpdated", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.get("/surveys/properties/:propertyId", async (request, reply) => {
     const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
@@ -3283,7 +3323,7 @@ export async function buildApiServer() {
   app.post("/surveys/properties/:propertyId", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "reputation_quality", entityType: "survey", auditAction: "SurveyCreated", requiredPermissions: ["surveys.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/surveys/:id/responses", async (request) => {
     const propertyId = await assertPropertyEntityAccess(request, { entity: "survey", id: (request.params as { id: string }).id });
-    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "survey_response", auditAction: "SurveyResponseReceived", requiredPermissions: ["surveys.read"], payload: { ...requireObjectBody(request.body), surveyId: (request.params as { id: string }).id }, correlationId: createId("corr") });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "reputation_quality", entityType: "survey_response", auditAction: "SurveyResponseReceived", requiredPermissions: ["surveys.manage"], payload: { ...requireObjectBody(request.body), surveyId: (request.params as { id: string }).id }, correlationId: createId("corr") });
   });
 
   app.get("/energy/properties/:propertyId/meters", async (request, reply) => {
@@ -8442,6 +8482,8 @@ if (entryFile === argFile) {
     }
   }
   const app = await buildApiServer();
+  // IA de reputación (Tanda T8 · §13): con proveedor configurado el puerto pasa por ai-core (redactPii/restorePii y presupuesto por organización); sin clave sigue RulesReputationAi con etiquetas honestas dictionary/rules. Solo en el proceso que escucha: los tests que usan buildApiServer no lo activan.
+  if (isLlmConfigured()) setReputationAiPort(createAiCoreReputationPort());
 
   // Tanda 3 (cierre · CRÍTICO SES): a rejected promise nobody awaited (the old
   // `records.map(queueSesHospedajesSubmission…)` in POST /ses/submissions) took
@@ -8502,6 +8544,27 @@ if (entryFile === argFile) {
     }
   }
   await app.listen({ port, host });
+
+  // Apagado ordenado (fusión T8 · E2): un único coordinador para SIGTERM/SIGINT
+  // (lib/shutdown.ts). Antes cada scheduler registraba su propio `process.once`
+  // que solo paraba su temporizador y no terminaba el proceso; al existir un
+  // manejador Node retira la salida por defecto y el API ignoraba SIGTERM (el
+  // 2026-09-19 hubo que matarlo con SIGKILL). Los pasos se ejecutan en orden
+  // inverso al registro: los schedulers (registrados más abajo) se detienen
+  // antes de cerrar Fastify, vaciar las colas de persistencia de auditoría
+  // (audit_events/event_stream sellados por las últimas peticiones: la cola es
+  // fire-and-forget y $disconnect sin flush los perdería) y desconectar Prisma
+  // (server.ts no tiene onClose que lo haga). Plazo SHUTDOWN_TIMEOUT_MS (10 000 ms) → warn + exit 1; segunda
+  // señal → exit 1 inmediato. RUN_SCHEDULERS no cambia. `process.on`, no `once`:
+  // la segunda señal la resuelve el coordinador.
+  const shutdown = createShutdownController({ timeoutMs: Number(process.env.SHUTDOWN_TIMEOUT_MS ?? 10_000), exit: (code) => process.exit(code), log: app.log });
+  shutdown.register("prisma", async () => {
+    const { prisma } = await import("@hotelos/database");
+    await prisma.$disconnect();
+  });
+  shutdown.register("audit.flush", () => flushAuditQueues());
+  shutdown.register("fastify", () => app.close());
+  for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => void shutdown.trigger(signal));
 
   // HA gate (audit 2026-06 · #13): the eight schedulers below must run on EXACTLY
   // one instance, or >1 replica would duplicate SES/VeriFactu submissions to the
@@ -8574,11 +8637,8 @@ if (entryFile === argFile) {
       void drainTick().catch((error) => app.log.error({ err: error }, "[channel.drain] failed"));
     }, drainIntervalMs);
     drainTimer.unref();
-    // The instance is already listening here, so no Fastify hooks: stop the
-    // interval on process shutdown like the other in-process schedulers.
-    for (const signal of ["SIGTERM", "SIGINT"] as const) {
-      process.once(signal, () => clearInterval(drainTimer));
-    }
+    // Se detiene por el coordinador de apagado (E2), no por process.once.
+    shutdown.register("channel.drain", () => clearInterval(drainTimer));
     app.log.info({ intervalMs: drainIntervalMs }, "[channel.drain] enabled (lease-gated)");
   }
 
@@ -8723,7 +8783,39 @@ if (entryFile === argFile) {
     }, pmsShadowIntervalMs);
     pmsShadowTimer.unref();
     const job = { stop: () => clearInterval(pmsShadowTimer) };
-    process.once("SIGTERM", job.stop);
-    process.once("SIGINT", job.stop);
+    shutdown.register("pms-shadow.job", job.stop);
+  }
+
+  // Reputación y reseñas (Tanda T8 · T8-C): job diario del líder — sincroniza las
+  // fuentes de reseñas de las propiedades con reputation_quality, analiza (diccionario
+  // o IA por ReputationAiPort), abre casos review_negative (score10 < 6) y purga por
+  // retención; cada vuelta bajo pg_try_advisory_xact_lock(hashtext('reputation.sync'))
+  // (modules/reputation/reputation-sync.job.ts). Vive aquí porque apps/worker no
+  // depende de @hotelos/api. Disable with REPUTATION_SYNC_DISABLED=true. Como el modo
+  // sombra: el arranque del módulo (runAtBoot + log) conserva la cadencia, pero su
+  // temporizador propio se detiene y lo sustituye uno que exige el lease en cada vuelta.
+  if (schedulerLeader && process.env.REPUTATION_SYNC_DISABLED !== "true") {
+    const reputationIntervalMs = reputationSyncIntervalMs(Number(process.env.REPUTATION_SYNC_INTERVAL_MS ?? 86_400_000));
+    const reputationSync = startReputationSyncJob({
+      log: app.log,
+      intervalMs: reputationIntervalMs,
+      runAtBoot: process.env.REPUTATION_SYNC_RUN_AT_BOOT !== "false",
+      collectorOptions: {
+        ...(process.env.GOOGLE_BUSINESS_CLIENT_ID ? { googleClientId: process.env.GOOGLE_BUSINESS_CLIENT_ID } : {}),
+        ...(process.env.GOOGLE_BUSINESS_CLIENT_SECRET ? { googleClientSecret: process.env.GOOGLE_BUSINESS_CLIENT_SECRET } : {}),
+        ...(process.env.GOOGLE_BUSINESS_REDIRECT_URI ? { googleRedirectUri: process.env.GOOGLE_BUSINESS_REDIRECT_URI } : {})
+      }
+    });
+    reputationSync.stop();
+    const reputationTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      await reputationSync.runNow();
+    };
+    const reputationTimer = setInterval(() => {
+      void reputationTick().catch((error) => app.log.error({ err: error }, "[reputation.sync.job] failed"));
+    }, reputationIntervalMs);
+    reputationTimer.unref();
+    const reputationJob = { stop: () => clearInterval(reputationTimer) };
+    shutdown.register("reputation.sync.job", reputationJob.stop);
   }
 }

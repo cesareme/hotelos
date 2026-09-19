@@ -17,7 +17,7 @@ const advancedService = read("apps/api/src/modules/advanced/advanced-modules.ser
 const server = read("apps/api/src/server.ts");
 const routePermissions = read("apps/api/src/security/route-permissions.ts");
 const worker = read("apps/worker/src/index.ts");
-// Tanda L2 (L2-07 · worker honesto): the catalogue is the four pg-boss queues of scheduler.ts.
+// Tanda L2 (L2-07 · worker honesto): the catalogue is the five pg-boss queues of scheduler.ts (+ jobs/reputation-maintenance.job.ts).
 const workerScheduler = read("apps/worker/src/scheduler.ts");
 // Tanda L2 (L2-03): the History & Forecast board is served by modules/revenue/hf-board.service.ts.
 const hfBoardService = read("apps/api/src/modules/revenue/hf-board.service.ts");

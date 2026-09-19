@@ -899,6 +899,12 @@ async function main() {
   // Idempotent: fixed ids + upsert. createdAt is set relative to "now" on every
   // run so the SLA-breach (> 60 min pending) and age columns stay meaningful.
   const minutesAgo = (m: number) => new Date(Date.now() - m * 60 * 1000);
+  // Tanda T8: rev_review_004 apunta a una reseña FICTICIA real (la peor de las
+  // sembradas por `demo:seed-reputation` en prop_123) si ese seed ya corrió; si no,
+  // conserva el marcador grev_5521. No se crea ninguna reseña aquí: l2-paginacion
+  // .test.mts:653-666 pina prop_123 sin reseñas en 30 días.
+  const demoReviewId =
+    (await prisma.guestReview.findFirst({ where: { propertyId: "prop_123", source: { endsWith: "_demo" } }, orderBy: { rating: "asc" }, select: { id: true } }))?.id ?? "grev_5521";
   const reviewItems: Array<{
     id: string;
     reviewType: string;
@@ -959,7 +965,7 @@ async function main() {
       id: "rev_review_004",
       reviewType: "review_response",
       relatedEntityType: "guest_review",
-      relatedEntityId: "grev_5521",
+      relatedEntityId: demoReviewId,
       status: "approved",
       assignedTo: "usr_123",
       minutesAgo: 180,
@@ -1057,7 +1063,7 @@ async function main() {
       { toolName: "draftGuestReply", moduleCode: "guest_experience", riskLevel: "medium" },
       { toolName: "recommendRate", moduleCode: "revenue", riskLevel: "medium" },
       { toolName: "classifyDocument", moduleCode: "onboarding", riskLevel: "low" },
-      { toolName: "summarizeReview", moduleCode: "reputation", riskLevel: "low" },
+      { toolName: "summarizeReview", moduleCode: "reputation_quality", riskLevel: "low" },
       { toolName: "matchBankTransaction", moduleCode: "banking", riskLevel: "medium" }
     ];
     for (const t of toolRegistry) {

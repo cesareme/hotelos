@@ -8,12 +8,12 @@
 // genérica `email` guarda en GuestReview.source el portal real, p. ej.
 // `tripadvisor`) y, si no, por el proveedor base de GuestReview.source; nunca
 // se indexa solo por ReviewSource.provider (dos fuentes del mismo proveedor no
-// se pisan). Hasta que se
-// aplique el parche T8-L0 no existe la tabla reputation_daily_scores: el índice
-// se calcula al vuelo con caché en memoria de 60 s por propiedad y `staleDays` es
-// siempre 0. detectSchemaPatch() consulta to_regclass de las 3 tablas nuevas
-// (caché 10 min) y lo expone como `schemaPatchApplied` (hoy false); el store de
-// tabla se añade al aplicar el parche.
+// se pisan). La tabla reputation_daily_scores existe desde la migración
+// 20260919124000_reputacion (T8-L0b), pero el store por tabla es la fase 2 (runbook
+// reputacion-reviews.md §9): el índice se calcula al vuelo con caché en memoria de
+// 60 s por propiedad y `staleDays` es siempre 0. detectSchemaPatch() consulta
+// to_regclass de las 3 tablas nuevas (caché 10 min) y lo expone como
+// `schemaPatchApplied` (true con la migración aplicada).
 //
 // Reglas:
 //   · NUNCA lanza en un tenant vacío ni con el módulo apagado
