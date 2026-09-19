@@ -43,6 +43,7 @@ import {
   type ReservationPriceSource
 } from "../../services/pmsCommerceApi";
 import { useToast } from "../../components/Toast";
+import { PREFILL_NOTE, hasReservationPrefill, parseReservationPrefill } from "./reservation-create-prefill";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 import { useTabHost } from "../tabs/TabHost";
 import { navigateTo } from "../../lib/navigate";
@@ -383,7 +384,12 @@ function parseStepper(raw: string, fallback: number) {
 export function ReservationCreateScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const [form, setForm] = useState<FormValues>(defaultForm);
+  // Tanda TL: el Live Timeline llega con ?arrivalDate&departureDate&roomTypeId&
+  // assignedRoomId al crear por celdas (window.location.search: sin react-router,
+  // como ReservationImportScreen). Se lee UNA vez al montar; lo inválido se ignora.
+  const [prefill] = useState(() => parseReservationPrefill(typeof window === "undefined" ? "" : window.location.search));
+  const prefilled = hasReservationPrefill(prefill);
+  const [form, setForm] = useState<FormValues>(() => ({ ...defaultForm, ...prefill }));
   const [companions, setCompanions] = useState<CompanionGuest[]>([]);
   const [roomTypes, setRoomTypes] = useState<AdminRoomType[]>([]);
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
@@ -764,6 +770,11 @@ export function ReservationCreateScreen() {
               </>
             }
           >
+            {prefilled ? (
+              <CocoaCallout tone="info" role="note">
+                {PREFILL_NOTE}
+              </CocoaCallout>
+            ) : null}
             <CocoaFormRow columns={3} min={220}>
               <CocoaField label="Fecha de llegada" required>
                 <CocoaDatePicker value={form.arrivalDate} onChange={set("arrivalDate")} />
