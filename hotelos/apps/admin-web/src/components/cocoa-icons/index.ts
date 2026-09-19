@@ -7,6 +7,8 @@
 // TODO: ActionIcons.tsx not yet created by Action worker.
 // export * from './ActionIcons';
 
+// StatusIcons: 12 iconos de estado + 7 de recepción (Key, Broom, Euro, ArrowIn,
+// ArrowOut, UserSlash, Moon; Tanda UX-1 · lote U2) que consume CocoaStatusBadge.
 export * from './StatusIcons';
 
 export {};

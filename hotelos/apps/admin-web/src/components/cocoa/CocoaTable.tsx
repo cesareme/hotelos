@@ -48,9 +48,23 @@
 // the inverse surface (stylesheet-owned). With `stickyFirstColumn` the first
 // cell of every section takes its opaque background from the stylesheet too
 // (content / sidebar / inverse surface): the component never paints it inline.
+//
+// Tanda UX-1 · U4 (docs/design/UX-RECEPCION-FEEL.md §4 «Selección múltiple»,
+// «Columnas configurables», «Esqueleto con retardo»; F11, F25, D11):
+//   keepDataWhileLoading  the current rows stay under an `aria-busy` overlay
+//                         (`c22-table__busy`) instead of skeleton rows
+//   selectable="multiple" a checkbox per row (`c22-table__check`, 44 px on a
+//                         coarse pointer, ≥ 24 with a mouse), Shift+clic range,
+//                         Ctrl/⌘A on the table, `aria-multiselectable`; a sticky
+//                         CocoaActionBar with the count (`batchBar` slot) while
+//                         rows are selected — independent of `onSelect` (open)
+//   columnsPrefsKey       «Columnas ▾» (show / hide / ↑↓) saved in localStorage
+//                         under `hotelos-table-columns:<key>` (pure helpers below)
 
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { CocoaActionBar } from "./CocoaActionBar";
 import { CocoaButton } from "./CocoaButton";
+import { CocoaPopover } from "./CocoaPopover";
 import { CocoaSkeleton } from "./CocoaState";
 import { toneBg, type CocoaTone } from "./cocoa-tones";
 import { useViewportTier, type CocoaViewportTier } from "./cocoa-viewport";
@@ -110,8 +124,21 @@ export interface CocoaTableProps<Row> {
   rowKey?: string | ((row: Row) => string);
   selectedKey?: string;
   onSelect?: (row: Row) => void;
+  /**
+   * `multiple`: a checkbox per row (44 px on a coarse pointer), Shift+clic
+   * selects a range, Ctrl/⌘A every rendered row, `aria-multiselectable`.
+   * Independent of `onSelect` (opens the row) and `selectedKey` (the open row).
+   */
+  selectable?: "multiple";
+  /** Keys of the selected rows (controlled). */
+  selectedKeys?: ReadonlyArray<string>;
+  onSelectionChange?: (keys: string[]) => void;
+  /** Extra controls of the sticky batch bar shown while rows are selected («Check-out de N con saldo 0»); the bar itself paints the count and «Quitar selección». */
+  batchBar?: (selection: CocoaTableSelection) => ReactNode;
   emptyState?: ReactNode;
   loading?: boolean;
+  /** Keep the current rows under an `aria-busy` overlay while `loading` (a search, a tab change) instead of skeleton rows; skeleton rows still paint when there is nothing to keep. */
+  keepDataWhileLoading?: boolean;
   density?: CocoaTableDensity;
   stickyFirstColumn?: boolean;
   /** Trailing actions cell per row (CocoaButton plain/small). */
@@ -136,8 +163,23 @@ export interface CocoaTableProps<Row> {
   "aria-label"?: string;
   /** Own vertical scroller (the sticky head needs it). */
   maxHeight?: number;
+  /** «Columnas ▾» menu (show / hide / reorder with ↑↓) saved in localStorage under this key (D11: per person and browser). */
+  columnsPrefsKey?: string;
   className?: string;
   style?: CSSProperties;
+}
+
+export interface CocoaTableSelection {
+  count: number;
+  keys: string[];
+  clear: () => void;
+}
+
+export interface CocoaTableColumnPrefs {
+  /** Column keys in display order (unknown keys dropped, new keys appended). */
+  order: string[];
+  /** Hidden column keys (never all of them). */
+  hidden: string[];
 }
 
 export const VIRTUALIZE_THRESHOLD = 200;
@@ -234,6 +276,189 @@ export function truncatedCellTitle(content: ReactNode): string | undefined {
   return typeof content === "string" || typeof content === "number" ? String(content) : undefined;
 }
 
+// ---------------------------------------------------------------- U4 · column prefs (pure)
+
+export const COLUMN_PREFS_STORAGE_PREFIX = "hotelos-table-columns:";
+
+/** localStorage key of a table's column prefs (pure). */
+export function columnPrefsStorageKey(prefsKey: string): string {
+  return `${COLUMN_PREFS_STORAGE_PREFIX}${prefsKey}`;
+}
+
+/**
+ * Prefs reconciled with the real columns (pure): unknown keys dropped, new
+ * keys appended in their declared order, duplicates removed, and never every
+ * column hidden (the first in order comes back).
+ */
+export function normalizeColumnPrefs(prefs: Partial<CocoaTableColumnPrefs> | null | undefined, keys: ReadonlyArray<string>): CocoaTableColumnPrefs {
+  const known = new Set(keys);
+  const order = (prefs?.order ?? []).filter((key, index, all) => known.has(key) && all.indexOf(key) === index);
+  for (const key of keys) if (!order.includes(key)) order.push(key);
+  let hidden = (prefs?.hidden ?? []).filter((key, index, all) => known.has(key) && all.indexOf(key) === index);
+  if (keys.length > 0 && hidden.length >= keys.length) hidden = hidden.filter((key) => key !== order[0]);
+  return { order, hidden };
+}
+
+/** Columns in the user's order without the hidden ones (pure); no prefs → the declared columns. */
+export function applyColumnPrefs<Row>(columns: CocoaTableColumn<Row>[], prefs: Partial<CocoaTableColumnPrefs> | null | undefined): CocoaTableColumn<Row>[] {
+  if (!prefs) return columns;
+  const byKey = new Map(columns.map((column) => [column.key, column]));
+  const normalized = normalizeColumnPrefs(prefs, columns.map((column) => column.key));
+  return normalized.order.filter((key) => !normalized.hidden.includes(key)).flatMap((key) => {
+    const column = byKey.get(key);
+    return column ? [column] : [];
+  });
+}
+
+/** Order with `key` moved one step up (−1) or down (+1) (pure); out of range → unchanged copy. */
+export function moveColumn(order: ReadonlyArray<string>, key: string, direction: -1 | 1): string[] {
+  const next = [...order];
+  const index = next.indexOf(key);
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= next.length) return next;
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}
+
+/** Prefs with `key` shown ↔ hidden (pure); the last visible column cannot be hidden. */
+export function toggleColumnHidden(prefs: CocoaTableColumnPrefs, key: string, keys: ReadonlyArray<string>): CocoaTableColumnPrefs {
+  const hidden = prefs.hidden.includes(key) ? prefs.hidden.filter((candidate) => candidate !== key) : [...prefs.hidden, key];
+  return normalizeColumnPrefs({ order: prefs.order, hidden }, keys);
+}
+
+/** Prefs read from storage (pure over the storage API): null when absent, corrupt or unreadable. */
+export function readColumnPrefs(storage: Pick<Storage, "getItem"> | null | undefined, prefsKey: string, keys: ReadonlyArray<string>): CocoaTableColumnPrefs | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(columnPrefsStorageKey(prefsKey));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Record<keyof CocoaTableColumnPrefs, unknown>> | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    const strings = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+    return normalizeColumnPrefs({ order: strings(parsed.order), hidden: strings(parsed.hidden) }, keys);
+  } catch {
+    return null;
+  }
+}
+
+/** Prefs written to storage (null removes them); a full or blocked storage keeps the session's in-memory prefs. */
+export function writeColumnPrefs(storage: Pick<Storage, "setItem" | "removeItem"> | null | undefined, prefsKey: string, prefs: CocoaTableColumnPrefs | null): void {
+  if (!storage) return;
+  try {
+    if (prefs) storage.setItem(columnPrefsStorageKey(prefsKey), JSON.stringify(prefs));
+    else storage.removeItem(columnPrefsStorageKey(prefsKey));
+  } catch {
+    // Quota exceeded / private mode: nothing to do, the prefs live in React state until reload.
+  }
+}
+
+function safeLocalStorage(): Storage | null {
+  try {
+    return typeof window !== "undefined" ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------- U4 · multiple selection (pure)
+
+/** Selection with `key` added or removed (pure). */
+export function toggleSelection(selected: ReadonlyArray<string>, key: string): string[] {
+  return selected.includes(key) ? selected.filter((candidate) => candidate !== key) : [...selected, key];
+}
+
+/**
+ * Shift+clic (pure): every rendered row between the anchor (the last row
+ * toggled) and the target joins the selection; without an anchor the target
+ * simply toggles.
+ */
+export function rangeSelection(input: { selected: ReadonlyArray<string>; keys: ReadonlyArray<string>; anchorIndex: number | null; targetIndex: number }): string[] {
+  const { selected, keys, anchorIndex, targetIndex } = input;
+  if (targetIndex < 0 || targetIndex >= keys.length) return [...selected];
+  if (anchorIndex === null || anchorIndex < 0 || anchorIndex >= keys.length) return toggleSelection(selected, keys[targetIndex]);
+  const [from, to] = anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+  const next = new Set(selected);
+  for (let index = from; index <= to; index += 1) next.add(keys[index]);
+  return [...next];
+}
+
+/** Selection plus every rendered row (pure): Ctrl/⌘A and the header checkbox. */
+export function selectAllRows(selected: ReadonlyArray<string>, keys: ReadonlyArray<string>): string[] {
+  return [...new Set([...selected, ...keys])];
+}
+
+/** Selection without the rendered rows (pure): the header checkbox when everything shown is selected. */
+export function deselectRows(selected: ReadonlyArray<string>, keys: ReadonlyArray<string>): string[] {
+  const shown = new Set(keys);
+  return selected.filter((key) => !shown.has(key));
+}
+
+/** Ctrl/⌘A (pure): never with Shift or Alt. */
+export function isSelectAllShortcut(event: { key: string; metaKey: boolean; ctrlKey: boolean; shiftKey?: boolean; altKey?: boolean }): boolean {
+  return (event.key === "a" || event.key === "A") && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey;
+}
+
+/** State of the header checkbox (pure): none · some (indeterminate) · all, over the rendered rows. */
+export function headerCheckboxState(selectedShown: number, shown: number): "none" | "some" | "all" {
+  if (shown === 0 || selectedShown === 0) return "none";
+  return selectedShown >= shown ? "all" : "some";
+}
+
+/** «1 fila seleccionada» / «N filas seleccionadas» (pure). */
+export function selectionStatusLabel(count: number): string {
+  return count === 1 ? "1 fila seleccionada" : `${count} filas seleccionadas`;
+}
+
+/** Text-editing targets keep their own Ctrl/⌘A (pure; checkboxes are not text). */
+function ownsSelectAll(target: unknown): boolean {
+  const node = target as { tagName?: string; type?: string; isContentEditable?: boolean } | null;
+  if (!node || typeof node !== "object") return false;
+  if (node.isContentEditable) return true;
+  const tag = (node.tagName ?? "").toUpperCase();
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  return tag === "INPUT" && node.type !== "checkbox" && node.type !== "radio";
+}
+
+const noop = () => undefined;
+
+function ColumnsMenu<Row>({ columns, prefs, onChange }: { columns: CocoaTableColumn<Row>[]; prefs: CocoaTableColumnPrefs; onChange: (next: CocoaTableColumnPrefs | null) => void }) {
+  const keys = columns.map((column) => column.key);
+  const byKey = new Map(columns.map((column) => [column.key, column]));
+  return (
+    <div className="c22-table__columns" data-cocoa="table-columns">
+      <ul className="c22-table__columns-list">
+        {prefs.order.map((key, index) => {
+          const column = byKey.get(key);
+          if (!column) return null;
+          const label = column.label || key;
+          const hidden = prefs.hidden.includes(key);
+          return (
+            <li key={key} className="c22-table__columns-item">
+              <label className="c22-table__columns-toggle">
+                <input type="checkbox" className="c22-table__check-input" checked={!hidden} onChange={() => onChange(toggleColumnHidden(prefs, key, keys))} />
+                <span>{label}</span>
+              </label>
+              <span className="c22-table__columns-move">
+                <CocoaButton variant="plain" tone="neutral" size="small" aria-label={`Subir ${label}`} disabled={index === 0} onClick={() => onChange(normalizeColumnPrefs({ ...prefs, order: moveColumn(prefs.order, key, -1) }, keys))}>
+                  ↑
+                </CocoaButton>
+                <CocoaButton variant="plain" tone="neutral" size="small" aria-label={`Bajar ${label}`} disabled={index === prefs.order.length - 1} onClick={() => onChange(normalizeColumnPrefs({ ...prefs, order: moveColumn(prefs.order, key, 1) }, keys))}>
+                  ↓
+                </CocoaButton>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="c22-table__columns-foot">
+        <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => onChange(null)}>
+          Restablecer
+        </CocoaButton>
+      </div>
+    </div>
+  );
+}
+
 /** Rendered content of a column, wrapped in the truncation cap when the column asks for it (`truncate`). */
 function cellContent<Row>(row: Row, col: CocoaTableColumn<Row>): ReactNode {
   const content = col.render ? col.render(row) : defaultRender(row, col.key);
@@ -268,8 +493,13 @@ export function CocoaTable<Row>({
   rowKey,
   selectedKey,
   onSelect,
+  selectable,
+  selectedKeys,
+  onSelectionChange,
+  batchBar,
   emptyState,
   loading = false,
+  keepDataWhileLoading = false,
   density,
   stickyFirstColumn = false,
   rowActions,
@@ -281,6 +511,7 @@ export function CocoaTable<Row>({
   caption,
   "aria-label": ariaLabel,
   maxHeight,
+  columnsPrefsKey,
   className,
   style
 }: CocoaTableProps<Row>) {
@@ -294,7 +525,26 @@ export function CocoaTable<Row>({
   const isClickable = typeof onSelect === "function";
   const hasSelection = selectedKey !== undefined;
   const cellPadding = densityRowPadding(density);
-  const visibleColumns = columns.filter((col) => isColumnVisible(col, tier));
+
+  // U4 · column prefs («Columnas ▾»): read once from localStorage, written on every change.
+  const columnKeys = columns.map((column) => column.key);
+  const [prefs, setPrefsState] = useState<CocoaTableColumnPrefs | null>(() => (columnsPrefsKey ? readColumnPrefs(safeLocalStorage(), columnsPrefsKey, columnKeys) : null));
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const [columnsAnchor, setColumnsAnchor] = useState<HTMLElement | null>(null);
+  const setPrefs = (next: CocoaTableColumnPrefs | null) => {
+    setPrefsState(next);
+    if (columnsPrefsKey) writeColumnPrefs(safeLocalStorage(), columnsPrefsKey, next);
+  };
+  const effectiveColumns = columnsPrefsKey ? applyColumnPrefs(columns, prefs) : columns;
+  const visibleColumns = effectiveColumns.filter((col) => isColumnVisible(col, tier));
+
+  // U4 · multiple selection and «keep the rows while loading».
+  const hasMulti = selectable === "multiple";
+  const selectedList: ReadonlyArray<string> = selectedKeys ?? [];
+  const selectedSet = new Set(selectedList);
+  const anchorIndex = useRef<number | null>(null);
+  const changeSelection = (next: string[]) => onSelectionChange?.(next);
+  const keepRows = loading && keepDataWhileLoading && rows.length > 0;
 
   // Progressive rendering: reset when the data changes, grow when the sentinel shows.
   useEffect(() => {
@@ -330,7 +580,7 @@ export function CocoaTable<Row>({
     return () => observer.disconnect();
   }, [virtualize, hasMore, shownCount]);
 
-  if (loading) {
+  if (loading && !keepRows) {
     return (
       <div role="status" aria-busy="true" aria-label="Cargando…" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)", padding: "var(--cocoa-space-2) 0" }} data-cocoa="table-loading">
         {Array.from({ length: 5 }, (_, index) => (
@@ -344,10 +594,52 @@ export function CocoaTable<Row>({
   const footerCells: Record<string, ReactNode> | null =
     footer === true ? Object.fromEntries(columns.map((col) => [col.key, col.footer])) : footer && typeof footer === "object" ? footer : null;
 
+  // U4 · selection over the RENDERED rows (the same keys the rows carry).
+  const shownKeys = shownRows.map((row, idx) => resolveRowKey(row, rowKey, idx));
+  const selectedShown = shownKeys.filter((key) => selectedSet.has(key)).length;
+  const headerState = headerCheckboxState(selectedShown, shownKeys.length);
+  const handleCheckClick = (event: ReactMouseEvent<HTMLInputElement>, index: number, key: string) => {
+    event.stopPropagation();
+    const next = event.shiftKey ? rangeSelection({ selected: selectedList, keys: shownKeys, anchorIndex: anchorIndex.current, targetIndex: index }) : toggleSelection(selectedList, key);
+    anchorIndex.current = index;
+    changeSelection(next);
+  };
+  const handleHeaderCheck = () => {
+    anchorIndex.current = null;
+    changeSelection(headerState === "all" ? deselectRows(selectedList, shownKeys) : selectAllRows(selectedList, shownKeys));
+  };
+  const handleTableKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!hasMulti || !isSelectAllShortcut(event) || ownsSelectAll(event.target)) return;
+    event.preventDefault();
+    changeSelection(selectAllRows(selectedList, shownKeys));
+  };
+  const rowCheckbox = (index: number, key: string) => (
+    <input type="checkbox" className="c22-table__check-input" aria-label={`Seleccionar fila ${index + 1}`} checked={selectedSet.has(key)} onClick={(event) => handleCheckClick(event, index, key)} onChange={noop} />
+  );
+  const selection: CocoaTableSelection = { count: selectedList.length, keys: [...selectedList], clear: () => changeSelection([]) };
+  const batchBarNode =
+    hasMulti && selection.count > 0 ? (
+      <CocoaActionBar className="c22-table__batch" aria-label="Acciones sobre la selección" status={selectionStatusLabel(selection.count)} extra={batchBar?.(selection)} secondary={{ label: "Quitar selección", onClick: selection.clear }} publishToastOffset />
+    ) : null;
+  // `aria-busy` on the wrapper says it; the veil itself is decorative.
+  const busyOverlay = keepRows ? <div className="c22-table__busy" aria-hidden="true" data-cocoa="table-busy" /> : null;
+  const toolsRow = columnsPrefsKey ? (
+    <div className="c22-table__tools" data-cocoa="table-tools">
+      <CocoaButton ref={setColumnsAnchor} variant="bordered" tone="neutral" size="small" aria-haspopup="dialog" aria-expanded={columnsOpen} onClick={() => setColumnsOpen((open) => !open)}>
+        Columnas
+      </CocoaButton>
+      <CocoaPopover open={columnsOpen} anchorEl={columnsAnchor} placement="bottom" onClose={() => setColumnsOpen(false)} role="dialog" aria-label="Columnas de la tabla">
+        <ColumnsMenu columns={columns} prefs={normalizeColumnPrefs(prefs, columnKeys)} onChange={setPrefs} />
+      </CocoaPopover>
+    </div>
+  ) : null;
+
   // ── Phone: stacked label/value cards ──────────────────────────────────────
   if (isNarrow && rows.length > 0) {
     return (
-      <div className={["c22-table-cards", "cocoa-table", className].filter(Boolean).join(" ")} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)", fontFamily: "var(--cocoa-font)", ...style }} data-cocoa="table-cards" data-layout="cards" aria-label={ariaLabel ?? caption}>
+      <>
+      {toolsRow}
+      <div className={["c22-table-cards", "cocoa-table", className].filter(Boolean).join(" ")} style={{ position: "relative", display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)", fontFamily: "var(--cocoa-font)", ...style }} data-cocoa="table-cards" data-layout="cards" aria-label={ariaLabel ?? caption} aria-busy={keepRows || undefined} aria-multiselectable={hasMulti || undefined} onKeyDown={hasMulti ? handleTableKeyDown : undefined}>
         {shownRows.map((row, idx) => {
           const key = resolveRowKey(row, rowKey, idx);
           const isSelected = hasSelection && selectedKey === key;
@@ -386,6 +678,12 @@ export function CocoaTable<Row>({
               title={rowTitle?.(row)}
               data-tone={tone}
             >
+              {hasMulti ? (
+                <label className="c22-table__check c22-table__check--card" onClick={(event) => event.stopPropagation()}>
+                  {rowCheckbox(idx, key)}
+                  <span>Seleccionar</span>
+                </label>
+              ) : null}
               {visibleColumns.map((col) => {
                 const content = cellContent(row, col);
                 return (
@@ -412,7 +710,10 @@ export function CocoaTable<Row>({
             </CocoaButton>
           </div>
         ) : null}
+        {busyOverlay}
       </div>
+      {batchBarNode}
+      </>
     );
   }
 
@@ -425,9 +726,11 @@ export function CocoaTable<Row>({
   const stickyFirst = (index: number, extra: CSSProperties = {}): CSSProperties =>
     stickyFirstColumn && index === 0 ? { position: "sticky", left: 0, zIndex: 1, boxShadow: "1px 0 0 var(--cocoa-separator)", ...extra } : extra;
 
-  const colSpanAll = visibleColumns.length + (rowActions ? 1 : 0);
+  const colSpanAll = visibleColumns.length + (rowActions ? 1 : 0) + (hasMulti ? 1 : 0);
 
   return (
+    <>
+    {toolsRow}
     <div
       ref={wrapRef}
       className={["c22-table-wrap", "cocoa-table-wrap", className].filter(Boolean).join(" ")}
@@ -435,6 +738,7 @@ export function CocoaTable<Row>({
       data-cocoa="table-wrap"
       data-cocoa-density={density}
       data-overflowing={overflowing ? "true" : undefined}
+      aria-busy={keepRows || undefined}
     >
       <table
         ref={tableRef}
@@ -446,10 +750,28 @@ export function CocoaTable<Row>({
         data-density={density}
         data-sticky-first-column={stickyFirstColumn ? "true" : undefined}
         data-actions={rowActionsVisible === "always" ? "always" : undefined}
+        aria-multiselectable={hasMulti || undefined}
+        onKeyDown={hasMulti ? handleTableKeyDown : undefined}
       >
         {caption ? <caption style={srOnly}>{caption}</caption> : null}
         <thead style={{ position: "sticky", top: 0, background: "var(--cocoa-background-sidebar)", zIndex: 2, boxShadow: "var(--cocoa-shadow-sticky)" }}>
           <tr style={{ background: "var(--cocoa-background-sidebar)" }}>
+            {hasMulti ? (
+              <th scope="col" className="c22-table__check-cell" data-cocoa="table-check">
+                <label className="c22-table__check">
+                  <input
+                    type="checkbox"
+                    className="c22-table__check-input"
+                    aria-label="Seleccionar todas las filas visibles"
+                    checked={headerState === "all"}
+                    ref={(element) => {
+                      if (element) element.indeterminate = headerState === "some";
+                    }}
+                    onChange={handleHeaderCheck}
+                  />
+                </label>
+              </th>
+            ) : null}
             {visibleColumns.map((col, index) => {
               const align = col.align ?? "left";
               const isSorted = sortBy?.key === col.key;
@@ -526,11 +848,16 @@ export function CocoaTable<Row>({
                       : undefined
                   }
                   tabIndex={isClickable ? 0 : undefined}
-                  aria-selected={hasSelection ? isSelected : undefined}
+                  aria-selected={hasMulti ? selectedSet.has(key) : hasSelection ? isSelected : undefined}
                   data-interactive={isClickable ? "true" : undefined}
                   data-tone={rowTone?.(row)}
                   title={rowTitle?.(row)}
                 >
+                  {hasMulti ? (
+                    <td className="c22-table__check-cell" data-cocoa="table-check" onClick={(event) => event.stopPropagation()}>
+                      <label className="c22-table__check">{rowCheckbox(idx, key)}</label>
+                    </td>
+                  ) : null}
                   {visibleColumns.map((col, index) => {
                     const align = col.align ?? "left";
                     const tdStyle: CSSProperties = stickyFirst(index, {
@@ -574,6 +901,7 @@ export function CocoaTable<Row>({
           <tfoot>
             {/* Totals on the inverse surface: colours and weight come from `.c22-table tfoot td` (stylesheet). */}
             <tr>
+              {hasMulti ? <td className="c22-table__check-cell" data-cocoa="table-check" /> : null}
               {visibleColumns.map((col, index) => {
                 const align = col.align ?? "left";
                 return (
@@ -587,7 +915,10 @@ export function CocoaTable<Row>({
           </tfoot>
         ) : null}
       </table>
+      {busyOverlay}
     </div>
+    {batchBarNode}
+    </>
   );
 }
 

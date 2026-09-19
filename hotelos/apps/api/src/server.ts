@@ -4666,6 +4666,7 @@ export async function buildApiServer() {
       primaryGuest?: GuestIdentityFields;
       discountReasonCode?: string;
       supervisorAuthorizationId?: string | null;
+      allowPastArrival?: boolean;
     };
 
     return createReservation({
@@ -4673,6 +4674,8 @@ export async function buildApiServer() {
       propertyId: params.propertyId,
       channel: body.channel,
       arrivalDate: body.arrivalDate,
+      // UX-1 (corrector L-02): una llegada pasada solo se admite confirmada Y con permiso de modificar reservas.
+      allowPastArrival: body.allowPastArrival === true && request.userContext.permissions.includes("pms.reservation.modify"),
       departureDate: body.departureDate,
       adults: body.adults,
       children: body.children,

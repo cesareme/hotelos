@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { guestFullName, pendingGuestIds, reservationGuestLabel, PENDING_GUEST_LABEL } from "../reservation-guest-label.ts";
+import { guestFullName, pendingGuestIds, reservationGuestLabel, PENDING_GUEST_LABEL, guestNamesFromRows } from "../reservation-guest-label.ts";
 
 // fix:3-A qa#7 — RES-00005 painted «cmrmvf0pr00ggfytlf41xybq8» in the Huésped
 // column of /recepcion/reservas/lista and as the meta of «Resumen» in the
@@ -49,5 +49,17 @@ describe("Reservas · ids pendientes de resolver", () => {
     ];
     assert.deepEqual(pendingGuestIds(rows, new Set(["g4"])), ["g2", "g3"]);
     assert.deepEqual(pendingGuestIds([], new Set()), []);
+  });
+  it("L-15: una fila con primaryGuestName del API no se pide (0 GET /guests/:id) y siembra la caché de nombres", () => {
+    const rows = [
+      { primaryGuestId: "g1", primaryGuestName: "Ana Alfa" },
+      { primaryGuestId: "g2" },
+      { bookerName: "Empresa", primaryGuestId: "g3", primaryGuestName: "Beto Beta" },
+      { primaryGuestId: "g1", primaryGuestName: "Otro nombre" }
+    ];
+    assert.deepEqual(pendingGuestIds(rows, new Set()), ["g2"]);
+    assert.deepEqual(guestNamesFromRows(rows), { g1: "Ana Alfa", g3: "Beto Beta" });
+    assert.equal(reservationGuestLabel({ primaryGuestId: "g1", primaryGuestName: "Ana Alfa" }), "Ana Alfa");
+    assert.equal(reservationGuestLabel({ primaryGuestId: "g1", primaryGuestName: "Ana Alfa" }, "Resuelto"), "Resuelto", "el resuelto por caché manda");
   });
 });

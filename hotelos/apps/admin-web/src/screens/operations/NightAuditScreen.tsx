@@ -42,7 +42,7 @@ import { useApiData } from "../../hooks/useApiData";
 // CF-05 (tests/admin-web-no-raw-fetch): every call goes through api-client
 // (the typed readers and writers live in services/posApi; ApiError carries the
 // `details` the 409s of review / reopen bring).
-import { ApiError } from "../../services/api-client";
+import { ApiError, apiRequest } from "../../services/api-client";
 import {
   fetchNightAuditRun,
   posErrorMessage,
@@ -327,6 +327,17 @@ export function NightAuditScreen() {
     if (!forced && !preflight?.canClose) return;
     setBusy(true);
     try {
+      // Tanda UX-1 · U6 (F15): «Cerrar día» recomprueba el preflight AL PULSAR y
+      // espera el resultado, en vez de fiarse del sondeo cacheado de 30 s: si
+      // entre tanto apareció un bloqueo, no se cierra y se repinta la lista.
+      if (!forced) {
+        const fresh = await apiRequest<PreflightData>(`/properties/${propertyId}/night-audit/preflight`);
+        if (!fresh.canClose) {
+          showToast(fresh.blockingMessage ?? "Han aparecido bloqueos desde la última comprobación: revisa la lista antes de cerrar.", { variant: "warning" });
+          refresh();
+          return;
+        }
+      }
       const run = await runNightAudit(propertyId, forced ? { force: true, reasonText: forceReasonText } : undefined);
       const warnings = run.report?.warnings.length ?? 0;
       showToast(

@@ -11,6 +11,7 @@
 
 import type { AdminReservation, AdminRoom, AdminRoomType, ReservationPatch } from "../../services/pmsCommerceApi";
 import type { CocoaTone } from "../../components/cocoa/cocoa-tones";
+import { BAR_KIND, RESERVATION_STATUS, ROOM_STATUS, reservationStatus, statusLabels, statusTones } from "../../content/status-dictionary";
 
 // ---------------------------------------------------------------------------
 // Fechas (solo día, UTC, sin deriva de zona horaria)
@@ -87,6 +88,17 @@ export const LEAD_WIDTH_NARROW = 104;
 /** Altura de la cabecera de días. */
 export const HEAD_HEIGHT = 48;
 export const BAR_HEIGHT = 40;
+/**
+ * Barra con puntero grueso (dedo, `pointer: coarse`): objetivo ≥ 44 px (WCAG
+ * 2.5.8, UX-1 §7.2). Con ratón se mantienen 40 px; la hoja lee la altura de
+ * `--tl-bar-h` (gridVars) y la geometría de `range.barHeight`.
+ */
+export const BAR_HEIGHT_COARSE = 44;
+/** Asideros de redimensión: 10 px con ratón, 24 px con el dedo (mínimo 2.5.8); la hoja lo fija bajo `pointer: coarse`. */
+export const HANDLE_WIDTH = 10;
+export const HANDLE_WIDTH_COARSE = 24;
+/** Con el dedo, el arrastre solo empieza tras mantener la pulsación este tiempo; antes, el toque desplaza la parrilla. */
+export const LONG_PRESS_MS = 250;
 export const LANE_GAP = 6;
 export const ROW_MIN_HEIGHT = 56;
 export const GROUP_ROW_HEIGHT = 36;
@@ -106,13 +118,20 @@ export type TimelineRange = {
   dayCount: number;
   cellWidth: number;
   granularity: Granularity;
+  /** Altura de las barras (40 px con ratón, 44 px con el dedo): la usan barGeometry, rowHeight y gridVars. */
+  barHeight: number;
 };
 
-export function rangeFor(anchor: Date, granularity: Granularity, options: { narrow?: boolean } = {}): TimelineRange {
+/** 44 px con puntero grueso, 40 px con ratón (puro). */
+export function barHeightFor(coarse: boolean): number {
+  return coarse ? BAR_HEIGHT_COARSE : BAR_HEIGHT;
+}
+
+export function rangeFor(anchor: Date, granularity: Granularity, options: { narrow?: boolean; coarse?: boolean } = {}): TimelineRange {
   const dayCount = GRANULARITY_DAYS[granularity];
   const start = parseDateOnly(toDateOnly(anchor));
   const cellWidth = (options.narrow ? CELL_WIDTH_NARROW : CELL_WIDTH)[granularity];
-  return { start, end: addDays(start, dayCount), dayCount, cellWidth, granularity };
+  return { start, end: addDays(start, dayCount), dayCount, cellWidth, granularity, barHeight: barHeightFor(Boolean(options.coarse)) };
 }
 
 export type DayColumn = {
@@ -171,42 +190,25 @@ export function barKind(res: Pick<AdminReservation, "status" | "arrivalDate" | "
 }
 
 /**
- * Tono por estado. Solo hay siete tonos Cocoa, así que los tres «neutros»
- * (borrador, salida, no-show) se distinguen además por el trazo del bloque
- * (`data-kind` en la hoja: borrador discontinuo, salida atenuada, no-show
- * punteado y tachado) y por la variante de la leyenda (LEGEND_VARIANT).
+ * Tono y etiqueta por clase de barra: los del diccionario común de estados
+ * (content/status-dictionary.ts, UX-1 · U2, D5), así el cronograma lee igual
+ * que Mi día, la lista, la ficha y el tablero. Solo hay siete tonos Cocoa,
+ * así que los tres «neutros» (borrador, salida, no-show) se distinguen además
+ * por el trazo del bloque (`data-kind` en la hoja: borrador discontinuo,
+ * salida atenuada, no-show punteado y tachado) y por la variante de la
+ * leyenda (LEGEND_VARIANT).
  */
-export const BAR_KIND_TONE: Record<BarKind, CocoaTone> = {
-  arrival_today: "accent",
-  in_house: "success",
-  departure_today: "warning",
-  confirmed: "info",
-  draft: "neutral",
-  checked_out: "neutral",
-  no_show: "warning",
-  cancelled: "danger"
-};
+export const BAR_KIND_TONE: Record<BarKind, CocoaTone> = statusTones(BAR_KIND);
 
-export const BAR_KIND_LABEL: Record<BarKind, string> = {
-  arrival_today: "Llega hoy",
-  in_house: "En casa",
-  departure_today: "Sale hoy",
-  confirmed: "Confirmada",
-  draft: "Borrador",
-  checked_out: "Salida",
-  no_show: "No-show",
-  cancelled: "Cancelada"
-};
+export const BAR_KIND_LABEL: Record<BarKind, string> = statusLabels(BAR_KIND);
 
-/** Etiqueta del estado de reserva del API (para filtros y ficha). */
-export const RES_STATUS_LABEL: Record<string, string> = {
-  draft: "Borrador",
-  confirmed: "Confirmada",
-  checked_in: "En casa",
-  checked_out: "Salida",
-  cancelled: "Cancelada",
-  no_show: "No-show"
-};
+/** Etiqueta del estado de reserva del API (para filtros y ficha), del diccionario común. */
+export const RES_STATUS_LABEL: Record<string, string> = statusLabels(RESERVATION_STATUS);
+
+/** Etiqueta de un estado de reserva con fallback del diccionario (nunca el enum crudo del API: P6). */
+export function reservationStatusLabel(status: string): string {
+  return reservationStatus(status).label;
+}
 
 // ---------------------------------------------------------------------------
 // Habitación: estado, bloqueo y capacidad
@@ -236,21 +238,10 @@ export function roomStatusKey(room: Pick<AdminRoom, "status" | "housekeepingStat
   return "clean";
 }
 
-export const ROOM_STATUS_LABEL: Record<RoomStatusKey, string> = {
-  clean: "Limpia",
-  dirty: "Sucia",
-  inspected: "Inspeccionada",
-  occupied: "Ocupada",
-  blocked: "Bloqueada"
-};
+/** Etiqueta y tono de la habitación: proyección del diccionario común sobre las cinco claves del cronograma. */
+export const ROOM_STATUS_LABEL: Record<RoomStatusKey, string> = Object.fromEntries(ROOM_STATUS_KEYS.map((key) => [key, ROOM_STATUS[key].label])) as Record<RoomStatusKey, string>;
 
-export const ROOM_STATUS_TONE: Record<RoomStatusKey, CocoaTone> = {
-  clean: "success",
-  dirty: "warning",
-  inspected: "success",
-  occupied: "info",
-  blocked: "danger"
-};
+export const ROOM_STATUS_TONE: Record<RoomStatusKey, CocoaTone> = Object.fromEntries(ROOM_STATUS_KEYS.map((key) => [key, ROOM_STATUS[key].tone])) as Record<RoomStatusKey, CocoaTone>;
 
 export function roomCapacity(
   room: Pick<AdminRoom, "roomTypeId">,
@@ -349,15 +340,16 @@ export type BarGeometry = { left: number; width: number; top: number; height: nu
 
 export function barGeometry(
   bar: Pick<BarModel, "laneStart" | "laneEnd" | "lane">,
-  range: Pick<TimelineRange, "cellWidth">
+  range: Pick<TimelineRange, "cellWidth"> & Partial<Pick<TimelineRange, "barHeight">>
 ): BarGeometry {
   const leftPx = bar.laneStart * range.cellWidth;
   const rightPx = bar.laneEnd * range.cellWidth;
+  const barHeight = range.barHeight ?? BAR_HEIGHT;
   return {
     left: leftPx + 2,
     width: Math.max(MIN_BAR_WIDTH, rightPx - leftPx - 4),
-    top: bar.lane * (BAR_HEIGHT + LANE_GAP) + LANE_GAP,
-    height: BAR_HEIGHT
+    top: bar.lane * (barHeight + LANE_GAP) + LANE_GAP,
+    height: barHeight
   };
 }
 
@@ -393,8 +385,8 @@ export function assignLanes<T extends { laneStart: number; laneEnd: number }>(
   return { laid: items.map((item, i) => ({ ...item, lane: laneOf[i] })), laneCount: Math.max(1, ends.length) };
 }
 
-export function rowHeight(laneCount: number): number {
-  return Math.max(ROW_MIN_HEIGHT, laneCount * (BAR_HEIGHT + LANE_GAP) + LANE_GAP);
+export function rowHeight(laneCount: number, barHeight: number = BAR_HEIGHT): number {
+  return Math.max(ROW_MIN_HEIGHT, laneCount * (barHeight + LANE_GAP) + LANE_GAP);
 }
 
 function barsFor(
@@ -482,7 +474,7 @@ export function buildRows(input: BuildRowsInput): ResourceRow[] {
   if (unassigned.length) {
     const { bars, laneCount } = barsFor(unassigned, range, todayKey);
     if (bars.length) {
-      rows.push({ kind: "unassigned", id: UNASSIGNED_ID, label: UNASSIGNED_LABEL, bars, laneCount, height: rowHeight(laneCount) });
+      rows.push({ kind: "unassigned", id: UNASSIGNED_ID, label: UNASSIGNED_LABEL, bars, laneCount, height: rowHeight(laneCount, range.barHeight) });
     }
   }
 
@@ -532,7 +524,7 @@ export function buildRows(input: BuildRowsInput): ResourceRow[] {
         blocked: roomBlocked(room),
         bars,
         laneCount,
-        height: rowHeight(laneCount)
+        height: rowHeight(laneCount, range.barHeight)
       });
     }
   };
@@ -889,7 +881,44 @@ export function undoEntryFor(change: PendingChange): UndoEntry | null {
       : `Reserva ${res.code} movida a ${change.newRoomLabel ?? "otra habitación"}`;
   } else label = `Habitación de ${res.code} asignada`;
   const entry: UndoEntry = { reservationId: res.id, code: res.code, label, patch, roomOnly };
-  return roomOnly ? { ...entry, note: IN_HOUSE_UNDO_NOTE } : entry;
+  // Sin diálogo previo (UX-1 · U9b, F24), los avisos del motor (tipo, pax,
+  // precio sin recotizar) viajan en la barra de deshacer junto a la nota en casa.
+  const notes = [...(roomOnly ? [IN_HOUSE_UNDO_NOTE] : []), ...("warnings" in change ? change.warnings : [])];
+  return notes.length ? { ...entry, note: notes.join(" · ") } : entry;
+}
+
+/**
+ * UX-1 · U9b (§4.2, §5.11, F24): mover y redimensionar se aplican DIRECTAMENTE
+ * (optimista + barra de deshacer 8 s); el motor ya ha rechazado bloqueo,
+ * ocupación y solape antes de llegar aquí, y los avisos (tipo, pax, precio)
+ * van en la nota de deshacer. El diálogo queda para lo que pide un dato o es
+ * irreversible: asignar (habitación), check-in, check-out (saldo), cancelar y
+ * no-show (motivo + penalización); y para el 409 del API sobre un cambio directo.
+ */
+export function needsConfirmation(change: Pick<PendingChange, "type">): boolean {
+  return change.type !== "move" && change.type !== "resize";
+}
+
+/** Reserva con un parche del API aplicado en local (fechas y habitación), para pintar antes de que responda el servidor. */
+export function withPatch<T extends Pick<AdminReservation, "arrivalDate" | "departureDate" | "assignedRoomId">>(res: T, patch: ReservationPatch): T {
+  const next: T = { ...res };
+  if (patch.arrivalDate) next.arrivalDate = patch.arrivalDate;
+  if (patch.departureDate) next.departureDate = patch.departureDate;
+  if (patch.assignedRoomId !== undefined) next.assignedRoomId = patch.assignedRoomId ?? undefined;
+  return next;
+}
+
+/** Reserva tal y como quedará tras un movimiento o cambio de fechas (optimista); el resto de cambios no se anticipan. */
+export function optimisticReservation(change: PendingChange): AdminReservation {
+  const { res } = change;
+  if (change.type === "move") {
+    return withPatch(res, {
+      ...(change.newArrival && change.newDeparture ? { arrivalDate: change.newArrival, departureDate: change.newDeparture } : {}),
+      ...(change.newRoomId ? { assignedRoomId: change.newRoomId } : {})
+    });
+  }
+  if (change.type === "resize") return withPatch(res, { arrivalDate: change.newArrivalDate, departureDate: change.newDepartureDate });
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1203,78 @@ export function neighborBar(rows: ReadonlyArray<ResourceRow>, currentId: string 
     }
   }
   return best.id;
+}
+
+// ---------------------------------------------------------------------------
+// Teclado: mover con ⌥ + flechas (WCAG 2.5.7, alternativa al arrastre; UX-1 · U9b)
+// ---------------------------------------------------------------------------
+
+/** Lo que mira keyboardMove de un KeyboardEvent: `code` (R8, nunca `key`) y los modificadores. */
+export type KeyboardMoveKey = { code: string; altKey: boolean; shiftKey: boolean; metaKey?: boolean; ctrlKey?: boolean };
+
+export type KeyboardMove =
+  | { type: "dates"; res: AdminReservation; mode: "move" | "resize-end"; dxDays: -1 | 1 }
+  | { type: "room"; res: AdminReservation; dir: "up" | "down" };
+
+const KEYBOARD_DX: Record<string, -1 | 1> = { ArrowLeft: -1, ArrowRight: 1 };
+const KEYBOARD_DIR: Record<string, "up" | "down"> = { ArrowUp: "up", ArrowDown: "down" };
+
+/**
+ * Con una barra seleccionada: `⌥←/→` mueve la estancia un día, `⌥⇧←/→` cambia
+ * la salida un día (redimensionar), `⌥↑/↓` la pasa a la habitación de la fila
+ * de arriba / abajo. Sin ⌥ (o con ⌘/Ctrl, o ⌥⇧↑/↓) no es un movimiento: las
+ * flechas solas siguen moviendo la selección. La validación es la misma que
+ * la del arrastre (resolveKeyboardMove → resolveDrop).
+ */
+export function keyboardMove(bar: Pick<BarModel, "res">, key: KeyboardMoveKey): KeyboardMove | null {
+  if (!key.altKey || key.metaKey || key.ctrlKey) return null;
+  const dx = KEYBOARD_DX[key.code];
+  if (dx !== undefined) return { type: "dates", res: bar.res, mode: key.shiftKey ? "resize-end" : "move", dxDays: dx };
+  const dir = KEYBOARD_DIR[key.code];
+  if (dir !== undefined && !key.shiftKey) return { type: "room", res: bar.res, dir };
+  return null;
+}
+
+export const NO_ROOM_ABOVE_REASON = "No hay ninguna habitación más arriba";
+export const NO_ROOM_BELOW_REASON = "No hay ninguna habitación más abajo";
+
+/**
+ * Habitación de la fila de arriba / abajo de la actual (saltando grupos y
+ * «Sin asignar»), o null en los extremos. Una reserva sin habitación parte del
+ * carril «Sin asignar»: hacia abajo llega a la primera habitación.
+ */
+export function neighborRoomId(rows: ReadonlyArray<ResourceRow>, currentRoomId: string | null | undefined, dir: "up" | "down"): string | null {
+  const currentId = currentRoomId ?? UNASSIGNED_ID;
+  let at = rows.findIndex((row) => row.kind !== "group" && row.id === currentId);
+  if (at < 0) {
+    if (currentId !== UNASSIGNED_ID) return null;
+    at = -1;
+  }
+  const step = dir === "up" ? -1 : 1;
+  for (let i = at + step; i >= 0 && i < rows.length; i += step) {
+    const row = rows[i];
+    if (row.kind === "room") return row.id;
+  }
+  return null;
+}
+
+export type ResolveKeyboardMoveInput = {
+  rows: ReadonlyArray<ResourceRow>;
+  roomById: ReadonlyMap<string, AdminRoom>;
+  roomTypeById: ReadonlyMap<string, AdminRoomType>;
+  reservations?: ReadonlyArray<RoomOccupant>;
+};
+
+/** Misma validación que el arrastre: bloqueo, ocupación, solape, en casa y cerradas salen como `rejected` con su motivo. */
+export function resolveKeyboardMove(move: KeyboardMove, input: ResolveKeyboardMoveInput): DropResolution {
+  const { res } = move;
+  const base = { res, roomById: input.roomById, roomTypeById: input.roomTypeById, reservations: input.reservations };
+  if (move.type === "dates") {
+    return resolveDrop({ ...base, mode: move.mode, dxDays: move.dxDays, targetRoomId: res.assignedRoomId ?? null });
+  }
+  const targetRoomId = neighborRoomId(input.rows, res.assignedRoomId ?? null, move.dir);
+  if (!targetRoomId) return { pending: null, rejected: move.dir === "up" ? NO_ROOM_ABOVE_REASON : NO_ROOM_BELOW_REASON };
+  return resolveDrop({ ...base, mode: "move", dxDays: 0, targetRoomId });
 }
 
 // ---------------------------------------------------------------------------

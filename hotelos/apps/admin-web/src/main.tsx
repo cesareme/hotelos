@@ -5,6 +5,7 @@ import "@fontsource-variable/inter";
 import { createRoot } from "react-dom/client";
 import * as Sentry from "@sentry/react";
 import { App } from "./App";
+import { UxTraceProvider } from "./providers/UxTraceProvider";
 import { initTheme } from "./theme";
 
 // Apply the persisted light/dark preference before first paint to avoid a flash.
@@ -50,6 +51,18 @@ if (sentryDsn && sentryDsn !== "change-me" && sentryDsn !== "") {
   // eslint-disable-next-line no-console
   console.log("[sentry] disabled (VITE_SENTRY_DSN no configurado)");
 }
+
+// Tanda UX-1 · lote U1: modo prueba (docs/design/UX-RECEPCION-FEEL.md §8.4 C).
+// Solo con VITE_UX_TRACE=1 la app se envuelve en UxTraceProvider (trazas de
+// clic/tecla/ruta/overlay/fetch por sesión y tarea, ⌘⇧T tarea siguiente, ⌘⇧E
+// exportar); sin la variable el árbol es idéntico al de siempre.
+const app = import.meta.env.VITE_UX_TRACE === "1" ? (
+  <UxTraceProvider>
+    <App />
+  </UxTraceProvider>
+) : (
+  <App />
+);
 
 const root = document.getElementById("root");
 
@@ -105,7 +118,7 @@ createRoot(root).render(
       </div>
     )}
   >
-    <App />
+    {app}
   </Sentry.ErrorBoundary>
 );
 

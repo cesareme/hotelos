@@ -15,6 +15,7 @@ import { cardRestingShadow } from "../CocoaCard.tsx";
 import { clampStep } from "../CocoaStepper.tsx";
 import { DONUT_PALETTE, MIN_LINE_WIDTH, SERIES_TONE_ORDER, donutShareLabel, donutSliceColor, gaugeToneLabel, lineViewBoxWidth, seriesStroke, seriesToneName } from "../CocoaChart.tsx";
 import { calloutRole } from "../CocoaCallout.tsx";
+import { arithmeticPreview, isArithmeticKey, parseDateArithmetic, shiftIsoDay } from "../CocoaDatePicker.tsx";
 import { degradedBannerLabel } from "../../cocoa-extras/DegradedValue.tsx";
 import { MIN_VIEWBOX_WIDTH, VIEWBOX_WIDTH, paceViewBoxWidth } from "../../cocoa-director/DirectorForwardPaceChart.tsx";
 
@@ -61,8 +62,16 @@ describe("CocoaSwitch · thumb", () => {
     const regular = { trackWidth: 52, trackHeight: 32, thumbSize: 28, padding: 2 };
     assert.equal(switchThumbOffset(false, regular), 2);
     assert.equal(switchThumbOffset(true, regular), 22);
-    const small = { trackWidth: 32, trackHeight: 20, thumbSize: 16, padding: 2 };
+    const small = { trackWidth: 36, trackHeight: 24, thumbSize: 20, padding: 2 };
     assert.equal(switchThumbOffset(true, small), 14);
+    // L-07 (2.5.8): el switch `small` mide ≥ 24 px con ratón; el segmentado `small` también.
+    const switchSource = readFileSync(new URL("../CocoaSwitch.tsx", import.meta.url), "utf8");
+    assert.match(switchSource, /small: \{ trackWidth: 36, trackHeight: 24, thumbSize: 20, padding: 2 \}/);
+    const segmented = readFileSync(new URL("../CocoaSegmentedControl.tsx", import.meta.url), "utf8");
+    assert.match(segmented, /export const SEGMENT_MIN_HEIGHT_PX = 24;/);
+    assert.doesNotMatch(segmented, /minHeight: SEGMENT_MIN_HEIGHT_PX/, "en la hoja, no en línea: la capa táctil (44) debe ganar");
+    const cocoaCss = readFileSync(new URL("../../../styles/cocoa-22.css", import.meta.url), "utf8");
+    assert.match(cocoaCss, /:where\(\[data-cocoa="segmented"\]\) \[role="tab"\] \{ min-height: 24px; \}/);
   });
 });
 
@@ -269,5 +278,202 @@ describe("DirectorForwardPaceChart · viewBox (Cocoa 22 fix)", () => {
     assert.equal(paceViewBoxWidth(null), 640);
     assert.equal(paceViewBoxWidth(276), 276);
     assert.equal(paceViewBoxWidth(120), 240);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tanda UX-1 · lote U5 · teclas de acceso y 2.5.8 (docs/design/UX-RECEPCION-FEEL.md
+// §4 «Atajos por pantalla y teclas de acceso», §7.1 2.5.8, §10 D7 / R8).
+// ---------------------------------------------------------------------------
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { CocoaButton, SMALL_TARGET_MIN_PX, buttonMinHeight } from "../CocoaButton.tsx";
+import {
+  accessKeyAriaShortcut,
+  accessKeyOfEvent,
+  accessKeysSuppressedFor,
+  dispatchAccessKey,
+  findAccessKeyTarget,
+  getAltHeld,
+  installAltHeldTracking,
+  isElementActionable,
+  normalizeAccessKey,
+  registerAccessKey,
+  resetAccessKeys
+} from "../CocoaAccessKey.tsx";
+import { RESERVED_ACCESS_LETTERS } from "../../../content/shortcuts-registry.ts";
+
+describe("CocoaButton · WCAG 2.5.8 target size (UX-1 · U5)", () => {
+  it("raises `small` from 22 to a 24 px box with a mouse and keeps 44 on touch", () => {
+    assert.equal(SMALL_TARGET_MIN_PX, 24);
+    assert.equal(buttonMinHeight("small", false), 24);
+    assert.equal(buttonMinHeight("regular", false), 28);
+    assert.equal(buttonMinHeight("large", false), 32);
+    assert.equal(buttonMinHeight("small", true), 44);
+    assert.equal(buttonMinHeight("large", true), 44);
+  });
+});
+
+describe("CocoaButton · accessKey (UX-1 · U5, D7)", () => {
+  it("normalizes the letter and rejects anything that is not one letter or digit", () => {
+    assert.equal(normalizeAccessKey("c"), "C");
+    assert.equal(normalizeAccessKey(" 1 "), "1");
+    assert.equal(normalizeAccessKey("ch"), null);
+    assert.equal(normalizeAccessKey(""), null);
+    assert.equal(normalizeAccessKey(undefined), null);
+    assert.equal(accessKeyAriaShortcut("C"), "Alt+C");
+  });
+
+  it("reads the physical key of ⌥+letter (R8: `code`, never `key`) and ignores ⌘/Ctrl/⇧ combos", () => {
+    assert.equal(accessKeyOfEvent({ code: "KeyC", altKey: true, metaKey: false, ctrlKey: false, shiftKey: false }), "C");
+    assert.equal(accessKeyOfEvent({ code: "Digit2", altKey: true, metaKey: false, ctrlKey: false, shiftKey: false }), "2");
+    assert.equal(accessKeyOfEvent({ code: "KeyC", altKey: false, metaKey: false, ctrlKey: false, shiftKey: false }), null);
+    assert.equal(accessKeyOfEvent({ code: "KeyC", altKey: true, metaKey: true, ctrlKey: false, shiftKey: false }), null);
+    assert.equal(accessKeyOfEvent({ code: "KeyC", altKey: true, metaKey: false, ctrlKey: false, shiftKey: true }), null);
+    assert.equal(accessKeyOfEvent({ code: "Enter", altKey: true, metaKey: false, ctrlKey: false, shiftKey: false }), null);
+  });
+
+  it("only runs a visible, enabled button; the deepest (latest) registration wins", () => {
+    resetAccessKeys();
+    const clicks: string[] = [];
+    const button = (name: string, extra: Record<string, unknown> = {}) => ({
+      disabled: false,
+      hidden: false,
+      getAttribute: (attr: string) => (attr in extra ? String(extra[attr]) : null),
+      getClientRects: () => ({ length: 1 }),
+      click: () => clicks.push(name),
+      ...extra
+    });
+    const outer = button("outer");
+    const inner = button("inner");
+    const disabled = button("disabled", { disabled: true });
+    const hidden = button("hidden", { getClientRects: () => ({ length: 0 }) });
+    assert.equal(isElementActionable(outer as never), true);
+    assert.equal(isElementActionable(disabled as never), false);
+    assert.equal(isElementActionable(hidden as never), false);
+    assert.equal(isElementActionable({ ...outer, getAttribute: () => "true" } as never), false, "aria-disabled");
+    assert.equal(isElementActionable(null), false);
+
+    registerAccessKey({ letter: "C", element: () => outer as never });
+    const offInner = registerAccessKey({ letter: "C", element: () => inner as never });
+    registerAccessKey({ letter: "C", element: () => disabled as never });
+    registerAccessKey({ letter: "X", element: () => hidden as never });
+    assert.equal(findAccessKeyTarget("C"), inner, "latest actionable registration wins over the disabled one");
+    assert.equal(findAccessKeyTarget("X"), null, "hidden button never runs");
+    assert.equal(findAccessKeyTarget("Z"), null);
+
+    let prevented = 0;
+    const event = (code: string, target?: unknown) => ({ code, altKey: true, metaKey: false, ctrlKey: false, shiftKey: false, target, preventDefault: () => { prevented += 1; } });
+    assert.equal(dispatchAccessKey(event("KeyC")), true);
+    assert.deepEqual(clicks, ["inner"]);
+    assert.equal(prevented, 1);
+    offInner();
+    assert.equal(dispatchAccessKey(event("KeyC")), true);
+    assert.deepEqual(clicks, ["inner", "outer"]);
+    assert.equal(dispatchAccessKey(event("KeyC", { tagName: "TEXTAREA" })), false, "never inside a textarea");
+    assert.equal(dispatchAccessKey(event("KeyC", { tagName: "INPUT", type: "text" })), true, "a one-line field does not block (⌥1 in the amount)");
+    assert.equal(dispatchAccessKey(event("KeyZ")), false, "no button → the event goes on to the ⌥ navigation");
+    assert.equal(accessKeysSuppressedFor({ isContentEditable: true }), true);
+    assert.equal(accessKeysSuppressedFor({ tagName: "input" }), false);
+    resetAccessKeys();
+  });
+
+  it("tracks ⌥ held globally (keydown/keyup/blur) and resets on uninstall", () => {
+    const listeners = new Map<string, Array<(event: unknown) => void>>();
+    const target = {
+      addEventListener: (type: string, listener: (event: unknown) => void) => {
+        listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+      },
+      removeEventListener: (type: string, listener: (event: unknown) => void) => {
+        listeners.set(type, (listeners.get(type) ?? []).filter((candidate) => candidate !== listener));
+      }
+    };
+    const fire = (type: string, event: unknown) => (listeners.get(type) ?? []).forEach((listener) => listener(event));
+    const uninstall = installAltHeldTracking(target as never);
+    assert.equal(getAltHeld(), false);
+    fire("keydown", { key: "Alt", altKey: true });
+    assert.equal(getAltHeld(), true);
+    fire("keydown", { key: "c", altKey: true });
+    assert.equal(getAltHeld(), true, "a letter with ⌥ keeps it held");
+    fire("keyup", { key: "Alt", altKey: false });
+    assert.equal(getAltHeld(), false);
+    fire("keydown", { key: "Alt", altKey: true });
+    fire("blur", {});
+    assert.equal(getAltHeld(), false, "leaving the window releases ⌥");
+    fire("keydown", { key: "Alt", altKey: true });
+    uninstall();
+    assert.equal(getAltHeld(), false);
+    assert.equal((listeners.get("keydown") ?? []).length, 0);
+  });
+
+  it("announces the shortcut on the button and paints no chip while ⌥ is up (SSR)", () => {
+    const html = renderToStaticMarkup(createElement(CocoaButton, { accessKey: "c", size: "small" }, "Cobrar"));
+    assert.match(html, /aria-keyshortcuts="Alt\+C"/);
+    assert.match(html, /data-access-key="C"/);
+    assert.doesNotMatch(html, /<kbd/);
+    const plain = renderToStaticMarkup(createElement(CocoaButton, {}, "Cobrar"));
+    assert.doesNotMatch(plain, /aria-keyshortcuts/);
+  });
+
+  it("keeps the ⌥ navigation letters out of the access keys", () => {
+    assert.deepEqual(RESERVED_ACCESS_LETTERS, ["H", "R", "N", "T", "B", "F", "W"]);
+  });
+});
+
+describe("CocoaDatePicker · aritmética de fechas (UX-1 · U7, F8, patrón OPERA)", () => {
+  const base = "2026-09-19";
+  const today = "2026-09-19";
+
+  it("«+7» / «-1» / «−1» mueven la fecha del campo (calendario, sin deriva horaria)", () => {
+    assert.equal(parseDateArithmetic("+7", base, today), "2026-09-26");
+    assert.equal(parseDateArithmetic("-1", base, today), "2026-09-18");
+    assert.equal(parseDateArithmetic("−1", base, today), "2026-09-18");
+    assert.equal(parseDateArithmetic(" + 30 ", base, today), "2026-10-19");
+    assert.equal(parseDateArithmetic("+2s", base, today), "2026-10-03", "semanas");
+    assert.equal(shiftIsoDay("2026-03-28", 2), "2026-03-30", "cambio de hora de marzo");
+    assert.equal(shiftIsoDay("2026-12-31", 1), "2027-01-01");
+  });
+
+  it("«hoy» / «mañana» / «ayer» parten del día de referencia, no del valor del campo", () => {
+    assert.equal(parseDateArithmetic("hoy", "2026-10-05", today), today);
+    assert.equal(parseDateArithmetic("Mañana", "2026-10-05", today), "2026-09-20");
+    assert.equal(parseDateArithmetic("manana", "2026-10-05", today), "2026-09-20");
+    assert.equal(parseDateArithmetic("ayer", "2026-10-05", today), "2026-09-18");
+    assert.equal(parseDateArithmetic("h", "", today), today, "atajo de una letra");
+  });
+
+  it("un campo vacío usa hoy como base del desplazamiento; sin referencia no resuelve", () => {
+    assert.equal(parseDateArithmetic("+1", "", today), "2026-09-20");
+    assert.equal(parseDateArithmetic("+1", "", ""), null);
+    assert.equal(parseDateArithmetic("hoy", "", ""), null);
+  });
+
+  it("acepta un día del mes en curso, «dd/mm», «dd/mm/aaaa» y una ISO tal cual; rechaza fechas imposibles y texto suelto", () => {
+    assert.equal(parseDateArithmetic("25", base, today), "2026-09-25");
+    assert.equal(parseDateArithmetic("3/10", base, today), "2026-10-03");
+    assert.equal(parseDateArithmetic("03/10/27", base, today), "2027-10-03");
+    assert.equal(parseDateArithmetic("03/10/2027", base, today), "2027-10-03");
+    assert.equal(parseDateArithmetic("2026-11-02", base, today), "2026-11-02");
+    assert.equal(parseDateArithmetic("31/02", base, today), null);
+    assert.equal(parseDateArithmetic("", base, today), null);
+    assert.equal(parseDateArithmetic("xyz", base, today), null);
+    assert.equal(parseDateArithmetic("+", base, today), null);
+  });
+
+  it("solo +, −, letras abren el búfer; los dígitos entran solo con el búfer abierto (el input nativo conserva sus segmentos)", () => {
+    assert.equal(isArithmeticKey("+", false), true);
+    assert.equal(isArithmeticKey("-", false), true);
+    assert.equal(isArithmeticKey("h", false), true);
+    assert.equal(isArithmeticKey("7", false), false);
+    assert.equal(isArithmeticKey("7", true), true);
+    assert.equal(isArithmeticKey("/", true), true);
+    assert.equal(isArithmeticKey("Enter", true), false);
+    assert.equal(isArithmeticKey("Backspace", true), false);
+  });
+
+  it("la vista previa dice a qué día resuelve el búfer, o «?» si no resuelve", () => {
+    assert.equal(arithmeticPreview("+7", base, today), "26/09");
+    assert.equal(arithmeticPreview("mañana", base, today), "20/09");
+    assert.equal(arithmeticPreview("+", base, today), "?");
   });
 });

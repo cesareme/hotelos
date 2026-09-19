@@ -15,6 +15,8 @@ import { describe, it } from "node:test";
 const source = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const billingCentre = source("../BillingCenterScreen.tsx");
 const reservation = source("../../reservations/ReservationWorkspaceScreen.tsx");
+// U7: cancelar / no-show y la renuncia con PIN de supervisor viven en el diálogo compartido con Mi día.
+const lifecycle = source("../../../components/reservations/LifecycleDialog.tsx");
 const reservationCreate = source("../../reservations/ReservationCreateScreen.tsx");
 const timeline = source("../../timeline/LiveTimeline.tsx");
 const timelineDialog = source("../../../components/timeline/TimelineActionDialog.tsx");
@@ -49,19 +51,20 @@ describe("Centro de facturación · cableado (BillingCenterScreen.tsx)", () => {
   });
 });
 
-describe("Ficha de reserva · cableado (ReservationWorkspaceScreen.tsx)", () => {
+describe("Ficha de reserva · cableado (ReservationWorkspaceScreen.tsx + components/reservations/LifecycleDialog.tsx, U7)", () => {
   it("cancelar y no-show envían applyPolicy (y el PIN si lo hay) y leen la vista previa con el modo", () => {
-    assert.match(reservation, /previewCancellationCharge\(reservation\.id, confirmMode\(confirm\)\)/);
-    assert.match(reservation, /supervisorAuthorizationId: waiverAuthorization\.id/);
-    assert.match(reservation, /cancelReservation\(reservation\.id, reason, options\)/);
-    assert.match(reservation, /noShowReservation\(reservation\.id, reason, options\)/);
+    assert.match(reservation, /<LifecycleDialog[\s\S]*?allowWaiver/);
+    assert.match(lifecycle, /previewCancellationCharge\(reservation\.id, mode\)/);
+    assert.match(lifecycle, /supervisorAuthorizationId: waiverAuthorization\.id/);
+    assert.match(lifecycle, /cancelReservation\(reservation\.id, text, options\)/);
+    assert.match(lifecycle, /noShowReservation\(reservation\.id, text, options\)/);
   });
 
   it("una renuncia por encima del tramo (409 APPROVAL_REQUIRED) ofrece el PIN de supervisor sobre pms.reservation.override (DS-02)", () => {
-    assert.match(reservation, /financeErrorCode\(error\) === "APPROVAL_REQUIRED"/);
-    assert.match(reservation, /permissionKey="pms\.reservation\.override"/);
-    assert.match(reservation, /entityType="reservation"/);
-    assert.match(reservation, /Autorizar con PIN de supervisor/);
+    assert.match(lifecycle, /financeErrorCode\(error\) === "APPROVAL_REQUIRED"/);
+    assert.match(lifecycle, /permissionKey="pms\.reservation\.override"/);
+    assert.match(lifecycle, /entityType="reservation"/);
+    assert.match(lifecycle, /Autorizar con PIN de supervisor/);
   });
 
   it("«Añadir cargo» de la ficha envía taxCategory y solo las categorías compatibles con el tipo (DS-08)", () => {
@@ -70,9 +73,9 @@ describe("Ficha de reserva · cableado (ReservationWorkspaceScreen.tsx)", () => 
   });
 
   it("el motivo es obligatorio en cancelación y no-show y cada toast habla de su acción (FUX-05)", () => {
-    assert.match(reservation, /Indica el motivo de la cancelación\./);
-    assert.match(reservation, /Indica el motivo del no-show\./);
-    assert.match(reservation, /confirmDisabled=\{!confirmReason\.trim\(\) \|\| preview\.loading\}/);
+    assert.match(lifecycle, /Indica el motivo de la cancelación\./);
+    assert.match(lifecycle, /Indica el motivo del no-show\./);
+    assert.match(lifecycle, /confirmDisabled=\{!reason\.trim\(\) \|\| preview\.loading\}/);
   });
 });
 

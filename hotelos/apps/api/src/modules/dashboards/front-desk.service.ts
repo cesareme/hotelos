@@ -6,6 +6,27 @@ export type FrontDeskDashboardInput = {
   date?: string;
 };
 
+/**
+ * Colaboradores inyectables (Tanda UX-1 · lote U3): el test unitario
+ * (`__tests__/front-desk.service.test.mts`) pasa un Prisma falso y un cálculo
+ * de saldos falso; en producción se usan `prisma` y `computeBalancesForReservations`.
+ */
+export type FrontDeskDashboardDeps = {
+  db?: Pick<typeof prisma, "reservation" | "reservationGuest" | "guest" | "room" | "roomType">;
+  computeBalances?: (reservationIds: string[]) => Promise<Map<string, number>>;
+  now?: () => Date;
+};
+
+/** Campos aditivos por fila (U3 → U6): ids para `mutate`/prefetch y VIP visible en Mi día. */
+export type FrontDeskRowIds = {
+  /** Habitación asignada (mismo valor que `assignedRoomId`; nombre alineado con la cola y `assign-room`). */
+  roomId?: string;
+  roomTypeId?: string;
+  assignedRoomId: string | null;
+  /** `Reservation.vipFlag`. */
+  vip: boolean;
+};
+
 export type FrontDeskDashboardKpis = {
   /** Arrivals still expected or already in (confirmed / checked_in) — never cancelled or no-show. */
   arrivalsToday: number;
@@ -19,7 +40,7 @@ export type FrontDeskDashboardKpis = {
   pendingBalanceEur: number;
 };
 
-export type FrontDeskArrivalRow = {
+export type FrontDeskArrivalRow = FrontDeskRowIds & {
   reservationId: string;
   guestName: string;
   arrivalDate: string;
@@ -31,7 +52,7 @@ export type FrontDeskArrivalRow = {
   specialRequests?: string;
 };
 
-export type FrontDeskDepartureRow = {
+export type FrontDeskDepartureRow = FrontDeskRowIds & {
   reservationId: string;
   guestName: string;
   departureDate: string;
@@ -40,7 +61,7 @@ export type FrontDeskDepartureRow = {
   status: string;
 };
 
-export type FrontDeskInHouseRow = {
+export type FrontDeskInHouseRow = FrontDeskRowIds & {
   reservationId: string;
   guestName: string;
   roomNumber?: string;
@@ -50,7 +71,7 @@ export type FrontDeskInHouseRow = {
   status: string;
 };
 
-export type FrontDeskUnassignedRow = {
+export type FrontDeskUnassignedRow = FrontDeskRowIds & {
   reservationId: string;
   guestName: string;
   arrivalDate: string;
@@ -107,49 +128,63 @@ function formatGuestName(parts: { firstName?: string | null; surname1?: string |
   return pieces.length > 0 ? pieces.join(" ") : "(unknown guest)";
 }
 
+function rowIds(r: { assignedRoomId: string | null; roomTypeId: string | null; vipFlag: boolean }): FrontDeskRowIds {
+  return {
+    roomId: r.assignedRoomId ?? undefined,
+    roomTypeId: r.roomTypeId ?? undefined,
+    assignedRoomId: r.assignedRoomId,
+    vip: r.vipFlag === true
+  };
+}
+
 export async function buildFrontDeskDashboard(
-  input: FrontDeskDashboardInput
+  input: FrontDeskDashboardInput,
+  deps: FrontDeskDashboardDeps = {}
 ): Promise<FrontDeskDashboardResult> {
+  const db = deps.db ?? prisma;
+  const computeBalances = deps.computeBalances ?? computeBalancesForReservations;
   const propertyId = input.propertyId;
   const dayStart = startOfDayUtc(input.date);
   const dayEnd = endOfDayUtc(dayStart);
-  const now = new Date();
+  const now = deps.now ? deps.now() : new Date();
 
   // Pull all reservations relevant to the dashboard in a few queries.
   // REC-07: only live reservations count as arrivals/departures. Cancelled and
   // no-show rows were inflating both KPIs (and the unassigned list derived
   // from arrivals); they are counted separately in arrivalsCancelledToday.
   // Same status rule as front-desk-queue.service and room-rack.service.
-  const arrivalsRaw = await prisma.reservation.findMany({
-    where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["confirmed", "checked_in"] } },
-    orderBy: { arrivalDate: "asc" }
-  });
-
-  const arrivalsCancelledCount = await prisma.reservation.count({
-    where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["cancelled", "no_show"] } }
-  });
-
-  const departuresRaw = await prisma.reservation.findMany({
-    where: { propertyId, departureDate: { gte: dayStart, lt: dayEnd }, status: { in: ["checked_in", "checked_out"] } },
-    orderBy: { departureDate: "asc" }
-  });
-
-  const inHouseRaw = await prisma.reservation.findMany({
-    where: {
-      propertyId,
-      status: "checked_in",
-      departureDate: { gt: now }
-    },
-    orderBy: { departureDate: "asc" }
-  });
-
-  const overdueDeparturesCount = await prisma.reservation.count({
-    where: {
-      propertyId,
-      status: "checked_in",
-      departureDate: { lt: now }
-    }
-  });
+  // Tanda UX-1 · U3 (F27): las cinco consultas son independientes → una sola
+  // ronda con Promise.all (mismo patrón que front-desk-queue.service.ts).
+  const [arrivalsRaw, arrivalsCancelledCount, departuresRaw, inHouseRaw, overdueDeparturesCount] = await Promise.all([
+    db.reservation.findMany({
+      where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["confirmed", "checked_in"] } },
+      orderBy: { arrivalDate: "asc" }
+    }),
+    db.reservation.count({
+      where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["cancelled", "no_show"] } }
+    }),
+    db.reservation.findMany({
+      where: { propertyId, departureDate: { gte: dayStart, lt: dayEnd }, status: { in: ["checked_in", "checked_out"] } },
+      orderBy: { departureDate: "asc" }
+    }),
+    // UX-1 (corrector L-16): «En el hotel» = alojados ahora, salgan hoy o no
+    // (la lista de reservas cuenta lo mismo: status checked_in); las salidas
+    // hechas quedan fuera por estado, no por fecha.
+    db.reservation.findMany({
+      where: {
+        propertyId,
+        status: "checked_in"
+      },
+      orderBy: { departureDate: "asc" }
+    }),
+    db.reservation.count({
+      where: {
+        propertyId,
+        status: "checked_in",
+        departureDate: { lt: now }
+      }
+    })
+  ]);
 
   const unassignedRaw = arrivalsRaw.filter((r) => !r.assignedRoomId);
 
@@ -180,70 +215,80 @@ export async function buildFrontDeskDashboard(
     )
   );
 
-  // Primary guest per reservation (fallback to any guest if no primary).
-  const reservationGuests = reservationIds.length === 0
-    ? []
-    : await prisma.reservationGuest.findMany({
-        where: { reservationId: { in: reservationIds } },
-        select: { reservationId: true, guestId: true, isPrimary: true }
-      });
-  const guestIdByReservation = new Map<string, string>();
-  // Pass 1: primaries.
-  for (const link of reservationGuests) {
-    if (link.isPrimary && !guestIdByReservation.has(link.reservationId)) {
-      guestIdByReservation.set(link.reservationId, link.guestId);
-    }
-  }
-  // Pass 2: fill in remaining with any guest.
-  for (const link of reservationGuests) {
-    if (!guestIdByReservation.has(link.reservationId)) {
-      guestIdByReservation.set(link.reservationId, link.guestId);
-    }
-  }
-  const guestIds = Array.from(new Set(Array.from(guestIdByReservation.values())));
-  const guests = guestIds.length === 0
-    ? []
-    : await prisma.guest.findMany({
-        where: { id: { in: guestIds } },
-        select: { id: true, firstName: true, surname1: true, surname2: true }
-      });
-  const guestById = new Map<string, { firstName: string | null; surname1: string | null; surname2: string | null }>();
-  for (const guest of guests) {
-    guestById.set(guest.id, {
-      firstName: guest.firstName ?? null,
-      surname1: guest.surname1 ?? null,
-      surname2: guest.surname2 ?? null
+  // Primary guest per reservation (fallback to any guest if no primary). Los
+  // vínculos y luego los huéspedes son la única cadena dependiente; corre en
+  // paralelo con habitaciones, tipos y saldos (segunda ronda de Promise.all).
+  async function loadGuests(): Promise<{
+    guestIdByReservation: Map<string, string>;
+    guestById: Map<string, { firstName: string | null; surname1: string | null; surname2: string | null }>;
+  }> {
+    const guestIdByReservation = new Map<string, string>();
+    const guestById = new Map<string, { firstName: string | null; surname1: string | null; surname2: string | null }>();
+    if (reservationIds.length === 0) return { guestIdByReservation, guestById };
+    const reservationGuests = await db.reservationGuest.findMany({
+      where: { reservationId: { in: reservationIds } },
+      select: { reservationId: true, guestId: true, isPrimary: true }
     });
+    // Pass 1: primaries.
+    for (const link of reservationGuests) {
+      if (link.isPrimary && !guestIdByReservation.has(link.reservationId)) {
+        guestIdByReservation.set(link.reservationId, link.guestId);
+      }
+    }
+    // Pass 2: fill in remaining with any guest.
+    for (const link of reservationGuests) {
+      if (!guestIdByReservation.has(link.reservationId)) {
+        guestIdByReservation.set(link.reservationId, link.guestId);
+      }
+    }
+    const guestIds = Array.from(new Set(Array.from(guestIdByReservation.values())));
+    const guests = guestIds.length === 0
+      ? []
+      : await db.guest.findMany({
+          where: { id: { in: guestIds } },
+          select: { id: true, firstName: true, surname1: true, surname2: true }
+        });
+    for (const guest of guests) {
+      guestById.set(guest.id, {
+        firstName: guest.firstName ?? null,
+        surname1: guest.surname1 ?? null,
+        surname2: guest.surname2 ?? null
+      });
+    }
+    return { guestIdByReservation, guestById };
   }
 
+  // Per-reservation folio balances via the shared helper (Sprint 46). Batched:
+  // one folio query + one folioLine groupBy + one payment query + one refund
+  // groupBy, regardless of reservation count.
+  const [{ guestIdByReservation, guestById }, rooms, roomTypes, balanceByReservation] = await Promise.all([
+    loadGuests(),
+    roomIds.length === 0
+      ? Promise.resolve([] as Array<{ id: string; number: string }>)
+      : db.room.findMany({
+          where: { id: { in: roomIds } },
+          select: { id: true, number: true }
+        }),
+    roomTypeIds.length === 0
+      ? Promise.resolve([] as Array<{ id: string; name: string }>)
+      : db.roomType.findMany({
+          where: { id: { in: roomTypeIds } },
+          select: { id: true, name: true }
+        }),
+    computeBalances(reservationIds)
+  ]);
+
   // Rooms (for roomNumber).
-  const rooms = roomIds.length === 0
-    ? []
-    : await prisma.room.findMany({
-        where: { id: { in: roomIds } },
-        select: { id: true, number: true }
-      });
   const roomNumberById = new Map<string, string>();
   for (const room of rooms) {
     roomNumberById.set(room.id, room.number);
   }
 
   // Room types (for roomTypeName).
-  const roomTypes = roomTypeIds.length === 0
-    ? []
-    : await prisma.roomType.findMany({
-        where: { id: { in: roomTypeIds } },
-        select: { id: true, name: true }
-      });
   const roomTypeNameById = new Map<string, string>();
   for (const rt of roomTypes) {
     roomTypeNameById.set(rt.id, rt.name);
   }
-
-  // Per-reservation folio balances via the shared helper (Sprint 46). Batched:
-  // one folio query + one folioLine groupBy + one payment query + one refund
-  // groupBy, regardless of reservation count.
-  const balanceByReservation = await computeBalancesForReservations(reservationIds);
 
   function balanceForReservation(reservationId: string): number {
     return balanceByReservation.get(reservationId) ?? 0;
@@ -263,6 +308,7 @@ export async function buildFrontDeskDashboard(
     const roomTypeName = r.roomTypeId ? roomTypeNameById.get(r.roomTypeId) : undefined;
     const nights = nightsBetween(r.arrivalDate, r.departureDate);
     return {
+      ...rowIds(r),
       reservationId: r.id,
       guestName: guestNameForReservation(r.id),
       arrivalDate: isoDate(r.arrivalDate),
@@ -280,6 +326,7 @@ export async function buildFrontDeskDashboard(
   const departures: FrontDeskDepartureRow[] = departuresRaw.map((r) => {
     const roomNumber = r.assignedRoomId ? roomNumberById.get(r.assignedRoomId) : undefined;
     return {
+      ...rowIds(r),
       reservationId: r.id,
       guestName: guestNameForReservation(r.id),
       departureDate: isoDate(r.departureDate),
@@ -294,6 +341,7 @@ export async function buildFrontDeskDashboard(
     const roomNumber = r.assignedRoomId ? roomNumberById.get(r.assignedRoomId) : undefined;
     const nightsRemaining = Math.max(0, Math.ceil((r.departureDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
     return {
+      ...rowIds(r),
       reservationId: r.id,
       guestName: guestNameForReservation(r.id),
       roomNumber,
@@ -308,6 +356,7 @@ export async function buildFrontDeskDashboard(
   const unassigned: FrontDeskUnassignedRow[] = unassignedRaw.map((r) => {
     const roomTypeName = r.roomTypeId ? roomTypeNameById.get(r.roomTypeId) : undefined;
     return {
+      ...rowIds(r),
       reservationId: r.id,
       guestName: guestNameForReservation(r.id),
       arrivalDate: isoDate(r.arrivalDate),

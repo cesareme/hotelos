@@ -16,15 +16,33 @@
 // (priority `CocoaSegmentedControl` + refresh), a `CocoaGrid` of `CocoaCard`
 // items, `CocoaState` for loading / error / empty and the shared toast
 // (`useToast`) instead of a local status pill. Same endpoint and actions.
+//
+// Tanda UX-1 · lote U3 (docs/design/UX-RECEPCION-FEEL.md §5.1 (7)-(9), §6.2):
+// la cola se lee con `staleTime` y sondeo consciente de la pestaña; tras una
+// acción o un check-in/out no se recarga todo (`refresh()`): se invalidan las
+// claves de Mi día y la cola se revalida en segundo plano sin esqueleto;
+// `assign_room` es optimista (`mutate`): la tarjeta desaparece al instante y
+// vuelve con un aviso si el API rechaza la asignación.
+//
+// Tanda UX-1 · lote U6 (§5.1 (9), §4.2, F9, F4): `mark_no_show` ya no escribe a
+// un clic con cuerpo `{}`: abre el mismo diálogo nominal que la ficha
+// (components/reservations/LifecycleDialog: motivo obligatorio, penalización
+// prevista, «Marcar no-show (penalización X €)» / «Mantener la reserva») y la
+// tarjeta sale de la cola cuando el API confirma; la acción de cabecera
+// «Walk-in» abre el cajón de Mi día (`onWalkIn`) o, sin él, el evento del
+// shell (⌥W); un fallo de `assign_room` se queda en Mi día con el mensaje del
+// API (409 ocupada…) en vez de saltar a la lista de reservas.
 
 import { useState, type CSSProperties } from "react";
-import { useApiData } from "../../hooks/useApiData";
+import { invalidateApi, useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
+import { OPEN_WALK_IN_EVENT, shortcutKeys } from "../../content/shortcuts-registry";
+import { LifecycleDialog } from "../../components/reservations/LifecycleDialog";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
 import { navigateTo } from "../../lib/navigate";
 import { number } from "../../lib/format";
-import { ACTIONS } from "../../content/actions";
+import { ACTIONS, FRONT_DESK_ACTIONS, FRONT_DESK_TOASTS } from "../../content/actions";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { SparkleIcon } from "../../components/cocoa-icons/NavigationIcons";
 import {
@@ -33,6 +51,7 @@ import {
   CocoaCallout,
   CocoaCard,
   CocoaGrid,
+  CocoaKbd,
   CocoaSection,
   CocoaSegmentedControl,
   CocoaSpan,
@@ -148,14 +167,45 @@ type Filter = Priority | "all";
 
 // ------------------------------------------------------------------ helpers
 
-function elapsedText(seconds: number): string {
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+type ActionContext = {
+  openCheckIn: (id: string) => void;
+  openCheckOut: (id: string) => void;
+  /** U6 · F9: el no-show pasa por el diálogo nominal con motivo y penalización; la tarjeta sale al confirmar el API. */
+  openNoShow: (itemId: string, reservationId: string) => void;
+  /** Asignación optimista (U3): quita la tarjeta al instante; rechaza si el API falla (rollback ya hecho). */
+  assignRoom: (itemId: string, reservationId: string, roomId: string) => Promise<void>;
+};
+
+/** «Asignar 102» → «102» (colas anteriores a `payload.roomNumber`); vacío si no hay número. */
+export function roomNumberFromLabel(label: string | undefined): string {
+  const match = /^Asignar\s+(\S+)$/i.exec((label ?? "").trim());
+  return match ? match[1] : "";
+}
+
+/** Optimismo de `assign_room`: la tarjeta sale de la cola y los contadores bajan en uno. */
+export function removeQueueItem(prev: QueueResponse, itemId: string): QueueResponse {
+  const item = prev.items.find((entry) => entry.id === itemId);
+  if (!item) return prev;
+  const counts = { ...prev.counts, [item.kind]: Math.max(0, (prev.counts[item.kind] ?? 0) - 1) };
+  const summary = {
+    ...prev.summary,
+    [item.priority]: Math.max(0, prev.summary[item.priority] - 1),
+    total: Math.max(0, prev.summary.total - 1)
+  };
+  return { ...prev, items: prev.items.filter((entry) => entry.id !== itemId), counts, summary };
+}
+
+/** Tras una acción de la cola o un check-in/out: Mi día y la cola se revalidan en segundo plano. */
+export function invalidateFrontDesk(): void {
+  invalidateApi("/dashboards/front-desk-queue");
+  invalidateApi("/dashboards/front-desk");
 }
 
 async function executeAction(
   action: QueueAction,
   propertyId: string,
-  drawerCtx: { openCheckIn: (id: string) => void; openCheckOut: (id: string) => void }
+  drawerCtx: ActionContext,
+  itemId: string
 ): Promise<{ ok: boolean; message?: string }> {
   const { kind, payload } = action;
   void propertyId;
@@ -210,31 +260,22 @@ async function executeAction(
         const roomId = payload?.roomId;
         if (!reservationId || !roomId) return { ok: false, message: "Datos incompletos" };
         try {
-          await apiRequest<unknown>(`/reservations/${encodeURIComponent(String(reservationId))}/assign-room`, {
-            method: "POST",
-            body: { roomId }
-          });
-        } catch {
-          // Fallback: navigate to detail screen so the user can do it manually.
-          // A 401 has already cleared the session inside apiRequest.
-          navigateTo("ReservationDetailWorkspace");
-          return { ok: false, message: "Asigna desde la reserva" };
+          await drawerCtx.assignRoom(itemId, String(reservationId), String(roomId));
+        } catch (err) {
+          // U6: el rollback ya devolvió la tarjeta; el recepcionista se queda en Mi
+          // día con el motivo del API (409 ocupada…). A 401 has already cleared the session.
+          return { ok: false, message: err instanceof Error && err.message ? err.message : "No se pudo asignar la habitación" };
         }
-        return { ok: true, message: "Habitación asignada" };
+        // L-11 (b): el toast dice qué habitación (la cola manda `roomNumber`); sin reversa en el API para una primera asignación (no hay «Deshacer»).
+        const roomNumber = String(payload?.roomNumber ?? "").trim() || roomNumberFromLabel(action.label);
+        return { ok: true, message: roomNumber ? FRONT_DESK_TOASTS.roomAssigned(roomNumber) : "Habitación asignada" };
       }
       case "mark_no_show": {
         const reservationId = payload?.reservationId;
         if (!reservationId) return { ok: false, message: "Falta reservationId" };
-        try {
-          await apiRequest<unknown>(`/reservations/${encodeURIComponent(String(reservationId))}/no-show`, {
-            method: "POST",
-            body: {}
-          });
-        } catch {
-          navigateTo("ReservationDetailWorkspace");
-          return { ok: false, message: "Marca desde la reserva" };
-        }
-        return { ok: true, message: "Marcada como no-show" };
+        // F9: nunca a un clic; el diálogo nominal confirma con motivo y penalización.
+        drawerCtx.openNoShow(itemId, String(reservationId));
+        return { ok: true };
       }
       default:
         return { ok: false, message: "Acción no soportada" };
@@ -263,37 +304,68 @@ const mutedStyle: CSSProperties = {
 
 // ------------------------------------------------------------------ component
 
-export function FrontDeskActionQueue() {
+export type FrontDeskActionQueueProps = {
+  /** Abre el cajón de walk-in de Mi día; sin él, el botón despacha el evento del shell (⌥W). */
+  onWalkIn?: () => void;
+};
+
+/** Reserva del diálogo de no-show: la tarjeta de la cola y el código real de la reserva (GET desde la caché). */
+type NoShowTarget = { itemId: string; reservation: { id: string; code: string; currency?: string | null } };
+
+export function FrontDeskActionQueue({ onWalkIn }: FrontDeskActionQueueProps = {}) {
   const propertyId = getActivePropertyId();
   const { showToast } = useToast();
-  const { data, loading, error, refresh } = useApiData<QueueResponse>(
+  const { data, loading, error, refresh, mutate } = useApiData<QueueResponse>(
     `/dashboards/front-desk-queue?propertyId=${propertyId}`,
-    { pollIntervalMs: 30000 }
+    { pollIntervalMs: 30000, staleTime: 30000 }
   );
   const [busy, setBusy] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [checkInReservationId, setCheckInReservationId] = useState<string | null>(null);
   const [checkOutReservationId, setCheckOutReservationId] = useState<string | null>(null);
+  const [noShowTarget, setNoShowTarget] = useState<NoShowTarget | null>(null);
 
   const items = data?.items ?? [];
   const summary = data?.summary ?? { urgent: 0, today: 0, soon: 0, total: 0 };
   const filtered = filter === "all" ? items : items.filter((i) => i.priority === filter);
 
-  const drawerCtx = {
+  const drawerCtx: ActionContext = {
     openCheckIn: (id: string) => setCheckInReservationId(id),
-    openCheckOut: (id: string) => setCheckOutReservationId(id)
+    openCheckOut: (id: string) => setCheckOutReservationId(id),
+    openNoShow: (itemId, reservationId) => {
+      void apiRequest<{ id: string; code: string; currency?: string | null }>(`/reservations/${encodeURIComponent(reservationId)}`)
+        .then((reservation) => setNoShowTarget({ itemId, reservation: { id: reservation.id, code: reservation.code, currency: reservation.currency } }))
+        .catch(() => setNoShowTarget({ itemId, reservation: { id: reservationId, code: reservationId } }));
+    },
+    assignRoom: (itemId, reservationId, roomId) =>
+      mutate(
+        (prev) => removeQueueItem(prev, itemId),
+        (request) => request<void>(`/reservations/${encodeURIComponent(reservationId)}/assign-room`, { method: "POST", body: { roomId } })
+      )
   };
 
   async function handleAction(item: QueueItem, action: QueueAction) {
     setBusy(item.id);
-    const result = await executeAction(action, propertyId, drawerCtx);
+    const result = await executeAction(action, propertyId, drawerCtx, item.id);
     setBusy(null);
     if (result.message) {
       showToast(result.message, { variant: result.ok ? "success" : "warning" });
     }
-    if (result.ok && action.kind !== "start_checkin" && action.kind !== "start_checkout") {
-      refresh();
+    if (result.ok && action.kind === "assign_room") {
+      // `mutate` ya revalida la cola al terminar el commit; Mi día se invalida aparte.
+      invalidateApi("/dashboards/front-desk");
+    } else if (result.ok && action.kind !== "start_checkin" && action.kind !== "start_checkout" && action.kind !== "mark_no_show") {
+      invalidateFrontDesk();
     }
+  }
+
+  function openWalkIn() {
+    if (onWalkIn) {
+      onWalkIn();
+      return;
+    }
+    // Sin Mi día alrededor: el shell abre Nueva reserva si nadie reclama el evento (fallback honesto).
+    window.dispatchEvent(new CustomEvent(OPEN_WALK_IN_EVENT, { cancelable: true }));
   }
 
   const filterOptions = [
@@ -310,9 +382,14 @@ export function FrontDeskActionQueue() {
         aria-label="Filtro de prioridad"
         leftSlot={<CocoaSegmentedControl size="small" aria-label="Prioridad" value={filter} onChange={(value) => setFilter(value as Filter)} options={filterOptions} />}
         rightSlot={
-          <CocoaButton variant="plain" tone="neutral" size="small" onClick={refresh} aria-label="Recargar la cola">
-            {ACTIONS.refresh}
-          </CocoaButton>
+          <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={openWalkIn} icon={<CocoaKbd>{shortcutKeys("nav.walk-in")}</CocoaKbd>} iconPosition="right" title={`Alta de una llegada sin reserva (${shortcutKeys("nav.walk-in")})`}>
+              {FRONT_DESK_ACTIONS.walkIn}
+            </CocoaButton>
+            <CocoaButton variant="plain" tone="neutral" size="small" onClick={refresh} aria-label="Recargar la cola">
+              {ACTIONS.refresh}
+            </CocoaButton>
+          </div>
         }
       />
 
@@ -352,9 +429,9 @@ export function FrontDeskActionQueue() {
         <QuickCheckInDrawer
           reservationId={checkInReservationId}
           onClose={() => setCheckInReservationId(null)}
-          onCompleted={({ elapsedSeconds }) => {
-            showToast(`Check-in completado en ${elapsedText(elapsedSeconds)}`, { variant: "success", duration: 5000 });
-            refresh();
+          onCompleted={() => {
+            // El cajón ya avisa con el número de habitación y el resultado SES; aquí solo se revalida.
+            invalidateFrontDesk();
           }}
         />
       ) : null}
@@ -362,12 +439,23 @@ export function FrontDeskActionQueue() {
         <QuickCheckOutDrawer
           reservationId={checkOutReservationId}
           onClose={() => setCheckOutReservationId(null)}
-          onCompleted={({ elapsedSeconds }) => {
-            showToast(`Check-out completado en ${elapsedText(elapsedSeconds)}`, { variant: "success", duration: 5000 });
-            refresh();
+          onCompleted={() => {
+            invalidateFrontDesk();
           }}
         />
       ) : null}
+      <LifecycleDialog
+        open={Boolean(noShowTarget)}
+        mode="no_show"
+        reservation={noShowTarget?.reservation ?? null}
+        onClose={() => setNoShowTarget(null)}
+        onDone={() => {
+          // La tarjeta sale de la cola cuando el API confirma (no antes: es irreversible).
+          const itemId = noShowTarget?.itemId;
+          if (itemId) void mutate((prev) => removeQueueItem(prev, itemId), () => Promise.resolve()).catch(() => undefined);
+          invalidateApi("/dashboards/front-desk");
+        }}
+      />
     </CocoaSection>
   );
 }

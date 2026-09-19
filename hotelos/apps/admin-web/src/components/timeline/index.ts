@@ -12,6 +12,7 @@ export * from "./TimelineDateSelector";
 export * from "./TimelineFilterBar";
 export * from "./TimelineLegend";
 export * from "./TimelineGapAlert";
+// TimelineUndoBar = alias de components/cocoa/CocoaUndoBar (Tanda UX-1 · U4); la pantalla ya importa CocoaUndoBar del barrel de Cocoa.
 export * from "./TimelineUndoBar";
 export * from "./TimelineInspector";
 export * from "./TimelineActionDialog";

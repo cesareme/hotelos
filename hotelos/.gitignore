@@ -49,6 +49,8 @@ demo/screenshots-*/
 tests/screenshots/
 playwright-report/
 test-results/
+# Tanda UX-1: medida automatizada del camino óptimo (baseline copiada a docs/audits/ux-recepcion/)
+apps/admin-web/e2e/measure/results.json
 
 # Lockfiles for tools we don't ship
 .npm/_logs/

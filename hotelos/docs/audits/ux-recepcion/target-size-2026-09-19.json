@@ -1,0 +1,1035 @@
+{
+  "generatedAt": "2026-09-19T14:47:00.000Z",
+  "lote": "U10",
+  "spec": "apps/admin-web/e2e/target-size.spec.ts (proyecto Playwright `touch`, hasTouch + Emulation.setEmulatedMedia pointer:coarse)",
+  "baseUrl": "http://127.0.0.1:5183",
+  "apiUrl": "http://127.0.0.1:3913",
+  "tenant": "prop_uxday (seed-ux-day --reset)",
+  "criterios": {
+    "targetMinPx": 24,
+    "targetGoalPx": 44,
+    "textContrastMin": 4.5,
+    "uiContrastMin": 3,
+    "uiContrastAssertedIn": "dark"
+  },
+  "runs": [
+    {
+      "id": "cronograma-apaisado-dark",
+      "route": "/hoy/live-timeline",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "compact",
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 77,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 27,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": [
+        {
+          "text": "Llega hoy",
+          "tone": "accent",
+          "variant": "tinted",
+          "textRatio": 9.04,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "En el hotel",
+          "tone": "success",
+          "variant": "tinted",
+          "textRatio": 10.28,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Sale hoy",
+          "tone": "warning",
+          "variant": "tinted",
+          "textRatio": 9.66,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Confirmada",
+          "tone": "info",
+          "variant": "tinted",
+          "textRatio": 8.53,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Borrador",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.19,
+          "borderRatio": 6.19,
+          "dotRatio": null
+        },
+        {
+          "text": "Salida hecha",
+          "tone": "neutral",
+          "variant": "dot",
+          "textRatio": 13.51,
+          "borderRatio": null,
+          "dotRatio": 6.19
+        },
+        {
+          "text": "No-show",
+          "tone": "warning",
+          "variant": "outline",
+          "textRatio": 9.66,
+          "borderRatio": 9.05,
+          "dotRatio": null
+        },
+        {
+          "text": "Cancelada",
+          "tone": "danger",
+          "variant": "outline",
+          "textRatio": 7.71,
+          "borderRatio": 5.46,
+          "dotRatio": null
+        },
+        {
+          "text": "Bloqueada · mantenimiento",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.19,
+          "borderRatio": 6.19,
+          "dotRatio": null
+        }
+      ]
+    },
+    {
+      "id": "cronograma-apaisado-light",
+      "route": "/hoy/live-timeline",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "compact",
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 77,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 27,
+      "badgeTextRatioMin": 6,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        {
+          "tone": "success",
+          "variant": "outline",
+          "ratio": 2.87
+        },
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.02
+        },
+        {
+          "tone": "warning",
+          "variant": "dot",
+          "ratio": 2.2
+        }
+      ],
+      "legend": [
+        {
+          "text": "Llega hoy",
+          "tone": "accent",
+          "variant": "tinted",
+          "textRatio": 6,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "En el hotel",
+          "tone": "success",
+          "variant": "tinted",
+          "textRatio": 6.01,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Sale hoy",
+          "tone": "warning",
+          "variant": "tinted",
+          "textRatio": 6.28,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Confirmada",
+          "tone": "info",
+          "variant": "tinted",
+          "textRatio": 9.26,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Borrador",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.03,
+          "borderRatio": 6.03,
+          "dotRatio": null
+        },
+        {
+          "text": "Salida hecha",
+          "tone": "neutral",
+          "variant": "dot",
+          "textRatio": 14.1,
+          "borderRatio": null,
+          "dotRatio": 6.03
+        },
+        {
+          "text": "No-show",
+          "tone": "warning",
+          "variant": "outline",
+          "textRatio": 6.28,
+          "borderRatio": 2.02,
+          "dotRatio": null
+        },
+        {
+          "text": "Cancelada",
+          "tone": "danger",
+          "variant": "outline",
+          "textRatio": 8.35,
+          "borderRatio": 3.25,
+          "dotRatio": null
+        },
+        {
+          "text": "Bloqueada · mantenimiento",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.03,
+          "borderRatio": 6.03,
+          "dotRatio": null
+        }
+      ]
+    },
+    {
+      "id": "cronograma-vertical-dark",
+      "route": "/hoy/live-timeline",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "compact",
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 75,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 27,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": [
+        {
+          "text": "Llega hoy",
+          "tone": "accent",
+          "variant": "tinted",
+          "textRatio": 9.04,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "En el hotel",
+          "tone": "success",
+          "variant": "tinted",
+          "textRatio": 10.28,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Sale hoy",
+          "tone": "warning",
+          "variant": "tinted",
+          "textRatio": 9.66,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Confirmada",
+          "tone": "info",
+          "variant": "tinted",
+          "textRatio": 8.53,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Borrador",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.19,
+          "borderRatio": 6.19,
+          "dotRatio": null
+        },
+        {
+          "text": "Salida hecha",
+          "tone": "neutral",
+          "variant": "dot",
+          "textRatio": 13.51,
+          "borderRatio": null,
+          "dotRatio": 6.19
+        },
+        {
+          "text": "No-show",
+          "tone": "warning",
+          "variant": "outline",
+          "textRatio": 9.66,
+          "borderRatio": 9.05,
+          "dotRatio": null
+        },
+        {
+          "text": "Cancelada",
+          "tone": "danger",
+          "variant": "outline",
+          "textRatio": 7.71,
+          "borderRatio": 5.46,
+          "dotRatio": null
+        },
+        {
+          "text": "Bloqueada · mantenimiento",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.19,
+          "borderRatio": 6.19,
+          "dotRatio": null
+        }
+      ]
+    },
+    {
+      "id": "cronograma-vertical-light",
+      "route": "/hoy/live-timeline",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "compact",
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 75,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 27,
+      "badgeTextRatioMin": 6,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        {
+          "tone": "success",
+          "variant": "outline",
+          "ratio": 2.87
+        },
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.02
+        },
+        {
+          "tone": "warning",
+          "variant": "dot",
+          "ratio": 2.2
+        }
+      ],
+      "legend": [
+        {
+          "text": "Llega hoy",
+          "tone": "accent",
+          "variant": "tinted",
+          "textRatio": 6,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "En el hotel",
+          "tone": "success",
+          "variant": "tinted",
+          "textRatio": 6.01,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Sale hoy",
+          "tone": "warning",
+          "variant": "tinted",
+          "textRatio": 6.28,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Confirmada",
+          "tone": "info",
+          "variant": "tinted",
+          "textRatio": 9.26,
+          "borderRatio": null,
+          "dotRatio": null
+        },
+        {
+          "text": "Borrador",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.03,
+          "borderRatio": 6.03,
+          "dotRatio": null
+        },
+        {
+          "text": "Salida hecha",
+          "tone": "neutral",
+          "variant": "dot",
+          "textRatio": 14.1,
+          "borderRatio": null,
+          "dotRatio": 6.03
+        },
+        {
+          "text": "No-show",
+          "tone": "warning",
+          "variant": "outline",
+          "textRatio": 6.28,
+          "borderRatio": 2.02,
+          "dotRatio": null
+        },
+        {
+          "text": "Cancelada",
+          "tone": "danger",
+          "variant": "outline",
+          "textRatio": 8.35,
+          "borderRatio": 3.25,
+          "dotRatio": null
+        },
+        {
+          "text": "Bloqueada · mantenimiento",
+          "tone": "neutral",
+          "variant": "outline",
+          "textRatio": 6.03,
+          "borderRatio": 6.03,
+          "dotRatio": null
+        }
+      ]
+    },
+    {
+      "id": "ficha-apaisado-dark",
+      "route": "/recepcion/reservas/res_uxday_t4",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 56,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 2,
+      "badgeTextRatioMin": 8.66,
+      "badgeUiRatioMin": 8.11,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "ficha-apaisado-light",
+      "route": "/recepcion/reservas/res_uxday_t4",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 56,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 2,
+      "badgeTextRatioMin": 6.01,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        {
+          "tone": "success",
+          "variant": "outline",
+          "ratio": 2.87
+        },
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.2
+        }
+      ],
+      "legend": null
+    },
+    {
+      "id": "ficha-vertical-dark",
+      "route": "/recepcion/reservas/res_uxday_t4",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 54,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 2,
+      "badgeTextRatioMin": 8.66,
+      "badgeUiRatioMin": 8.11,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "ficha-vertical-light",
+      "route": "/recepcion/reservas/res_uxday_t4",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 54,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 2,
+      "badgeTextRatioMin": 6.01,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        {
+          "tone": "success",
+          "variant": "outline",
+          "ratio": 2.87
+        },
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.2
+        }
+      ],
+      "legend": null
+    },
+    {
+      "id": "hoy-apaisado-dark",
+      "route": "/hoy",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 108,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 44,
+      "badgeTextRatioMin": 6.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "hoy-apaisado-light",
+      "route": "/hoy",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 108,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 44,
+      "badgeTextRatioMin": 6.28,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.2
+        }
+      ],
+      "legend": null
+    },
+    {
+      "id": "hoy-vertical-dark",
+      "route": "/hoy",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 106,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 44,
+      "badgeTextRatioMin": 6.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "hoy-vertical-light",
+      "route": "/hoy",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 106,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 44,
+      "badgeTextRatioMin": 6.28,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.2
+        }
+      ],
+      "legend": null
+    },
+    {
+      "id": "lista-apaisado-dark",
+      "route": "/recepcion/reservas/lista",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 87,
+        "below24": 0,
+        "below44": 4,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [
+        {
+          "kind": "button (table)",
+          "label": "(fila/tarjeta)",
+          "count": 4,
+          "min": 25.88
+        }
+      ],
+      "badges": 7,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "lista-apaisado-light",
+      "route": "/recepcion/reservas/lista",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 87,
+        "below24": 0,
+        "below44": 4,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [
+        {
+          "kind": "button (table)",
+          "label": "(fila/tarjeta)",
+          "count": 4,
+          "min": 25.88
+        }
+      ],
+      "badges": 7,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 4.02,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "lista-vertical-dark",
+      "route": "/recepcion/reservas/lista",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 84,
+        "below24": 0,
+        "below44": 4,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [
+        {
+          "kind": "button (table)",
+          "label": "(fila/tarjeta)",
+          "count": 4,
+          "min": 25.88
+        }
+      ],
+      "badges": 7,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "lista-vertical-light",
+      "route": "/recepcion/reservas/lista",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 84,
+        "below24": 0,
+        "below44": 4,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [
+        {
+          "kind": "button (table)",
+          "label": "(fila/tarjeta)",
+          "count": 4,
+          "min": 25.88
+        }
+      ],
+      "badges": 7,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 4.02,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "tablero-apaisado-dark",
+      "route": "/recepcion/reservas/tablero",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 117,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 90,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "tablero-apaisado-light",
+      "route": "/recepcion/reservas/tablero",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "totals": {
+        "targets": 117,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 90,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        {
+          "tone": "success",
+          "variant": "dot",
+          "ratio": 2.87
+        },
+        {
+          "tone": "warning",
+          "variant": "dot",
+          "ratio": 2.02
+        },
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.2
+        }
+      ],
+      "legend": null
+    },
+    {
+      "id": "tablero-vertical-dark",
+      "route": "/recepcion/reservas/tablero",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 115,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 90,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": [],
+      "legend": null
+    },
+    {
+      "id": "tablero-vertical-light",
+      "route": "/recepcion/reservas/tablero",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "totals": {
+        "targets": 115,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44": [],
+      "badges": 90,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        {
+          "tone": "success",
+          "variant": "dot",
+          "ratio": 2.87
+        },
+        {
+          "tone": "warning",
+          "variant": "dot",
+          "ratio": 2.02
+        },
+        {
+          "tone": "warning",
+          "variant": "outline",
+          "ratio": 2.2
+        }
+      ],
+      "legend": null
+    }
+  ]
+}

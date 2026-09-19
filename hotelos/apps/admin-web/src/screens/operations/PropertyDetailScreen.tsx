@@ -18,9 +18,11 @@ import { urlForScreen } from "../../navigation/nav-tree";
 import { navigateTo, type ScreenKey } from "../../lib/navigate";
 import { date, money, number, percent, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { reservationStatus } from "../../content/status-dictionary";
 import { StarIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaButton,
   CocoaGrid,
   CocoaKpi,
@@ -88,24 +90,6 @@ type RecentReservation = {
   balanceEur: number;
 };
 
-const RESERVATION_STATUS_LABELS: Record<string, string> = {
-  draft: "Borrador",
-  confirmed: "Confirmada",
-  checked_in: "En casa",
-  checked_out: "Salida realizada",
-  cancelled: "Cancelada",
-  no_show: "No presentado"
-};
-
-const RESERVATION_STATUS_TONE: Record<string, CocoaTone> = {
-  draft: "neutral",
-  confirmed: "info",
-  checked_in: "success",
-  checked_out: "success",
-  cancelled: "danger",
-  no_show: "danger"
-};
-
 const PROPERTY_STATUS_LABELS: Record<string, string> = {
   open: "Abierta",
   maintenance: "En mantenimiento",
@@ -127,12 +111,9 @@ function fmtRating(value: number | null | undefined): string {
   return number(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
+// Estado de reserva: etiqueta, tono e icono del diccionario común (UX-1 · U2, D5).
 function reservationStatusBadge(status: string) {
-  return (
-    <CocoaBadge tone={RESERVATION_STATUS_TONE[status] ?? "info"} size="small">
-      {RESERVATION_STATUS_LABELS[status] ?? status}
-    </CocoaBadge>
-  );
+  return <CocoaStatusBadge entry={reservationStatus(status)} />;
 }
 
 function balanceBadge(value: number) {
@@ -290,7 +271,7 @@ export function PropertyDetailScreen({ propertyId: propertyIdProp }: { propertyI
           <CocoaKpiStrip stagger aria-label="Indicadores de hoy">
             <CocoaKpi label="Llegadas hoy" value={number(today.arrivals)} polarity="neutral" status="ok" />
             <CocoaKpi label="Salidas hoy" value={number(today.departures)} polarity="neutral" status="ok" />
-            <CocoaKpi label="En casa" value={number(today.inHouse)} deltaLabel="ocupadas ahora" polarity="neutral" status="ok" />
+            <CocoaKpi label="En el hotel" value={number(today.inHouse)} deltaLabel="ocupadas ahora" polarity="neutral" status="ok" />
             <CocoaKpi label="Ocupación" value={fmtPct(today.occupancyPct)} deltaLabel="media del mes" polarity="neutral" status="ok" />
             <CocoaKpi label="ADR" value={money(today.adrEur)} status="ok" />
             <CocoaKpi label="RevPAR" value={money(today.revparEur)} status="ok" />

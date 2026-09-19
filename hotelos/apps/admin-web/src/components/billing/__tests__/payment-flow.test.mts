@@ -142,3 +142,177 @@ describe("payment-flow · intento de cobro (202)", () => {
     assert.match(PSP_NOT_CONFIGURED_MESSAGE, /Ajustes/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tanda UX-1 · lote U5 · PaymentDialog como <form> (docs/design/UX-RECEPCION-FEEL.md
+// §5.6, F6, §7.1 2.1.1): etiqueta con importe, método recordado en la sesión,
+// ⌥1/2/3 y `closeAfter`. PaymentDialog.tsx llega a services/api-client.ts
+// (`import.meta.env`): mismo gancho que hooks/__tests__/useApiData.test.mts.
+// ---------------------------------------------------------------------------
+import { readFileSync } from "node:fs";
+import { registerHooks, stripTypeScriptTypes } from "node:module";
+import { fileURLToPath } from "node:url";
+
+registerHooks({
+  load(url, context, nextLoad) {
+    if (url.endsWith("/src/services/api-client.ts")) {
+      const source = stripTypeScriptTypes(readFileSync(fileURLToPath(url), "utf8"), { mode: "strip" });
+      return { format: "module", source: `import.meta.env ??= {};\n${source}`, shortCircuit: true };
+    }
+    return nextLoad(url, context);
+  }
+});
+
+const dialog = await import("../PaymentDialog.tsx");
+const { money } = await import("../../../lib/format.ts");
+const DIALOG_SOURCE = readFileSync(new URL("../PaymentDialog.tsx", import.meta.url), "utf8");
+
+function memoryStorage(initial: Record<string, string> = {}) {
+  const map = new Map(Object.entries(initial));
+  return { getItem: (key: string) => map.get(key) ?? null, setItem: (key: string, value: string) => void map.set(key, value), map };
+}
+
+describe("PaymentDialog · etiqueta con importe (UX-1 · U5, §5.6)", () => {
+  it("lleva el importe, «y cerrar» con closeAfter, «Cobrando…» mientras espera y «Cerrar» tras un intento", () => {
+    // `money()` separa importe y símbolo con un espacio fino de no separación: se compone con la misma función.
+    assert.equal(dialog.paymentConfirmLabel({ amount: 120, currency: "EUR", busy: false, intent: false }), `Cobrar ${money(120, "EUR")}`);
+    assert.match(dialog.paymentConfirmLabel({ amount: 120, currency: "EUR", busy: false, intent: false }), /^Cobrar 120,00\s€$/);
+    assert.equal(dialog.paymentConfirmLabel({ amount: 89.5, currency: "EUR", busy: false, intent: false, closeAfter: true }), `Cobrar ${money(89.5, "EUR")} y cerrar`);
+    assert.equal(dialog.paymentConfirmLabel({ amount: null, currency: "EUR", busy: false, intent: false }), "Cobrar");
+    assert.equal(dialog.paymentConfirmLabel({ amount: 0, currency: "EUR", busy: false, intent: false }), "Cobrar");
+    assert.equal(dialog.paymentConfirmLabel({ amount: 120, currency: "EUR", busy: true, intent: false }), "Cobrando…");
+    assert.equal(dialog.paymentConfirmLabel({ amount: 120, currency: "EUR", busy: false, intent: true }), "Cerrar");
+  });
+});
+
+describe("PaymentDialog · método por defecto = último usado en la sesión", () => {
+  it("recuerda el método y lo propone al abrir; efectivo si no hay ninguno o si el último necesita una pasarela ausente", () => {
+    const storage = memoryStorage();
+    assert.equal(dialog.readLastPaymentMethod(storage), null);
+    assert.equal(dialog.defaultPaymentMethod(storage), "cash");
+    dialog.rememberPaymentMethod(storage, "card_terminal");
+    assert.equal(storage.map.get(dialog.LAST_PAYMENT_METHOD_KEY), "card_terminal");
+    assert.equal(dialog.readLastPaymentMethod(storage), "card_terminal");
+    assert.equal(dialog.defaultPaymentMethod(storage), "card_terminal");
+    dialog.rememberPaymentMethod(storage, "card_online");
+    assert.equal(dialog.defaultPaymentMethod(storage, { pspUnavailable: true }), "cash");
+    assert.equal(dialog.defaultPaymentMethod(storage, { pspUnavailable: false }), "card_online");
+  });
+
+  it("ignora valores corruptos y almacenamientos que fallan", () => {
+    assert.equal(dialog.readLastPaymentMethod(memoryStorage({ [dialog.LAST_PAYMENT_METHOD_KEY]: "bizum" })), null);
+    assert.equal(dialog.readLastPaymentMethod(null), null);
+    const broken = { getItem: () => { throw new Error("private mode"); }, setItem: () => { throw new Error("quota"); } };
+    assert.equal(dialog.defaultPaymentMethod(broken), "cash");
+    assert.doesNotThrow(() => dialog.rememberPaymentMethod(broken, "cash"));
+  });
+});
+
+describe("PaymentDialog · ⌥1 / ⌥2 / ⌥3 (por `code`, R8)", () => {
+  it("mapea efectivo, tarjeta (datáfono) y transferencia y no responde sin ⌥ ni con ⌘/Ctrl/⇧", () => {
+    assert.deepEqual(dialog.PAYMENT_METHOD_ACCESS_KEYS, { Digit1: "cash", Digit2: "card_terminal", Digit3: "bank_transfer" });
+    assert.equal(dialog.paymentMethodForAccessKey({ code: "Digit1", altKey: true }), "cash");
+    assert.equal(dialog.paymentMethodForAccessKey({ code: "Digit2", altKey: true }), "card_terminal");
+    assert.equal(dialog.paymentMethodForAccessKey({ code: "Digit3", altKey: true }), "bank_transfer");
+    assert.equal(dialog.paymentMethodForAccessKey({ code: "Digit4", altKey: true }), null);
+    assert.equal(dialog.paymentMethodForAccessKey({ code: "Digit1", altKey: false }), null);
+    assert.equal(dialog.paymentMethodForAccessKey({ code: "Digit1", altKey: true, metaKey: true }), null);
+    assert.equal(dialog.paymentMethodForAccessKey({ code: "Digit1", altKey: true, shiftKey: true }), null);
+  });
+});
+
+describe("PaymentDialog · fuente: <form onSubmit> y Confirm como botón de envío (F6)", () => {
+  it("envuelve el cuerpo en un <form id> con onSubmit, lo asocia al Confirm del diálogo y mantiene el foco en el importe", () => {
+    assert.match(DIALOG_SOURCE, /<form\s[^>]*id=\{formId\}/);
+    assert.match(DIALOG_SOURCE, /onSubmit=\{\(event\) => \{\s*event\.preventDefault\(\);/);
+    assert.match(DIALOG_SOURCE, /confirmForm=\{intent \? undefined : formId\}/);
+    assert.match(DIALOG_SOURCE, /initialFocus=\{\(\) => document\.getElementById\(amountId\)\}/);
+    assert.match(DIALOG_SOURCE, /closeAfter\?: boolean/);
+    assert.match(DIALOG_SOURCE, /rememberPaymentMethod\(sessionStorageOrNull\(\), method\)/);
+    assert.doesNotMatch(DIALOG_SOURCE, /style=\{/, "0 style= nuevos (contrato Cocoa 22)");
+  });
+});
+
+describe("PaymentDialog · «Cobrar y cerrar» solo cuando el importe salda la cuenta (UX-1 · U7, §5.6)", () => {
+  it("shouldCloseAfter: cierra con closeAfter e importe = saldo (a un céntimo); un anticipo o un importe distinto solo cobra", () => {
+    assert.equal(dialog.shouldCloseAfter({ closeAfter: true, amount: 120, balanceDue: 120 }), true);
+    assert.equal(dialog.shouldCloseAfter({ closeAfter: true, amount: 120.004, balanceDue: 120 }), true);
+    assert.equal(dialog.shouldCloseAfter({ closeAfter: true, amount: 50, balanceDue: 120 }), false);
+    assert.equal(dialog.shouldCloseAfter({ closeAfter: true, amount: null, balanceDue: 120 }), false);
+    assert.equal(dialog.shouldCloseAfter({ closeAfter: true, amount: 0, balanceDue: 0 }), false);
+    assert.equal(dialog.shouldCloseAfter({ closeAfter: false, amount: 120, balanceDue: 120 }), false);
+    assert.equal(dialog.shouldCloseAfter({ amount: 120, balanceDue: 120 }), false);
+  });
+  it("la fuente pasa la decisión en onCaptured y la etiqueta usa willClose, no la prop a secas", () => {
+    assert.match(DIALOG_SOURCE, /const willClose = shouldCloseAfter\(\{ closeAfter, amount, balanceDue \}\)/);
+    assert.match(DIALOG_SOURCE, /onCaptured\?\.\(result, \{ closeAfter: willClose \}\)/);
+    assert.match(DIALOG_SOURCE, /closeAfter: willClose \}\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// InvoiceFromReservationDialog (U7 · F14, WCAG 3.3.7): valores recordados,
+// memoria de NIF por razón social, validación y etiqueta del botón.
+// ---------------------------------------------------------------------------
+const invoiceDialog = await import("../InvoiceFromReservationDialog.tsx");
+const INVOICE_SOURCE = readFileSync(new URL("../InvoiceFromReservationDialog.tsx", import.meta.url), "utf8");
+const { buildFolioInvoiceBody } = await import("../../../services/pmsCommerceApi.ts");
+
+describe("InvoiceFromReservationDialog · destinatario y valores recordados (3.3.7)", () => {
+  const reservation = {
+    id: "res_1",
+    code: "RES-1",
+    companyName: "Empresa UXDAY SL",
+    billingInstruction: "company_invoice",
+    bookerName: "Contacto Corporativo",
+    primaryGuest: { firstName: "Contacto", surname1: "Corporativo", surname2: null, documentNumber: "12345678Z" }
+  };
+  it("recuerda «empresa» cuando la reserva se factura a empresa o tiene razón social; «huésped» si no", () => {
+    assert.equal(invoiceDialog.rememberedCustomerType(reservation), "company");
+    assert.equal(invoiceDialog.rememberedCustomerType({ billingInstruction: null, companyName: "  Acme  " }), "company");
+    assert.equal(invoiceDialog.rememberedCustomerType({ billingInstruction: "guest_pays", companyName: "" }), "guest");
+  });
+  it("empresa: razón social de la reserva y NIF recordado del navegador; huésped: nombre completo y documento", () => {
+    const company = invoiceDialog.invoiceDefaultsFor(reservation, "company", memoryStorage());
+    assert.deepEqual(company, { customerName: "Empresa UXDAY SL", customerTaxId: "", taxIdSource: null });
+    const storage = memoryStorage();
+    invoiceDialog.rememberTaxId(storage, "Empresa UXDAY SL", "B12345674");
+    assert.equal(invoiceDialog.readRememberedTaxId(storage, "  empresa uxday sl "), "B12345674");
+    assert.deepEqual(invoiceDialog.invoiceDefaultsFor(reservation, "company", storage), { customerName: "Empresa UXDAY SL", customerTaxId: "B12345674", taxIdSource: "memory" });
+    assert.deepEqual(invoiceDialog.invoiceDefaultsFor(reservation, "guest", storage), { customerName: "Contacto Corporativo", customerTaxId: "12345678Z", taxIdSource: "guest" });
+    assert.equal(invoiceDialog.guestDisplayName(null), null);
+    assert.equal(invoiceDialog.guestDisplayName({ firstName: " Ana ", surname1: "", surname2: "Zeta" }), "Ana Zeta");
+  });
+  it("la memoria de NIF ignora valores corruptos, conserva 50 entradas y sobrevive a un almacenamiento roto", () => {
+    assert.equal(invoiceDialog.readRememberedTaxId(memoryStorage({ [invoiceDialog.TAX_ID_MEMORY_KEY]: "{oops" }), "x"), null);
+    assert.equal(invoiceDialog.readRememberedTaxId(null, "x"), null);
+    const storage = memoryStorage();
+    for (let i = 0; i < 55; i += 1) invoiceDialog.rememberTaxId(storage, `Empresa ${i}`, `B${i}`);
+    assert.equal(invoiceDialog.readRememberedTaxId(storage, "Empresa 0"), null, "las más antiguas caen");
+    assert.equal(invoiceDialog.readRememberedTaxId(storage, "Empresa 54"), "B54");
+    const broken = { getItem: () => { throw new Error("private mode"); }, setItem: () => { throw new Error("quota"); } };
+    assert.doesNotThrow(() => invoiceDialog.rememberTaxId(broken, "Acme", "B1"));
+    assert.equal(invoiceDialog.readRememberedTaxId(broken, "Acme"), null);
+  });
+  it("una factura a empresa exige razón social y NIF; a huésped no; el botón dice lo que hará", () => {
+    assert.equal(invoiceDialog.invoiceFormError({ customerType: "company", customerName: "", customerTaxId: "B1" }), "Indica la razón social de la empresa.");
+    assert.equal(invoiceDialog.invoiceFormError({ customerType: "company", customerName: "Acme", customerTaxId: " " }), "Indica el NIF de la empresa.");
+    assert.equal(invoiceDialog.invoiceFormError({ customerType: "company", customerName: "Acme", customerTaxId: "B1" }), null);
+    assert.equal(invoiceDialog.invoiceFormError({ customerType: "guest", customerName: "", customerTaxId: "" }), null);
+    assert.equal(invoiceDialog.invoiceConfirmLabel({ mode: "draft", busy: false }), "Crear borrador");
+    assert.equal(invoiceDialog.invoiceConfirmLabel({ mode: "issue", busy: false }), "Emitir con número");
+    assert.equal(invoiceDialog.invoiceConfirmLabel({ mode: "issue", busy: true }), "Emitiendo…");
+  });
+  it("buildFolioInvoiceBody: solo las claves con valor (IssueInvoiceSchema estricto)", () => {
+    assert.deepEqual(buildFolioInvoiceBody({ customerType: "guest", customerName: "", customerTaxId: null }), { customerType: "guest" });
+    assert.deepEqual(buildFolioInvoiceBody({ customerType: "company", customerName: " Acme ", customerTaxId: " B1 " }), { customerType: "company", customerName: "Acme", customerTaxId: "B1" });
+  });
+  it("fuente: <form id> con Intro, borrador por defecto, toast con número real y 0 style=", () => {
+    assert.match(INVOICE_SOURCE, /<form id=\{formId\}/);
+    assert.match(INVOICE_SOURCE, /confirmForm=\{formId\}/);
+    assert.match(INVOICE_SOURCE, /mode: initialMode = "draft"/);
+    assert.match(INVOICE_SOURCE, /FRONT_DESK_TOASTS\.invoiceIssued\(result\.invoiceNumber\)/);
+    assert.match(INVOICE_SOURCE, /issueFolioInvoice\(folioId, \{ customerType, customerName, customerTaxId, issue: mode === "issue" \}\)/);
+    assert.doesNotMatch(INVOICE_SOURCE, /style=\{/, "0 style= nuevos (contrato Cocoa 22)");
+  });
+});

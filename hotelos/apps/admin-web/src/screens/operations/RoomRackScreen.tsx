@@ -10,6 +10,12 @@
 // abren los drawers de Hoy; limpieza y bloqueo van al API) → toasts por
 // useToast. Same endpoint (/dashboards/room-rack) and 30 s polling as before;
 // hosted inside ReservasTabs the container paints the title.
+//
+// Tanda UX-1 · U10 (§7.2 «Tablero»): los tiles van en `.c22-tile-grid`
+// (cocoa-22-layout.css: minmax 150 → 160 px con el dedo) y los chips de
+// leyenda son CocoaButton (objetivo ≥ 24 px con ratón, 44 con el dedo) con un
+// CocoaStatusBadge `dot` del diccionario dentro: punto en el tono + icono +
+// etiqueta, sin cuadrado de 10 px pintado a mano.
 
 import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
@@ -24,6 +30,7 @@ import { date, money, number, plural, time } from "../../lib/format";
 import { ACTIONS } from "../../content/actions";
 import {
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaButton,
   CocoaCallout,
   CocoaCard,
@@ -40,6 +47,7 @@ import {
   toneColor,
   type CocoaTone
 } from "../../components/cocoa";
+import { BAR_KIND, RESERVATION_STATUS, ROOM_STATUS, roomStatus, type StatusEntry } from "../../content/status-dictionary";
 
 // ============================================================== types
 
@@ -107,14 +115,17 @@ type RackData = {
 
 // ============================================================== display
 
-const OCCUPANCY_META: Record<Occupancy, { tone: CocoaTone; label: string }> = {
-  vacant_clean: { tone: "success", label: "Lista" },
-  vacant_dirty: { tone: "warning", label: "Sucia" },
-  occupied_stay: { tone: "info", label: "Ocupada" },
-  occupied_departing_today: { tone: "accent", label: "Sale hoy" },
-  checked_out_today: { tone: "neutral", label: "Salida hecha" },
-  out_of_order: { tone: "danger", label: "Fuera de servicio" },
-  blocked_maintenance: { tone: "danger", label: "Bloqueada" }
+// Ocupación del tile → entrada del diccionario común (UX-1 · U2, D5): la
+// etiqueta, el tono y el icono son los mismos que en Mi día, la lista, la
+// ficha y el Live Timeline.
+const OCCUPANCY_META: Record<Occupancy, StatusEntry> = {
+  vacant_clean: ROOM_STATUS.clean,
+  vacant_dirty: ROOM_STATUS.dirty,
+  occupied_stay: ROOM_STATUS.occupied,
+  occupied_departing_today: BAR_KIND.departure_today,
+  checked_out_today: RESERVATION_STATUS.checked_out,
+  out_of_order: ROOM_STATUS.out_of_order,
+  blocked_maintenance: ROOM_STATUS.blocked
 };
 const OCCUPANCIES = Object.keys(OCCUPANCY_META) as Occupancy[];
 
@@ -129,8 +140,6 @@ const BADGE_META: Record<Badge, { short: string; title: string; tone: CocoaTone 
   early_checkin: { short: "Early check-in", title: "Early check-in", tone: "neutral" },
   vacant_due_soon: { short: "Llega hoy", title: "Llegada hoy", tone: "info" }
 };
-
-const HK_LABEL: Record<string, string> = { clean: "limpia", dirty: "sucia", inspected: "inspeccionada" };
 
 const EMPTY_TOTALS: RackData["totals"] = { rooms: 0, occupied: 0, vacantClean: 0, vacantDirty: 0, outOfOrder: 0, arrivalsToday: 0, departuresToday: 0 };
 
@@ -270,7 +279,7 @@ export function RoomRackScreen() {
     setBusy(true);
     const result = await postAction(`/rooms/${roomId}/housekeeping-status`, { status });
     setBusy(false);
-    showToast(result.ok ? `Habitación marcada como ${HK_LABEL[status] ?? status}` : (result.message ?? "No se pudo completar la acción."), { variant: result.ok ? "success" : "warning" });
+    showToast(result.ok ? `Habitación marcada como ${roomStatus(status).label.toLowerCase()}` : (result.message ?? "No se pudo completar la acción."), { variant: result.ok ? "success" : "warning" });
     if (result.ok) refresh();
   }
 
@@ -353,9 +362,8 @@ export function RoomRackScreen() {
               size="small"
               aria-pressed={active}
               onClick={() => toggleFilter(o)}
-              icon={<span aria-hidden="true" style={{ ...toneBarStyle(meta.tone), width: 10, height: 10 }} />}
             >
-              {meta.label}
+              <CocoaStatusBadge entry={meta} variant="dot" />
             </CocoaButton>
           );
         })}
@@ -379,7 +387,7 @@ export function RoomRackScreen() {
       ) : (
         filteredFloors.map((floor) => (
           <CocoaSection key={floor.key} title={floor.title} meta={plural(floor.rooms.length, "habitación", "habitaciones")}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "var(--cocoa-space-2)" }}>
+            <div className="c22-tile-grid">
               {floor.rooms.map((tile) => (
                 <RoomTile key={tile.roomId} tile={tile} onOpen={() => setSelectedRoomId(tile.roomId)} />
               ))}
@@ -461,9 +469,7 @@ function RoomTile({ tile, onOpen }: { tile: Tile; onOpen: () => void }) {
       <span aria-hidden="true" style={toneBarStyle(meta.tone)} />
       <span className="cocoa-row" data-gap="2" data-justify="between" data-wrap="nowrap">
         <strong style={roomNumberStyle}>{tile.roomNumber}</strong>
-        <CocoaBadge tone={meta.tone} variant="dot" size="small">
-          {meta.label}
-        </CocoaBadge>
+        <CocoaStatusBadge entry={meta} dense />
       </span>
       <span style={tileLineStyle}>{line}</span>
       {badges.length > 0 ? (
@@ -526,10 +532,8 @@ function RoomDetail({
   return (
     <div className="cocoa-stack" data-gap="4">
       <span className="cocoa-cluster">
-        <CocoaBadge tone={meta.tone} variant="dot">
-          {meta.label}
-        </CocoaBadge>
-        {tile.housekeepingStatus ? <CocoaBadge tone="neutral">Limpieza: {HK_LABEL[tile.housekeepingStatus] ?? tile.housekeepingStatus}</CocoaBadge> : null}
+        <CocoaStatusBadge entry={meta} />
+        {tile.housekeepingStatus ? <CocoaStatusBadge entry={roomStatus(tile.housekeepingStatus)} title="Estado de limpieza" /> : null}
         {tile.badges.map((b) => (
           <CocoaBadge key={b} tone={BADGE_META[b].tone} title={BADGE_META[b].title}>
             {BADGE_META[b].title}

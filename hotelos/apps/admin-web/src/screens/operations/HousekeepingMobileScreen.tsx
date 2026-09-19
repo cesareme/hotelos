@@ -30,10 +30,12 @@ import { HK_INSTRUCTIONS } from "../../content/screen-instructions/housekeeping"
 import { useTabHost } from "../tabs/TabHost";
 import { number, plural, time } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { roomStatus } from "../../content/status-dictionary";
 import { ChatBubbleIcon, StarIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
   CocoaActionBar,
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaButton,
   CocoaCallout,
   CocoaCard,
@@ -84,23 +86,9 @@ type Filter = Priority | "all";
 const PRIORITY_TONE: Record<Priority, CocoaTone> = { urgent: "danger", high: "warning", normal: "info", low: "neutral" };
 const PRIORITY_LABEL: Record<Priority, string> = { urgent: "Urgente", high: "Alta", normal: "Normal", low: "Baja" };
 
-const HK_STATUS_LABEL: Record<string, string> = {
-  clean: "Limpia",
-  dirty: "Sucia",
-  inspected: "Inspeccionada",
-  stayover: "Stayover",
-  in_progress: "En limpieza",
-  ready: "Lista"
-};
-
-const HK_STATUS_TONE: Record<string, CocoaTone> = {
-  clean: "success",
-  dirty: "warning",
-  inspected: "success",
-  stayover: "info",
-  in_progress: "info",
-  ready: "success"
-};
+// El estado de limpieza (clean | dirty | inspected) se etiqueta con el
+// diccionario común (UX-1 · U2, D5); «En limpieza» es el estado de la TAREA.
+const CLEANING_IN_PROGRESS_LABEL = "En limpieza";
 
 const FILTERS: Array<{ id: Filter; label: string }> = [
   { id: "all", label: "Todo" },
@@ -174,7 +162,7 @@ export function HousekeepingMobileScreen() {
     const result = await postAction(`/rooms/${encodeURIComponent(room.roomId)}/housekeeping-status`, { status });
     setBusy(null);
     if (result.ok) {
-      showToast(`Hab. ${room.roomNumber} → ${HK_STATUS_LABEL[status] ?? status}`, { variant: "success" });
+      showToast(`Hab. ${room.roomNumber} → ${roomStatus(status).label}`, { variant: "success" });
       refresh();
     } else {
       showToast(result.message || "No se pudo actualizar el estado", { variant: "error" });
@@ -191,7 +179,7 @@ export function HousekeepingMobileScreen() {
       : await postAction(`/rooms/${encodeURIComponent(room.roomId)}/housekeeping-status`, { status: "dirty" });
     setBusy(null);
     if (result.ok) {
-      showToast(`Hab. ${room.roomNumber} → ${HK_STATUS_LABEL.in_progress}`, { variant: "success" });
+      showToast(`Hab. ${room.roomNumber} → ${CLEANING_IN_PROGRESS_LABEL}`, { variant: "success" });
       refresh();
     } else {
       showToast(result.message || "No se pudo iniciar la limpieza", { variant: "error" });
@@ -355,7 +343,7 @@ function RoomCard({
   const isInProgress = room.taskStatus === "in_progress";
   const isInspected = hk === "inspected";
   const isClean = hk === "clean" || isInspected;
-  const hkLabel = hk ? (HK_STATUS_LABEL[hk] ?? room.housekeepingStatus) : null;
+  const hkStatus = hk ? roomStatus(hk) : null;
 
   return (
     <CocoaCard variant="bordered" style={cardStyle} role="group" aria-label={`Habitación ${room.roomNumber}`}>
@@ -368,14 +356,14 @@ function RoomCard({
       </div>
 
       <div className="cocoa-cluster">
-        {hkLabel ? <CocoaBadge tone={HK_STATUS_TONE[hk] ?? "neutral"} size="small">{hkLabel}</CocoaBadge> : null}
+        {hkStatus ? <CocoaStatusBadge entry={hkStatus} dense /> : null}
         {room.roomTypeName ? <CocoaBadge tone="neutral" size="small" uppercase={false}>{room.roomTypeName}</CocoaBadge> : null}
         {room.openIncidents > 0 ? (
           <CocoaBadge tone="danger" variant="tinted" size="small" uppercase={false}>
             {plural(room.openIncidents, "incidencia", "incidencias")}
           </CocoaBadge>
         ) : null}
-        {isInProgress ? <CocoaBadge tone="info" size="small">En limpieza</CocoaBadge> : null}
+        {isInProgress ? <CocoaBadge tone="info" size="small">{CLEANING_IN_PROGRESS_LABEL}</CocoaBadge> : null}
       </div>
 
       <div className="cocoa-stack" data-gap="1">
@@ -391,7 +379,7 @@ function RoomCard({
             {room.nextArrivalEta ? <span style={captionStyle}>· ETA {room.nextArrivalEta}</span> : null}
           </span>
         ) : null}
-        {room.currentGuest ? <span>Alojado: {room.currentGuest}</span> : null}
+        {room.currentGuest ? <span>En el hotel: {room.currentGuest}</span> : null}
         {room.specialRequest ? (
           <CocoaCallout tone="info" icon={<ChatBubbleIcon size={14} />}>
             {room.specialRequest}

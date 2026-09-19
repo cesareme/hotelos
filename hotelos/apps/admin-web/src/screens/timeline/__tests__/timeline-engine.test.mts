@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   ARRIVAL_BEFORE_DEPARTURE,
   BAR_HEIGHT,
+  BAR_HEIGHT_COARSE,
   BAR_KIND_LABEL,
   BAR_KIND_TONE,
   CELL_WIDTH,
@@ -13,15 +14,20 @@ import {
   DEPARTURE_AFTER_ARRIVAL,
   GRANULARITY_DAYS,
   GROUP_ROW_HEIGHT,
+  HANDLE_WIDTH,
+  HANDLE_WIDTH_COARSE,
   HIDDEN_GUEST_LABEL,
   IN_HOUSE_DRAG_REASON,
   IN_HOUSE_UNDO_NOTE,
   LANE_GAP,
   LEAD_WIDTH,
   LEAD_WIDTH_NARROW,
+  LONG_PRESS_MS,
   MIN_BAR_WIDTH,
   MS_DAY,
   NO_GUEST_LABEL,
+  NO_ROOM_ABOVE_REASON,
+  NO_ROOM_BELOW_REASON,
   PENDING_GUEST_LABEL,
   PRICE_NOT_REQUOTED_WARNING,
   RES_STATUS_LABEL,
@@ -40,6 +46,7 @@ import {
   assignLanes,
   availabilityByType,
   barGeometry,
+  barHeightFor,
   barKind,
   blockFor,
   bookedByType,
@@ -56,11 +63,15 @@ import {
   guestLabel,
   isForbidden,
   isNotFound,
+  keyboardMove,
   matchesFilters,
+  needsConfirmation,
   neighborBar,
+  neighborRoomId,
   newReservationSearch,
   normalizeText,
   occupiedNights,
+  optimisticReservation,
   overbookingDays,
   overbookingSummary,
   parseDateOnly,
@@ -68,7 +79,9 @@ import {
   pinRow,
   rangeFor,
   referenceToday,
+  reservationStatusLabel,
   resolveDrop,
+  resolveKeyboardMove,
   roomAssignmentConflict,
   roomBlocked,
   roomCapacity,
@@ -86,6 +99,8 @@ import {
   todayLocalIso,
   undoEntryFor,
   undoPatchFor,
+  withPatch,
+  type KeyboardMove,
   type PendingChange,
   type ResourceRow
 } from "../timeline-engine.ts";
@@ -272,13 +287,14 @@ describe("timeline-engine · estado visual de la reserva", () => {
       no_show: "warning",
       cancelled: "danger"
     });
+    // UX-1 · U2 (D5): etiquetas del diccionario común («En el hotel», «Salida hecha»).
     assert.deepEqual(BAR_KIND_LABEL, {
       arrival_today: "Llega hoy",
-      in_house: "En casa",
+      in_house: "En el hotel",
       departure_today: "Sale hoy",
       confirmed: "Confirmada",
       draft: "Borrador",
-      checked_out: "Salida",
+      checked_out: "Salida hecha",
       no_show: "No-show",
       cancelled: "Cancelada"
     });
@@ -288,10 +304,10 @@ describe("timeline-engine · estado visual de la reserva", () => {
     assert.deepEqual(RES_STATUS_LABEL, {
       draft: "Borrador",
       confirmed: "Confirmada",
-      checked_in: "En casa",
-      checked_out: "Salida",
-      cancelled: "Cancelada",
-      no_show: "No-show"
+      checked_in: "En el hotel",
+      checked_out: "Salida hecha",
+      no_show: "No-show",
+      cancelled: "Cancelada"
     });
   });
 });
@@ -1030,5 +1046,180 @@ describe("timeline-engine · errores del API y actividad", () => {
     assert.equal(activityLabel("service_request", "Reception"), "Petición · Recepción");
     assert.equal(activityLabel("service_request", "Spa"), "Petición · Spa");
     assert.equal(activityLabel("service_request", ""), "Petición");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UX-1 · U9b: tamaños con el dedo, teclado ⌥ + flechas, directo sin diálogo y optimista
+// ---------------------------------------------------------------------------
+
+describe("timeline-engine · U9b · tamaños con puntero grueso", () => {
+  it("constantes: barra 40 → 44, asideros 10 → 24, pulsación larga 250 ms", () => {
+    assert.equal(BAR_HEIGHT, 40);
+    assert.equal(BAR_HEIGHT_COARSE, 44);
+    assert.equal(HANDLE_WIDTH, 10);
+    assert.equal(HANDLE_WIDTH_COARSE, 24);
+    assert.equal(LONG_PRESS_MS, 250);
+    assert.equal(barHeightFor(false), 40);
+    assert.equal(barHeightFor(true), 44);
+  });
+
+  it("rangeFor lleva la altura de barra: 40 con ratón, 44 con el dedo (narrow no la cambia)", () => {
+    assert.equal(rangeFor(D("10"), "week").barHeight, 40);
+    assert.equal(rangeFor(D("10"), "week", { coarse: false }).barHeight, 40);
+    assert.equal(rangeFor(D("10"), "week", { coarse: true }).barHeight, 44);
+    assert.equal(rangeFor(D("10"), "month", { narrow: true, coarse: true }).barHeight, 44);
+    assert.equal(rangeFor(D("10"), "month", { narrow: true }).barHeight, 40);
+  });
+
+  it("barGeometry y rowHeight crecen con el dedo (44 + 6 por carril) y siguen en 40 sin barHeight", () => {
+    const coarse = rangeFor(D("11"), "day", { coarse: true });
+    const block = blockFor(res({ id: "c1", arrivalDate: "2026-09-12", departureDate: "2026-09-14" }), coarse);
+    assert.ok(block);
+    const geo = barGeometry({ ...block, lane: 1 }, coarse);
+    assert.equal(geo.height, 44);
+    assert.equal(geo.top, 44 + LANE_GAP + LANE_GAP);
+    assert.equal(barGeometry({ ...block, lane: 0 }, { cellWidth: 100 }).height, BAR_HEIGHT, "sin barHeight, la altura de ratón");
+    assert.equal(rowHeight(1, 44), ROW_MIN_HEIGHT);
+    assert.equal(rowHeight(2, 44), 2 * (44 + LANE_GAP) + LANE_GAP);
+    assert.equal(rowHeight(2), 2 * (BAR_HEIGHT + LANE_GAP) + LANE_GAP);
+  });
+
+  it("buildRows usa la altura del rango: las filas con dos carriles miden más con el dedo", () => {
+    const coarse = rangeFor(D("10"), "day", { coarse: true });
+    const overlapA = res({ id: "o1", arrivalDate: "2026-09-11", departureDate: "2026-09-13", assignedRoomId: "r2" });
+    const overlapB = res({ id: "o2", arrivalDate: "2026-09-12", departureDate: "2026-09-14", assignedRoomId: "r2" });
+    const fine = buildRows({ rooms: ROOMS, roomTypes: TYPES, reservations: [overlapA, overlapB], range: RANGE, todayKey: TODAY, collapsed: new Set(), availability: new Map() });
+    const touch = buildRows({ rooms: ROOMS, roomTypes: TYPES, reservations: [overlapA, overlapB], range: coarse, todayKey: TODAY, collapsed: new Set(), availability: new Map() });
+    assert.equal(roomRow(fine, "r2").height, 2 * (40 + LANE_GAP) + LANE_GAP);
+    assert.equal(roomRow(touch, "r2").height, 2 * (44 + LANE_GAP) + LANE_GAP);
+    assert.equal(roomRow(touch, "r2").bars.length, 2);
+  });
+});
+
+describe("timeline-engine · U9b · teclado: ⌥ + flechas mueven la reserva (2.5.7)", () => {
+  const bar = { res: A1 };
+  const key = (code: string, mods: Partial<{ altKey: boolean; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }> = {}) => ({ code, altKey: false, shiftKey: false, ...mods });
+
+  it("keyboardMove: ⌥←/→ un día, ⌥⇧←/→ la salida, ⌥↑/↓ la habitación; sin ⌥, con ⌘/Ctrl o ⌥⇧↑/↓ nada", () => {
+    assert.deepEqual(keyboardMove(bar, key("ArrowRight", { altKey: true })), { type: "dates", res: A1, mode: "move", dxDays: 1 });
+    assert.deepEqual(keyboardMove(bar, key("ArrowLeft", { altKey: true })), { type: "dates", res: A1, mode: "move", dxDays: -1 });
+    assert.deepEqual(keyboardMove(bar, key("ArrowRight", { altKey: true, shiftKey: true })), { type: "dates", res: A1, mode: "resize-end", dxDays: 1 });
+    assert.deepEqual(keyboardMove(bar, key("ArrowLeft", { altKey: true, shiftKey: true })), { type: "dates", res: A1, mode: "resize-end", dxDays: -1 });
+    assert.deepEqual(keyboardMove(bar, key("ArrowUp", { altKey: true })), { type: "room", res: A1, dir: "up" });
+    assert.deepEqual(keyboardMove(bar, key("ArrowDown", { altKey: true })), { type: "room", res: A1, dir: "down" });
+    assert.equal(keyboardMove(bar, key("ArrowRight")), null, "sin ⌥ la flecha mueve la selección, no la reserva");
+    assert.equal(keyboardMove(bar, key("ArrowRight", { altKey: true, metaKey: true })), null);
+    assert.equal(keyboardMove(bar, key("ArrowRight", { altKey: true, ctrlKey: true })), null);
+    assert.equal(keyboardMove(bar, key("ArrowUp", { altKey: true, shiftKey: true })), null);
+    assert.equal(keyboardMove(bar, key("KeyT", { altKey: true })), null, "⌥+letra es de la navegación global (U5)");
+    assert.equal(keyboardMove(bar, key("Enter", { altKey: true })), null);
+  });
+
+  it("neighborRoomId: fila de arriba / abajo saltando grupos y «Sin asignar»; sin habitación parte del carril Sin asignar", () => {
+    // Filas: Sin asignar [u] · grupo A · Hab. 2 · Hab. 10 · grupo B · Hab. 202 · Hab. 301 · Sin tipo · Hab. 900
+    const rows = rowsFor([A1, C1, D1, U1]);
+    assert.equal(neighborRoomId(rows, "r2", "down"), "r10");
+    assert.equal(neighborRoomId(rows, "r10", "down"), "r202", "salta la cabecera del grupo B");
+    assert.equal(neighborRoomId(rows, "r202", "up"), "r10");
+    assert.equal(neighborRoomId(rows, "r2", "up"), null, "arriba de la primera habitación solo queda «Sin asignar»: no es un destino");
+    assert.equal(neighborRoomId(rows, "rz", "down"), null);
+    assert.equal(neighborRoomId(rows, null, "down"), "r2", "sin habitación: hacia abajo, la primera habitación");
+    assert.equal(neighborRoomId(rows, null, "up"), null);
+    assert.equal(neighborRoomId(rows, "nope", "down"), null);
+  });
+
+  it("resolveKeyboardMove: misma validación que el arrastre (propuesta, rechazo con motivo, en casa, cerradas, extremos)", () => {
+    const rows = rowsFor([A1, B1, C1, D1, U1]);
+    const ctx = { rows, roomById, roomTypeById, reservations: [A1, B1, C1, D1, U1] };
+    const move = (res: typeof A1, over: Partial<KeyboardMove>): KeyboardMove => ({ type: "dates", res, mode: "move", dxDays: 1, ...over } as KeyboardMove);
+    // A1 (2 → 09-10..12) un día adelante: solapa con B1 (09-12..14) en la misma habitación → rechazo con el motivo del solape.
+    const later = resolveKeyboardMove(move(A1, { dxDays: 1 }), ctx);
+    assert.equal(later.pending, null);
+    assert.equal(later.rejected, roomOverlapReason("2", "R-b"));
+    // Un día antes: libre → propuesta directa con el aviso del precio (que no abre diálogo).
+    const earlier = resolveKeyboardMove(move(A1, { dxDays: -1 }), ctx);
+    assert.ok(earlier.pending && earlier.pending.type === "move");
+    assert.equal(earlier.pending.newArrival, "2026-09-09");
+    assert.equal(earlier.pending.newDeparture, "2026-09-11");
+    assert.equal(earlier.pending.newRoomId, null);
+    assert.deepEqual(earlier.pending.warnings, [PRICE_NOT_REQUOTED_WARNING]);
+    // ⌥⇧← acorta la salida un día (resize-end).
+    const shorter = resolveKeyboardMove(move(A1, { mode: "resize-end", dxDays: -1 }), ctx);
+    assert.ok(shorter.pending && shorter.pending.type === "resize");
+    assert.equal(shorter.pending.newDepartureDate, "2026-09-11");
+    // ⌥↓ desde Hab. 2 → Hab. 10: ocupada por C1 (en casa) → rechazada con el motivo del API.
+    const down = resolveKeyboardMove({ type: "room", res: A1, dir: "down" }, ctx);
+    assert.equal(down.pending, null);
+    assert.equal(down.rejected, ROOM_OCCUPIED_REASON);
+    // ⌥↑ desde Hab. 2: no hay habitación más arriba.
+    assert.deepEqual(resolveKeyboardMove({ type: "room", res: A1, dir: "up" }, ctx), { pending: null, rejected: NO_ROOM_ABOVE_REASON });
+    // D1 (Hab. 202, tipo B) ⌥↓ → Hab. 301 bloqueada → rechazo; ⌥↑ → Hab. 10 ocupada → rechazo.
+    assert.equal(resolveKeyboardMove({ type: "room", res: D1, dir: "down" }, ctx).rejected, ROOM_BLOCKED_REASON);
+    assert.equal(resolveKeyboardMove({ type: "room", res: D1, dir: "up" }, ctx).rejected, ROOM_OCCUPIED_REASON);
+    // Habitación libre de otro tipo: propuesta directa con el aviso de tipo (sin bloquear ni diálogo);
+    // en casa (Hab. 10 «occupied» por ella misma) ⌥↑ → Hab. 2 libre.
+    const inHouseB = res({ id: "f", arrivalDate: "2026-09-13", departureDate: "2026-09-14", assignedRoomId: "r10", status: "checked_in", roomTypeId: "B" });
+    const ctx2 = { rows: rowsFor([inHouseB]), roomById, roomTypeById, reservations: [inHouseB] };
+    const toA = resolveKeyboardMove({ type: "room", res: inHouseB, dir: "up" }, ctx2);
+    assert.ok(toA.pending && toA.pending.type === "move", toA.rejected ?? "propuesta");
+    assert.equal(toA.pending.newRoomId, "r2");
+    assert.equal(toA.pending.newArrival, null, "en casa no cambian las fechas");
+    assert.match(toA.pending.warnings.join(" "), /La habitación 2 es de tipo Doble y la reserva es de tipo Suite/);
+    assert.equal(needsConfirmation(toA.pending), false, "el aviso de tipo no abre diálogo: va en la nota de deshacer");
+    assert.equal(undoEntryFor(toA.pending)?.roomOnly, true);
+    // En casa: ⌥→ se rechaza con la razón; cerrada: rechazo.
+    assert.deepEqual(resolveKeyboardMove(move(C1, { dxDays: 1 }), ctx), { pending: null, rejected: IN_HOUSE_DRAG_REASON });
+    assert.deepEqual(resolveKeyboardMove(move(X1, { dxDays: 1 }), ctx), { pending: null, rejected: CLOSED_DRAG_REASON });
+    // Sin habitación: ⌥→ mueve fechas sin tocar la habitación; ⌥↓ propone la primera habitación.
+    const unassigned = resolveKeyboardMove(move(U1, { dxDays: 1 }), ctx);
+    assert.ok(unassigned.pending && unassigned.pending.type === "move" && unassigned.pending.newRoomId === null);
+    const assignDown = resolveKeyboardMove({ type: "room", res: U1, dir: "down" }, ctx);
+    assert.equal(assignDown.rejected, roomOverlapReason("2", "R-b"), "Hab. 2 ya tiene a B1 el 12-13");
+    assert.equal(NO_ROOM_BELOW_REASON, "No hay ninguna habitación más abajo");
+  });
+});
+
+describe("timeline-engine · U9b · directo sin diálogo (F24) y optimista", () => {
+  const M = res({ id: "m", arrivalDate: "2026-09-12", departureDate: "2026-09-14", assignedRoomId: "r2" });
+  const moveDates: PendingChange = { type: "move", res: M, newRoomId: null, newArrival: "2026-09-13", newDeparture: "2026-09-15", warnings: [PRICE_NOT_REQUOTED_WARNING] };
+  const moveRoom: PendingChange = { type: "move", res: M, newRoomId: "r10", newRoomLabel: "Hab. 10", newArrival: null, newDeparture: null, warnings: ["La habitación admite 2 personas y la reserva lleva 3"] };
+  const resize: PendingChange = { type: "resize", res: M, newArrivalDate: "2026-09-12", newDepartureDate: "2026-09-15", warnings: [PRICE_NOT_REQUOTED_WARNING] };
+
+  it("needsConfirmation: move y resize se aplican directos; asignar, check-in, check-out, cancelar y no-show piden diálogo", () => {
+    assert.equal(needsConfirmation(moveDates), false);
+    assert.equal(needsConfirmation(moveRoom), false, "los avisos del motor no abren diálogo: viajan en la nota de deshacer");
+    assert.equal(needsConfirmation(resize), false);
+    for (const type of ["assign", "checkin", "checkout", "cancel", "noshow"] as const) assert.equal(needsConfirmation({ type, res: M }), true, type);
+  });
+
+  it("undoEntryFor lleva los avisos del motor como nota (y la nota en casa delante)", () => {
+    assert.equal(undoEntryFor(moveDates)?.note, PRICE_NOT_REQUOTED_WARNING);
+    assert.equal(undoEntryFor(moveRoom)?.note, "La habitación admite 2 personas y la reserva lleva 3");
+    assert.equal(undoEntryFor({ ...moveRoom, warnings: [] })?.note, undefined);
+    const inHouse = undoEntryFor({ ...moveRoom, res: { ...M, status: "checked_in" }, warnings: [IN_HOUSE_DRAG_REASON] });
+    assert.equal(inHouse?.note, `${IN_HOUSE_UNDO_NOTE} · ${IN_HOUSE_DRAG_REASON}`);
+    assert.equal(undoEntryFor({ type: "assign", res: M })?.note, undefined);
+  });
+
+  it("optimisticReservation pinta el cambio antes del servidor; withPatch aplica el parche inverso (habitación null → sin habitación)", () => {
+    assert.deepEqual(optimisticReservation(moveDates), { ...M, arrivalDate: "2026-09-13", departureDate: "2026-09-15" });
+    assert.deepEqual(optimisticReservation(moveRoom), { ...M, assignedRoomId: "r10" });
+    assert.deepEqual(optimisticReservation(resize), { ...M, departureDate: "2026-09-15" });
+    assert.equal(optimisticReservation({ type: "checkin", res: M }), M, "el resto no se anticipa");
+    const moved = optimisticReservation(moveDates);
+    assert.deepEqual(withPatch(moved, undoPatchFor(moveDates)), M);
+    assert.deepEqual(withPatch({ ...M, assignedRoomId: "r10" }, { assignedRoomId: "r2" }), M);
+    assert.equal(withPatch(M, { assignedRoomId: null }).assignedRoomId, undefined);
+    assert.equal(withPatch(M, {}).arrivalDate, "2026-09-12");
+    assert.notEqual(withPatch(M, {}), M, "siempre una copia");
+  });
+
+  it("reservationStatusLabel: etiqueta del diccionario con fallback en español, nunca el enum crudo", () => {
+    assert.equal(reservationStatusLabel("checked_in"), "En el hotel");
+    assert.equal(reservationStatusLabel("confirmed"), "Confirmada");
+    assert.equal(reservationStatusLabel("CHECKED_OUT"), "Salida hecha");
+    assert.notEqual(reservationStatusLabel("weird_status"), "weird_status");
+    assert.equal(RES_STATUS_LABEL.checked_in, reservationStatusLabel("checked_in"));
   });
 });

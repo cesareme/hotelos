@@ -3,49 +3,66 @@
 // Directriz ehotelOS (Nov 2026):
 //   "Diseñar check-in/check-out de 90 segundos. Buscar reserva, validar
 //    identidad, confirmar datos, ver alertas importantes, asignar habitación
-//    limpia, cobrar o preautorizar, firmar digitalmente, emitir llave, enviar
+//    limpia, cobrar saldo o depósito, firmar digitalmente, emitir llave, enviar
 //    mensaje de bienvenida. Evitar saltos entre pantallas."
 //
 // Este drawer concentra todo el flujo en una sola vista deslizante:
 //   1. Huésped + identidad + alertas (VIP, recurrente, peticiones)
-//   2. Habitación asignada + estado HK (con sugerencia de cambio si no lista)
-//   3. Folio + saldo + método de pago (preautorización vs captura)
+//   2. Habitación asignada + estado HK (con sugerencia de cambio si no lista y
+//      override con motivo si el recepcionista decide seguir: F18)
+//   3. Folio + saldo + método de pago (cobrar saldo · cobrar depósito · sin cobro, U0b)
 //   4. Compliance (parte viajeros SES) + firma
-// Un único CTA "Hacer check-in" ejecuta:
+// Un único CTA que dice lo que hará («Cobrar 120,00 € y hacer check-in» /
+// «Hacer check-in») ejecuta el runner compartido `checkinRunner.ts`:
 //   - POST /reservations/:id/assign-room (si hay que reasignar)
-//   - POST /reservations/:id/check-in
-//   - POST /properties/:id/ses/submissions → { status, queued, submissions[], failed[] }
-//     (Tanda 3 · cierre): el resultado se lee de verdad. «Encolado» solo si
-//     queued > 0 y failed vacío; un 409 SES_ESTABLISHMENT_INCOMPLETE
-//     (details.missing) o entradas en failed[] se muestran con los campos que
-//     faltan y un enlace a Ajustes fiscales. Nunca «enviado» en falso.
+//   - POST /folios/:id/payments (saldo o depósito; un fallo aborta)
+//   - POST /reservations/:id/check-in (con `overrideReason` si la habitación
+//     no está limpia; el API no exige limpieza y el motivo queda auditado)
+//   - partes de viajeros + identidad verificada (best-effort)
+//   - POST /properties/:id/ses/submissions → resultado leído de verdad
+//     (Tanda 3 · cierre): «encolado» solo si queued > 0 y failed vacío; nunca
+//     «enviado» en falso.
 // Mostramos cronómetro: la directriz exige < 90 s.
 //
 // Cocoa 22 (ola 2 · lote 2-A): the panel is a `CocoaDrawer` (portal, scrim,
 // focus trap, Esc, bottom sheet on phones); each step is a `CocoaSection`
-// with a `CocoaBadge` as meta; controls are `CocoaField` + `CocoaSelect` /
-// `CocoaSegmentedControl`; notices are `CocoaCallout`; the finished state is a
-// `CocoaState` with the success illustration. Same endpoints, same props.
+// with a badge as meta; controls are `CocoaField` + `CocoaSelect` /
+// `CocoaSegmentedControl`; notices are `CocoaCallout`.
 //
-// Tanda L5 (L5-A / L5-B4):
-//   · «limpia» = housekeepingStatus ∈ {clean, inspected} (vocabulario cerrado
-//     de L5-A; sin «ready» ni fallback a `status`);
-//   · paso 4 lista los partes de viajeros reales de la reserva
-//     (GET /compliance/spain/reservations/:id/guest-register) con su estado en
-//     español y los distintivos «Principal» / «Menor», antes y después del
-//     check-in (la ruta de check-in crea uno por huésped);
-//   · casilla opcional «Identidad verificada en mostrador» (solo con
-//     guest_register.edit): al confirmar, POST …/mark-identity-verified por
-//     parte ANTES del envío SES; un 403 no bloquea el check-in;
-//   · el resultado SES distingue SES_DISABLED («SES desactivado…») y
-//     GUEST_REGISTER_INVALID («parte incompleto: faltan …»): el API ya no crea
-//     filas para esos casos.
-// El check-in sigue en ≤ 4 clics con habitación asignada (la casilla es opcional).
+// Tanda L5 (L5-A / L5-B4): «limpia» = housekeepingStatus ∈ {clean, inspected};
+// paso 4 lista los partes reales de la reserva con «Principal» / «Menor»;
+// casilla opcional «Identidad verificada en mostrador» (guest_register.edit).
+//
+// Tanda UX-1 · lote U6 (docs/design/UX-RECEPCION-FEEL.md §5.2, §6.2, F18, F23,
+// F24, D8): apertura en UNA ronda — reserva ∥ folio ∥ rooms ∥ room-types por
+// la caché compartida de `useApiData` (catálogos 5 min, reserva y folio 30 s;
+// si la fila de Mi día hizo prefetch, el cajón abre ya con datos) y cronología
+// del huésped + partes al llegar la reserva; esqueleto espejo de 4 secciones
+// tras 300 ms; el cuerpo es un `<form>` (Intro confirma); foco inicial en la
+// sección incompleta (habitación → pago → CTA); la sugerencia de habitación
+// nunca es una ocupada (F24); al éxito, la fila de Mi día se reconcilia con la
+// reserva que devuelve el API y el cajón se cierra al instante con un toast
+// que dice qué pasó («Check-in de la 204 hecho · parte enviado a SES (1)»).
+// Sin la palabra «preautorizar» (D8).
 
-import { useCallback, useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useToast } from "../../components/Toast";
 import { ApiError, apiRequest } from "../../services/api-client";
 import { getUser } from "../../services/auth-storage";
+import { getActivePropertyId } from "../../services/activeProperty";
+import { invalidateApi, useApiData } from "../../hooks/useApiData";
+import { postFolioPayment } from "../../services/pmsCommerceApi";
+import { newClientRequestId } from "../../services/finance-contracts";
+import {
+  QUICK_CHECKIN_METHOD_OPTIONS,
+  QUICK_CHECKIN_PAYMENT_MODE_LABELS,
+  defaultQuickCheckinPaymentMode,
+  resolveQuickCheckinAmount,
+  type QuickCheckinMethodOption,
+  type QuickCheckinPaymentAttempt,
+  type QuickCheckinPaymentMode
+} from "./quickCheckinPayment";
+import { CheckinRunError, isOverrideReasonValid, overrideReasonFor, progressLabel, runCheckin, type CheckedInReservation, type CheckinProgress } from "./checkinRunner";
 import {
   guestRegisterIssueLabel,
   queueSesSubmissions,
@@ -63,9 +80,11 @@ import {
 } from "../../services/guestRegisterApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 import { navigateTo } from "../../lib/navigate";
-import { housekeepingStatusLabel, reservationStatusLabel, roomOptionLabel } from "./frontdesk-labels";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { reservationStatusLabel, roomOptionLabel } from "./frontdesk-labels";
+import { roomStatus } from "../../content/status-dictionary";
 import { DEFAULT_CURRENCY, money, plural } from "../../lib/format";
-import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { ACTIONS, FRONT_DESK_ACTIONS, FRONT_DESK_NOTES, FRONT_DESK_TOASTS, STATUS_LABELS } from "../../content/actions";
 import { ChatBubbleIcon, ClockIcon, InfoCircleIcon, StarIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
   CocoaBadge,
@@ -73,11 +92,15 @@ import {
   CocoaCallout,
   CocoaDrawer,
   CocoaField,
+  CocoaInput,
   CocoaSection,
   CocoaSegmentedControl,
   CocoaSelect,
+  CocoaSkeleton,
   CocoaState,
+  CocoaStatusBadge,
   CocoaSwitch,
+  openTabPath,
   type CocoaTone
 } from "../../components/cocoa";
 
@@ -101,7 +124,10 @@ type Reservation = {
   notes?: string;
   cancellationPolicyCode?: string;
   totalAmount: number;
+  /** Depósito de la política comercial (GET /reservations/:id lo devuelve; ausente = sin depósito). */
+  depositAmount?: number | null;
   currency: string;
+  primaryGuest?: Guest | null;
 };
 
 type Guest = {
@@ -126,6 +152,7 @@ type Room = {
   status: string;
   housekeepingStatus?: string;
   roomTypeId: string;
+  sellable?: boolean;
 };
 
 type RoomType = { id: string; name: string };
@@ -142,21 +169,36 @@ type FolioBalance = {
   balanceDue: number;
 };
 
+export type QuickCheckInCompleted = {
+  reservationId: string;
+  elapsedSeconds: number;
+  /** Reserva que devuelve POST check-in (estado `checked_in` + habitación): para reconciliar la fila sin recargar. */
+  reservation: CheckedInReservation | null;
+  roomNumber: string | null;
+  ses: SesQueueOutcome;
+};
+
 export type QuickCheckInProps = {
   reservationId: string;
   onClose: () => void;
-  onCompleted?: (info: { reservationId: string; elapsedSeconds: number }) => void;
+  onCompleted?: (info: QuickCheckInCompleted) => void;
+  /** L-17: se dispara al pulsar el CTA, antes del runner (Mi día pinta la fila «En el hotel» al instante). */
+  onSubmitted?: (info: { reservationId: string; roomId: string | null; roomNumber: string | null }) => void;
+  /** L-17: el runner falló (cobro, 409 de fecha o saldo…): Mi día revalida y la fila vuelve a su estado. */
+  onFailed?: (reservationId: string) => void;
+  /** Habitación candidata que propone Mi día (R14: la del motor si la hay); si no, la primera limpia y libre del tipo. */
+  initialRoomId?: string | null;
 };
 
-type PaymentMode = "none" | "preauth" | "capture";
-// Values match the API PaymentRecord.method union.
-type PaymentMethod = "card" | "cash" | "bank_transfer";
+// U0b · D8: «Cobrar saldo» · «Cobrar depósito» · «Sin cobro»; ninguna garantía
+// que el contrato PSP no ofrece. Modos, métodos y cuerpo del cobro viven en
+// quickCheckinPayment.ts: solo métodos que el API captura en la misma llamada.
+type PaymentMode = QuickCheckinPaymentMode;
+type PaymentMethod = QuickCheckinMethodOption;
 
-const PAYMENT_METHOD_OPTIONS = [
-  { value: "card", label: "Tarjeta" },
-  { value: "cash", label: "Efectivo" },
-  { value: "bank_transfer", label: "Transferencia" }
-];
+const PAYMENT_METHOD_OPTIONS = QUICK_CHECKIN_METHOD_OPTIONS;
+const CATALOG_STALE_MS = 5 * 60_000;
+const RESERVATION_STALE_MS = 30_000;
 
 // =============================================================== utils
 
@@ -164,7 +206,7 @@ function fmtEur(value: number | undefined | null): string {
   return money(value);
 }
 
-function fmtName(g: Guest | null): string {
+function fmtName(g: Guest | null | undefined): string {
   if (!g) return "Huésped";
   return [g.firstName, g.surname1, g.surname2].filter(Boolean).join(" ").trim() || "Huésped";
 }
@@ -175,46 +217,52 @@ function nightsBetween(arrival: string, departure: string): number {
   return Math.max(0, Math.round((d - a) / 86400000));
 }
 
-function missingLabels(missing: string[]): string {
-  return missing.map(sesEstablishmentIssueLabel).join(", ");
-}
-
 function elapsedText(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-/** Toast copy for a non-queued SES outcome (the queued case has its own success toast). */
-function sesOutcomeToast(outcome: SesQueueOutcome): string {
-  switch (outcome.kind) {
-    case "queued":
-      return `Parte de viajeros encolado en SES.HOSPEDAJES (${outcome.queued}).`;
-    case "no_records":
-      return "La reserva no tiene registros de viajeros: no se ha encolado ningún parte SES. Completa el registro de viajeros.";
-    case "partial":
-      return `Parte SES: ${outcome.queued} encolado${outcome.queued === 1 ? "" : "s"}, ${outcome.failed.length} sin encolar${outcome.missing.length > 0 ? ` (faltan: ${missingLabels(outcome.missing)})` : ""}.`;
-    case "incomplete":
-      return `Parte SES no encolado: faltan datos del establecimiento${outcome.missing.length > 0 ? ` (${missingLabels(outcome.missing)})` : ""}. Complétalos en Ajustes fiscales.`;
-    case "disabled":
-      return "Parte SES no encolado: SES.HOSPEDAJES está desactivado para este establecimiento. Actívalo en Ajustes de cumplimiento.";
-    case "invalid":
-      return `Parte SES no encolado: parte incompleto${outcome.issues.length > 0 ? ` (faltan ${issueLabels(outcome.issues)})` : ""}. Complétalo en el registro de viajeros.`;
-    case "error":
-      return `Parte SES no encolado${outcome.code ? ` (${outcome.code})` : ""}: ${outcome.message} Revísalo en la bandeja de cumplimiento.`;
-  }
 }
 
 function issueLabels(issues: string[]): string {
   return issues.map(guestRegisterIssueLabel).join(", ");
 }
 
-// Secondary text inside the steps (caption, secondary ink); layout comes from
-// the `cocoa-stack` / `cocoa-row` utilities and `c22-section__list`.
-const mutedStyle: CSSProperties = {
-  margin: 0,
-  fontSize: "var(--cocoa-fs-caption)",
-  color: "var(--cocoa-label-secondary)"
-};
+/** «limpia» per the closed vocabulary of Tanda L5-A: housekeepingStatus clean | inspected, nothing else. */
+export function isRoomClean(room: Pick<Room, "housekeepingStatus">): boolean {
+  const hk = (room.housekeepingStatus ?? "").trim().toLowerCase();
+  return hk === "clean" || hk === "inspected";
+}
 
+/** Libre para asignar: vendible y ni ocupada ni bloqueada ni fuera de servicio (F24: la caché de rooms trae `status`). */
+export function isRoomFree(room: Pick<Room, "status" | "sellable">): boolean {
+  if (room.sellable === false) return false;
+  const status = (room.status ?? "").trim().toLowerCase();
+  return status !== "occupied" && status !== "blocked" && status !== "out_of_order" && status !== "ooo" && status !== "out_of_service";
+}
+
+/** Candidatas: limpias y libres del tipo de la reserva, por número; la asignada actual siempre cuenta. */
+export function candidateRoomsFor(rooms: readonly Room[], roomTypeId: string, assignedRoomId?: string | null): Room[] {
+  return rooms
+    .filter((room) => room.id === assignedRoomId || (room.roomTypeId === roomTypeId && isRoomFree(room) && isRoomClean(room)))
+    .sort((a, b) => a.number.localeCompare(b.number, "es", { numeric: true }));
+}
+
+/** Habitación con la que abre el cajón: la asignada, la que propone Mi día (si sigue limpia y libre) o la primera candidata. */
+export function initialRoomFor(reservation: Pick<Reservation, "assignedRoomId" | "roomTypeId">, rooms: readonly Room[], initialRoomId?: string | null): string | undefined {
+  if (reservation.assignedRoomId) return reservation.assignedRoomId;
+  const proposed = initialRoomId ? rooms.find((room) => room.id === initialRoomId) : undefined;
+  if (proposed && proposed.roomTypeId === reservation.roomTypeId && isRoomFree(proposed) && isRoomClean(proposed)) return proposed.id;
+  return candidateRoomsFor(rooms, reservation.roomTypeId)[0]?.id;
+}
+
+/** F3: la ficha de la reserva con su id (`/recepcion/reservas/:id`), nunca la lista. */
+function openReservationDetail(reservationId: string): void {
+  const url = urlForScreen("ReservationDetailWorkspace", { id: reservationId });
+  if (url) openTabPath(url);
+  else navigateTo("ReservationDetailWorkspace");
+}
+
+// Legacy named styles (pre-U6) kept only where no utility class exists; the
+// secondary prose now uses `.cocoa-note`. Layout comes from `cocoa-stack` /
+// `cocoa-row` and `c22-section__list`.
 const nameStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-headline)",
   fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
@@ -223,30 +271,71 @@ const nameStyle: CSSProperties = {
 
 const bulletListStyle: CSSProperties = { margin: 0, paddingLeft: "var(--cocoa-space-5)" };
 
+// Mirror skeleton of the four steps (§5.2 (3)).
+function CheckInSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={96} />
+      <CocoaSkeleton variant="card" height={88} />
+      <CocoaSkeleton variant="card" height={140} />
+      <CocoaSkeleton variant="card" height={96} />
+    </div>
+  );
+}
+
 // =============================================================== component
 
-export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: QuickCheckInProps) {
+export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubmitted, onFailed, initialRoomId }: QuickCheckInProps) {
   const { showToast } = useToast();
   const roomSelectId = useId();
-  const [reservation, setReservation] = useState<Reservation | null>(null);
-  const [guest, setGuest] = useState<Guest | null>(null);
-  const [room, setRoom] = useState<Room | null>(null);
-  const [roomType, setRoomType] = useState<RoomType | null>(null);
-  const [folio, setFolio] = useState<FolioBalance | null>(null);
-  // QC-06: the folio is money-path. A failed load is surfaced (with retry) and
-  // the operator must explicitly pick "Sin cobro" to continue without it.
-  const [folioError, setFolioError] = useState<string | null>(null);
-  const [folioLoading, setFolioLoading] = useState(false);
-  const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
-  const [priorStays, setPriorStays] = useState<number>(0);
+  const paymentMethodId = useId();
+  const overrideReasonId = useId();
+  const submitId = useId();
+  const formId = useId();
+  const activePropertyId = getActivePropertyId();
+
+  // One round (§6.2): reservation ∥ folio ∥ rooms ∥ room-types, every one from the shared cache.
+  const reservationState = useApiData<Reservation>(`/reservations/${reservationId}`, { staleTime: RESERVATION_STALE_MS });
+  const folioState = useApiData<FolioBalance>(`/reservations/${reservationId}/folio`, { staleTime: RESERVATION_STALE_MS });
+  const reservation = reservationState.data;
+  const propertyId = reservation?.propertyId ?? activePropertyId;
+  const roomsState = useApiData<Room[]>(`/properties/${propertyId}/rooms`, { staleTime: CATALOG_STALE_MS });
+  const roomTypesState = useApiData<RoomType[]>(`/properties/${propertyId}/room-types`, { staleTime: CATALOG_STALE_MS });
+  const guest = reservation?.primaryGuest ?? null;
+  const timelineState = useApiData<GuestTimelineLite>(guest?.id ? `/guests/${guest.id}/timeline` : null, { staleTime: CATALOG_STALE_MS });
+
+  const folio = folioState.data;
+  const folioError = folioState.error;
+  const folioLoading = folioState.loading || (folioState.isValidating && !folio);
+  const availableRooms = useMemo(() => roomsState.data ?? [], [roomsState.data]);
+  const roomType = useMemo(() => (reservation ? roomTypesState.data?.find((t) => t.id === reservation.roomTypeId) ?? null : null), [reservation, roomTypesState.data]);
+  const priorStays = Math.max(0, Math.floor(timelineState.data?.metrics?.totalStays ?? 0));
 
   const [selectedRoomId, setSelectedRoomId] = useState<string | undefined>(undefined);
-  const [paymentMode, setPaymentMode] = useState<PaymentMode>("preauth");
+  const roomInitialised = useRef(false);
+  // U0b · F19: por defecto «Cobrar saldo»; al cargar el folio pasa a «Sin cobro»
+  // si ya está saldado (defaultQuickCheckinPaymentMode).
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>("balance");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
+  // Clave de idempotencia del intento de cobro en curso (U0b): se conserva entre
+  // renders para que un reintento del mismo cobro repita en vez de cobrar dos veces.
+  const paymentAttempt = useRef<QuickCheckinPaymentAttempt | null>(null);
+  // F18 · override de limpieza con motivo (auditado en el check-in).
+  const [overrideEnabled, setOverrideEnabled] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
 
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<CheckinProgress | null>(null);
+  // Tras un check-in, la reserva y el folio de la caché caducan al cerrar (ver executeCheckIn).
+  const staleOnClose = useRef(false);
+  const close = useCallback(() => {
+    if (staleOnClose.current) {
+      staleOnClose.current = false;
+      invalidateApi(`/reservations/${reservationId}`);
+    }
+    onClose();
+  }, [onClose, reservationId]);
   const [completed, setCompleted] = useState<{ elapsedSeconds: number } | null>(null);
   // Real result of the SES queue call after the check-in (null until then).
   const [sesOutcome, setSesOutcome] = useState<SesQueueOutcome | null>(null);
@@ -277,23 +366,9 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   const elapsedLabel = elapsedText(elapsedSeconds);
   const timerTone: CocoaTone = elapsedSeconds < 90 ? "success" : elapsedSeconds < 120 ? "warning" : "danger";
 
-  // ------------------------------------------------------------- data load
-  const loadFolio = useCallback(async () => {
-    setFolioLoading(true);
-    setFolioError(null);
-    try {
-      setFolio(await apiRequest<FolioBalance>(`/reservations/${reservationId}/folio`));
-    } catch (err) {
-      setFolio(null);
-      setFolioError(err instanceof Error ? err.message : "No se pudo cargar el folio.");
-    } finally {
-      setFolioLoading(false);
-    }
-  }, [reservationId]);
-
   // Partes de viajeros: best-effort (GET needs guest_register.read; a failure is
   // shown in step 4, never as a fake «sin partes»). Returns the fresh list so
-  // the check-in can act on it without waiting for React state.
+  // the runner can act on it without waiting for React state.
   const loadPartes = useCallback(async (): Promise<GuestRegisterRecord[]> => {
     try {
       const rows = await listReservationGuestRegisterRecords(reservationId, { retries: 0 });
@@ -306,73 +381,38 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     }
   }, [reservationId]);
 
-  const loadAll = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiRequest<Reservation>(`/reservations/${reservationId}`);
-      setReservation(res);
-      setSelectedRoomId(res.assignedRoomId);
-
-      // Guest — el endpoint /reservations/:id ya devuelve `primaryGuest`
-      // enriquecido (id + name + dni + vip). Evitamos /guests/:id porque tiene
-      // scope por org y la cadena demo usa varias orgs.
-      const primaryGuest = (res as unknown as { primaryGuest?: Guest | null }).primaryGuest;
-      if (primaryGuest) setGuest(primaryGuest);
-
-      // Parallel fetches — the folio failure is tracked separately (folioError)
-      // instead of being swallowed into a fake "0 € pending". Prior stays
-      // («Recurrente» badge) come from the guest timeline, the history route
-      // the API does expose (`/reservations/:id/guest-history` never existed:
-      // 404 on every opening, fix:2-A qa#6); best-effort — a failure degrades
-      // to "no badge" (not money-path).
-      const [, roomsData, roomTypesData, timeline] = await Promise.all([
-        loadFolio(),
-        apiRequest<Room[]>(`/properties/${res.propertyId}/rooms`),
-        apiRequest<RoomType[]>(`/properties/${res.propertyId}/room-types`),
-        primaryGuest?.id ? apiRequest<GuestTimelineLite>(`/guests/${primaryGuest.id}/timeline`).catch(() => null) : Promise.resolve<GuestTimelineLite | null>(null),
-        loadPartes()
-      ]);
-      setAvailableRooms(roomsData);
-      const rt = roomTypesData.find((t) => t.id === res.roomTypeId) ?? null;
-      setRoomType(rt);
-      const r = res.assignedRoomId ? roomsData.find((x) => x.id === res.assignedRoomId) ?? null : null;
-      setRoom(r);
-      // `metrics.totalStays` counts the guest's checked-out reservations.
-      setPriorStays(Math.max(0, Math.floor(timeline?.metrics?.totalStays ?? 0)));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Error cargando reserva");
-    } finally {
-      setLoading(false);
-    }
-  }, [reservationId, loadFolio, loadPartes]);
-
+  // Second round only once the reservation is here: partes (the timeline is a hook above).
   useEffect(() => {
-    void loadAll();
-  }, [loadAll]);
+    if (!reservation) return;
+    void loadPartes();
+  }, [reservation?.id, loadPartes, reservation]);
+
+  // Room with which the drawer opens (assigned → proposed by Mi día → first clean and free of the type).
+  useEffect(() => {
+    if (roomInitialised.current || !reservation || !roomsState.data) return;
+    roomInitialised.current = true;
+    setSelectedRoomId(initialRoomFor(reservation, roomsState.data, initialRoomId));
+  }, [reservation, roomsState.data, initialRoomId]);
+
+  // U0b · F19: el modo por defecto depende del saldo real del folio (no del
+  // total de la reserva): «Cobrar saldo» si hay saldo, «Sin cobro» si está saldado.
+  const folioModeApplied = useRef(false);
+  useEffect(() => {
+    if (!folio || folioModeApplied.current) return;
+    folioModeApplied.current = true;
+    setPaymentMode(defaultQuickCheckinPaymentMode(folio.balanceDue));
+  }, [folio]);
 
   // ------------------------------------------------------------- derived
 
-  const selectedRoom = useMemo(
-    () => (selectedRoomId ? availableRooms.find((r) => r.id === selectedRoomId) : undefined),
-    [selectedRoomId, availableRooms]
-  );
-  void room;
+  const selectedRoom = useMemo(() => (selectedRoomId ? availableRooms.find((r) => r.id === selectedRoomId) : undefined), [selectedRoomId, availableRooms]);
 
   // Tanda L5-A: «limpia» is the closed housekeeping vocabulary only (clean |
   // inspected). `status` is occupancy (occupied / out_of_order…) and «ready»
   // no longer exists as a persisted value: neither is a cleanliness signal.
   const roomIsClean = useMemo(() => (selectedRoom ? isRoomClean(selectedRoom) : false), [selectedRoom]);
 
-  const candidateRooms = useMemo(() => {
-    if (!reservation) return [];
-    const occupiedIds = new Set<string>(); // se podría enriquecer con in-house ids
-    return availableRooms.filter((r) => {
-      if (occupiedIds.has(r.id)) return false;
-      if (r.roomTypeId !== reservation.roomTypeId) return false;
-      return isRoomClean(r);
-    });
-  }, [availableRooms, reservation]);
+  const candidateRooms = useMemo(() => (reservation ? candidateRoomsFor(availableRooms, reservation.roomTypeId, reservation.assignedRoomId).filter((room) => isRoomClean(room) && isRoomFree(room)) : []), [availableRooms, reservation]);
 
   // Identity verification at the desk needs guest_register.edit; a session
   // without a permission list (demo mode) still offers it, as the layout does
@@ -383,13 +423,13 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   }, []);
 
   // Options of the room select: "Sin asignar" is a real choice (the legacy
-  // select offered it), then the clean rooms of the same type, then the room
-  // currently selected when it is not clean (so the control never loses it).
+  // select offered it), then the clean and free rooms of the same type, then
+  // the room currently selected when it is not clean (so the control never loses it).
   const roomOptions = useMemo(() => {
     const options = [{ value: "", label: "Sin asignar" }];
-    for (const r of candidateRooms) options.push({ value: r.id, label: roomOptionLabel(r, "limpia") });
+    for (const r of candidateRooms) options.push({ value: r.id, label: roomOptionLabel(r, roomStatus(r.housekeepingStatus).label) });
     if (selectedRoom && !candidateRooms.some((c) => c.id === selectedRoom.id)) {
-      options.push({ value: selectedRoom.id, label: roomOptionLabel(selectedRoom, housekeepingStatusLabel(selectedRoom.housekeepingStatus)) });
+      options.push({ value: selectedRoom.id, label: roomOptionLabel(selectedRoom, roomStatus(selectedRoom.housekeepingStatus).label) });
     }
     return options;
   }, [candidateRooms, selectedRoom]);
@@ -397,144 +437,147 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   // null = unknown (folio not loaded). The reservation total is NOT a balance:
   // it ignores deposits already captured, so it is never used as a fallback.
   const balanceDue: number | null = folio ? folio.balanceDue : null;
-  const preauthAmount = Math.max(0, Math.round((reservation?.totalAmount ?? 0) * 100) / 100);
+  // U0b · F19: importe según el modo — saldo del folio o lo que falte del
+  // depósito de la política (`depositAmount`), nunca `totalAmount`. null = nada que cobrar.
+  const depositAmount = reservation?.depositAmount ?? null;
+  const amountToCollect: number | null = folio ? resolveQuickCheckinAmount(paymentMode, { balanceDue: folio.balanceDue, paymentsTotal: folio.paymentsTotal, depositAmount }) : null;
+  const canCollectDeposit = folio ? resolveQuickCheckinAmount("deposit", { balanceDue: folio.balanceDue, paymentsTotal: folio.paymentsTotal, depositAmount }) !== null : false;
   const paymentRequiresFolio = paymentMode !== "none";
+  const overrideReady = overrideEnabled && isOverrideReasonValid(overrideReason);
+  const currency = reservation?.currency || DEFAULT_CURRENCY;
 
   // ------------------------------------------------------------- execute
-  const canSubmit = Boolean(
-    reservation && selectedRoomId && guest && reservation.status === "confirmed" && (folio || !paymentRequiresFolio)
-  );
+  const canSubmit = Boolean(reservation && selectedRoomId && guest && reservation.status === "confirmed" && (folio || !paymentRequiresFolio) && (roomIsClean || overrideReady));
   const blockingReason = !reservation
     ? ""
     : reservation.status !== "confirmed"
-    ? `Reserva en estado «${reservationStatusLabel(reservation.status)}»: el check-in solo procede con la reserva confirmada.`
-    : !selectedRoomId
-    ? "Asigna una habitación primero."
-    : !guest
-    ? "Sin huésped principal vinculado."
-    : !roomIsClean
-    ? "La habitación seleccionada no está limpia. Cambia o avisa a housekeeping."
-    : !folio && paymentRequiresFolio
-    ? "No se pudo cargar el folio: reintenta o elige «Sin cobro» de forma explícita."
-    : "";
+      ? `Reserva en estado «${reservationStatusLabel(reservation.status)}»: el check-in solo procede con la reserva confirmada.`
+      : !selectedRoomId
+        ? "Asigna una habitación primero."
+        : !guest
+          ? "Sin huésped principal vinculado."
+          : !roomIsClean && !overrideReady
+            ? `${FRONT_DESK_NOTES.roomNotClean} Cambia de habitación o marca «${FRONT_DESK_ACTIONS.overrideCheckIn}» con un motivo.`
+            : !folio && paymentRequiresFolio
+              ? "No se pudo cargar el folio: reintenta o elige «Sin cobro» de forma explícita."
+              : "";
+
+  // Foco inicial en la sección incompleta (§5.2 (4)): habitación si falta, pago si hay saldo, CTA si todo está.
+  // Se decide UNA vez, cuando reserva, habitaciones y folio (dato o error) han llegado; `focusKey` se lo dice al cajón.
+  const [focusKey, setFocusKey] = useState<"loading" | "room" | "payment" | "submit">("loading");
+  useEffect(() => {
+    if (focusKey !== "loading" || !reservation || !roomsState.data || (!folioState.data && !folioState.error)) return;
+    const room = initialRoomFor(reservation, roomsState.data, initialRoomId);
+    const balance = folioState.data?.balanceDue ?? 0;
+    setFocusKey(!room ? "room" : balance > 0 ? "payment" : "submit");
+  }, [focusKey, reservation, roomsState.data, folioState.data, folioState.error, initialRoomId]);
+  const initialFocus = useCallback(() => {
+    if (focusKey === "room") return document.getElementById(roomSelectId);
+    if (focusKey === "payment") return document.getElementById(paymentMethodId) ?? document.getElementById(submitId);
+    if (focusKey === "submit") return document.getElementById(submitId);
+    return null;
+  }, [focusKey, roomSelectId, paymentMethodId, submitId]);
+
+  const ctaLabel = !folio || amountToCollect === null ? FRONT_DESK_ACTIONS.checkIn : FRONT_DESK_ACTIONS.collectAndCheckIn(fmtEur(amountToCollect));
 
   async function executeCheckIn() {
-    if (!reservation || !selectedRoomId) return;
+    if (!reservation || !selectedRoomId || !canSubmit) return;
     setBusy(true);
     setError(null);
     logBreadcrumb("checkin.submitted", "mutation", {
       reservationId: reservation.id,
       paymentMode,
-      reassignRoom: selectedRoomId !== reservation.assignedRoomId
+      reassignRoom: selectedRoomId !== reservation.assignedRoomId,
+      override: !roomIsClean
     });
+    // QC-06: sin folio cargado no se puede cobrar; la UI exige "Sin cobro"
+    // explícito antes de llegar aquí, y este guard lo hace imposible de saltar.
+    if (paymentMode !== "none" && !folio) {
+      setBusy(false);
+      setError("No se pudo cargar el folio: no es posible cobrar. Reintenta o elige «Sin cobro».");
+      return;
+    }
+    const payment = folio && amountToCollect !== null ? { folioId: folio.folio.id, amount: amountToCollect, method: paymentMethod } : null;
+    // L-17 (§4.1): la fila de Mi día cambia al instante; el resultado del runner la reconcilia o la revierte.
+    onSubmitted?.({ reservationId: reservation.id, roomId: selectedRoomId, roomNumber: selectedRoom?.number ?? null });
     try {
-      // 1) Reassign si el room cambió.
-      if (selectedRoomId !== reservation.assignedRoomId) {
-        await apiRequest(`/reservations/${reservation.id}/assign-room`, {
-          method: "POST",
-          body: { roomId: selectedRoomId }
-        });
-      }
-      // 2) Cobro previo si capture/preauth con saldo.
-      // Auditoría 2026-07: antes `.catch(()=>undefined)` — si el cobro fallaba se
-      // tragaba el error y el check-in seguía como si se hubiera cobrado. Ahora
-      // un fallo de cobro ABORTA el check-in con error visible; el recepcionista
-      // puede reintentar o elegir explícitamente "Sin cobro".
-      // QC-06: sin folio cargado no se puede cobrar; la UI exige "Sin cobro"
-      // explícito antes de llegar aquí, y este guard lo hace imposible de saltar.
-      if (paymentMode !== "none" && !folio) {
-        throw new Error("No se pudo cargar el folio: no es posible cobrar. Reintenta o elige «Sin cobro».");
-      }
-      if (paymentMode !== "none" && folio && balanceDue !== null && balanceDue > 0) {
-        try {
-          await apiRequest(`/folios/${folio.folio.id}/payments`, {
-            method: "POST",
-            body: {
-              amount: paymentMode === "capture" ? balanceDue : preauthAmount,
-              currency: reservation.currency || DEFAULT_CURRENCY,
-              method: paymentMethod,
-              status: paymentMode === "capture" ? "captured" : "pending"
-            }
-          });
-        } catch (err) {
-          throw new Error(
-            `No se pudo registrar el cobro (${err instanceof Error ? err.message : "error"}). ` +
-              `El check-in NO se ha realizado. Reintenta o selecciona "Sin cobro".`
-          );
+      const result = await runCheckin(
+        {
+          reservationId: reservation.id,
+          propertyId: reservation.propertyId,
+          assignedRoomId: reservation.assignedRoomId ?? null,
+          roomId: selectedRoomId,
+          currency,
+          payment,
+          overrideReason: !roomIsClean && overrideReady ? overrideReasonFor(overrideReason, selectedRoom?.number) : null,
+          verifyIdentity
+        },
+        {
+          request: apiRequest,
+          postPayment: (folioId, body) => postFolioPayment(folioId, body),
+          listPartes: loadPartes,
+          markIdentity: (parteId) => markGuestRegisterIdentityVerified(parteId, "visual_document_check"),
+          queueSes: (pid, rid) => queueSesSubmissions(pid, rid).then(sesQueueOutcomeFromResponse, sesQueueOutcomeFromError),
+          newClientRequestId,
+          previousAttempt: paymentAttempt.current,
+          isForbidden: (err) => err instanceof ApiError && err.status === 403,
+          onProgress: setProgress
         }
-      }
-      // 3) Check-in.
-      await apiRequest(`/reservations/${reservation.id}/check-in`, {
-        method: "POST",
-        body: { roomId: selectedRoomId, signatureObjectKey: "sig_drawer_checkin" }
-      });
-      // 3b) Partes de viajeros: the check-in route created one per guest. If
-      // the operator ticked the desk verification, mark each parte BEFORE the
-      // SES queue (guest_register.edit); a 403 (or any failure) is reported
-      // and never blocks the check-in, which is already done.
-      let partesAfter = await loadPartes();
-      let identityNote: string | null = null;
-      if (verifyIdentity && partesAfter.length > 0) {
-        const results = await Promise.allSettled(
-          partesAfter.map((parte) => (parte.identityVerified ? Promise.resolve(parte) : markGuestRegisterIdentityVerified(parte.id, "visual_document_check")))
-        );
-        const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (failures.length > 0) {
-          const forbidden = failures.some((failure) => failure.reason instanceof ApiError && failure.reason.status === 403);
-          identityNote = forbidden
-            ? "Sin permiso para marcar la identidad verificada (guest_register.edit): el check-in y el parte siguen adelante."
-            : `No se pudo marcar la identidad verificada en ${plural(failures.length, "parte", "partes")}; el check-in sigue adelante.`;
-        }
-        partesAfter = await loadPartes();
-        logBreadcrumb("checkin.identity_verified", "mutation", { reservationId: reservation.id, partes: partesAfter.length, failed: failures.length });
-      }
-      setIdentityNotice(identityNote);
-      // 4) Parte de viajeros SES.HOSPEDAJES. The check-in is already done; the
-      // queue response is read honestly (queued > 0 and no failed record) and
-      // a 409 SES_ESTABLISHMENT_INCOMPLETE / failed[] is surfaced with the
-      // missing establishment fields instead of a fake "enviado". Tanda L5:
-      // SES_DISABLED / GUEST_REGISTER_INVALID are refusals without a row.
-      let ses: SesQueueOutcome;
-      try {
-        ses = sesQueueOutcomeFromResponse(await queueSesSubmissions(reservation.propertyId, reservation.id));
-      } catch (sesError) {
-        ses = sesQueueOutcomeFromError(sesError);
-      }
-      setSesOutcome(ses);
-      logBreadcrumb("checkin.ses", "mutation", { reservationId: reservation.id, outcome: ses.kind });
-      // The partes mirror the queue outcome (queued / accepted…): refresh the summary list.
-      void loadPartes();
+      );
+      paymentAttempt.current = result.paymentAttempt;
+      setIdentityNotice(result.identityNote);
+      setSesOutcome(result.ses);
+      logBreadcrumb("checkin.ses", "mutation", { reservationId: reservation.id, outcome: result.ses.kind });
+      // La habitación pasa a ocupada: el catálogo de Mi día se revalida. La
+      // reserva y el folio se marcan caducados al CERRAR el cajón (sus hooks
+      // siguen montados mientras se lee el resultado SES: invalidarlos aquí
+      // costaría dos GET que nadie mira; §6.2).
+      invalidateApi(`/properties/${reservation.propertyId}/rooms`);
+      staleOnClose.current = true;
 
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const roomNumber = selectedRoom?.number ?? null;
       setCompleted({ elapsedSeconds: elapsed });
-      onCompleted?.({ reservationId: reservation.id, elapsedSeconds: elapsed });
-      if (ses.kind === "queued") {
-        showToast(`Check-in completado en ${elapsedText(elapsed)} · parte de viajeros encolado en SES (${ses.queued}).`, { variant: "success" });
-        window.setTimeout(() => onClose(), 2500);
+      onCompleted?.({ reservationId: reservation.id, elapsedSeconds: elapsed, reservation: result.reservation, roomNumber, ses: result.ses });
+      if (result.ses.kind === "queued") {
+        // Cierre inmediato (§5.2 (6)): el toast dice qué pasó y ofrece la ficha.
+        showToast(FRONT_DESK_TOASTS.checkInDoneSes(roomNumber, result.ses.queued), {
+          variant: "success",
+          action: { label: FRONT_DESK_ACTIONS.openReservation, onAction: () => openReservationDetail(reservation.id) }
+        });
+        close();
       } else {
-        // The drawer stays open: the operator must see what SES is missing.
-        showToast(`Check-in completado en ${elapsedText(elapsed)}.`, { variant: "success" });
-        showToast(sesOutcomeToast(ses), { variant: ses.kind === "no_records" ? "info" : "error", duration: 9000 });
+        // The drawer stays open: the SES callout inside it (role=alert) is the ONE notice of what is missing (L-04); the toast only says the check-in is done.
+        showToast(FRONT_DESK_TOASTS.checkInDone(roomNumber), { variant: "success" });
       }
     } catch (err) {
+      if (err instanceof CheckinRunError) paymentAttempt.current = err.paymentAttempt;
       const message = err instanceof Error ? err.message : "Error ejecutando check-in";
       setError(message);
-      showToast(message, { variant: "error" });
+      // El callout del cajón (role=alert) ya lo anuncia; el toast no se duplica (L-04).
+      showToast(message, { variant: "error", announce: false });
+      onFailed?.(reservation.id);
     } finally {
       setBusy(false);
+      setProgress(null);
     }
+  }
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void executeCheckIn();
   }
 
   // =============================================================== render
   const nights = reservation ? nightsBetween(reservation.arrivalDate, reservation.departureDate) : 0;
+  const loadingReservation = !reservation && (reservationState.loading || reservationState.isValidating);
+  const catalogLoading = !roomsState.data && (roomsState.loading || roomsState.isValidating);
 
   let body: ReactNode;
-  if (loading) {
-    body = <CocoaState kind="loading" title="Cargando reserva…" />;
-  } else if (error && !reservation) {
-    body = <CocoaState kind="error" title={STATUS_LABELS.loadError} message={error} onRetry={() => void loadAll()} />;
+  if (!reservation && reservationState.error) {
+    body = <CocoaState kind="error" title={STATUS_LABELS.loadError} message={reservationState.error} onRetry={reservationState.refresh} />;
   } else if (!reservation) {
-    body = <CocoaState kind="error" title="No se encontró la reserva." onRetry={() => void loadAll()} />;
+    body = <CocoaState kind="error" title="No se encontró la reserva." onRetry={reservationState.refresh} />;
   } else if (completed) {
     body = (
       <CompletedView
@@ -549,14 +592,23 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     );
   } else {
     body = (
-      <>
-        {error ? <CocoaCallout tone="danger" role="alert">{error}</CocoaCallout> : null}
+      <form id={formId} onSubmit={onSubmit} className="cocoa-stack" data-gap="3" aria-label="Check-in rápido">
+        {error ? (
+          <CocoaCallout tone="danger" role="alert">
+            {error}
+          </CocoaCallout>
+        ) : null}
+        {progress ? (
+          <CocoaCallout tone="info" role="status">
+            {progressLabel(progress)}
+          </CocoaCallout>
+        ) : null}
 
         {/* STEP 1: huésped + alertas */}
-        <Step title="1 · Huésped" badge={guest?.vipCode ? "VIP" : priorStays > 0 ? "Recurrente" : undefined} badgeTone={guest?.vipCode ? "accent" : "info"}>
+        <Step title="1 · Huésped" badge={guest?.vipCode ? undefined : priorStays > 0 ? "Recurrente" : undefined} badgeTone="info">
           <div className="cocoa-stack" data-gap="2">
             <strong style={nameStyle}>{fmtName(guest)}</strong>
-            <p style={mutedStyle}>
+            <p className="cocoa-note">
               {guest?.documentType ?? "Documento"} {guest?.documentNumber ?? "—"} · {guest?.nationality ?? "?"}
               {guest?.email ? ` · ${guest.email}` : ""}
             </p>
@@ -584,45 +636,48 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
         </Step>
 
         {/* STEP 2: habitación */}
-        <Step title="2 · Habitación" badge={roomIsClean ? "Limpia" : "No lista"} badgeTone={roomIsClean ? "success" : "warning"}>
+        <Step title="2 · Habitación" badgeNode={selectedRoom ? <CocoaStatusBadge entry={roomStatus(selectedRoom.housekeepingStatus)} dense /> : <CocoaBadge tone="warning" size="small">Sin asignar</CocoaBadge>}>
           <div className="cocoa-stack" data-gap="2">
             <div className="cocoa-row" data-gap="2" data-align="baseline">
               <strong>{selectedRoom ? `Hab. ${selectedRoom.number}` : "Sin asignar"}</strong>
-              {selectedRoom?.floor ? <span style={mutedStyle}>Planta {selectedRoom.floor}</span> : null}
-              {roomType ? <span style={mutedStyle}>· {roomType.name}</span> : null}
+              {selectedRoom?.floor ? <span className="cocoa-note">Planta {selectedRoom.floor}</span> : null}
+              {roomType ? <span className="cocoa-note">· {roomType.name}</span> : null}
+              {catalogLoading ? <span className="cocoa-note">· cargando habitaciones…</span> : null}
             </div>
-            {!roomIsClean && candidateRooms.length > 0 ? (
+            {selectedRoom && !roomIsClean && candidateRooms.length > 0 ? (
               <CocoaCallout
                 tone="info"
                 title="Sugerencia"
                 icon={<InfoCircleIcon size={16} />}
                 actions={
-                  <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => setSelectedRoomId(candidateRooms[0].id)}>
-                    Cambiar a {candidateRooms[0].number}
+                  <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => setSelectedRoomId(candidateRooms[0].id)} disabled={busy}>
+                    {FRONT_DESK_ACTIONS.changeRoomTo(candidateRooms[0].number)}
                   </CocoaButton>
                 }
               >
-                La {candidateRooms[0].number} está limpia y es del mismo tipo.
+                La {candidateRooms[0].number} está limpia, libre y es del mismo tipo.
               </CocoaCallout>
             ) : null}
-            <CocoaField label="Cambiar habitación">
-              <CocoaSelect id={roomSelectId} value={selectedRoomId ?? ""} onChange={(value) => setSelectedRoomId(value || undefined)} options={roomOptions} />
+            <CocoaField label={FRONT_DESK_ACTIONS.changeRoom} htmlFor={roomSelectId}>
+              <CocoaSelect id={roomSelectId} value={selectedRoomId ?? ""} onChange={(value) => setSelectedRoomId(value || undefined)} options={roomOptions} disabled={busy} />
             </CocoaField>
+            {selectedRoom && !roomIsClean ? (
+              <div className="cocoa-stack" data-gap="2">
+                <CocoaSwitch checked={overrideEnabled} onChange={setOverrideEnabled} size="small" disabled={busy} label={`${FRONT_DESK_ACTIONS.overrideCheckIn} (la limpieza sigue siendo de pisos; el motivo queda auditado)`} />
+                {overrideEnabled ? (
+                  <CocoaField label={FRONT_DESK_NOTES.overrideReasonLabel} required htmlFor={overrideReasonId} help="Mínimo 3 caracteres.">
+                    <CocoaInput id={overrideReasonId} value={overrideReason} onChange={setOverrideReason} maxLength={400} disabled={busy} autoComplete="off" placeholder="El huésped lo acepta; la limpian en 10 minutos" />
+                  </CocoaField>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </Step>
 
         {/* STEP 3: pago */}
         <Step
           title="3 · Pago"
-          badge={
-            folioLoading
-              ? "Cargando folio…"
-              : balanceDue === null
-              ? "Folio no disponible"
-              : balanceDue > 0
-              ? `${fmtEur(balanceDue)} pendiente`
-              : "Saldado"
-          }
+          badge={folioLoading ? "Cargando folio…" : balanceDue === null ? "Folio no disponible" : balanceDue > 0 ? `${fmtEur(balanceDue)} pendiente` : "Saldado"}
           badgeTone={folioLoading ? "info" : balanceDue === null ? "danger" : balanceDue > 0 ? "warning" : "success"}
         >
           <div className="cocoa-stack" data-gap="2">
@@ -631,12 +686,12 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
                 tone="danger"
                 title={`No se pudo cargar el folio${folioError ? `: ${folioError}` : "."}`}
                 actions={
-                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void loadFolio()} disabled={busy}>
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={folioState.refresh} disabled={busy}>
                     {ACTIONS.retry}
                   </CocoaButton>
                 }
               >
-                Sin folio no se puede cobrar ni preautorizar. Reintenta o elige «Sin cobro» de forma explícita.
+                Sin folio no se puede cobrar. Reintenta o elige «Sin cobro» de forma explícita.
               </CocoaCallout>
             ) : null}
             <ul className="c22-section__list">
@@ -659,15 +714,15 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
               value={paymentMode}
               onChange={(value) => setPaymentMode(value as PaymentMode)}
               options={[
-                { value: "preauth", label: "Preautorizar", disabled: !folio },
-                { value: "capture", label: "Cobrar ahora", disabled: !folio },
-                { value: "none", label: "Sin cobro" }
+                { value: "balance", label: QUICK_CHECKIN_PAYMENT_MODE_LABELS.balance, disabled: !folio || balanceDue === null || balanceDue <= 0 },
+                { value: "deposit", label: QUICK_CHECKIN_PAYMENT_MODE_LABELS.deposit, disabled: !canCollectDeposit },
+                { value: "none", label: QUICK_CHECKIN_PAYMENT_MODE_LABELS.none }
               ]}
             />
-            {!folio ? <p style={mutedStyle}>Preautorizar y cobrar requieren el folio cargado.</p> : null}
+            {!folio || amountToCollect !== null ? <p className="cocoa-note">{!folio ? "Cobrar requiere el folio cargado." : `Se cobrarán ${fmtEur(amountToCollect)} al confirmar.`}</p> : null}
             {paymentMode !== "none" ? (
-              <CocoaField label="Método">
-                <CocoaSelect value={paymentMethod} onChange={(value) => setPaymentMethod(value as PaymentMethod)} options={PAYMENT_METHOD_OPTIONS} />
+              <CocoaField label="Método" htmlFor={paymentMethodId}>
+                <CocoaSelect id={paymentMethodId} value={paymentMethod} onChange={(value) => setPaymentMethod(value as PaymentMethod)} options={PAYMENT_METHOD_OPTIONS} disabled={busy} />
               </CocoaField>
             ) : null}
           </div>
@@ -682,12 +737,7 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
           <div className="cocoa-stack" data-gap="2">
             <PartesList partes={partes} error={partesError} emptyText="Sin partes de viajeros todavía: el check-in crea uno por huésped vinculado a la reserva." />
             {canVerifyIdentity ? (
-              <CocoaSwitch
-                checked={verifyIdentity}
-                onChange={setVerifyIdentity}
-                disabled={busy}
-                label="Identidad verificada en mostrador (documento cotejado; se anota en cada parte antes del envío SES)"
-              />
+              <CocoaSwitch checked={verifyIdentity} onChange={setVerifyIdentity} disabled={busy} label="Identidad verificada en mostrador (documento cotejado; se anota en cada parte antes del envío SES)" />
             ) : null}
             <ul style={bulletListStyle}>
               <li>Al confirmar se encola el parte de viajeros (SES.HOSPEDAJES); aquí verás el resultado real del encolado.</li>
@@ -702,38 +752,34 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
             {blockingReason}
           </CocoaCallout>
         ) : null}
-      </>
+      </form>
     );
   }
 
   return (
     <CocoaDrawer
       open
-      onClose={onClose}
+      onClose={close}
       title="Check-in"
       subtitle={reservation ? `${fmtName(guest)} · ${reservation.code}` : undefined}
       side="right"
       size="md"
-      initialFocus={() => document.getElementById(roomSelectId)}
+      loading={loadingReservation}
+      skeleton={<CheckInSkeleton />}
+      focusKey={`${focusKey}:${canSubmit ? "ready" : "wait"}`}
+      initialFocus={initialFocus}
       footer={
         <>
-          <CocoaButton variant="bordered" tone="neutral" onClick={onClose} disabled={busy}>
+          <CocoaButton variant="bordered" tone="neutral" onClick={close} disabled={busy}>
             {ACTIONS.cancel}
           </CocoaButton>
           {completed ? (
-            <CocoaButton variant="filled" tone="accent" onClick={onClose}>
+            <CocoaButton variant="filled" tone="accent" onClick={close}>
               {ACTIONS.close}
             </CocoaButton>
           ) : (
-            <CocoaButton
-              variant="filled"
-              tone="accent"
-              disabled={!canSubmit || busy || !roomIsClean}
-              loading={busy}
-              onClick={() => void executeCheckIn()}
-              title={blockingReason || "Pulsa para completar el check-in"}
-            >
-              Hacer check-in
+            <CocoaButton id={submitId} variant="filled" tone="accent" type="submit" form={formId} disabled={!canSubmit || busy} loading={busy} title={blockingReason || "Intro también confirma"} data-tour="checkin-submit">
+              {progress ? progressLabel(progress) : ctaLabel}
             </CocoaButton>
           )}
         </>
@@ -758,16 +804,17 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
 
 // =============================================================== sub-components
 
-function Step({ title, badge, badgeTone = "neutral", children }: { title: string; badge?: string; badgeTone?: CocoaTone; children: ReactNode }) {
+function Step({ title, badge, badgeTone = "neutral", badgeNode, children }: { title: string; badge?: string; badgeTone?: CocoaTone; badgeNode?: ReactNode; children: ReactNode }) {
   return (
     <CocoaSection
       title={title}
       meta={
-        badge ? (
+        badgeNode ??
+        (badge ? (
           <CocoaBadge tone={badgeTone} size="small">
             {badge}
           </CocoaBadge>
-        ) : undefined
+        ) : undefined)
       }
     >
       {children}
@@ -778,12 +825,12 @@ function Step({ title, badge, badgeTone = "neutral", children }: { title: string
 /** Real SES queue outcome after the check-in: never claims "enviado" unless every record was queued. */
 function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
   if (!outcome) {
-    return <p style={mutedStyle}>Sin resultado del parte de viajeros todavía.</p>;
+    return <p className="cocoa-note">Sin resultado del parte de viajeros todavía.</p>;
   }
   if (outcome.kind === "queued") {
     return (
       <CocoaCallout tone="success" title={`Parte de viajeros encolado en SES.HOSPEDAJES (${outcome.queued})`} role="status">
-        Encolado no es aceptado: el envío real al MIR se ve en el Centro de envíos. Esta ventana se cierra automáticamente.
+        Encolado no es aceptado: el envío real al MIR se ve en el Centro de envíos.
       </CocoaCallout>
     );
   }
@@ -804,11 +851,11 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
   const issues = outcome.kind === "invalid" ? outcome.issues : [];
   const detail =
     outcome.kind === "no_records"
-      ? "La reserva no tiene registros de viajeros (SES_NO_GUEST_REGISTER_RECORDS). Completa el registro de viajeros y vuelve a encolar el parte desde la bandeja de cumplimiento."
+      ? "La reserva no tiene registros de viajeros. Completa el registro de viajeros y vuelve a encolar el parte desde la bandeja de cumplimiento."
       : outcome.kind === "disabled"
-        ? "El API no ha creado ningún envío (SES_DISABLED): activa SES.HOSPEDAJES en Ajustes de cumplimiento y vuelve a encolar el parte desde la bandeja."
+        ? "El envío a SES.HOSPEDAJES está desactivado en este hotel: actívalo en Ajustes de cumplimiento y vuelve a encolar el parte desde la bandeja."
         : outcome.kind === "invalid"
-          ? "El API no ha creado ningún envío (GUEST_REGISTER_INVALID): completa los datos del parte (y la firma si procede) en el registro de viajeros y vuelve a encolarlo."
+          ? "El parte de viajeros está incompleto: completa los datos (y la firma si procede) en el registro de viajeros y vuelve a encolarlo."
           : outcome.kind === "error"
             ? `${outcome.message}${outcome.code ? ` (${outcome.code})` : ""}`
             : outcome.kind === "incomplete" && missing.length === 0
@@ -833,9 +880,9 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
             ))}
           </ul>
         ) : null}
-        {detail ? <p style={mutedStyle}>{detail}</p> : null}
+        {detail ? <p className="cocoa-note">{detail}</p> : null}
         {failureMessages.length > 0 ? (
-          <div style={mutedStyle}>
+          <div className="cocoa-note">
             Motivo{failedCount === 1 ? "" : "s"} del servidor ({plural(failedCount, "parte", "partes")} sin encolar):
             <ul style={bulletListStyle}>
               {failureMessages.map((message) => (
@@ -864,7 +911,7 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
             Bandeja de cumplimiento
           </CocoaButton>
         </div>
-        <p style={mutedStyle}>El check-in sí se ha realizado. Esta ventana no se cierra sola para que puedas revisar el parte.</p>
+        <p className="cocoa-note">El check-in sí se ha realizado. Esta ventana no se cierra sola para que puedas revisar el parte.</p>
       </div>
     </CocoaCallout>
   );
@@ -910,12 +957,6 @@ function CompletedView({
   );
 }
 
-/** «limpia» per the closed vocabulary of Tanda L5-A: housekeepingStatus clean | inspected, nothing else. */
-function isRoomClean(room: Pick<Room, "housekeepingStatus">): boolean {
-  const hk = (room.housekeepingStatus ?? "").trim().toLowerCase();
-  return hk === "clean" || hk === "inspected";
-}
-
 function parteTone(status: string): CocoaTone {
   if (status === "accepted") return "success";
   if (status === "rejected" || status === "failed") return "danger";
@@ -937,7 +978,7 @@ function PartesList({ partes, error, emptyText }: { partes: GuestRegisterRecord[
     );
   }
   if (partes.length === 0) {
-    return <p className="cocoa-caption">{emptyText}</p>;
+    return <p className="cocoa-note">{emptyText}</p>;
   }
   return (
     <ul className="c22-section__list" aria-label="Partes de viajeros">

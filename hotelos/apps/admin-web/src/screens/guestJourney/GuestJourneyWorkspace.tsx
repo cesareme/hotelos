@@ -36,8 +36,10 @@ import { urlForScreen } from "../../navigation/nav-tree";
 import { navigateTo } from "../../lib/navigate";
 import { channelLabel, date, dateRange, money, plural, relativeTime } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { reservationStatus, type StatusEntry } from "../../content/status-dictionary";
 import {
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaButton,
   CocoaCallout,
   CocoaDrawer,
@@ -174,7 +176,7 @@ function computeJourney(res: AdminReservation, folio: FolioBalance | null, guest
     key: "checkout",
     label: "Check-out y factura",
     state: cancelled ? "skipped" : checkedOut ? "done" : "pending",
-    detail: checkedOut ? "Salida realizada." : `Prevista el ${date(res.departureDate, "medium")}.`
+    detail: checkedOut ? "Salida hecha." : `Prevista el ${date(res.departureDate, "medium")}.`
   });
 
   const total = steps.filter((s) => s.state !== "skipped").length;
@@ -183,16 +185,12 @@ function computeJourney(res: AdminReservation, folio: FolioBalance | null, guest
   return { steps, done, total, next, cancelled };
 }
 
-/** Lightweight stage from the reservation alone (for the list, no extra fetch). */
-function listStage(res: AdminReservation): { done: number; total: number; label: string; tone: CocoaTone } {
-  if (res.status === "cancelled" || res.status === "no_show") {
-    return { done: 0, total: 4, label: res.status === "no_show" ? "No presentado" : STATUS_LABELS.cancelled, tone: "danger" };
-  }
+/** Lightweight stage from the reservation alone (for the list, no extra fetch); the badge reads the common status dictionary (UX-1 · U2, D5). */
+function listStage(res: AdminReservation): { done: number; total: number; status: StatusEntry } {
+  const status = reservationStatus(res.status);
+  if (res.status === "cancelled" || res.status === "no_show") return { done: 0, total: 4, status };
   const flags = [res.status !== "draft", Boolean(res.assignedRoomId), res.status === "checked_in" || res.status === "checked_out", res.status === "checked_out"];
-  const done = flags.filter(Boolean).length;
-  const label =
-    res.status === "checked_out" ? "Completada" : res.status === "checked_in" ? "En casa" : res.status === "confirmed" ? "Próxima" : res.status === "draft" ? STATUS_LABELS.draft : res.status;
-  return { done, total: 4, label, tone: res.status === "checked_out" ? "success" : res.status === "checked_in" ? "info" : "warning" };
+  return { done: flags.filter(Boolean).length, total: 4, status };
 }
 
 const KIND_TONE: Record<ActivityItem["kind"], CocoaTone> = {
@@ -436,9 +434,7 @@ export function GuestJourneyWorkspace() {
                   </span>
                 </CocoaButton>
                 <span style={rowEndStyle}>
-                  <CocoaBadge tone={st.tone} variant="dot" size="small">
-                    {st.label}
-                  </CocoaBadge>
+                  <CocoaStatusBadge entry={st.status} dense />
                   <span className="cocoa-caption">
                     {st.done} de {st.total} pasos
                   </span>

@@ -120,6 +120,9 @@ describe("timeline-presentation · variables CSS de bloques", () => {
     assert.equal(vars["--tl-head-h"], "48px");
     assert.equal(vars["--tl-bar-h"], "40px");
     assert.equal(vars["--tl-lane-gap"], "6px");
+    // U9b: con puntero grueso la barra mide 44 px (rangeFor coarse → range.barHeight → --tl-bar-h).
+    assert.equal(gridVars(rangeFor(new Date(Date.UTC(2026, 8, 14)), "week", { coarse: true }), 3)["--tl-bar-h"], "44px");
+    assert.equal(gridVars(rangeFor(new Date(Date.UTC(2026, 8, 14)), "week", { coarse: false }), 3)["--tl-bar-h"], "40px");
     assert.equal(gridVars(range, -1)["--tl-today"], "-1");
     assert.equal(gridVars(range, 14)["--tl-today"], "-1");
     assert.equal(gridVars(rangeFor(new Date(Date.UTC(2026, 8, 14)), "month"), 0)["--tl-days"], "30");
@@ -245,7 +248,16 @@ describe("components/timeline · contrato Cocoa 22 sobre el fuente", () => {
     assert.match(tsxSources.TimelineBar, /data-reservation-id=\{bar\.id\}/);
     assert.match(tsxSources.TimelineBar, /"resize-start"/);
     assert.match(tsxSources.TimelineBar, /"resize-end"/);
-    assert.match(tsxSources.TimelineBar, /aria-label=\{barAriaLabel\(bar, label, roomLabel\)\}/, "el aria-label lleva habitación y fechas");
+    assert.match(tsxSources.TimelineBar, /aria-label=\{barAriaLabel\(bar, label, roomLabel, note\)\}/, "el aria-label lleva habitación, fechas y el motivo cuando no se puede redimensionar (U9b)");
+    // U9b: una reserva en el hotel no ofrece asideros (409 REC-03) y lo explica: data-resize + motivo del motor en aria-label y tarjeta rápida.
+    assert.match(tsxSources.TimelineBar, /data-resize=\{String\(allowed\.resize\)\}/);
+    assert.match(tsxSources.TimelineBar, /export function resizeNote\(/);
+    assert.match(tsxSources.TimelineBar, /allowed: \{ move: boolean; resize: boolean; room: boolean; reason\?: string \};/);
+    assert.match(tsxSources.TimelineQuickCard, /allowed\?: Pick<DragPermission, "move" \| "resize" \| "room" \| "reason">;/);
+    assert.match(tsxSources.TimelineQuickCard, /const restriction = allowed && \(!allowed\.resize \|\| !allowed\.move\) \? allowed\.reason : undefined;/);
+    assert.match(tsxSources.TimelineQuickCard, /export const QUICK_CARD_HINT_TOUCH = "Toca para abrir el detalle · mantén pulsado y arrastra para mover";/);
+    assert.match(tsxSources.TimelineQuickCard, /\{quickCardHint\(coarse\)\}/, "con el dedo la pista habla de mantener pulsado");
+    assert.match(tsxSources.TimelineQuickCard, /useCoarsePointer\(\)/);
     assert.match(tsxSources.TimelineBar, /dateRange\(bar\.res\.arrivalDate, bar\.res\.departureDate, DAY_MONTH\)/);
     assert.match(tsxSources.TimelineBar, /onKeyDown=\{onKeyDown\}/, "el teclado lo resuelve la parrilla en un único sitio");
     assert.doesNotMatch(tsxSources.TimelineBar, /onSelect/, "la barra no abre nada por su cuenta");
@@ -253,10 +265,9 @@ describe("components/timeline · contrato Cocoa 22 sobre el fuente", () => {
     assert.match(tsxSources.TimelineQuickCard, /marketSegmentLabel/);
     assert.match(tsxSources.TimelineGapAlert, /role="alert"/);
     assert.match(tsxSources.TimelineGapAlert, /overbookingSummary/);
-    assert.match(tsxSources.TimelineUndoBar, /role="status"/);
-    assert.match(tsxSources.TimelineUndoBar, /clearInterval/);
-    assert.match(tsxSources.TimelineUndoBar, /seconds = DEFAULT_UNDO_SECONDS/);
-    assert.match(tsxSources.TimelineUndoBar, /entry\.note/, "la barra muestra la nota honesta del traslado en casa");
+    // TimelineUndoBar = reexport de CocoaUndoBar (Tanda UX-1 · U4); sus asserts (role=status, clearInterval,
+    // seconds = DEFAULT_UNDO_SECONDS, entry.note) viven en components/cocoa/__tests__/CocoaUndoBar.test.mts.
+    assert.match(tsxSources.TimelineUndoBar, /export \{ CocoaUndoBar as TimelineUndoBar[^}]*\} from "\.\.\/cocoa";/);
   });
 
   it("textos en español (sin cadenas de UI en inglés)", () => {
@@ -295,8 +306,14 @@ describe("styles/cocoa-22-timeline.css", () => {
     assert.match(rules, /\.tl-bar\[data-kind="checked_out"\] \{[^}]*opacity/);
     assert.match(rules, /\.tl-bar\[data-kind="no_show"\] \{[^}]*border-style: dotted/);
     assert.match(rules, /\.tl-bar\[data-kind="no_show"\] \.tl-bar__title \{[^}]*line-through/);
-    assert.match(rules, /@media \(pointer: coarse\) \{[^@]*\.tl-bar \{[^}]*touch-action: pan-x pan-y/, "con el dedo la parrilla se desplaza sobre las barras");
-    assert.match(rules, /@media \(pointer: coarse\) \{[^@]*\.tl-bar__handle \{[^}]*touch-action: none/, "los asideros sí capturan el toque");
+    // U9b (§5.11 (3), §7.2): pan-y sobre barras y asideros (el arrastre exige pulsación larga), barra 44 y asideros 24 con el dedo.
+    assert.match(rules, /@media \(pointer: coarse\) \{[^@]*\.tl-bar \{[^}]*touch-action: pan-y;/, "con el dedo la parrilla se desplaza en vertical sobre las barras");
+    assert.doesNotMatch(rules, /@media \(pointer: coarse\) \{[^@]*touch-action: pan-x pan-y/, "sin pan-x: el movimiento horizontal queda para el arrastre armado");
+    assert.match(rules, /@media \(pointer: coarse\) \{[^@]*\.tl-bar__handle \{[^}]*width: 24px;[^}]*touch-action: pan-y;/, "asideros de 24 px (WCAG 2.5.8) que también dejan desplazar");
+    assert.match(rules, /@media \(pointer: coarse\) \{[^@]*\.tl-grid \{[^}]*--tl-bar-h: 44px;/, "barra de 44 px de respaldo en la hoja");
+    assert.match(rules, /\.tl-bar__handle \{[^}]*width: 10px;/, "con ratón los asideros siguen en 10 px");
+    assert.match(rules, /\.tl-bar\[data-armed="true"\] \{[^}]*box-shadow/, "la pulsación larga armada se ve");
+    assert.match(rules, /\.tl-bar \{[^}]*-webkit-touch-callout: none;/, "sin globo de iOS al mantener pulsado");
     assert.match(rules, /\.tl-workspace\[data-panel="open"\] \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(300px, 380px\)/);
     assert.match(rules, /\.tl-panel \{[^}]*position: sticky/);
     assert.doesNotMatch(rules, /\.tl-panel \{[^}]*position: fixed/);

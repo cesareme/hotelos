@@ -7,9 +7,16 @@
 // «hoy» de referencia (fecha de negocio de la propiedad o el día local si el
 // cierre nocturno va por detrás, como el check-in del API), los filtros, la
 // resolución de nombres de huésped (con degradación honesta del 403), las
-// acciones (todas pasan por el diálogo de confirmación: `applyPending` es el
-// único sitio que escribe, además de `onUndo`), deshacer, el teclado global y
-// la única live region de la página.
+// acciones, deshacer, el teclado global y el anuncio de la selección por la
+// live region del shell (useCocoaAnnounce, UX-1 · U4: una sola por página).
+//
+// Escrituras (UX-1 · U9b, §4.2 y §5.11, F24): mover y redimensionar —por
+// arrastre, por ⌥ + flechas o desde ⌘K— se aplican DIRECTAMENTE en
+// `applyDirect` (barra optimista, PATCH / assign-room, barra de deshacer 8 s
+// con los avisos del motor como nota; si el API responde 409 se revierte y el
+// diálogo explica el conflicto); el diálogo de confirmación (`applyPending`)
+// queda para asignar, check-in, check-out, cancelar y no-show; `onUndo`
+// revierte (también optimista). Nada más escribe.
 //
 // Selección ≠ detalle: las flechas y el clic seleccionan (`selectedId`,
 // aria-pressed + badge); el clic, Intro y Espacio además abren el inspector
@@ -17,13 +24,15 @@
 // parrilla (hoja inferior en teléfonos). Escape cierra en orden: diálogo →
 // selección de celdas → detalle (devolviendo el foco a la barra) → selección.
 // Una sola voz por resultado: el cambio deshacible lo anuncia la barra de
-// deshacer (role=status); el resto, el toast (role=status); la live region
-// solo anuncia la selección. Sin estilos en línea: la geometría dinámica vive
+// deshacer (role=status); el resto, el toast; la región del shell solo
+// anuncia la selección. Sin estilos en línea: la geometría dinámica vive
 // en TimelineGrid y las clases `tl-*` en styles/cocoa-22-timeline.css. Alojada
 // en un contenedor de pestañas, el contenedor pinta el título (useTabHost).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
+import { useCoarsePointer } from "../../lib/useCoarsePointer";
+import { useCocoaAnnounce } from "../../providers/CocoaGlobalProvider";
 import { previewCancellationCharge, type ChargeBreakdown } from "../../services/cancellationApi";
 import { financeErrorMessage } from "../../services/finance-contracts";
 import { lifecycleOutcomeSummary, penaltyPreviewSummary, type LifecycleOutcomeLike, type PenaltyMode } from "../../components/billing/charge-types";
@@ -48,7 +57,7 @@ import {
 } from "../../services/pmsCommerceApi";
 import { fetchNightAuditBusinessDate } from "../../services/posApi";
 import { fetchGuest } from "../../services/guestsApi";
-import { guestFullName, pendingGuestIds } from "../reservations/reservation-guest-label";
+import { guestFullName, guestNamesFromRows, pendingGuestIds } from "../reservations/reservation-guest-label";
 import { useTabHost } from "../tabs/TabHost";
 import { useToast } from "../../components/Toast";
 import { urlForScreen } from "../../navigation/nav-tree";
@@ -61,11 +70,11 @@ import {
   CocoaBadge,
   CocoaButton,
   CocoaCallout,
-  CocoaLiveRegion,
   CocoaPage,
   CocoaSection,
   CocoaSkeleton,
   CocoaState,
+  CocoaUndoBar,
   openTabPath,
   useIsNarrow
 } from "../../components/cocoa";
@@ -79,7 +88,6 @@ import {
   TimelineGrid,
   TimelineInspector,
   TimelineLegend,
-  TimelineUndoBar,
   dialogCopy,
   type TimelineConfirmInput,
   type TimelineConflict,
@@ -95,7 +103,6 @@ import {
   DEFAULT_FILTERS,
   HIDDEN_GUEST_LABEL,
   IN_HOUSE_UNDO_DONE_MESSAGE,
-  RES_STATUS_LABEL,
   UNKNOWN_CONFLICT_MESSAGE,
   addDays,
   anchorForToday,
@@ -111,18 +118,23 @@ import {
   isForbidden,
   isNotFound,
   matchesFilters,
+  needsConfirmation,
   newReservationSearch,
+  optimisticReservation,
   overbookingDays,
   parseDateOnly,
   patchFor,
   rangeFor,
   referenceToday,
+  reservationStatusLabel,
+  resolveKeyboardMove,
   roomOverlapCount,
   selectionDates,
   sellableByType,
   toDateOnly,
   todayLocalIso,
   undoEntryFor,
+  withPatch,
   type CellSelection,
   type Granularity,
   type PendingChange,
@@ -137,7 +149,7 @@ import {
 
 export const LIVE_TIMELINE_TITLE = "Live Timeline";
 export const LIVE_TIMELINE_SUBTITLE =
-  "Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el detalle con folio y actividad, y arrastra para mover o redimensionar la estancia. Las acciones críticas piden confirmación antes de ejecutarse.";
+  "Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el detalle con folio y actividad, y arrastra (o usa ⌥ con las flechas) para mover o redimensionar la estancia: el cambio se aplica al momento y se puede deshacer durante 8 segundos. Solo el check-in, el check-out, cancelar y el no-show piden confirmación.";
 export const FORBIDDEN_TITLE = "Tu perfil no puede leer reservas";
 export const FORBIDDEN_MESSAGE = "Pide acceso a dirección para ver el Live Timeline.";
 export const GUESTS_HIDDEN_TITLE = "Nombres de huésped no visibles";
@@ -148,6 +160,10 @@ export const REFRESH_ERROR_MESSAGE = "No se pudo actualizar el Live Timeline.";
 export const UNDO_DONE_MESSAGE = "Cambio deshecho.";
 export const UNDO_ERROR_MESSAGE = "No se pudo deshacer el cambio.";
 export const UNDO_NO_ROOM_MESSAGE = "No se puede deshacer: la reserva no tenía habitación asignada.";
+export const SELECT_TO_MOVE_MESSAGE = "Selecciona una reserva del Live Timeline para moverla.";
+export const MOVE_LATER_COMMAND = "Mover un día la reserva seleccionada";
+export const MOVE_EARLIER_COMMAND = "Mover un día antes la reserva seleccionada";
+export const UNDO_COMMAND = "Deshacer el último cambio del Live Timeline";
 export const ASSIGN_NEEDS_ROOM = "Selecciona una habitación.";
 export const NO_ROOM_LABEL = "Sin habitación";
 export const NO_MATCH_TITLE = "Sin reservas que coincidan";
@@ -209,7 +225,10 @@ function countOptions(reservations: ReadonlyArray<AdminReservation>, pick: (res:
 export function LiveTimeline() {
   const hosted = useTabHost() !== null;
   const narrow = useIsNarrow();
+  /** Puntero grueso (dedo): barras de 44 px (rangeFor coarse) y arrastre tras pulsación larga (parrilla). */
+  const coarse = useCoarsePointer();
   const { showToast } = useToast();
+  const { announce } = useCocoaAnnounce();
   const propertyId = useMemo(() => getActivePropertyId(), []);
 
   // ---- datos base ---------------------------------------------------------
@@ -235,7 +254,6 @@ export function LiveTimeline() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   /** Sube cada vez que el detalle se abre con teclado: el panel toma el foco. */
   const [focusToken, setFocusToken] = useState(0);
-  const [liveMessage, setLiveMessage] = useState("");
   const gridHandle = useRef<TimelineGridHandle | null>(null);
 
   // ---- acciones -----------------------------------------------------------
@@ -244,6 +262,8 @@ export function LiveTimeline() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<TimelineConflict | null>(null);
   const [undo, setUndo] = useState<UndoEntry | null>(null);
+  /** Escritura directa en curso (move / resize sin diálogo): deshacer espera a que termine. */
+  const inflightRef = useRef<Promise<boolean> | null>(null);
   const [cellSel, setCellSel] = useState<TimelineCreateSelection | null>(null);
   // Tanda L3 · F1 (traspasado de LiveTimelineWorkspace en la fusión TL): la
   // previsualización de la penalización se lee al abrir el diálogo de cancelar /
@@ -315,7 +335,7 @@ export function LiveTimeline() {
   }, []);
 
   // ---- rango y columnas ---------------------------------------------------
-  const range = useMemo(() => rangeFor(anchor, granularity, { narrow }), [anchor, granularity, narrow]);
+  const range = useMemo(() => rangeFor(anchor, granularity, { narrow, coarse }), [anchor, granularity, narrow, coarse]);
   const columns = useMemo(() => columnsFor(range, todayKey), [range, todayKey]);
   const rangeLabel = dateRange(range.start, addDays(range.start, range.dayCount - 1));
 
@@ -419,7 +439,7 @@ export function LiveTimeline() {
   const roomTypeById = useMemo(() => new Map(roomTypes.map((type) => [type.id, type])), [roomTypes]);
 
   const statusesPresent = useMemo(
-    () => countOptions(reservations, (res) => res.status, (id) => RES_STATUS_LABEL[id] ?? id),
+    () => countOptions(reservations, (res) => res.status, (id) => reservationStatusLabel(id)),
     [reservations]
   );
   const channelsPresent = useMemo(() => countOptions(reservations, (res) => res.channel, (id) => channelLabel(id)), [reservations]);
@@ -456,6 +476,12 @@ export function LiveTimeline() {
   // Un 403 (perfil sin guests.read) se guarda como «Huésped no visible» en vez
   // de dejar el bloque en «pendiente» para siempre, y enciende el callout.
   useEffect(() => {
+    // L-15: los nombres que ya trae la lista (`primaryGuestName`) se siembran sin pedir GET /guests/:id.
+    const seeded = Object.entries(guestNamesFromRows(scoped)).filter(([id]) => !requestedGuestIds.current.has(id));
+    if (seeded.length > 0) {
+      for (const [id] of seeded) requestedGuestIds.current.add(id);
+      setGuestNames((current) => ({ ...current, ...Object.fromEntries(seeded) }));
+    }
     const ids = pendingGuestIds(scoped, requestedGuestIds.current);
     if (ids.length === 0) return;
     ids.forEach((id) => requestedGuestIds.current.add(id));
@@ -569,13 +595,16 @@ export function LiveTimeline() {
   const reservationsRef = useRef(reservations);
   reservationsRef.current = reservations;
 
-  /** Selección (flechas, clic, Intro): nunca abre el detalle por sí sola. */
-  const onSelect = useCallback((id: string | null) => {
-    setSelectedId(id);
-    if (!id) return;
-    const res = reservationsRef.current.find((item) => item.id === id);
-    if (res) setLiveMessage(`Seleccionada la reserva ${res.code}`);
-  }, []);
+  /** Selección (flechas, clic, Intro): nunca abre el detalle por sí sola; la anuncia la región del shell. */
+  const onSelect = useCallback(
+    (id: string | null) => {
+      setSelectedId(id);
+      if (!id) return;
+      const res = reservationsRef.current.find((item) => item.id === id);
+      if (res) announce(`Seleccionada la reserva ${res.code}`);
+    },
+    [announce]
+  );
 
   /** Abrir el detalle (clic, Intro, Espacio); con teclado el panel toma el foco. */
   const onOpen = useCallback((id: string, via: TimelineOpenVia) => {
@@ -589,12 +618,6 @@ export function LiveTimeline() {
     setInspectorOpen(false);
     if (selectedId) gridHandle.current?.focusBar(selectedId);
   }, [selectedId]);
-
-  const onDrop = useCallback((change: PendingChange) => {
-    setActionError(null);
-    setConflict(null);
-    setPending(change);
-  }, []);
 
   const onDropRejected = useCallback(
     (reason: string) => {
@@ -675,7 +698,7 @@ export function LiveTimeline() {
   }, [cellSel]);
   const cancelCreate = useCallback(() => setCellSel(null), []);
 
-  // ---- acciones: todas pasan por el diálogo -------------------------------
+  // ---- acciones: directas (move / resize) o con diálogo (el resto) --------
   const roomLabel = useCallback(
     (id: string | null): string => {
       const room = id ? roomById.get(id) : undefined;
@@ -766,10 +789,99 @@ export function LiveTimeline() {
     [pending, copy, refresh, showToast]
   );
 
+  /**
+   * Mover / redimensionar SIN diálogo (F24): la barra cambia al instante, la
+   * barra de deshacer (8 s) anuncia el cambio con los avisos del motor, y el
+   * PATCH / assign-room viaja detrás; después se reconcilia con el servidor.
+   * Si el API lo rechaza se revierte la barra y, con un 409 tipado, el diálogo
+   * se abre con el conflicto (repetir o cancelar); otro error, un toast.
+   */
+  const applyDirect = useCallback(
+    (change: PendingChange, via: TimelineOpenVia): Promise<boolean> => {
+      const { res } = change;
+      const next = optimisticReservation(change);
+      const entry = undoEntryFor(change);
+      // Una carga de rango en vuelo no debe pisar la barra optimista.
+      requestSeq.current++;
+      setReservations((prev) => prev.map((item) => (item.id === res.id ? next : item)));
+      setUndo(entry);
+      if (via === "keyboard") requestAnimationFrame(() => gridHandle.current?.focusBar(res.id));
+      let request: Promise<boolean> | null = null;
+      request = (async () => {
+        try {
+          if (change.type === "move") {
+            const patch = patchFor(change);
+            if (patch) await updateReservation(res.id, patch);
+            else if (change.newRoomId) await assignReservationRoom(res.id, { roomId: change.newRoomId });
+          } else if (change.type === "resize") {
+            const patch = patchFor(change);
+            if (patch) await updateReservation(res.id, patch);
+          }
+          if (mounted.current) void refresh();
+          return true;
+        } catch (err) {
+          if (!mounted.current) return false;
+          setReservations((prev) => prev.map((item) => (item.id === res.id ? res : item)));
+          setUndo((current) => (current === entry ? null : current));
+          const code = conflictCode(err);
+          if (code) {
+            setActionError(null);
+            setConflict({ code, message: conflictMessage(code) });
+            setPending(change);
+          } else {
+            showToast(describeError(err, UNKNOWN_CONFLICT_MESSAGE), { variant: "error" });
+          }
+          void refresh();
+          return false;
+        } finally {
+          if (inflightRef.current === request) inflightRef.current = null;
+        }
+      })();
+      inflightRef.current = request;
+      return request;
+    },
+    [refresh, showToast]
+  );
+
+  /** Arrastre o ⌥ + flechas: directo si el motor no pide confirmación; si no, el diálogo. */
+  const onDrop = useCallback(
+    (change: PendingChange, via: TimelineOpenVia = "pointer") => {
+      setActionError(null);
+      setConflict(null);
+      if (needsConfirmation(change)) {
+        setPending(change);
+        return;
+      }
+      void applyDirect(change, via);
+    },
+    [applyDirect]
+  );
+
+  /** ⌘K «Mover un día»: la reserva seleccionada, con la validación del arrastre. */
+  const moveSelected = useCallback(
+    (dxDays: -1 | 1) => {
+      if (!selected) {
+        showToast(SELECT_TO_MOVE_MESSAGE, { variant: "info" });
+        return;
+      }
+      const r = resolveKeyboardMove({ type: "dates", res: selected, mode: "move", dxDays }, { rows, roomById, roomTypeById, reservations });
+      if (r.pending) onDrop(r.pending, "keyboard");
+      else if (r.rejected) onDropRejected(r.rejected);
+    },
+    [selected, rows, roomById, roomTypeById, reservations, onDrop, onDropRejected, showToast]
+  );
+
   const onUndo = useCallback(async () => {
     const entry = undo;
     if (!entry) return;
     setUndo(null);
+    // Un cambio directo aún en vuelo: deshacer espera a que el API lo confirme (si falló, ya se revirtió).
+    const inflight = inflightRef.current;
+    if (inflight && !(await inflight)) return;
+    if (!mounted.current) return;
+    // Optimista también al deshacer: la barra vuelve antes de que responda el servidor.
+    requestSeq.current++;
+    setReservations((prev) => prev.map((item) => (item.id === entry.reservationId ? withPatch(item, entry.patch) : item)));
     try {
       if (entry.roomOnly) {
         const roomId = entry.patch.assignedRoomId;
@@ -784,6 +896,7 @@ export function LiveTimeline() {
       showToast(entry.roomOnly ? IN_HOUSE_UNDO_DONE_MESSAGE : UNDO_DONE_MESSAGE, { variant: entry.roomOnly ? "warning" : "success" });
     } catch (err) {
       if (!mounted.current) return;
+      void refresh();
       const code = conflictCode(err);
       const message = code ? conflictMessage(code) : describeError(err, UNDO_ERROR_MESSAGE);
       showToast(message, { variant: "error" });
@@ -850,7 +963,11 @@ export function LiveTimeline() {
           : [
               { id: "live-timeline-refresh", label: "Actualizar Live Timeline", run: () => void refresh() },
               { id: "live-timeline-today", label: "Live Timeline: ir a hoy", run: goToday },
-              { id: "live-timeline-new", label: "Nueva reserva desde el timeline", run: openNewReservation }
+              { id: "live-timeline-new", label: "Nueva reserva desde el timeline", run: openNewReservation },
+              // UX-1 · U9b (§5.11 (5)): mover la selección y deshacer también desde ⌘K.
+              { id: "live-timeline-move-later", label: MOVE_LATER_COMMAND, shortcut: "⌥→", run: () => moveSelected(1) },
+              { id: "live-timeline-move-earlier", label: MOVE_EARLIER_COMMAND, shortcut: "⌥←", run: () => moveSelected(-1) },
+              ...(undo ? [{ id: "live-timeline-undo", label: UNDO_COMMAND, shortcut: "⌘Z", run: () => void onUndo() }] : [])
             ]
       }
     >
@@ -897,7 +1014,7 @@ export function LiveTimeline() {
             <span className="cocoa-cluster">
               <CocoaBadge tone="neutral">{plural(rooms.length, "habitación", "habitaciones")}</CocoaBadge>
               <CocoaBadge tone="neutral">{plural(visible.length, "reserva visible", "reservas visibles")}</CocoaBadge>
-              <CocoaBadge tone="success">En casa: {inHouseCount}</CocoaBadge>
+              <CocoaBadge tone="success">En el hotel: {inHouseCount}</CocoaBadge>
               <CocoaBadge tone="info">Llegadas hoy: {arrivalsToday}</CocoaBadge>
               <CocoaBadge tone="warning">Salidas hoy: {departuresToday}</CocoaBadge>
               {businessDateBehind && businessDateKey ? (
@@ -940,7 +1057,7 @@ export function LiveTimeline() {
             </CocoaCallout>
           ) : null}
 
-          <TimelineUndoBar entry={undo} onUndo={onUndo} onDismiss={dismissUndo} />
+          <CocoaUndoBar entry={undo} onUndo={onUndo} onDismiss={dismissUndo} />
 
           {noVisible ? (
             <CocoaCallout
@@ -1026,8 +1143,6 @@ export function LiveTimeline() {
           </div>
         </>
       )}
-
-      <CocoaLiveRegion message={liveMessage} />
 
       <TimelineActionDialog
         pending={pending}

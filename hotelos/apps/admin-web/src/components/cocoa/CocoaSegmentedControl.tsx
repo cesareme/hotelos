@@ -53,6 +53,12 @@ export interface CocoaSegmentedControlProps {
 }
 
 const ITEM_PADDING_BY_SIZE: Record<CocoaSegmentedControlSize, string> = { small: "4px 12px", regular: "6px 16px" };
+/**
+ * Caja mínima de un segmento con ratón (2.5.8: 24 px; `small` medía 21 px,
+ * corrector L-07). Vive en la hoja (cocoa-22.css `:where([data-cocoa="segmented"])
+ * [role="tab"]`), no en línea, para que la capa táctil (mobile.css, 44 px) gane.
+ */
+export const SEGMENT_MIN_HEIGHT_PX = 24;
 const FONT_SIZE_BY_SIZE: Record<CocoaSegmentedControlSize, string> = { small: "var(--cocoa-fs-subheadline)", regular: "var(--cocoa-fs-body)" };
 const ICON_SIZE_BY_SIZE: Record<CocoaSegmentedControlSize, number> = { small: 12, regular: 14 };
 const ITEM_GAP_BY_SIZE: Record<CocoaSegmentedControlSize, number> = { small: 4, regular: 6 };

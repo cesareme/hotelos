@@ -69,6 +69,8 @@ export const CreateReservationSchema = z
     etd: isoDateTime,
     roomTypeId: z.string().min(1, "roomTypeId required"),
     assignedRoomId: z.string().optional(),
+    // UX-1 (corrector L-02): confirma una llegada anterior a hoy; la ruta solo lo honra con pms.reservation.modify.
+    allowPastArrival: z.boolean().optional(),
     ratePlanId: z.string().optional(),
     boardType: z.string().max(40).optional(),
     marketSegment: z.string().max(80).optional(),

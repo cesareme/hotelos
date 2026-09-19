@@ -22,10 +22,11 @@ import { useRouteParam } from "../tabs/tab-helpers";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { EMPTY, channelLabel, date, dateRange, dateTime, money, number, plural, relativeTime } from "../../lib/format";
 import { ACTIONS } from "../../content/actions";
-import { reservationStatusLabel } from "../operations/frontdesk-labels";
+import { reservationStatus } from "../../content/status-dictionary";
 import { BellIcon, InfoCircleIcon, StarIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaButton,
   CocoaCallout,
   CocoaField,
@@ -152,15 +153,6 @@ const EVENT_LABEL: Record<EventType, string> = {
 
 const IMPORTANCE_TONE: Record<TLEvent["importance"], CocoaTone> = { info: "neutral", highlight: "accent", alert: "danger" };
 
-const RESERVATION_TONE: Record<string, CocoaTone> = {
-  draft: "neutral",
-  confirmed: "info",
-  checked_in: "success",
-  checked_out: "neutral",
-  cancelled: "danger",
-  no_show: "danger"
-};
-
 type FilterTab = "all" | "reservations" | "payments" | "incidents" | "notes";
 
 const FILTER_BY_TAB: Record<FilterTab, (e: TLEvent) => boolean> = {
@@ -208,7 +200,7 @@ const RESERVATION_COLUMNS: CocoaTableColumn<Reservation>[] = [
         EMPTY
       )
   },
-  { key: "status", label: "Estado", fit: true, render: (r) => <CocoaBadge tone={RESERVATION_TONE[r.status] ?? "neutral"}>{reservationStatusLabel(r.status)}</CocoaBadge> }
+  { key: "status", label: "Estado", fit: true, render: (r) => <CocoaStatusBadge entry={reservationStatus(r.status)} /> }
 ];
 
 // Avatar with the initials: accent wash, no gradient (§6 of the spec).

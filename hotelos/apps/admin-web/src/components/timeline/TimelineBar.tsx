@@ -4,11 +4,14 @@
 // habitación y fechas), aria-pressed = seleccionado, foco visible
 // (`cocoa-focus-ring`). El color viene del tono (`data-tone` → `--c22-tone*`
 // en cocoa-22.css) y el estado visual de `data-kind` / `data-dragging` /
-// `data-continues-*`. Los asideros de redimensión son <span> sin foco (la
-// misma acción existe por teclado y en el inspector). El teclado (flechas,
-// Intro, Espacio, Escape) lo resuelve la parrilla en un único sitio
-// (`onKeyDown`). ÚNICO estilo inline del lote: la geometría del bloque como
-// variables CSS (el objeto de barVars con cast a CSSProperties), nunca un literal.
+// `data-continues-*` / `data-resize` (UX-1 · U9b: una reserva en el hotel no
+// ofrece asideros porque el API rechaza cambiar sus fechas —409 REC-03— y el
+// aria-label y la tarjeta rápida lo explican con el motivo del motor). Los
+// asideros de redimensión son <span> sin foco (la misma acción existe por
+// teclado: ⌥⇧←/→). El teclado (flechas, ⌥ + flechas, Intro, Espacio, Escape)
+// lo resuelve la parrilla en un único sitio (`onKeyDown`). ÚNICO estilo inline
+// del lote: la geometría del bloque como variables CSS (el objeto de barVars
+// con cast a CSSProperties), nunca un literal.
 //
 // memo: la pantalla pinta 120 habitaciones × 31 días; el hover global no debe
 // re-renderizar cada bloque (los callbacks deben ser estables en TL-3).
@@ -29,7 +32,8 @@ export type TimelineBarProps = {
   dragging: boolean;
   /** Solo el bloque activo es tab stop (roving tabindex de la parrilla). */
   focusable: boolean;
-  allowed: { move: boolean; resize: boolean; room: boolean };
+  /** Permisos del motor (dragAllowed); `reason` explica por qué no se puede redimensionar (en el hotel). */
+  allowed: { move: boolean; resize: boolean; room: boolean; reason?: string };
   onPointerDown(e: ReactPointerEvent<HTMLElement>, mode: DragMode): void;
   /** Elemento bajo el ratón / con foco (ancla de la tarjeta rápida) o null al salir. */
   onHover(el: HTMLElement | null): void;
@@ -38,12 +42,18 @@ export type TimelineBarProps = {
 
 const DAY_MONTH = { style: "dayMonth" } as const;
 
-/** «Reserva RA-1 de Ana Pérez, Llega hoy, 3 noches, Hab. 202, 21 sept – 24 sept» (puro). */
-export function barAriaLabel(bar: Pick<BarModel, "res" | "kind" | "nights">, label: string, roomLabel?: string): string {
+/** «Reserva RA-1 de Ana Pérez, Llega hoy, 3 noches, Hab. 202, 21 sept – 24 sept[, motivo]» (puro). */
+export function barAriaLabel(bar: Pick<BarModel, "res" | "kind" | "nights">, label: string, roomLabel?: string, note?: string): string {
   const parts = [`Reserva ${bar.res.code} de ${label}`, BAR_KIND_LABEL[bar.kind], plural(bar.nights, "noche", "noches")];
   if (roomLabel) parts.push(roomLabel);
   parts.push(dateRange(bar.res.arrivalDate, bar.res.departureDate, DAY_MONTH));
+  if (note) parts.push(note);
   return parts.join(", ");
+}
+
+/** Motivo por el que la barra no ofrece asideros (puro): el del motor cuando no se puede redimensionar. */
+export function resizeNote(allowed: Pick<TimelineBarProps["allowed"], "resize" | "reason">): string | undefined {
+  return !allowed.resize && allowed.reason ? allowed.reason : undefined;
 }
 
 export const TimelineBar = memo(function TimelineBar(props: TimelineBarProps) {
@@ -52,6 +62,7 @@ export const TimelineBar = memo(function TimelineBar(props: TimelineBarProps) {
   const kindLabel = BAR_KIND_LABEL[kind];
   const nightsLabel = plural(nights, "noche", "noches");
   const locked = !allowed.move && !allowed.room;
+  const note = resizeNote(allowed);
 
   return (
     <div
@@ -62,10 +73,11 @@ export const TimelineBar = memo(function TimelineBar(props: TimelineBarProps) {
       data-kind={kind}
       data-dragging={String(dragging)}
       data-locked={String(locked)}
+      data-resize={String(allowed.resize)}
       data-continues-left={String(continuesLeft)}
       data-continues-right={String(continuesRight)}
       data-reservation-id={bar.id}
-      aria-label={barAriaLabel(bar, label, roomLabel)}
+      aria-label={barAriaLabel(bar, label, roomLabel, note)}
       aria-pressed={selected}
       onPointerDown={(e) => onPointerDown(e, "move")}
       onMouseEnter={(e) => onHover(e.currentTarget)}

@@ -7,11 +7,21 @@
 // CocoaTable (fit / showFrom columns, badges for status and AI). Same data:
 // GET /dashboards/concierge?propertyId (polling 30 s); a failed refresh with
 // stale data shows a danger callout instead of zeros.
+//
+// Tanda UX-1 · lote U8 (§5.9, solo los patrones comunes): el sondeo de 30 s se
+// pausa en segundo plano y revalida al volver (useApiData v2, `staleTime`);
+// el filtro de la bandeja es en cliente y la tabla lleva
+// `keepDataWhileLoading` (una revalidación nunca vacía las conversaciones);
+// el estado de la conversación es un badge de estado (icono + tono + texto).
+// El payload no enlaza la conversación con una reserva: sin `reservationId`
+// no se pinta ningún estado de reserva (honestidad, P7).
 
+import { useMemo, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
-import { ACTIONS, UI_STATES } from "../../content/actions";
+import { ACTIONS, STATUS_LABELS, UI_STATES } from "../../content/actions";
+import { type StatusEntry } from "../../content/status-dictionary";
 import { EMPTY, number, percent, plural, relativeTime } from "../../lib/format";
 import {
   CocoaBadge,
@@ -22,16 +32,21 @@ import {
   CocoaKpi,
   CocoaKpiStrip,
   CocoaPage,
+  CocoaSearchInput,
   CocoaSection,
   CocoaSkeleton,
   CocoaSpan,
   CocoaState,
+  CocoaStatusBadge,
   CocoaTable,
-  type CocoaTableColumn,
-  type CocoaTone
+  CocoaToolbar,
+  type CocoaTableColumn
 } from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+/** Sondeo (pausado con la pestaña oculta) y ventana de frescura al volver (§6.2). */
+const POLL_MS = 30_000;
+const STALE_MS = 30_000;
 
 type ConversationRow = {
   id: string;
@@ -59,11 +74,25 @@ type ConciergeDashboard = {
   topGuestRequests: RequestRow[];
 };
 
-function conversationStatus(status: string): { label: string; tone: CocoaTone } {
-  if (status === "open") return { label: "abierta", tone: "success" };
-  if (status === "handoff") return { label: "pasada a persona", tone: "warning" };
-  if (status === "closed") return { label: "cerrada", tone: "neutral" };
-  return { label: status, tone: "neutral" };
+// Estados de conversación (dominio de mensajería, no de reserva): badge de estado
+// con icono + tono + texto; un valor desconocido nunca llega crudo al operador.
+const CONVERSATION_STATUS: Readonly<Record<"open" | "handoff" | "closed", StatusEntry>> = {
+  open: { label: "Abierta", short: "Abierta", tone: "success", icon: "check-circle" },
+  handoff: { label: "Pasada a persona", short: "Persona", tone: "warning", icon: "user-slash" },
+  closed: { label: "Cerrada", short: "Cerrada", tone: "neutral", icon: "x-circle" }
+};
+const UNKNOWN_CONVERSATION_STATUS: StatusEntry = { label: STATUS_LABELS.unknown, short: STATUS_LABELS.unknown, tone: "neutral", icon: "info-circle" };
+
+export function conversationStatus(status: string): StatusEntry {
+  const key = status.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(CONVERSATION_STATUS, key) ? CONVERSATION_STATUS[key as keyof typeof CONVERSATION_STATUS] : UNKNOWN_CONVERSATION_STATUS;
+}
+
+/** Filtro en cliente de la bandeja (id, huésped, canal o estado); sin término, todas. */
+export function filterConversations<T extends { id: string; guestId?: string; channel: string; status: string }>(rows: readonly T[], term: string): T[] {
+  const t = term.trim().toLowerCase();
+  if (!t) return [...rows];
+  return rows.filter((row) => [row.id, row.guestId ?? "", row.channel, row.status, conversationStatus(row.status).label].some((value) => value.toLowerCase().includes(t)));
 }
 
 const CHANNEL_COLUMNS: CocoaTableColumn<ChannelRow>[] = [
@@ -84,10 +113,7 @@ const RECENT_COLUMNS: CocoaTableColumn<ConversationRow>[] = [
     key: "status",
     label: "Estado",
     fit: true,
-    render: (r) => {
-      const s = conversationStatus(r.status);
-      return <CocoaBadge tone={s.tone}>{s.label}</CocoaBadge>;
-    }
+    render: (r) => <CocoaStatusBadge entry={conversationStatus(r.status)} />
   },
   {
     key: "aiEnabled",
@@ -111,10 +137,12 @@ function ConciergeSkeleton() {
 }
 
 export function ConciergeInboxDashboard() {
-  const { data, loading, error, refresh } = useApiData<ConciergeDashboard>("/dashboards/concierge", {
+  const { data, loading, isValidating, error, refresh } = useApiData<ConciergeDashboard>("/dashboards/concierge", {
     query: { propertyId: PROPERTY_ID },
-    pollIntervalMs: 30000
+    pollIntervalMs: POLL_MS,
+    staleTime: STALE_MS
   });
+  const [filter, setFilter] = useState("");
 
   const kpis = data?.kpis;
   const sentiment = kpis?.sentimentAggregate ?? { positive: 0, neutral: 0, negative: 0 };
@@ -122,6 +150,9 @@ export function ConciergeInboxDashboard() {
   const channels = toArray<ChannelRow>(data?.conversationsByChannel);
   const recent = toArray<ConversationRow>(data?.recentConversations);
   const requests = toArray<RequestRow>(data?.topGuestRequests);
+  // Filtro en cliente: 0 peticiones, y la bandeja nunca se vacía mientras el sondeo revalida.
+  const shownRecent = useMemo(() => filterConversations(recent, filter), [recent, filter]);
+  const revalidating = isValidating && Boolean(data);
 
   return (
     <CocoaPage
@@ -129,7 +160,7 @@ export function ConciergeInboxDashboard() {
       title="Mensajes de huéspedes"
       subtitle="Resumen en vivo de las conversaciones con los huéspedes: cobertura de la IA, tiempo de respuesta, sentimiento y peticiones más frecuentes de los últimos 7 días."
       actions={
-        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => refresh()} loading={loading && Boolean(data)}>
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => refresh()} loading={revalidating}>
           {ACTIONS.refresh}
         </CocoaButton>
       }
@@ -199,11 +230,17 @@ export function ConciergeInboxDashboard() {
         </CocoaSpan>
       </CocoaGrid>
 
-      <CocoaSection title="Conversaciones recientes" meta={plural(recent.length, "conversación mostrada", "conversaciones mostradas")} padding={recent.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
-        {recent.length === 0 ? (
-          <CocoaState kind="empty" inline title="No hay conversaciones que mostrar." />
+      <CocoaToolbar
+        variant="content"
+        aria-label="Filtro de conversaciones"
+        leftSlot={<CocoaSearchInput id="concierge-filter" value={filter} onChange={setFilter} placeholder="Filtrar por conversación, huésped, canal o estado…" aria-label="Filtrar las conversaciones recientes" />}
+        rightSlot={filter && recent.length > 0 ? <CocoaBadge tone="neutral">{`${shownRecent.length} de ${recent.length}`}</CocoaBadge> : undefined}
+      />
+      <CocoaSection title="Conversaciones recientes" meta={plural(shownRecent.length, "conversación mostrada", "conversaciones mostradas")} padding={shownRecent.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {shownRecent.length === 0 ? (
+          <CocoaState kind="empty" inline title={filter ? "Ninguna conversación coincide con el filtro." : "No hay conversaciones que mostrar."} primaryAction={filter ? { label: ACTIONS.clearFilters, onClick: () => setFilter("") } : undefined} />
         ) : (
-          <CocoaTable columns={RECENT_COLUMNS} rows={recent} rowKey="id" caption="Conversaciones recientes" aria-label="Conversaciones recientes" />
+          <CocoaTable columns={RECENT_COLUMNS} rows={shownRecent} rowKey="id" loading={revalidating} keepDataWhileLoading caption="Conversaciones recientes" aria-label="Conversaciones recientes" />
         )}
       </CocoaSection>
     </CocoaPage>

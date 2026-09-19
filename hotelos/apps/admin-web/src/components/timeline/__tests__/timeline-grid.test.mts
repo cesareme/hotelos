@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { AUTOSCROLL_EDGE_PX, AUTOSCROLL_STEP_PX, autoscrollDelta, cellIndexAt, dropRoomFromElement } from "../useTimelineDrag.ts";
+import { AUTOSCROLL_EDGE_PX, AUTOSCROLL_STEP_PX, autoscrollDelta, cellIndexAt, dropRoomFromElement, isLongPressPointer, touchMoveBeforeArm } from "../useTimelineDrag.ts";
+import { DRAG_THRESHOLD_PX, LONG_PRESS_MS } from "../../../screens/timeline/timeline-engine.ts";
 
 // Tanda TL · lote TL-3: las funciones puras del hook de arrastre se prueban
 // en runtime (el módulo importa solo react, el motor y timeline-presentation:
@@ -45,6 +46,19 @@ describe("useTimelineDrag · funciones puras", () => {
     assert.equal(autoscrollDelta(961, 200, 1000), 16);
     assert.equal(autoscrollDelta(990, 200, 1000), 16);
     assert.equal(autoscrollDelta(210, 200, 260), 0, "scroller de 60 px: sin autoscroll");
+  });
+
+  it("U9b · pulsación larga: solo el dedo la exige (250 ms); antes de armar, moverse más del umbral es un scroll y no un arrastre", () => {
+    assert.equal(LONG_PRESS_MS, 250);
+    assert.equal(isLongPressPointer("touch"), true);
+    assert.equal(isLongPressPointer("mouse"), false);
+    assert.equal(isLongPressPointer("pen"), false);
+    assert.equal(isLongPressPointer(undefined), false);
+    assert.equal(touchMoveBeforeArm(0, 0), "wait");
+    assert.equal(touchMoveBeforeArm(DRAG_THRESHOLD_PX, -DRAG_THRESHOLD_PX), "wait");
+    assert.equal(touchMoveBeforeArm(0, DRAG_THRESHOLD_PX + 1), "scroll");
+    assert.equal(touchMoveBeforeArm(-9, 0), "scroll");
+    assert.equal(touchMoveBeforeArm(3, 3, 2), "scroll");
   });
 });
 
@@ -145,6 +159,17 @@ describe("TL-3 · contrato de fuente", () => {
     assert.match(grid, /pinRow\(baseWin, offsets, draggingRowIndex\)/, "la fila origen del arrastre no sale de la ventana virtual");
     assert.match(grid, /rowIndex = win\.start \+ offset \+ FIRST_DATA_ROW_INDEX/, "aria-rowindex absoluto");
     assert.match(grid, /useImperativeHandle\(handleRef, \(\) => \(\{ focusBar/, "la pantalla devuelve el foco a la barra al cerrar el detalle");
+    // U9b (2.5.7): ⌥ + flechas mueven la reserva con la validación del arrastre, por `code`, y dicen de dónde viene el cambio.
+    assert.match(grid, /const move = bar \? keyboardMove\(bar, e\) : null;/);
+    assert.match(grid, /resolveKeyboardMove\(move, \{ rows, roomById, roomTypeById, reservations \}\)/);
+    assert.match(grid, /if \(r\.pending\) onDrop\(r\.pending, "keyboard"\);/);
+    assert.match(grid, /if \(r\.pending\) onDrop\(r\.pending, "pointer"\);/);
+    assert.match(grid, /onDrop\(pending: PendingChange, via: TimelineOpenVia\): void;/);
+    assert.ok(grid.indexOf("keyboardMove(bar, e)") < grid.indexOf("const dir = ARROWS[e.key];"), "⌥ + flecha se resuelve antes que la selección con flechas");
+    // U9b (táctil): la pulsación larga arma el arrastre y abre la tarjeta rápida; la tarjeta explica por qué no hay asideros.
+    assert.match(grid, /onArm: handleArm/);
+    assert.match(grid, /if \(bar\) setHover\(\{ bar, el \}\);/);
+    assert.match(grid, /allowed=\{dragAllowed\(hover\.bar\.res\)\}/);
     for (const label of ["Live Timeline de reservas por habitación", "Ficha rápida de la reserva", "Libres"]) {
       assert.ok(grid.includes(label), `grid: «${label}»`);
     }
@@ -238,6 +263,15 @@ describe("TL-3 · contrato de fuente", () => {
     assert.match(hook, /scrollTop \+= deltaY/, "autoscroll vertical (corrección 1)");
     assert.match(hook, /const scrollTopStartRef = useRef\(0\);/, "el desplazamiento vertical cuenta en el fantasma");
     assert.match(hook, /if \(d\.mode === "move" && targetRoomId === null\) \{\s*onCancel\(\);\s*return;\s*\}/, "soltar fuera de toda fila cancela (no propone fechas)");
+    // U9b: pulsación larga con el dedo (LONG_PRESS_MS), touchmove NO pasivo solo armado, sin menú contextual, data-armed en la barra.
+    assert.match(hook, /window\.setTimeout\(arm, LONG_PRESS_MS\)/);
+    assert.match(hook, /window\.addEventListener\("touchmove", onTouchMove, \{ passive: false \}\)/);
+    assert.match(hook, /if \(d\?\.longPress && d\.armed && e\.cancelable\) e\.preventDefault\(\);/);
+    assert.match(hook, /window\.addEventListener\("contextmenu", onContextMenu\)/);
+    assert.match(hook, /el\.setAttribute\("data-armed", "true"\)/);
+    assert.match(hook, /if \(longPress && armed\) return;/, "soltar armado sin mover deja la tarjeta y no abre el detalle");
+    assert.match(hook, /const longPress = isLongPressPointer\(e\.pointerType\);/);
+    assert.match(hook, /if \(touchMoveBeforeArm\(e\.clientX - d\.startX, dy\) === "scroll"\)/);
     const imports = hook.split("\n").filter((line) => /^import /.test(line));
     assert.equal(imports.length, 3);
     assert.ok(imports.some((line) => /from "react";$/.test(line)));

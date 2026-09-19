@@ -537,6 +537,38 @@ Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).
 
+Estado verificado (Tanda UX-1 · «Feel» de recepción, 2026-09-19, main tras 150a713 +
+fusión de `tanda-ux1` 4e7fdee):
+- diseño `docs/design/UX-RECEPCION-FEEL.md` implementado en 13 lotes (U0a…U10):
+  check-in sin habitación con candidata sugerida; diccionario de estados
+  (`content/status-dictionary.ts`, `CocoaStatusBadge`, vocabulario «Llega hoy · En el
+  hotel · Sale hoy · Salida hecha · No-show · Cancelada»); `useApiData` v2 (caché,
+  SWR 30 s, mutate optimista con rollback, abort, prefetch) y dedupe de GET en
+  `api-client`; toast con acción y pausa, `CocoaUndoBar`, región viva única del
+  shell, skip link, esqueletos a 300 ms, `CocoaTable` selección/columnas/keepData,
+  `CocoaInspector`; ⌘K con comandos de página, ⌥+letra, teclas de acceso, `PaymentDialog`
+  como form; check-in con cobro real (saldo/depósito/sin cobro, sin «preautorizar»);
+  Mi día con acción contextual, inspector, lote de check-out de salidas de hoy,
+  `WalkInDrawer` (⌥W); ficha con primaria única por estado, cambio de habitación
+  con deshacer, `LifecycleDialog`; lista/huéspedes/mensajes con keepData e inspector;
+  `ReservationQuickCreate`; Live Timeline con deshacer sin diálogo, teclado
+  ⌥←→↑↓ y objetivos táctiles ≥ 44 px; densidad operativa por dispositivo
+- medida automatizada del camino óptimo: `apps/admin-web/e2e/measure` (MEASURE_STRICT=1,
+  tenant aislado `org_uxday/prop_uxday` del seed `db:seed:ux-day -- --reset`);
+  baseline y final en `docs/audits/ux-recepcion/measure-*.json`: T1 2 clics · T2 13 → 2
+  clics · T3 3 · T4 no completable → 4 · T5 9 → 1 clic · T6 2 → 0 clics (solo teclado);
+  los seis objetivos de §8.3 cumplidos
+- `corepack pnpm --filter @hotelos/admin-web test` existe (unitarios del front con el
+  tsx de apps/api); e2e 44/45 (la spec solo-teclado de quick-checkin depende del
+  orden de specs: pendiente), informe `docs/audits/TANDA-UX1-RECEPCION-2026-09-19.md`
+- API: `POST /properties/:id/reservations` responde 400 `PAST_ARRIVAL_DATE` salvo
+  `allowPastArrival` con `pms.reservation.modify`; la lista devuelve `primaryGuestName`;
+  `/search` enruta los hits de habitación al tablero
+- pendientes con dueño (informe §9-§10): folio del walk-in sin cargo de alojamiento
+  hasta el cierre («anticipo»), sin deshacer de la primera asignación desde la cola,
+  contraste 1.4.11 en claro de badges warning/success, `role=grid` para selección
+  múltiple, sesiones con recepcionistas reales (kit en `docs/runbooks/ux-recepcion-pruebas.md`)
+
 ## Servicios en local Mac Pro
 
 - Postgres 16 brew · puerto 5432 · DB hotelos / user hotelos / pass

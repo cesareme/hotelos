@@ -123,6 +123,11 @@ function daysBetween(fromIso: string, toIso: string): number {
  * night-audit.service. Exported for the reservation importer (Tanda 7), whose
  * «llegada pasada» frontier must be the same one as the `historical` guard below.
  */
+/** Llegada anterior a «hoy» (las dos en `YYYY-MM-DD`; comparación lexicográfica). Pura: la comparte la ruta y el test. */
+export function isPastArrival(arrivalIso: string, todayIso: string): boolean {
+  return arrivalIso.slice(0, 10) < todayIso.slice(0, 10);
+}
+
 export function todayInTimezone(timezone: string): string {
   try {
     return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -281,7 +286,7 @@ function mapGuest(row: NonNullable<Awaited<ReturnType<typeof prisma.guest.findUn
 export type ReservationPersistedPriceSource = ReservationPriceSource | "quoted";
 export type ReservationRecordWithPricing = ReservationRecord & { priceSource?: ReservationPersistedPriceSource };
 
-function mapReservation(row: NonNullable<Awaited<ReturnType<typeof prisma.reservation.findUnique>>> & { primaryGuestId?: string | null }): ReservationRecordWithPricing {
+function mapReservation(row: NonNullable<Awaited<ReturnType<typeof prisma.reservation.findUnique>>> & { primaryGuestId?: string | null; primaryGuestName?: string | null }): ReservationRecordWithPricing {
   return {
     id: row.id,
     propertyId: row.propertyId,
@@ -320,6 +325,7 @@ function mapReservation(row: NonNullable<Awaited<ReturnType<typeof prisma.reserv
     priceSource: (row.priceSource as ReservationPersistedPriceSource | null) ?? undefined,
     currency: row.currency,
     primaryGuestId: row.primaryGuestId ?? undefined,
+    primaryGuestName: row.primaryGuestName ?? undefined,
     // REC-01a: parity columns accepted by UpdateReservationSchema must round-trip.
     estimatedArrivalTime: row.estimatedArrivalTime ?? undefined,
     internalNotes: row.internalNotes ?? undefined,
@@ -342,7 +348,19 @@ async function withPrimaryGuestId(row: ReservationRow): Promise<ReservationRecor
   return mapReservation(Object.assign(row, { primaryGuestId: primary?.guestId }));
 }
 
-/** Batch variant of withPrimaryGuestId: ONE reservationGuest query for a whole page (no N+1). */
+/** «Nombre Apellido1 Apellido2» del titular (puro; vacío → null). */
+export function primaryGuestDisplayName(guest: { firstName?: string | null; surname1?: string | null; surname2?: string | null } | null | undefined): string | null {
+  if (!guest) return null;
+  const name = [guest.firstName, guest.surname1, guest.surname2].map((part) => (part ?? "").trim()).filter(Boolean).join(" ");
+  return name || null;
+}
+
+/**
+ * Batch variant of withPrimaryGuestId: ONE reservationGuest query for a whole
+ * page (no N+1) and, Tanda UX-1 (corrector L-15), ONE guest query for the
+ * titular's display name (`primaryGuestName`): la lista y el Live Timeline
+ * dejan de pedir GET /guests/:id por reserva (71 peticiones al abrir ⌥T).
+ */
 async function attachPrimaryGuestIds(rows: ReservationRow[]): Promise<ReservationRecord[]> {
   if (rows.length === 0) return [];
   const links = await prisma.reservationGuest.findMany({
@@ -350,7 +368,13 @@ async function attachPrimaryGuestIds(rows: ReservationRow[]): Promise<Reservatio
     select: { reservationId: true, guestId: true }
   });
   const primaryByReservation = new Map(links.map((l) => [l.reservationId, l.guestId] as const));
-  return rows.map((row) => mapReservation(Object.assign(row, { primaryGuestId: primaryByReservation.get(row.id) ?? null })));
+  const guestIds = Array.from(new Set(links.map((l) => l.guestId)));
+  const guests = guestIds.length > 0 ? await prisma.guest.findMany({ where: { id: { in: guestIds } }, select: { id: true, firstName: true, surname1: true, surname2: true } }) : [];
+  const nameByGuest = new Map(guests.map((g) => [g.id, primaryGuestDisplayName(g)] as const));
+  return rows.map((row) => {
+    const primaryGuestId = primaryByReservation.get(row.id) ?? null;
+    return mapReservation(Object.assign(row, { primaryGuestId, primaryGuestName: primaryGuestId ? nameByGuest.get(primaryGuestId) ?? null : null }));
+  });
 }
 
 export type RoomListOptions = {
@@ -876,6 +900,13 @@ export async function createReservation(input: {
    */
   allowOverbooking?: boolean;
   /**
+   * Tanda UX-1 (corrector L-02): una llegada anterior a hoy (fecha local de la
+   * propiedad) se rechaza con 400 `PAST_ARRIVAL_DATE` salvo que el llamador la
+   * confirme explícitamente (la ruta solo lo admite con `pms.reservation.modify`;
+   * el importador ya valida la llegada pasada fila a fila). Nunca por defecto.
+   */
+  allowPastArrival?: boolean;
+  /**
    * Tanda 7 · importación masiva: reserva histórica (llegada pasada) creada como
    * estancia cerrada en la MISMA transacción: estado `checked_out`, folio
    * `closed` y, si hay `assignedRoomId`, un `Stay` cerrado (llegada 15:00 →
@@ -966,6 +997,17 @@ export async function createReservation(input: {
     // se crea por recepción y se le hace el check-in).
     if (input.historical && input.departureDate > todayInTimezone(property.timezone)) {
       throw new BadRequestError("Una reserva histórica debe haber terminado.");
+    }
+    // UX-1 (corrector L-02): una llegada en el pasado casi siempre es un error de
+    // tecleo (RES-00046: 61 noches a 0 €); solo pasa confirmada explícitamente.
+    if (!input.historical && !input.allowPastArrival) {
+      const localToday = todayInTimezone(property.timezone);
+      if (isPastArrival(input.arrivalDate, localToday)) {
+        throw withDetails(
+          new BadRequestError(`La llegada ${input.arrivalDate} es anterior a hoy (${localToday}): comprueba las fechas. Para registrar una llegada pasada confírmala con allowPastArrival (requiere el permiso pms.reservation.modify).`),
+          { code: "PAST_ARRIVAL_DATE", arrivalDate: input.arrivalDate, today: localToday }
+        );
+      }
     }
     // roomType / ratePlan must belong to the same property (and therefore the
     // same tenant) — prevents grafting another property's inventory/pricing.

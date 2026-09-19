@@ -29,8 +29,10 @@ import { toArray } from "../../utils/toArray";
 import { useTabHost } from "../tabs/TabHost";
 import { number, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS, newLabel } from "../../content/actions";
+import { roomStatus } from "../../content/status-dictionary";
 import {
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaButton,
   CocoaCard,
   CocoaDrawer,
@@ -48,23 +50,6 @@ import {
 } from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
-
-const HK_STATUS_LABEL: Record<string, string> = {
-  dirty: "Sucia",
-  clean: "Limpia",
-  inspected: "Inspeccionada",
-  occupied: "Ocupada",
-  out_of_order: "Fuera de servicio",
-  out_of_service: "Fuera de servicio"
-};
-const HK_STATUS_TONE: Record<string, CocoaTone> = {
-  dirty: "warning",
-  clean: "success",
-  inspected: "success",
-  occupied: "info",
-  out_of_order: "danger",
-  out_of_service: "danger"
-};
 
 const TASK_TYPE_LABEL: Record<string, string> = {
   departure_clean: "Salida (limpieza)",
@@ -271,10 +256,8 @@ export function HousekeepingDashboard() {
                     {item.room.floor ? <span style={captionStyle}>planta {item.room.floor}</span> : null}
                   </div>
                   <span className="cocoa-cluster">
-                    <CocoaBadge tone={HK_STATUS_TONE[s] ?? "info"}>{HK_STATUS_LABEL[s] ?? s}</CocoaBadge>
-                    {isOccupied(item) || isOutOfService(item) ? (
-                      <CocoaBadge tone={HK_STATUS_TONE[item.room.status] ?? "info"} variant="tinted">{HK_STATUS_LABEL[item.room.status] ?? item.room.status}</CocoaBadge>
-                    ) : null}
+                    <CocoaStatusBadge entry={roomStatus(s)} />
+                    {isOccupied(item) || isOutOfService(item) ? <CocoaStatusBadge entry={roomStatus(item.room.status)} variant="tinted" /> : null}
                   </span>
                 </div>
 

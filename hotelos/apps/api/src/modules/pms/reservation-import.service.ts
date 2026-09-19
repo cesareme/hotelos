@@ -1487,6 +1487,9 @@ export function buildCreateReservationInput(input: {
     bookingSource: bookingSourceOf(input.importId),
     bookerName: `${row.guest.firstName} ${surnames}`.trim(),
     vipFlag: row.vipFlag,
+    // La llegada pasada ya se valida fila a fila (RESERVATION_IMPORT_ROW_PAST_ARRIVAL / `historico`, y los
+    // cortes de sincronización traen alojados que llegaron días atrás): el guard de createReservation no aplica.
+    allowPastArrival: true,
     correlationId: input.correlationId
   };
   if (row.ratePlanId) out.ratePlanId = row.ratePlanId;

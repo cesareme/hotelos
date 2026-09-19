@@ -22,8 +22,15 @@
 // Hooks for the css lot: `c22-state` + data-kind/inline/dashed, parts
 // `c22-state__illustration/__title/__message/__actions`; skeletons carry
 // `data-cocoa="skeleton"` + data-variant/data-width.
+//
+// Tanda UX-1 · U4 (docs/design/UX-RECEPCION-FEEL.md §4 «Esqueleto con retardo
+// + fundido», §6.1, F28): `useSkeletonDelay` paints a skeleton only after
+// `SKELETON_DELAY_MS` (300, NN/g «under 1 s nothing»; 0 = immediate),
+// `useFadeInAfterLoading` hands the body `.cocoa-fade-in` (cocoa-motion.css)
+// when a loading phase resolves, and `CocoaPageSkeleton` is the generic
+// page skeleton (title + rows) of the App's Suspense.
 
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ExclamationCircleIcon, XCircleIcon } from "../cocoa-icons/StatusIcons";
 import { EmptyStateBox, EmptyStateConnection, EmptyStateError, EmptyStateSearch, SuccessIllustration } from "../cocoa-illustrations";
 import { DEGRADED_HINT } from "../cocoa-extras/DegradedValue";
@@ -377,5 +384,85 @@ function CocoaSkeletonStrip({ count = 5, min = 180, label = "Cargando indicadore
 
 CocoaSkeleton.Grid = CocoaSkeletonGrid;
 CocoaSkeleton.Strip = CocoaSkeletonStrip;
+
+// ----------------------------------------------------------------- skeleton delay + fade (U4)
+
+/** Default delay before a skeleton paints (ms): NN/g — nothing under 300 ms feels instant. */
+export const SKELETON_DELAY_MS = 300;
+
+/** Whether the skeleton paints (pure): never before `delayMs` of loading; immediately with 0. */
+export function shouldShowSkeleton(input: { loading: boolean; delayMs: number; elapsedMs: number }): boolean {
+  if (!input.loading) return false;
+  if (input.delayMs <= 0) return true;
+  return input.elapsedMs >= input.delayMs;
+}
+
+/** True once `loading` has lasted `delayMs` (0 = at once); false as soon as it stops. */
+export function useSkeletonDelay(loading: boolean, delayMs: number = SKELETON_DELAY_MS): boolean {
+  const [show, setShow] = useState(() => shouldShowSkeleton({ loading, delayMs, elapsedMs: 0 }));
+  useEffect(() => {
+    if (!loading) {
+      setShow(false);
+      return undefined;
+    }
+    if (delayMs <= 0) {
+      setShow(true);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setShow(true), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [loading, delayMs]);
+  return show;
+}
+
+/** True after a loading phase resolves (false again while loading), so the body can carry `.cocoa-fade-in`. */
+export function useFadeInAfterLoading(loading: boolean): boolean {
+  const wasLoading = useRef(false);
+  const [fade, setFade] = useState(false);
+  useEffect(() => {
+    if (loading) {
+      wasLoading.current = true;
+      setFade(false);
+    } else if (wasLoading.current) {
+      wasLoading.current = false;
+      setFade(true);
+    }
+  }, [loading]);
+  return fade;
+}
+
+/** Class of the skeleton → content swap (pure): `.cocoa-fade-in` of cocoa-motion.css, nothing otherwise. */
+export function fadeInClass(fade: boolean): string | undefined {
+  return fade ? "cocoa-fade-in" : undefined;
+}
+
+export interface CocoaPageSkeletonProps {
+  /** Placeholder rows under the title (default 6). */
+  rows?: number;
+  /** Delay before it paints (default SKELETON_DELAY_MS; 0 = at once). */
+  delayMs?: number;
+  label?: string;
+}
+
+/** Generic page skeleton (title + text + rows) for the App's Suspense: mirrors a CocoaPage instead of «Cargando pantalla…». */
+export function CocoaPageSkeleton({ rows = 6, delayMs = SKELETON_DELAY_MS, label = "Cargando pantalla…" }: CocoaPageSkeletonProps) {
+  const show = useSkeletonDelay(true, delayMs);
+  return (
+    <div role="status" aria-busy="true" className="c22-page-skeleton" data-cocoa="page-skeleton" data-pending={show ? undefined : "true"}>
+      {show ? (
+        <>
+          <CocoaSkeleton variant="title" />
+          <CocoaSkeleton variant="text" lines={2} />
+          <div className="c22-page-skeleton__rows" data-cocoa="page-skeleton-rows">
+            {Array.from({ length: rows }, (_, index) => (
+              <CocoaSkeleton key={index} variant="row" />
+            ))}
+          </div>
+        </>
+      ) : null}
+      <span className="cocoa-sr-only">{label}</span>
+    </div>
+  );
+}
 
 export default CocoaState;

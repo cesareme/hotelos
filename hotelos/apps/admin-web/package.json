@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
-    "e2e": "playwright test"
+    "test": "node --import ../api/node_modules/tsx/dist/loader.mjs --test \"src/**/__tests__/*.test.mts\"",
+    "e2e": "playwright test",
+    "e2e:measure": "playwright test --project measure"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.0.0",

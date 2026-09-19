@@ -35,10 +35,14 @@ import {
   getThemePreference,
   type ThemePreference
 } from "../theme";
-import { useCocoaNotifications } from "../providers/CocoaGlobalProvider";
+import { useCocoaNotifications, useCocoaShortcuts } from "../providers/CocoaGlobalProvider";
+import { GLOBAL_ALT_SHORTCUTS, isTextEntryTarget, modalDialogOpen, shortcutCombo, type ShortcutEntry } from "../content/shortcuts-registry";
 import { openHelpCenter } from "../components/guide/guideStore";
 import { SupervisorPinSettingsDialog } from "../components/SupervisorPinSettingsDialog";
 import { useToast } from "../components/Toast";
+import { CocoaShellLiveRegion, SHELL_MAIN_ID, SKIP_LINK_LABEL, announce, focusTargetAfterNavigate } from "../components/cocoa/CocoaLiveRegion";
+import { UNDO_LABEL } from "../components/cocoa/CocoaUndoBar";
+import { setMutationFeedback } from "../hooks/useApiData";
 import { fetchPropertyReadiness, type PropertyReadiness } from "../services/billingApi";
 import { setupBannerMessage, shouldShowSetupBanner } from "./setup-banner";
 import { PROPERTY_KIND_LABELS, type StructuredPropertyRow } from "../services/financeScope";
@@ -993,6 +997,81 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
   // sidebar column) the layout owns the navigation drawer and the toolbar.
   const compact = useIsCompactViewport();
   const canCreateReservation = useCanCreateReservation();
+  const { showToast } = useToast();
+  const { register: registerShortcut } = useCocoaShortcuts();
+  const gate = useNavGate();
+
+  // Focus lands on `main` after every shell navigation (UX-1 · U4, P2, WCAG
+  // 2.4.3): sidebar, ⌘K, `hotelos-nav`, popstate all end in a new
+  // `activeScreen`; the first paint keeps the document's own focus.
+  const mainRef = useRef<HTMLElement | null>(null);
+  const previousScreen = useRef<string | null>(null);
+  useEffect(() => {
+    const target = focusTargetAfterNavigate({ previousScreen: previousScreen.current, nextScreen: props.activeScreen });
+    previousScreen.current = props.activeScreen;
+    if (target === "main") mainRef.current?.focus({ preventScroll: true });
+  }, [props.activeScreen]);
+
+  // `mutate(…, { announce, undo })` of hooks/useApiData feeds the shell's live
+  // region and a toast with «Deshacer» (8 s, pauses on hover, announced once).
+  useEffect(() => {
+    setMutationFeedback({
+      announce: (text) => announce(text),
+      undo: (entry) => {
+        showToast(entry.label, {
+          variant: "success",
+          duration: entry.seconds * 1000,
+          action: entry.onUndo ? { label: UNDO_LABEL, onAction: entry.onUndo } : undefined,
+          announce: true
+        });
+      }
+    });
+    return () => setMutationFeedback({});
+  }, [showToast]);
+
+  // ⌥+letter navigation (UX-1 · U5, §4 «Atajos por pantalla», D7, R8): the seven
+  // entries of content/shortcuts-registry.ts GLOBAL_ALT_SHORTCUTS, registered in
+  // CocoaGlobalProvider by physical key (`Alt+KeyH`, so ⌥N never inserts «˜»),
+  // ignored inside text fields and while a modal dialog is open, gated by the
+  // same role/module visibility as the sidebar. ⌥F and ⌥W dispatch a cancelable
+  // window event the active screen may claim (`event.preventDefault()`); when
+  // nobody does, ⌥F opens ⌘K and ⌥W opens «Nueva reserva» (honest fallback).
+  const altNavRef = useRef<(entry: ShortcutEntry) => void>(() => undefined);
+  altNavRef.current = (entry) => {
+    if (entry.event) {
+      const claimed = new CustomEvent(entry.event, { cancelable: true });
+      window.dispatchEvent(claimed);
+      if (claimed.defaultPrevented) return;
+      if (entry.id === "nav.focus-search") {
+        openPaletteWith("");
+        return;
+      }
+      if (entry.id === "nav.walk-in") {
+        if (canCreateReservation) openNewReservation();
+        return;
+      }
+      return;
+    }
+    if (!entry.screen) return;
+    const match = findByScreen(entry.screen);
+    if (!match || !("item" in match) || !gate.isVisible(match.item)) return;
+    pushRecent(entry.screen);
+    selectAndClose(entry.screen);
+  };
+  useEffect(() => {
+    const offs = GLOBAL_ALT_SHORTCUTS.map((entry) => {
+      const combo = shortcutCombo(entry);
+      if (!combo) return () => undefined;
+      return registerShortcut(combo, (event) => {
+        if (isTextEntryTarget(event.target) || modalDialogOpen(document)) return;
+        event.preventDefault();
+        altNavRef.current(entry);
+      });
+    });
+    return () => {
+      for (const off of offs) off();
+    };
+  }, [registerShortcut]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -1092,6 +1171,18 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
 
   return (
     <div className="cocoa-shell" data-route-base="/backoffice">
+      {/* Skip link (WCAG 2.4.1): first Tab stop of the page, visible only while focused (styles/cocoa-22.css `.c22-skip-link`). */}
+      <a
+        href={`#${SHELL_MAIN_ID}`}
+        className="c22-skip-link"
+        data-cocoa="skip-link"
+        onClick={(event) => {
+          event.preventDefault();
+          mainRef.current?.focus();
+        }}
+      >
+        {SKIP_LINK_LABEL}
+      </a>
       {compact ? (
         <CompactToolbar
           navOpen={navOpen}
@@ -1160,7 +1251,11 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
         <CocoaSplitView
           sidebar={compact ? null : <div className="cocoa-sidebar-host">{sidebar}</div>}
           collapsibleSidebar={!compact}
-          content={<main className="cocoa-content">{props.children}</main>}
+          content={
+            <main id={SHELL_MAIN_ID} ref={mainRef} className="cocoa-content" tabIndex={-1}>
+              {props.children}
+            </main>
+          }
         />
       </div>
       <CommandPalette
@@ -1171,6 +1266,8 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
         onSelectHit={(hit) => selectHit(hit)}
       />
       <GuideProvider />
+      {/* The page's ONE live region (UX-1 · U4, R5): `announce()` from anywhere, toasts with `announce`, `mutate({ announce })`. */}
+      <CocoaShellLiveRegion />
     </div>
   );
 }

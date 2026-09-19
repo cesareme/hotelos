@@ -108,6 +108,7 @@ export function TimelineActionDialog(props: TimelineActionDialogProps) {
     <CocoaDialog
       open={pending !== null}
       onClose={onCancel}
+      submitOnEnter
       title={copy?.title ?? ""}
       description={copy?.body}
       tone={copy?.danger ? "destructive" : "primary"}

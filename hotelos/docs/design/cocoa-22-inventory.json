@@ -11,43 +11,43 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 232,
-    "lines": 96754,
+    "files": 234,
+    "lines": 101019,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1126,
+    "cocoaButtons": 1165,
     "rawTables": 1,
-    "cocoaTables": 311,
+    "cocoaTables": 306,
     "rawInputs": 0,
-    "cocoaInputs": 1139,
-    "inlineStyles": 647,
+    "cocoaInputs": 1169,
+    "inlineStyles": 625,
     "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
     "withPageHeader": 201,
-    "withTabHost": 89,
-    "debtPoints": 182
+    "withTabHost": 90,
+    "debtPoints": 176
   },
   "bySize": {
-    "S": 98,
+    "S": 97,
     "M": 107,
-    "L": 22,
-    "XL": 5
+    "L": 23,
+    "XL": 7
   },
   "byArchetype": {
     "dashboard": 94,
     "lista": 18,
     "detalle": 3,
     "formulario": 19,
-    "asistente": 11,
+    "asistente": 12,
     "workspace": 5,
     "calendario": 6,
     "chat": 1,
-    "dialogo": 20,
+    "dialogo": 21,
     "contenedor": 41,
     "otro": 14
   },
@@ -169,13 +169,13 @@
     "hoy": {
       "label": "Hoy",
       "files": 12,
-      "lines": 6530,
+      "lines": 7475,
       "debtPoints": 17,
       "sizes": {
         "S": 3,
-        "M": 6,
+        "M": 5,
         "L": 3,
-        "XL": 0
+        "XL": 1
       },
       "archetypes": {
         "dashboard": 7,
@@ -188,7 +188,7 @@
     "informes": {
       "label": "Informes",
       "files": 9,
-      "lines": 2321,
+      "lines": 2302,
       "debtPoints": 7,
       "sizes": {
         "S": 5,
@@ -203,19 +203,19 @@
     },
     "operaciones": {
       "label": "Operaciones",
-      "files": 33,
-      "lines": 12923,
-      "debtPoints": 38,
+      "files": 34,
+      "lines": 13616,
+      "debtPoints": 34,
       "sizes": {
         "S": 13,
-        "M": 17,
+        "M": 18,
         "L": 3,
         "XL": 0
       },
       "archetypes": {
         "dashboard": 12,
         "lista": 1,
-        "dialogo": 13,
+        "dialogo": 14,
         "otro": 1,
         "asistente": 2,
         "contenedor": 4
@@ -239,21 +239,21 @@
     },
     "recepcion": {
       "label": "Recepción",
-      "files": 18,
-      "lines": 9111,
-      "debtPoints": 17,
+      "files": 19,
+      "lines": 11757,
+      "debtPoints": 15,
       "sizes": {
-        "S": 6,
+        "S": 5,
         "M": 8,
-        "L": 4,
-        "XL": 0
+        "L": 5,
+        "XL": 1
       },
       "archetypes": {
         "dashboard": 5,
         "workspace": 3,
         "lista": 1,
         "calendario": 2,
-        "asistente": 3,
+        "asistente": 4,
         "contenedor": 4
       }
     },
@@ -3409,9 +3409,9 @@
         "recepcion"
       ],
       "archetype": "workspace",
-      "lines": 678,
+      "lines": 674,
       "metrics": {
-        "lines": 678,
+        "lines": 674,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3447,14 +3447,14 @@
         "recepcion"
       ],
       "archetype": "dashboard",
-      "lines": 389,
+      "lines": 412,
       "metrics": {
-        "lines": 389,
+        "lines": 412,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 1,
+        "cocoaButtons": 3,
         "rawTables": 0,
         "cocoaTables": 1,
         "rawInputs": 0,
@@ -3485,19 +3485,19 @@
         "recepcion"
       ],
       "archetype": "lista",
-      "lines": 226,
+      "lines": 487,
       "metrics": {
-        "lines": 226,
+        "lines": 487,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 2,
+        "cocoaButtons": 8,
         "rawTables": 0,
-        "cocoaTables": 2,
+        "cocoaTables": 1,
         "rawInputs": 0,
         "cocoaInputs": 1,
-        "inlineStyles": 3,
+        "inlineStyles": 1,
         "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
@@ -3509,8 +3509,8 @@
         "emoji": 0
       },
       "headerExempt": false,
-      "debtPoints": 1,
-      "size": "S"
+      "debtPoints": 0,
+      "size": "M"
     },
     {
       "path": "apps/admin-web/src/screens/guests/GuestTimelineScreen.tsx",
@@ -3523,9 +3523,9 @@
         "recepcion"
       ],
       "archetype": "calendario",
-      "lines": 435,
+      "lines": 427,
       "metrics": {
-        "lines": 435,
+        "lines": 427,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4123,9 +4123,9 @@
         "recepcion"
       ],
       "archetype": "workspace",
-      "lines": 212,
+      "lines": 249,
       "metrics": {
-        "lines": 212,
+        "lines": 249,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4134,7 +4134,7 @@
         "rawTables": 0,
         "cocoaTables": 3,
         "rawInputs": 0,
-        "cocoaInputs": 0,
+        "cocoaInputs": 1,
         "inlineStyles": 3,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -4271,14 +4271,14 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "lista",
-      "lines": 422,
+      "lines": 510,
       "metrics": {
-        "lines": 422,
+        "lines": 510,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 3,
+        "cocoaButtons": 4,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -4309,19 +4309,19 @@
         "hoy"
       ],
       "archetype": "dashboard",
-      "lines": 754,
+      "lines": 1557,
       "metrics": {
-        "lines": 754,
+        "lines": 1557,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 13,
+        "cocoaButtons": 21,
         "rawTables": 0,
-        "cocoaTables": 4,
+        "cocoaTables": 1,
         "rawInputs": 0,
-        "cocoaInputs": 1,
-        "inlineStyles": 8,
+        "cocoaInputs": 2,
+        "inlineStyles": 7,
         "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
@@ -4334,7 +4334,7 @@
       },
       "headerExempt": false,
       "debtPoints": 2,
-      "size": "M"
+      "size": "XL"
     },
     {
       "path": "apps/admin-web/src/screens/operations/GeneralManagerScreen.tsx",
@@ -4491,9 +4491,9 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "otro",
-      "lines": 218,
+      "lines": 220,
       "metrics": {
-        "lines": 218,
+        "lines": 220,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4529,9 +4529,9 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 380,
+      "lines": 363,
       "metrics": {
-        "lines": 380,
+        "lines": 363,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4567,9 +4567,9 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 426,
+      "lines": 414,
       "metrics": {
-        "lines": 426,
+        "lines": 414,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4825,9 +4825,9 @@
         "hoy"
       ],
       "archetype": "dashboard",
-      "lines": 925,
+      "lines": 936,
       "metrics": {
-        "lines": 925,
+        "lines": 936,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5015,9 +5015,9 @@
         "informes"
       ],
       "archetype": "dashboard",
-      "lines": 391,
+      "lines": 372,
       "metrics": {
-        "lines": 391,
+        "lines": 372,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5087,9 +5087,9 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "dialogo",
-      "lines": 972,
+      "lines": 1013,
       "metrics": {
-        "lines": 972,
+        "lines": 1013,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5098,8 +5098,8 @@
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
-        "cocoaInputs": 4,
-        "inlineStyles": 12,
+        "cocoaInputs": 6,
+        "inlineStyles": 4,
         "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
@@ -5111,7 +5111,7 @@
         "emoji": 0
       },
       "headerExempt": true,
-      "debtPoints": 3,
+      "debtPoints": 1,
       "size": "L"
     },
     {
@@ -5121,9 +5121,9 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "dialogo",
-      "lines": 602,
+      "lines": 661,
       "metrics": {
-        "lines": 602,
+        "lines": 661,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5132,8 +5132,8 @@
         "rawTables": 0,
         "cocoaTables": 1,
         "rawInputs": 0,
-        "cocoaInputs": 4,
-        "inlineStyles": 11,
+        "cocoaInputs": 6,
+        "inlineStyles": 2,
         "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
@@ -5145,7 +5145,7 @@
         "emoji": 0
       },
       "headerExempt": true,
-      "debtPoints": 3,
+      "debtPoints": 1,
       "size": "M"
     },
     {
@@ -5507,9 +5507,9 @@
         "recepcion"
       ],
       "archetype": "dashboard",
-      "lines": 587,
+      "lines": 591,
       "metrics": {
-        "lines": 587,
+        "lines": 591,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5519,7 +5519,7 @@
         "cocoaTables": 0,
         "rawInputs": 0,
         "cocoaInputs": 2,
-        "inlineStyles": 7,
+        "inlineStyles": 5,
         "cocoaCards": 1,
         "colourLiterals": 0,
         "colourFallbacks": 0,
@@ -5531,7 +5531,7 @@
         "emoji": 0
       },
       "headerExempt": false,
-      "debtPoints": 2,
+      "debtPoints": 1,
       "size": "M"
     },
     {
@@ -5621,14 +5621,14 @@
         "hoy"
       ],
       "archetype": "calendario",
-      "lines": 309,
+      "lines": 325,
       "metrics": {
-        "lines": 309,
+        "lines": 325,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 2,
+        "cocoaButtons": 4,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -5761,6 +5761,40 @@
       "headerExempt": false,
       "debtPoints": 1,
       "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/operations/WalkInDrawer.tsx",
+      "name": "WalkInDrawer",
+      "screenKeys": [],
+      "category": "operaciones",
+      "categories": [],
+      "archetype": "dialogo",
+      "lines": 532,
+      "metrics": {
+        "lines": 532,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 5,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 10,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "M"
     },
     {
       "path": "apps/admin-web/src/screens/operations/WorkforceDashboard.tsx",
@@ -6354,9 +6388,9 @@
         "recepcion"
       ],
       "archetype": "asistente",
-      "lines": 1302,
+      "lines": 1261,
       "metrics": {
-        "lines": 1302,
+        "lines": 1261,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6365,7 +6399,7 @@
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
-        "cocoaInputs": 73,
+        "cocoaInputs": 74,
         "inlineStyles": 3,
         "cocoaCards": 1,
         "colourLiterals": 0,
@@ -6420,6 +6454,40 @@
       "size": "L"
     },
     {
+      "path": "apps/admin-web/src/screens/reservations/ReservationQuickCreate.tsx",
+      "name": "ReservationQuickCreate",
+      "screenKeys": [],
+      "category": "recepcion",
+      "categories": [],
+      "archetype": "asistente",
+      "lines": 1100,
+      "metrics": {
+        "lines": 1100,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 6,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 12,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": true,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
+    },
+    {
       "path": "apps/admin-web/src/screens/reservations/ReservationsListScreen.tsx",
       "name": "ReservationsListScreen",
       "screenKeys": [
@@ -6430,16 +6498,16 @@
         "recepcion"
       ],
       "archetype": "dashboard",
-      "lines": 517,
+      "lines": 1191,
       "metrics": {
-        "lines": 517,
+        "lines": 1191,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 4,
+        "cocoaButtons": 12,
         "rawTables": 0,
-        "cocoaTables": 2,
+        "cocoaTables": 1,
         "rawInputs": 0,
         "cocoaInputs": 2,
         "inlineStyles": 1,
@@ -6455,7 +6523,7 @@
       },
       "headerExempt": false,
       "debtPoints": 0,
-      "size": "M"
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/reservations/ReservationWorkspaceScreen.tsx",
@@ -6468,18 +6536,18 @@
         "recepcion"
       ],
       "archetype": "workspace",
-      "lines": 1016,
+      "lines": 1616,
       "metrics": {
-        "lines": 1016,
+        "lines": 1616,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 18,
+        "cocoaButtons": 19,
         "rawTables": 0,
         "cocoaTables": 4,
         "rawInputs": 0,
-        "cocoaInputs": 7,
+        "cocoaInputs": 8,
         "inlineStyles": 2,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -6493,7 +6561,7 @@
       },
       "headerExempt": false,
       "debtPoints": 1,
-      "size": "L"
+      "size": "XL"
     },
     {
       "path": "apps/admin-web/src/screens/revenue/RateGridEditorScreen.tsx",
@@ -8612,9 +8680,9 @@
         "hoy"
       ],
       "archetype": "calendario",
-      "lines": 1052,
+      "lines": 1167,
       "metrics": {
-        "lines": 1052,
+        "lines": 1167,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

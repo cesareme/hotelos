@@ -638,6 +638,8 @@ export type ReservationRecord = {
   totalAmount: number;
   currency: string;
   primaryGuestId?: string;
+  /** Tanda UX-1 (L-15): nombre visible del titular en las listas (una consulta por página, sin GET /guests/:id por fila). */
+  primaryGuestName?: string;
   // Tanda 2 · REC-01a: PMS parity columns (schema.prisma `model Reservation`).
   // Accepted by UpdateReservationSchema and persisted; they must round-trip
   // through GET / PATCH / list, so they are part of the record. Same

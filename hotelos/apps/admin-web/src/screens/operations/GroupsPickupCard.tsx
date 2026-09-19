@@ -18,6 +18,7 @@ import { toArray } from "../../utils/toArray";
 import { date, dateRange, number, percent, plural } from "../../lib/format";
 import {
   CocoaBadge,
+  CocoaStatusBadge,
   CocoaCallout,
   CocoaCard,
   CocoaChart,
@@ -28,6 +29,7 @@ import {
   type CocoaBarsDatum,
   type CocoaTone
 } from "../../components/cocoa";
+import { BAR_KIND, RESERVATION_STATUS, UNKNOWN_STATUS, type StatusEntry } from "../../content/status-dictionary";
 
 // ───────────────────────────────────────────────────────── API types
 
@@ -72,13 +74,15 @@ const GROUP_TYPE_LABEL: Record<string, string> = {
   other: "Otro"
 };
 
-const STATUS_META: Record<string, { tone: CocoaTone; label: string }> = {
-  inquiry: { tone: "neutral", label: "Consulta" },
-  tentative: { tone: "warning", label: "Provisional" },
-  definite: { tone: "success", label: "Confirmado" },
-  confirmed: { tone: "success", label: "Confirmado" },
-  in_house: { tone: "accent", label: "En casa" },
-  cancelled: { tone: "danger", label: "Cancelado" }
+// Estado del grupo: las fases propias de grupos (consulta, provisional) más
+// las que comparte con la reserva, tomadas del diccionario común (UX-1 · U2, D5).
+const STATUS_META: Record<string, StatusEntry> = {
+  inquiry: { label: "Consulta", short: "Consulta", tone: "neutral", icon: "info-circle" },
+  tentative: { label: "Provisional", short: "Prov.", tone: "warning", icon: "clock" },
+  definite: RESERVATION_STATUS.confirmed,
+  confirmed: RESERVATION_STATUS.confirmed,
+  in_house: BAR_KIND.in_house,
+  cancelled: RESERVATION_STATUS.cancelled
 };
 
 function pickupTone(pct: number): CocoaTone {
@@ -134,7 +138,7 @@ export function GroupsPickupCard(props: { propertyId: string; onSelect?: (groupI
 
 function GroupPickupRow({ group, onSelect }: { group: GroupPickupSummary; onSelect?: (groupId: string) => void }) {
   const tone = pickupTone(group.pickupPct);
-  const status = STATUS_META[group.status.toLowerCase()] ?? { tone: "info" as CocoaTone, label: group.status };
+  const status = STATUS_META[group.status.toLowerCase()] ?? UNKNOWN_STATUS;
 
   // Closest deadline: cut-off when it exists and comes first, else arrival.
   let proximityText: string;
@@ -170,9 +174,7 @@ function GroupPickupRow({ group, onSelect }: { group: GroupPickupSummary; onSele
               <strong className="cocoa-mono">{group.code}</strong>
               <span>{group.name}</span>
               <CocoaBadge tone="neutral">{GROUP_TYPE_LABEL[group.groupType.toLowerCase()] ?? group.groupType}</CocoaBadge>
-              <CocoaBadge tone={status.tone} variant="dot">
-                {status.label}
-              </CocoaBadge>
+              <CocoaStatusBadge entry={status} />
             </div>
             <span style={NOTE_STYLE}>
               {dateRange(group.arrivalDate, group.departureDate)} · {plural(group.totalBlocked, "habitación bloqueada", "habitaciones bloqueadas")}

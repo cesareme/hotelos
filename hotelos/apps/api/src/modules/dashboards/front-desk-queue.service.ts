@@ -206,6 +206,8 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
       .filter((id): id is string => Boolean(id))
   );
   const cleanByRoomType = new Map<string, typeof allRooms>();
+  /** Candidatas ya propuestas a otra llegada (L-22). */
+  const suggestedRoomIds = new Set<string>();
   for (const room of allRooms) {
     if (!room.roomTypeId) continue;
     // Tanda L5: estado unificado — limpia por housekeepingStatus (helper único).
@@ -361,7 +363,9 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
     // Si ya marcamos no_show_risk, evitamos duplicar el flag de "haz algo".
     if (!res.assignedRoomId && res.status === "confirmed" && !noShowFlagged) {
       const candidates = res.roomTypeId ? cleanByRoomType.get(res.roomTypeId) ?? [] : [];
-      const suggestion = candidates[0];
+      // L-22: dos llegadas del mismo tipo nunca reciben la misma candidata.
+      const suggestion = candidates.find((candidate) => !suggestedRoomIds.has(candidate.id));
+      if (suggestion) suggestedRoomIds.add(suggestion.id);
       const roomTypeLabel = res.roomTypeId ? "" : "";
       items.push({
         id: `unassigned_${res.id}`,
@@ -375,7 +379,7 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
         reservationId: res.id,
         guestId: guest?.id,
         primaryAction: suggestion
-          ? { label: `Asignar ${suggestion.number}`, kind: "assign_room", payload: { reservationId: res.id, roomId: suggestion.id } }
+          ? { label: `Asignar ${suggestion.number}`, kind: "assign_room", payload: { reservationId: res.id, roomId: suggestion.id, roomNumber: suggestion.number } }
           : { label: "Abrir reserva", kind: "open_reservation", payload: { reservationId: res.id } },
         secondaryActions: [{ label: "Ver room rack", kind: "open_room_rack", payload: { propertyId } }]
       });
@@ -398,7 +402,7 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
           priority: isImminent ? "urgent" : "today",
           kind: isImminent ? "housekeeping_late" : "checkin_blocked",
           title: `Habitación no lista · ${room.number}`,
-          context: `${guestName} llega${etaLabel}. La ${room.number} está en estado "${hk || "desconocido"}".`,
+          context: `${guestName} llega${etaLabel}. La ${room.number} está ${cleanlinessLabel(hk)}.`,
           recommendation: isImminent
             ? "Prioriza la limpieza con housekeeping o reasigna a una habitación limpia."
             : "Pide a housekeeping que adelante la limpieza de esta habitación.",
@@ -562,4 +566,29 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
   };
 
   return { generatedAt: now.toISOString(), items, counts, summary, degraded };
+}
+
+/** Estado de limpieza en el idioma del mostrador (D5; nunca el enum crudo, L-14). */
+export function cleanlinessLabel(status: string | null | undefined): string {
+  switch ((status ?? "").trim().toLowerCase()) {
+    case "clean":
+      return "limpia";
+    case "inspected":
+      return "inspeccionada";
+    case "dirty":
+      return "sucia";
+    case "cleaning":
+    case "in_progress":
+      return "en limpieza";
+    case "occupied":
+      return "ocupada";
+    case "blocked":
+      return "bloqueada";
+    case "out_of_order":
+    case "ooo":
+    case "out_of_service":
+      return "fuera de servicio";
+    default:
+      return "en un estado desconocido";
+  }
 }

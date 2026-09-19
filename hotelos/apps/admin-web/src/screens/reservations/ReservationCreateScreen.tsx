@@ -22,6 +22,18 @@
 // it: an empty field lets the API price the stay from the rate grid
 // (`pricing.source` on the response). `baseAmount` / `taxAmount` are no longer
 // sent (the API ignored them).
+//
+// Tanda UX-1 · lote U9a (docs/design/UX-RECEPCION-FEEL.md §5.10, F12, F33,
+// 3.3.7): dos modos en la misma URL (`?modo=rapida|completa`, rápida por
+// defecto, conmutador en la cabecera). El modo rápido (ReservationQuickCreate)
+// es una sola pantalla con los tres obligatorios, precio en vivo y los CTA
+// «Crear y…»; el completo conserva los seis pasos. Los dos comparten el
+// formulario, el prefijado (Live Timeline `?arrivalDate&departureDate&
+// roomTypeId&assignedRoomId` y huésped `?guestId=` de la lista y la ficha de
+// huéspedes, 3.3.7) y el cuerpo del POST (`buildCreateReservationPayload`). El
+// catálogo (tipos y habitaciones) viene de la caché compartida (`useApiData`,
+// 5 min) y mientras no está la página pinta un esqueleto espejo: «Sin tipos de
+// habitación» solo se dice cuando la carga ha terminado sin tipos (F33).
 
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import type { RateGridRatePlan } from "@hotelos/shared";
@@ -32,8 +44,6 @@ import { urlForScreen } from "../../navigation/nav-tree";
 import { fetchConfigurationCategories, type ConfigurationCategoryGroup } from "../../services/backofficeApi";
 import {
   createReservation,
-  fetchRoomTypes,
-  fetchRooms,
   quoteAvailability,
   scanIdDocument,
   type AdminReservation,
@@ -42,13 +52,33 @@ import {
   type AvailabilityQuote,
   type ReservationPriceSource
 } from "../../services/pmsCommerceApi";
+import { fetchGuest } from "../../services/guestsApi";
+import { useApiData } from "../../hooks/useApiData";
+import { toArray } from "../../utils/toArray";
 import { useToast } from "../../components/Toast";
+import { rememberTaxId } from "../../components/billing/InvoiceFromReservationDialog";
+import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
 import { PREFILL_NOTE, hasReservationPrefill, parseReservationPrefill } from "./reservation-create-prefill";
+import {
+  ReservationQuickCreate,
+  ReservationQuickCreateSkeleton,
+  ReservationWizardSkeleton,
+  buildCreateReservationPayload,
+  defaultReservationForm,
+  guestDisplayName,
+  guestIdFromSearch,
+  guestPrefillValues,
+  reservationModeFromSearch,
+  searchWithReservationMode,
+  type ReservationCreateMode,
+  type ReservationFormValues
+} from "./ReservationQuickCreate";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 import { useTabHost } from "../tabs/TabHost";
 import { navigateTo } from "../../lib/navigate";
 import { money, plural } from "../../lib/format";
-import { ACTIONS, FIELD_LABELS } from "../../content/actions";
+import { ACTIONS, FIELD_LABELS, RESERVATION_CREATE_ACTIONS, RESERVATION_CREATE_TOASTS } from "../../content/actions";
+import { RESERVATION_CREATE_INSTRUCTIONS } from "../../content/screen-instructions/reservations";
 import {
   CocoaActionBar,
   CocoaBadge,
@@ -77,8 +107,13 @@ import {
 
 const PROPERTY_ID = getActivePropertyId();
 
-const TODAY_ISO = new Date().toISOString().slice(0, 10);
-const TOMORROW_ISO = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+/** Caché del catálogo (tipos y habitaciones) compartida con Mi día y el walk-in. */
+const CATALOG_STALE_MS = 5 * 60_000;
+
+/** Formulario compartido por los dos modos (ReservationQuickCreate): los 70 campos del asistente más el huésped enlazado y el NIF de la empresa. */
+const defaultForm = defaultReservationForm;
+
+type FormValues = ReservationFormValues;
 
 // Companion guest — accompanying guests linked to the primary reservation. The
 // titular fills in their own data in the main form; companions are added
@@ -108,90 +143,6 @@ function newCompanion(type: CompanionGuest["type"] = "adult"): CompanionGuest {
 }
 
 const COMPANION_TYPE_LABEL: Record<CompanionGuest["type"], string> = { adult: "Adulto", child: "Niño", infant: "Bebé" };
-
-const defaultForm = {
-  // ── Estancia ───────────────────────────────────────────────────────────
-  arrivalDate: TODAY_ISO,
-  departureDate: TOMORROW_ISO,
-  eta: "",
-  etd: "",
-  estimatedArrivalTime: "",
-  adults: "2",
-  children: "0",
-  infants: "0",
-  childrenAges: "",
-  roomsCount: "1",
-  roomTypeId: "",
-  assignedRoomId: "",
-  // ── Tarifa ─────────────────────────────────────────────────────────────
-  ratePlanId: "",
-  boardType: "BB",
-  totalAmount: "",
-  // ── Origen (Channel / Source / Market) ─────────────────────────────────
-  bookingSource: "direct",
-  channel: "direct",
-  marketSegment: "leisure",
-  sourceCode: "direct_web",
-  purposeOfStay: "leisure",
-  externalReference: "",
-  groupCode: "",
-  companyName: "",
-  travelAgentName: "",
-  bookerName: "",
-  bookerEmail: "",
-  // ── Pagos ──────────────────────────────────────────────────────────────
-  paymentMethod: "credit_card",
-  depositAmount: "",
-  depositPaid: "",
-  depositDueDate: "",
-  guaranteeType: "card_guarantee",
-  // Filled with the property's default policy once GET /cancellation-policies answers.
-  cancellationPolicyCode: "",
-  billingInstruction: "guest_pays_checkout",
-  // ── Primary guest (titular) ────────────────────────────────────────────
-  title: "",
-  firstName: "",
-  middleName: "",
-  surname1: "",
-  surname2: "",
-  email: "",
-  phone: "",
-  mobilePhone: "",
-  languagePreference: "es",
-  guestCompany: "",
-  vipCode: "",
-  vipFlag: "",
-  loyaltyProgram: "",
-  loyaltyNumber: "",
-  loyaltyTier: "",
-  // Guest identity & residence — required by SES Hospedajes (RD 933/2021) for the
-  // parte de viajeros. Optional at booking; can be completed by check-in (24h).
-  documentType: "DNI",
-  documentNumber: "",
-  documentSupportNumber: "",
-  documentIssueCountry: "",
-  documentExpiryDate: "",
-  dateOfBirth: "",
-  nationality: "ESP",
-  sex: "",
-  residenceAddress: "",
-  residenceCountry: "España",
-  residenceProvince: "",
-  residenceLocality: "",
-  residencePostalCode: "",
-  // ── Solicitudes & preferencias ─────────────────────────────────────────
-  preferences: "",
-  marketingConsent: "",
-  emergencyContactName: "",
-  emergencyContactPhone: "",
-  specialRequests: "",
-  accessibilityNeeds: "",
-  dietaryRequirements: "",
-  internalNotes: "",
-  notes: ""
-};
-
-type FormValues = typeof defaultForm;
 
 const DOCUMENT_TYPE_OPTIONS = [
   { value: "DNI", label: "DNI" },
@@ -350,6 +301,20 @@ const STEPS: Array<{ key: StepKey; label: string; description: string }> = [
   { key: "solicitudes", label: "Solicitudes", description: "Peticiones especiales, accesibilidad, dieta y notas internas." }
 ];
 
+/** Conmutador de la cabecera (U9a): la misma URL con `?modo=` (rápida = sin parámetro). */
+const MODE_TABS: Array<{ value: ReservationCreateMode; label: string }> = [
+  { value: "rapida", label: RESERVATION_CREATE_ACTIONS.quickMode },
+  { value: "completa", label: RESERVATION_CREATE_ACTIONS.fullMode }
+];
+
+function localStorageOrNull(): Storage | null {
+  try {
+    return typeof window !== "undefined" ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
 function categoryOptions(groups: ConfigurationCategoryGroup[], categoryCode: string) {
   return groups
     .flatMap((group) => group.categories)
@@ -390,31 +355,37 @@ export function ReservationCreateScreen() {
   const [prefill] = useState(() => parseReservationPrefill(typeof window === "undefined" ? "" : window.location.search));
   const prefilled = hasReservationPrefill(prefill);
   const [form, setForm] = useState<FormValues>(() => ({ ...defaultForm, ...prefill }));
+  // U9a: modo (`?modo=`, rápida por defecto) y huésped prefijado (`?guestId=`, lista y ficha de huéspedes), leídos UNA vez al montar.
+  const [mode, setMode] = useState<ReservationCreateMode>(() => reservationModeFromSearch(typeof window === "undefined" ? "" : window.location.search));
+  const [prefillGuestId] = useState(() => guestIdFromSearch(typeof window === "undefined" ? "" : window.location.search));
+  const [prefilledGuestName, setPrefilledGuestName] = useState<string | null>(null);
   const [companions, setCompanions] = useState<CompanionGuest[]>([]);
-  const [roomTypes, setRoomTypes] = useState<AdminRoomType[]>([]);
-  const [rooms, setRooms] = useState<AdminRoom[]>([]);
+  // U9a: catálogo desde la caché compartida (sin petición si es fresco); la página pinta el esqueleto mientras no hay datos (F33).
+  const roomTypesState = useApiData<AdminRoomType[]>(`/properties/${PROPERTY_ID}/room-types`, { staleTime: CATALOG_STALE_MS });
+  const roomsState = useApiData<AdminRoom[]>(`/properties/${PROPERTY_ID}/rooms`, { staleTime: CATALOG_STALE_MS });
+  const roomTypes = useMemo(() => toArray<AdminRoomType>(roomTypesState.data), [roomTypesState.data]);
+  const rooms = useMemo(() => toArray<AdminRoom>(roomsState.data), [roomsState.data]);
+  const catalogLoading = roomTypesState.loading && roomTypesState.data === null;
+  const roomTypesLoaded = !roomTypesState.loading && roomTypesState.data !== null;
   const [categoryGroups, setCategoryGroups] = useState<ConfigurationCategoryGroup[]>([]);
   const [quotes, setQuotes] = useState<AvailabilityQuote[]>([]);
   const [quoted, setQuoted] = useState(false);
   const [ratePlans, setRatePlans] = useState<RateGridRatePlan[]>([]);
   const [policies, setPolicies] = useState<CancellationPolicy[]>([]);
   const [createdReservation, setCreatedReservation] = useState<AdminReservation | null>(null);
-  const [status, setStatus] = useState("Listo para consultar disponibilidad y crear una reserva.");
+  const [status, setStatus] = useState("");
   const [step, setStep] = useState(0);
   const [quoting, setQuoting] = useState(false);
   const [creating, setCreating] = useState(false);
   const [attempted, setAttempted] = useState(false);
 
   useEffect(() => {
-    // Auditoría 2026-07: cargas INDEPENDIENTES. Antes un Promise.all descartaba
-    // los tipos de habitación reales si fallaba la llamada de categorías.
-    void fetchRoomTypes(PROPERTY_ID)
-      .then(setRoomTypes)
-      .catch(() => setStatus("No se pudieron cargar los tipos de habitación. Reintenta."));
+    // Auditoría 2026-07: cargas INDEPENDIENTES (tipos y habitaciones ya vienen de
+    // useApiData). Antes un Promise.all descartaba los tipos reales si fallaba la
+    // llamada de categorías.
     void fetchConfigurationCategories(PROPERTY_ID)
       .then((categoryResponse) => setCategoryGroups(categoryResponse.groups))
       .catch(() => undefined); // opcional: los selects usan sus valores locales
-    void fetchRooms(PROPERTY_ID).then(setRooms).catch(() => setRooms([]));
     // Tanda L3 (lote A): real rate plans and cancellation policies of the hotel.
     void fetchRatePlans(PROPERTY_ID).then(setRatePlans).catch(() => setRatePlans([]));
     void fetchCancellationPolicies(PROPERTY_ID)
@@ -424,6 +395,39 @@ export function ReservationCreateScreen() {
       })
       .catch(() => setPolicies([]));
   }, []);
+
+  useEffect(() => {
+    if (roomTypesState.error) setStatus("No se pudieron cargar los tipos de habitación. Reintenta.");
+  }, [roomTypesState.error]);
+
+  // 3.3.7 (U9a): huésped prefijado por `?guestId=` → su ficha rellena el formulario y viaja como `primaryGuestId`.
+  useEffect(() => {
+    if (!prefillGuestId) return undefined;
+    let cancelled = false;
+    fetchGuest(prefillGuestId)
+      .then((detail) => {
+        if (cancelled) return;
+        const name = guestDisplayName(detail.guest);
+        setForm((current) => ({ ...current, ...guestPrefillValues(detail.guest) }));
+        setPrefilledGuestName(name);
+        setStatus(RESERVATION_CREATE_TOASTS.guestPrefilled(name));
+      })
+      .catch(() => {
+        if (!cancelled) setStatus("No se pudo cargar la ficha del huésped: rellena sus datos a mano.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [prefillGuestId]);
+
+  /** Conmutador Rápida / Completa: misma URL, `?modo=` sin recargar ni cambiar de pestaña. */
+  function switchMode(next: ReservationCreateMode) {
+    setMode(next);
+    if (typeof window === "undefined") return;
+    const search = searchWithReservationMode(window.location.search, next);
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
+    logBreadcrumb("reservation.create.mode", "ui", { mode: next });
+  }
 
   const sourceOptions = useMemo(() => categoryOptions(categoryGroups, "reservation_source_codes"), [categoryGroups]);
   const marketOptions = useMemo(() => categoryOptions(categoryGroups, "market_segments"), [categoryGroups]);
@@ -536,7 +540,13 @@ export function ReservationCreateScreen() {
     }
   }
 
-  async function handleCreate() {
+  /**
+   * Valida los tres obligatorios y crea la reserva con el cuerpo compartido
+   * (`buildCreateReservationPayload`). Devuelve la reserva o null si falta
+   * algo (mensaje, foco en el campo y, en el modo completo, salto al paso). Lo
+   * usan los dos modos: el rápido encadena después el cobro o el check-in.
+   */
+  async function createFromForm(): Promise<AdminReservation | null> {
     // Required-field guard. Defaults are blank on purpose (no demo guest
     // pre-filled): block without a room type (500 on the FK) or a guest name.
     setAttempted(true);
@@ -546,7 +556,7 @@ export function ReservationCreateScreen() {
       showToast(message, { variant: "error" });
       setStep(0);
       focusField("rc-field-roomtype");
-      return;
+      return null;
     }
     if (!form.firstName.trim() || !form.surname1.trim()) {
       const message = "Indica al menos el nombre y el primer apellido del huésped.";
@@ -554,12 +564,13 @@ export function ReservationCreateScreen() {
       showToast(message, { variant: "error" });
       setStep(1);
       focusField(!form.firstName.trim() ? "rc-field-firstname" : "rc-field-surname1");
-      return;
+      return null;
     }
     setCreating(true);
     setStatus("Creando reserva y abriendo folio…");
     // PII-safe: no name, email or document; only operational data.
     logBreadcrumb("reservation.create.attempt", "mutation", {
+      mode,
       channel: form.channel,
       bookingSource: form.bookingSource,
       roomTypeId: form.roomTypeId,
@@ -568,137 +579,34 @@ export function ReservationCreateScreen() {
       totalAmount: manualTotal,
       ratePlanId: form.ratePlanId || null,
       paymentMethod: form.paymentMethod,
-      companionCount: companions.length
+      companionCount: companions.length,
+      guestLinked: Boolean(form.primaryGuestId)
     });
     try {
-      const childrenAges = form.childrenAges
-        .split(",")
-        .map((value) => Number(value.trim()))
-        .filter((value) => Number.isFinite(value) && value >= 0);
-      const preferences = form.preferences
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-      const accessibilityList = form.accessibilityNeeds
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-      const dietaryList = form.dietaryRequirements
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-
-      const reservation = await createReservation(PROPERTY_ID, {
-        // Estancia
-        arrivalDate: form.arrivalDate,
-        departureDate: form.departureDate,
-        nightsCount,
-        eta: form.eta || undefined,
-        etd: form.etd || undefined,
-        estimatedArrivalTime: form.estimatedArrivalTime || form.eta || undefined,
-        adults: Number(form.adults),
-        children: Number(form.children),
-        infants: Number(form.infants) || 0,
-        childrenAges: childrenAges.length ? childrenAges : undefined,
-        roomsCount: Number(form.roomsCount) || 1,
-        roomTypeId: form.roomTypeId || undefined,
-        assignedRoomId: form.assignedRoomId || undefined,
-        // Tarifa · Tanda L3 (lote A): `totalAmount` only when typed (an empty
-        // field → the API prices the stay from the rate grid); the IVA preview
-        // is display only (the API ignored baseAmount / taxAmount).
-        ratePlanId: form.ratePlanId || undefined,
-        boardType: form.boardType || undefined,
-        totalAmount: manualTotal ?? undefined,
-        currency: "EUR",
-        // Origen (commercial provenance)
-        bookingSource: form.bookingSource,
-        channel: form.channel,
-        marketSegment: form.marketSegment,
-        sourceCode: form.sourceCode,
-        purposeOfStay: form.purposeOfStay || undefined,
-        externalReference: form.externalReference || undefined,
-        groupCode: form.groupCode || undefined,
-        companyName: form.companyName || undefined,
-        travelAgentName: form.travelAgentName || undefined,
-        bookerName: form.bookerName,
-        bookerEmail: form.bookerEmail,
-        // Pagos
-        paymentMethod: form.paymentMethod,
-        depositAmount: form.depositAmount ? Number(form.depositAmount) : undefined,
-        depositPaid: form.depositPaid ? Number(form.depositPaid) : undefined,
-        depositDueDate: form.depositDueDate || undefined,
-        guaranteeType: form.guaranteeType,
-        cancellationPolicyCode: form.cancellationPolicyCode || undefined,
-        billingInstruction: form.billingInstruction,
-        // Solicitudes & operativos
-        specialRequests: form.specialRequests || undefined,
-        accessibilityNeeds: accessibilityList.length ? accessibilityList : undefined,
-        dietaryRequirements: dietaryList.length ? dietaryList : undefined,
-        vipFlag: form.vipFlag === "yes",
-        internalNotes: form.internalNotes || undefined,
-        notes: form.notes,
-        // Companion guests (acompañantes & bebés)
-        companions: companions.length
-          ? companions.map((c) => ({
-              firstName: c.firstName,
-              surname1: c.surname1,
-              documentType: c.documentType,
-              documentNumber: c.documentNumber || undefined,
-              dateOfBirth: c.dateOfBirth || undefined,
-              nationality: c.nationality || undefined,
-              type: c.type
-            }))
-          : undefined,
-        // Primary guest (titular)
-        primaryGuest: {
-          title: form.title || undefined,
-          firstName: form.firstName,
-          middleName: form.middleName || undefined,
-          surname1: form.surname1,
-          surname2: form.surname2 || undefined,
-          phone: form.phone,
-          mobilePhone: form.mobilePhone || undefined,
-          email: form.email,
-          languagePreference: form.languagePreference || undefined,
-          company: form.guestCompany || undefined,
-          vipCode: form.vipCode || undefined,
-          vipFlag: form.vipFlag === "yes",
-          loyaltyProgram: form.loyaltyProgram || undefined,
-          loyaltyNumber: form.loyaltyNumber || undefined,
-          loyaltyTier: form.loyaltyTier || undefined,
-          documentType: form.documentType || undefined,
-          documentNumber: form.documentNumber || undefined,
-          documentSupportNumber: form.documentSupportNumber || undefined,
-          documentIssueCountry: form.documentIssueCountry || undefined,
-          documentExpiryDate: form.documentExpiryDate || undefined,
-          dateOfBirth: form.dateOfBirth || undefined,
-          nationality: form.nationality || undefined,
-          sex: form.sex || undefined,
-          residenceAddress: form.residenceAddress || undefined,
-          residenceCountry: form.residenceCountry || undefined,
-          residenceProvince: form.residenceProvince || undefined,
-          residenceLocality: form.residenceLocality || undefined,
-          residencePostalCode: form.residencePostalCode || undefined,
-          emergencyContactName: form.emergencyContactName || undefined,
-          emergencyContactPhone: form.emergencyContactPhone || undefined,
-          marketingConsent: form.marketingConsent === "yes",
-          preferences: preferences.length ? preferences : undefined
-        }
-      });
-      setCreatedReservation(reservation);
+      const reservation = await createReservation(PROPERTY_ID, buildCreateReservationPayload(form, { nightsCount, manualTotal, companions }));
+      // 3.3.7: el NIF de la empresa se recuerda para la factura a la empresa desde la ficha.
+      if (form.companyName.trim() && form.companyTaxId.trim()) rememberTaxId(localStorageOrNull(), form.companyName, form.companyTaxId);
       const pricing = reservation.pricing;
       const priceNote = pricing
         ? `${priceSourceLabel(pricing.source)}: ${money(reservation.totalAmount, reservation.currency)}.${pricing.warning ? ` ${pricing.warning}` : ""}`
         : `importe ${money(reservation.totalAmount, reservation.currency)}.`;
       setStatus(`Reserva ${reservation.code} creada (${priceNote}) Se abrió un folio y se registró el evento de auditoría.`);
-      showToast(`Reserva ${reservation.code} creada · ${money(reservation.totalAmount, reservation.currency)}`, { variant: pricing?.warning ? "info" : "success" });
+      showToast(RESERVATION_CREATE_TOASTS.created(reservation.code, money(reservation.totalAmount, reservation.currency)), { variant: pricing?.warning ? "info" : "success" });
+      return reservation;
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo crear la reserva.";
       setStatus(message);
       showToast(message, { variant: "error" });
+      return null;
     } finally {
       setCreating(false);
     }
+  }
+
+  /** Modo completo: crear y pintar el estado de éxito con «Abrir el detalle de la reserva». */
+  async function handleCreate() {
+    const reservation = await createFromForm();
+    if (reservation) setCreatedReservation(reservation);
   }
 
   function handleScanFile(file: File) {
@@ -785,7 +693,7 @@ export function ReservationCreateScreen() {
               <CocoaField label="Noches" help="Calculadas desde las fechas.">
                 <CocoaInput value={String(nightsCount)} onChange={() => undefined} readOnly />
               </CocoaField>
-              <CocoaField label={FIELD_LABELS.roomType} required error={roomTypeError} help={roomTypes.length === 0 ? "Sin tipos de habitación: configúralos primero." : undefined}>
+              <CocoaField label={FIELD_LABELS.roomType} required error={roomTypeError} help={roomTypesLoaded && roomTypes.length === 0 ? "Sin tipos de habitación: configúralos primero." : undefined}>
                 <CocoaSelect id="rc-field-roomtype" value={form.roomTypeId} onChange={set("roomTypeId")} options={roomTypeOptions} placeholder="Selecciona un tipo…" />
               </CocoaField>
               <CocoaField label="Habitación asignada" hint="opcional" help="Puede dejarse vacía y asignarse en el check-in.">
@@ -940,8 +848,8 @@ export function ReservationCreateScreen() {
                 <CocoaField label="Código postal">
                   <CocoaInput value={form.residencePostalCode} onChange={set("residencePostalCode")} placeholder="28001" autoComplete="off" />
                 </CocoaField>
-                <CocoaField label="País de residencia">
-                  <CocoaInput value={form.residenceCountry} onChange={set("residenceCountry")} placeholder="España" autoComplete="off" />
+                <CocoaField label="País de residencia" help="Código ISO de tres letras.">
+                  <CocoaInput value={form.residenceCountry} onChange={set("residenceCountry")} placeholder="ESP" maxLength={3} autoComplete="off" />
                 </CocoaField>
               </CocoaFormRow>
             </CocoaFormSection>
@@ -1110,6 +1018,9 @@ export function ReservationCreateScreen() {
               <CocoaField label="Empresa (facturación)">
                 <CocoaInput value={form.companyName} onChange={set("companyName")} placeholder="Razón social" autoComplete="off" />
               </CocoaField>
+              <CocoaField label="NIF de la empresa" help="Se recuerda para la factura a la empresa desde la ficha.">
+                <CocoaInput value={form.companyTaxId} onChange={set("companyTaxId")} placeholder="B12345674" autoComplete="off" />
+              </CocoaField>
               <CocoaField label="Agencia de viajes">
                 <CocoaInput value={form.travelAgentName} onChange={set("travelAgentName")} placeholder="Agencia o turoperador" autoComplete="off" />
               </CocoaField>
@@ -1220,12 +1131,34 @@ export function ReservationCreateScreen() {
     }
   }
 
+  const quick = mode === "rapida";
+  const instructions = (
+    <CocoaScreenInstructionsCard
+      title={RESERVATION_CREATE_INSTRUCTIONS.title}
+      description={RESERVATION_CREATE_INSTRUCTIONS.description}
+      steps={[...RESERVATION_CREATE_INSTRUCTIONS.steps]}
+      tip={RESERVATION_CREATE_INSTRUCTIONS.tip}
+      dismissible
+      persistKey="reservation-create"
+    />
+  );
+
   return (
     <CocoaPage
       eyebrow="Recepción · Nueva reserva"
       title="Nueva reserva"
-      subtitle={hosted ? undefined : "Recoge la estancia, los huéspedes, la tarifa, el origen, los pagos y las solicitudes antes de confirmar."}
-      state={createdReservation ? "empty" : "ready"}
+      subtitle={
+        hosted
+          ? undefined
+          : quick
+            ? "Lo mínimo para reservar en una pantalla: estancia, tipo con precio y huésped. Intro crea la reserva."
+            : "Recoge la estancia, los huéspedes, la tarifa, el origen, los pagos y las solicitudes antes de confirmar."
+      }
+      tabs={MODE_TABS}
+      activeTab={mode}
+      onTabChange={(value) => switchMode(value === "completa" ? "completa" : "rapida")}
+      state={createdReservation ? "empty" : catalogLoading ? "loading" : "ready"}
+      skeleton={quick ? <ReservationQuickCreateSkeleton /> : <ReservationWizardSkeleton />}
       empty={{
         title: `Reserva ${createdReservation?.code ?? ""} creada`,
         message: createdReservation
@@ -1235,11 +1168,35 @@ export function ReservationCreateScreen() {
         primaryAction: { label: "Abrir el detalle de la reserva", onClick: openCreated },
         secondaryAction: { label: "Abrir facturación", onClick: () => navigateTo("BillingCenter") }
       }}
-      commands={[
-        { id: "nueva-reserva-disponibilidad", label: "Consultar disponibilidad de la nueva reserva", run: () => void handleQuote() },
-        { id: "nueva-reserva-crear", label: "Confirmar y crear la reserva", run: () => void handleCreate() }
-      ]}
+      commands={
+        quick
+          ? [{ id: "nueva-reserva-modo-completo", label: "Nueva reserva: pasar al modo completo", run: () => switchMode("completa") }]
+          : [
+              { id: "nueva-reserva-modo-rapido", label: "Nueva reserva: pasar al modo rápido", run: () => switchMode("rapida") },
+              { id: "nueva-reserva-disponibilidad", label: "Consultar disponibilidad de la nueva reserva", run: () => void handleQuote() },
+              { id: "nueva-reserva-crear", label: "Confirmar y crear la reserva", run: () => void handleCreate() }
+            ]
+      }
     >
+      {instructions}
+      {quick ? (
+        <ReservationQuickCreate
+          propertyId={PROPERTY_ID}
+          form={form}
+          setForm={setForm}
+          roomTypes={roomTypes}
+          rooms={rooms}
+          ratePlanOptions={ratePlanOptionList}
+          bookingSourceOptions={BOOKING_SOURCE_OPTIONS}
+          status={status || null}
+          errors={{ roomType: roomTypeError, firstName: firstNameError, surname1: surnameError }}
+          prefillNote={prefilled ? PREFILL_NOTE : null}
+          prefilledGuestName={prefilledGuestName}
+          creating={creating}
+          onCreate={createFromForm}
+        />
+      ) : (
+        <>
       <CocoaGrid align="start" aria-label="Asistente de nueva reserva">
         <CocoaSpan cols={4} min={240}>
           <CocoaSection title="Pasos" meta={`${step + 1} / ${STEPS.length}`}>
@@ -1296,6 +1253,8 @@ export function ReservationCreateScreen() {
         }
         publishToastOffset
       />
+        </>
+      )}
     </CocoaPage>
   );
 }
