@@ -11,7 +11,7 @@ Para todo el personal del hotel, antes de abrir la guía de su perfil. Necesitas
 - Todas las capturas son del hotel de demostración «Hotel Demo Madrid Centro» (organización «Grupo Hotelero Demo»), con la cuenta de demostración `reception@example.com` / `hotelos-demo`. Los huéspedes, reservas, empresas y avisos que ves son ficticios.
 - Esa cuenta es administradora: su menú es «Mi menú (administrador)», con «9 categorías · 69 entradas · 1 por activar». Tu menú tendrá menos entradas: verás solo lo que corresponde a tu plantilla de usuario.
 - Dos capturas usan el selector «Ver como…» para enseñarte lo que ve otro perfil; lo reconoces por el aviso «Viendo como Pisos · solo menú» o «Viendo como RRHH y nóminas · solo menú». Ese selector solo cambia el menú, no los permisos (lo explica el apartado 3).
-- Tema claro, ventana de 1280 × 800 píxeles, español. En la captura de la pantalla completa se ha dejado a la vista el aviso «Faltan 1 comprobación para poner la propiedad en marcha.» porque en la demostración está siempre; en el resto está oculto con «Ahora no».
+- Tema claro, ventana de 1280 × 800 píxeles, español. En la captura de la pantalla completa se ha dejado a la vista el aviso «Falta 1 comprobación para poner la propiedad en marcha.» porque en la demostración está siempre; en el resto está oculto con «Ahora no».
 - Las capturas son del 19 de septiembre de 2026. La demostración tiene la fecha de negocio en el 14 de septiembre (sin cierres del día desde entonces), por eso el Live Timeline muestra «Cierre nocturno pendiente · fecha de negocio 14 sept». Es un estado de la demo, no un error tuyo.
 
 ## 1. Entrar en ehotelOS
@@ -42,7 +42,7 @@ Ruta: pantalla pública «Inicia sesión» (`/acceso`). Si abres cualquier direc
 
 Ruta de la captura: «Menú › Hoy › Live Timeline» (`/hoy/live-timeline`). Todas las pantallas de ehotelOS tienen la misma estructura: barra superior, menú lateral y área de contenido.
 
-![Pantalla completa de ehotelOS: barra superior con el selector de hotel, «Nueva reserva», el buscador, el tema «Claro», la campana con 2 avisos, el botón «?» y el usuario; aviso «Faltan 1 comprobación para poner la propiedad en marcha.»; menú lateral con «Ver como…», «Buscar en el menú» y las categorías; contenido con el Live Timeline](img/primeros-pasos/pantalla-completa.png)
+![Pantalla completa de ehotelOS: barra superior con el selector de hotel, «Nueva reserva», el buscador, el tema «Claro», la campana con 2 avisos, el botón «?» y el usuario; aviso «Falta 1 comprobación para poner la propiedad en marcha.»; menú lateral con «Ver como…», «Buscar en el menú» y las categorías; contenido con el Live Timeline](img/primeros-pasos/pantalla-completa.png)
 
 *La pantalla de ehotelOS con el Live Timeline abierto. El aviso amarillo de puesta en marcha es propio de la demostración.*
 
@@ -88,7 +88,7 @@ Ruta de la captura: «Menú › Hoy › Live Timeline» (`/hoy/live-timeline`). 
 
 Cada pantalla empieza con la categoría en pequeño («HOY»), el título («Live Timeline») y una frase que explica para qué sirve. Muchas tienen un botón «Actualizar» arriba a la derecha para recargar los datos sin salir. Algunas se dividen en pestañas (por ejemplo, «Reservas» tiene «Lista · Tablero de habitaciones · Detalle · Recorrido · Importar»): están justo debajo del título.
 
-> **Nota:** el aviso «Faltan 1 comprobación para poner la propiedad en marcha.», con los botones «Ver qué falta» y «Ahora no», aparece mientras la propiedad tenga comprobaciones de puesta en marcha pendientes. En la demostración es permanente (el registro de viajeros está en modo de pruebas); «Ahora no» lo oculta hasta que vuelvas a entrar. Qué falta y cómo resolverlo se explica en [10 · Dirección](10-direccion.md) y [60 · Sistemas](60-sistemas.md).
+> **Nota:** el aviso «Falta 1 comprobación para poner la propiedad en marcha.», con los botones «Ver qué falta» y «Ahora no», aparece mientras la propiedad tenga comprobaciones de puesta en marcha pendientes. En la demostración es permanente (el registro de viajeros está en modo de pruebas); «Ahora no» lo oculta hasta que vuelvas a entrar. Qué falta y cómo resolverlo se explica en [10 · Dirección](10-direccion.md) y [60 · Sistemas](60-sistemas.md).
 
 ## 3. «Ver como…»: simular el menú de otro perfil
 
@@ -279,7 +279,7 @@ Pulsa **⌘/** en cualquier pantalla y se abre la hoja «Atajos de teclado», co
 | «Sin resultados · Ninguna entrada del menú coincide con «…».» | «Buscar en el menú» no ha encontrado esa palabra | Prueba con otra palabra; para buscar reservas o huéspedes usa ⌘K |
 | ⌘K no muestra nada | Menos de dos letras escritas, o el dato es de otro hotel | Escribe dos letras o más y comprueba el hotel activo |
 | Tenías «Ver como…» activo y ha desaparecido | Has recargado la página o escrito una dirección | Vuelve a elegir el perfil en «Ver como…» y navega por el menú o con ⌘K |
-| «Faltan 1 comprobación para poner la propiedad en marcha.» vuelve a aparecer | «Ahora no» solo lo oculta durante la sesión | Es normal; desaparece cuando la propiedad complete la puesta en marcha |
+| «Falta 1 comprobación para poner la propiedad en marcha.» vuelve a aparecer | «Ahora no» solo lo oculta durante la sesión | Es normal; desaparece cuando la propiedad complete la puesta en marcha |
 
 ## Qué no hace todavía
 

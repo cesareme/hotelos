@@ -23,6 +23,14 @@
 //   GET  /payroll/cost-report?from&to[&propertyId][&group]                         getPayrollCostReport   payroll.read
 // Errors arrive as details.code (PAYROLL_IMPORT_DUPLICATE · PAYROLL_IMPORT_OVERLAP ·
 // PAYROLL_IMPORT_CENTRE_UNMAPPED …) mapped by payrollErrorMessage through finance-contracts.
+//
+// FIX-1 · F10 · fichas de personal (apps/api/src/modules/payroll/staff-profiles.routes.ts):
+//   GET  /payroll/staff-profiles?propertyId=                                     listStaffProfiles   payroll.read
+//   POST /payroll/staff-profiles { propertyId, userId, employeeCode?, departmentId?, employmentType?, hourlyCost? }
+//                                                                                createStaffProfile (201; 409 STAFF_PROFILE_EXISTS,
+//                                                                                400 STAFF_PROFILE_DEPARTMENT_MISMATCH, 404 «Usuario no encontrado.»)   payroll.manage
+//   GET  /backoffice/properties/:id/departments                                  listPropertyDepartments   property.configure
+// The «Persona» picker of the drawer reads GET /rbac/users through services/rbacApi (listUsersInScope).
 
 import type {
   PayrollCostImportCreateBody,
@@ -127,6 +135,61 @@ export type PayrollSlipRecord = {
   createdAt: string;
   lines: Array<{ id: string; slipId: string; lineType: "earning" | "deduction" | "employer_cost"; code: string; description?: string; amount: number }>;
 };
+
+// ---- Fichas de personal (FIX-1 · F10) ----------------------------------------------
+
+export const STAFF_EMPLOYMENT_TYPES = ["indefinido", "temporal", "fijo_discontinuo", "practicas", "otro"] as const;
+export type StaffEmploymentType = (typeof STAFF_EMPLOYMENT_TYPES)[number];
+
+export type StaffProfileRecord = {
+  id: string;
+  propertyId: string;
+  userId: string;
+  employeeCode: string | null;
+  departmentId: string | null;
+  departmentName: string | null;
+  employmentType: StaffEmploymentType | string | null;
+  /** «12.50» (dos decimales) o null. */
+  hourlyCost: string | null;
+  active: boolean;
+  createdAt: string;
+  userFullName: string | null;
+  userEmail: string | null;
+};
+
+export type CreateStaffProfileRequest = {
+  propertyId: string;
+  userId: string;
+  employeeCode?: string;
+  departmentId?: string;
+  employmentType?: StaffEmploymentType;
+  /** Número o texto con coma («12,50»); ≥ 0, dos decimales como máximo. */
+  hourlyCost?: number | string;
+};
+
+export type PropertyDepartmentRecord = {
+  id: string;
+  propertyId: string;
+  name: string;
+  code: string;
+  description?: string;
+  active: boolean;
+};
+
+/** Fichas del centre (or of every centre within scope when `propertyId` is empty), person and department resolved. */
+export function listStaffProfiles(propertyId: string | null | undefined = getActivePropertyId()): Promise<StaffProfileRecord[]> {
+  return apiRequest<StaffProfileRecord[]>("/payroll/staff-profiles", { query: compactQuery({ propertyId: propertyId ?? undefined }) });
+}
+
+/** Strict body: 201 with the profile; 409 STAFF_PROFILE_EXISTS for an active duplicate (userId, propertyId). */
+export function createStaffProfile(body: CreateStaffProfileRequest): Promise<StaffProfileRecord> {
+  return apiRequest<StaffProfileRecord>("/payroll/staff-profiles", { method: "POST", body });
+}
+
+/** Departments of a centre (property.configure): without the grant the drawer keeps the picker optional and empty. */
+export function listPropertyDepartments(propertyId: string): Promise<PropertyDepartmentRecord[]> {
+  return apiRequest<PropertyDepartmentRecord[]>(`/backoffice/properties/${enc(propertyId)}/departments`);
+}
 
 // ---- Contratos ------------------------------------------------------------------
 

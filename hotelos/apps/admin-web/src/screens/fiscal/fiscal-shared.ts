@@ -8,7 +8,7 @@
 // download. No React, no network: screens/fiscal/__tests__/fiscal-shared.test.mts
 // runs it under node --test.
 
-import type { FiscalBox, FiscalBoxKind, FiscalModelCode, FiscalPeriodDto, FiscalReportSources, VatBookName, VatBookRowDto, VatBookSourceTypeCode, VatPeriodicityCode, VatRegimeCode } from "@hotelos/shared";
+import type { FiscalBox, FiscalBoxKind, FiscalModelCode, FiscalPeriodDto, FiscalReportSources, VatBookName, VatBookRegimeCode, VatBookRowDto, VatBookSourceTypeCode, VatPeriodicityCode, VatRegimeCode } from "@hotelos/shared";
 import { STATUS_LABELS, UI_STATES } from "../../content/actions";
 import { date, dateRange, dateTime, money, number, percent } from "../../lib/format";
 import { financeErrorCode, financeErrorMessage, financeErrorStatus, isAnnualFiscalModel, monthPeriod, periodBounds, quarterPeriod, yearPeriod } from "../../services/finance-contracts";
@@ -64,6 +64,38 @@ export function currentQuarter(now: Date | string = new Date()): string {
 
 export function currentMonth(now: Date | string = new Date()): string {
   return monthPeriod(now).slice(-2);
+}
+
+export type PeriodPickerState = { year: string; quarter: string; month: string };
+
+/**
+ * FIX-1 · F3 (E-04): initial state of the period pickers — the last period
+ * with materialised book rows (`GET /fiscal/vat-books/periods` → `latest`:
+ * `2026-Q2` sets 2026 / 2 / 06, `2026-05` sets 2026 / 2 / 05) or, without
+ * books (or an unreadable code), the current quarter and month of `now`.
+ * Pure: a picker opened on 3T 2026 without books was «No cuadra» by default.
+ */
+export function initialPeriodPicker(latest: string | null, now: Date | string = new Date()): PeriodPickerState {
+  const fallback: PeriodPickerState = { year: yearPeriod(now), quarter: currentQuarter(now), month: currentMonth(now) };
+  if (!latest) return fallback;
+  const quarter = /^(\d{4})-Q([1-4])$/.exec(latest.trim().toUpperCase());
+  if (quarter) {
+    const q = Number(quarter[2]);
+    return { year: quarter[1]!, quarter: String(q), month: String(q * 3).padStart(2, "0") };
+  }
+  const month = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(latest.trim());
+  if (month) {
+    const m = Number(month[2]);
+    return { year: month[1]!, quarter: String(Math.floor((m - 1) / 3) + 1), month: month[2]! };
+  }
+  return fallback;
+}
+
+/** The three months of a quarter as picker options («— trimestre completo —» first): the monthly informative view of a quarterly 303. */
+export function quarterMonthOptions(quarter: string): SelectOption[] {
+  const q = Number(quarter);
+  const first = Number.isInteger(q) && q >= 1 && q <= 4 ? (q - 1) * 3 : 0;
+  return [{ value: "", label: "— trimestre completo —" }, ...MONTH_OPTIONS.slice(first, first + 3)];
 }
 
 /** Settlement period code of a picker state: `2026-Q3` · `2026-09` · `2026`. */
@@ -140,6 +172,66 @@ export const SOURCE_TYPE_LABELS: Readonly<Record<VatBookSourceTypeCode, string>>
 });
 
 export const PERIODICITY_LABELS: Readonly<Record<VatPeriodicityCode, string>> = Object.freeze({ quarterly: "Trimestral", monthly: "Mensual" });
+
+/** FIX-1 · F3: régimen de una fila del libro (F2 DTO `regime`) → etiqueta española; null (sin clasificar) → «—». */
+export const REGIME_ROW_LABELS: Readonly<Record<VatBookRegimeCode, string>> = Object.freeze({
+  interior: "Interior",
+  isp: "ISP",
+  aib: "AIB",
+  importacion: "Importación",
+  exento_no_sujeto: "Exenta / no sujeta"
+});
+
+export function regimeRowLabel(regime: VatBookRegimeCode | null | undefined): string {
+  return regime ? REGIME_ROW_LABELS[regime] ?? regime : "—";
+}
+
+// ---------------------------------------------------------------------------
+// Opening compensation form (FIX-1 · F3, B-2 · Configuración › Contabilidad)
+// ---------------------------------------------------------------------------
+
+// The period is typed as the fiscal screens name it («1T 2025» · «2025-01») and travels to
+// PUT /fiscal/vat-settings as its settlement code («2025-Q1» · «2025-01»); the code is accepted too.
+const OPENING_PERIOD_CODE_RE = /^\d{4}-(Q[1-4]|0[1-9]|1[0-2])$/;
+const OPENING_QUARTER_RE = /^(?:([1-4])T[\s/-]*(\d{4})|(\d{4})[\s/-]*([1-4])T)$/;
+const OPENING_MONTH_RE = /^(0[1-9]|1[0-2])\/(\d{4})$/;
+
+/** Pure: the period typed in the opening compensation field («1T 2025» · «2025-3T» · «2025-01» · «01/2025» · «2025-Q1») → its settlement code, null when unreadable. */
+export function parseOpeningPeriod(raw: string): string | null {
+  const text = raw.trim().toUpperCase().replace(/\s+/g, " ");
+  if (OPENING_PERIOD_CODE_RE.test(text)) return text;
+  const quarter = OPENING_QUARTER_RE.exec(text);
+  if (quarter) return `${quarter[2] ?? quarter[3]}-Q${quarter[1] ?? quarter[4]}`;
+  const month = OPENING_MONTH_RE.exec(text);
+  return month ? `${month[2]}-${month[1]}` : null;
+}
+
+/** Pure: the stored settlement code («2025-Q1» · «2025-01» · null) → the text of the field («1T 2025» · «2025-01» · ""). */
+export function formatOpeningPeriod(code: string | null | undefined): string {
+  if (!code) return "";
+  const quarter = /^(\d{4})-Q([1-4])$/.exec(code);
+  return quarter ? `${quarter[2]}T ${quarter[1]}` : code;
+}
+
+/** Pure: the amount typed in the opening compensation field («42.024,03» · «1184.07» · "") → number (NaN when unreadable). */
+export function parseOpeningAmount(raw: string): number {
+  const text = raw.trim();
+  if (text === "") return 0;
+  const normalised = text.includes(",") ? text.replace(/\./g, "").replace(",", ".") : text;
+  return /^\d+(\.\d{1,2})?$/.test(normalised) ? Number(normalised) : Number.NaN;
+}
+
+/** Pure: the draft of the opening compensation form → the PUT body (`amount`, `period`) and the field errors (undefined = valid). */
+export function openingCompensationDraft(amountRaw: string, periodRaw: string): { amount: number; period: string | null; amountError?: string; periodError?: string } {
+  const amount = parseOpeningAmount(amountRaw);
+  const typed = periodRaw.trim();
+  const parsed = typed === "" ? null : parseOpeningPeriod(typed);
+  const period = typed === "" ? null : parsed ?? typed.toUpperCase();
+  const amountError = Number.isNaN(amount) || amount < 0 ? "Indica un importe mayor o igual que 0 (p. ej. 42024,03)." : undefined;
+  const periodError =
+    typed !== "" && parsed === null ? "Formato 1T 2025 (trimestre) o 2025-01 (mes)." : amount > 0 && period === null ? "Indica el periodo desde el que aplica el saldo (p. ej. 1T 2025)." : undefined;
+  return { amount, period, amountError, periodError };
+}
 
 export const REGIME_LABELS: Readonly<Record<VatRegimeCode, string>> = Object.freeze({
   general: "Régimen general",

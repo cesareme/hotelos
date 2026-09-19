@@ -3,7 +3,7 @@
 //   node --import tsx --test src/modules/compliance/__tests__/guest-register-ensure.test.mts
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ageAtDate, GUEST_REGISTER_MINOR_AGE, guestRegisterPayloadForLink, type GuestRegisterLinkGuest } from "../compliance.service.js";
+import { ageAtDate, GUEST_REGISTER_MINOR_AGE, guestRegisterPayloadForLink, toGuestRegisterApi, type GuestRegisterLinkGuest } from "../compliance.service.js";
 
 const CHECKIN_AT = "2026-09-19T14:00:00.000Z";
 
@@ -173,5 +173,53 @@ describe("guestRegisterPayloadForLink", () => {
     assert.equal(payload.age, undefined);
     assert.equal(payload.isMinor, false);
     assert.equal(payload.dateOfBirth, undefined);
+  });
+});
+
+// FIX-1 · F9: the manual parte screen painted the reservation cuid; the list
+// resolves the RES-… code apart (no Prisma relation) and toGuestRegisterApi
+// reads it from `row.reservation.code`.
+type ApiRow = Parameters<typeof toGuestRegisterApi>[0];
+
+function registerRow(overrides: Record<string, unknown> = {}): ApiRow {
+  const at = new Date("2026-09-19T14:00:00.000Z");
+  return {
+    id: "gr_1",
+    propertyId: "prop_x",
+    reservationId: "res_cuid_1",
+    guestId: "guest_1",
+    recordType: "checkin",
+    status: "missing_data",
+    isPrimaryGuest: true,
+    isMinor: false,
+    requiredPayloadJson: {},
+    validationErrorsJson: [],
+    signatureRequired: true,
+    identityVerified: false,
+    idImageStored: false,
+    idImageDiscarded: true,
+    retentionUntil: at,
+    createdAt: at,
+    updatedAt: at,
+    ...overrides
+  } as unknown as ApiRow;
+}
+
+describe("toGuestRegisterApi · reservationCode (FIX-1 · F9)", () => {
+  it("exposes reservation.code as reservationCode next to reservationId", () => {
+    const api = toGuestRegisterApi(registerRow({ reservation: { code: "RES-00042" } }));
+    assert.equal(api.reservationId, "res_cuid_1");
+    assert.equal(api.reservationCode, "RES-00042");
+    assert.equal(api.id, "gr_1");
+    assert.equal(api.status, "missing_data");
+    assert.equal(api.retentionUntil, "2026-09-19T14:00:00.000Z");
+  });
+
+  it("without a resolved reservation (plain row, null, or record without reservation) reservationCode is undefined and reservationId untouched", () => {
+    assert.equal(toGuestRegisterApi(registerRow()).reservationCode, undefined);
+    assert.equal(toGuestRegisterApi(registerRow({ reservation: null })).reservationCode, undefined);
+    const orphan = toGuestRegisterApi(registerRow({ reservationId: null, reservation: null }));
+    assert.equal(orphan.reservationId, undefined);
+    assert.equal(orphan.reservationCode, undefined);
   });
 });

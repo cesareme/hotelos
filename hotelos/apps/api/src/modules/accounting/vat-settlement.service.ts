@@ -387,6 +387,10 @@ async function buildPreview(input: { organizationId: string; periodo: FiscalPeri
   const existing = model.report.fuentes.liquidacion && !model.report.fuentes.liquidacion.reversed ? model.report.fuentes.liquidacion : null;
   const avisos = [...plan.avisos];
   if (!hasAccount("4750") || !hasAccount("4700")) avisos.push("Faltan las cuentas 4750/4700 en el plan contable: la liquidación no puede asentarse (provisiona el plan «PGC Pymes hotelero»).");
+  // Corrector FIX-1 (SEC-01): a chained 110 means earlier periods are not posted; their result is not in 4700 yet.
+  if (model.compensacionEncadenadaDesde.length > 0) {
+    avisos.push(`La casilla 110 (${model.computation.compensacionPendienteInicial.toFixed(2)} €) incluye el resultado de ${model.compensacionEncadenadaDesde.length} periodo(s) sin asiento de liquidación (${model.compensacionEncadenadaDesde.join(", ")}): asiéntalos antes para que el saldo de 4700 cuadre con la compensación aplicada.`);
+  }
   return {
     organizationId: input.organizationId,
     periodo: input.periodo,

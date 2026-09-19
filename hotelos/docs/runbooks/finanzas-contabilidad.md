@@ -717,8 +717,28 @@ byte-idéntica a la anterior.
 
 `annual-accounts.service.ts`, `GET /accounting/annual-accounts[/balance|/pyg|/ecpn|/memoria]?fiscalYearId|from&to[&propertyId][&comparative=1][&format=pdf|xlsx|csv]`
 (`fiscalYearId` debe ser un `FiscalYear` de la organización → si no, 404;
-`comparative=1` añade el periodo anterior de la misma longitud). Tres lecturas:
-`balance_at(to)`, `balance_at(from − 1)` y `movements(from, to)`.
+`comparative=1` añade el periodo anterior de la misma longitud). Tres conjuntos
+del libro en cuatro lecturas (`readLedgerSet`): `rowsAt = balance_at(to)`,
+`rowsBefore = balance_at(from − 1) + opening_in_period(from, to)` (fusionadas
+por cuenta con `mergeBalanceRows`) y `rowsMovements = movements(from, to)`.
+
+**Apertura importada dentro del ejercicio (A-01/E-01).** Un libro cargado desde
+otro sistema empieza con un asiento `opening` fechado el primer día del
+ejercicio: `balance_at(from − 1)` no lo ve y `movements` lo excluye, pero la
+aplicación de su 129 dentro del ejercicio sí cuenta, así que el balance salía
+descuadrado por ese saldo y el ECPN abría a cero. Regla: `rowsBefore` incluye
+las aperturas fechadas en `[from, to]` (modo `opening_in_period` de
+`source.ts`) **salvo** que exista un cierre contabilizado de la misma propiedad
+(sociedad con sociedad) fechado en `[from − 1, fecha de la apertura)`: el
+cierre fechado en `from − 1` queda fuera de `balance_at(from − 1)`, cuyos
+saldos ya son los previos al cierre que la apertura restaura, y un cierre
+dentro del periodo anterior a la apertura está en `balance_at(to)` junto con
+ella; en ambos casos sumarla abriría el ejercicio dos veces. Así el ejercicio
+siguiente a uno cerrado (apertura espejo del cierre a `from − 1`) no cambia,
+un periodo a caballo de dos ejercicios tampoco, y el 129 arrastrado
+(`carried129`) y la columna «A. Saldo, inicio» del ECPN quedan corregidos por
+construcción. Tests: `annual-accounts.test.mts` («apertura importada el primer
+día del ejercicio») y `source.test.mts` (modo `opening_in_period`).
 
 - **Balance**: clasificación por prefijo de código (dígitos, sin punto:
   `477.21` → `477`; el prefijo más largo gana; tablas `BALANCE_PREFIXES` y
@@ -735,6 +755,23 @@ byte-idéntica a la anterior.
   regularizar van a su propia línea con aviso. Así la identidad se mantiene
   con el ejercicio abierto, regularizado o cerrado (verificado con
   regularización + cierre + apertura en los tests).
+- **Balance clásico frente a cuentas anuales (corrector FIX-1, F1-CLASSIC-VS-ANNUAL-TOTALS).**
+  `GET /accounting/reports/balance-sheet` (`balance-sheet.service.ts`) clasifica por
+  `Account.kind` (+ prefijos corriente / no corriente); las cuentas anuales, por prefijo
+  PGC. Con un plan importado cuyos `kind` vienen del mapa de Sage difieren: en Faranda
+  474 (activos por impuesto diferido, saldo deudor 38.989,26) y 566 (depósitos
+  constituidos, 5.569,75) tienen kind `liability` —el clásico los presenta como pasivo
+  negativo, las cuentas anuales como activo: activo 2025 clásico 26.456.572,96 · cuentas
+  anuales 26.501.131,97, diferencia 44.559,01 = 38.989,26 + 5.569,75— y 163 (deudas a
+  largo plazo con partes vinculadas, 1.180.258,40) kind `equity` —patrimonio neto en el
+  clásico, pasivo no corriente en las cuentas anuales—; ambos `balanced = true`. 478
+  («Hacienda Pública, deudora por aplazamientos y otros conceptos», plan de Sage, saldo
+  ACREEDOR 213.575,15 = deuda aplazada con Hacienda) es pasivo en los dos: desde esta
+  corrección lleva epígrafe C.IV y ya no sale «sin clasificar» (el aviso desaparece; el
+  total no cambia). La forma de igualar los dos informes es corregir el `kind` de 474 /
+  566 / 163 en el plan (`PATCH /accounting/chart/:code`, acción de producto sobre el piloto:
+  decide el orquestador), no cambiar el clásico; el brief pedía «activo = balance
+  clásico» y no se cumple mientras los `kind` importados no se corrijan.
 - **PyG** (`PYG_PREFIXES`, `PYG_LINES`): partidas 1-18 del modelo de Pymes,
   ingresos positivos y gastos negativos; A) explotación, B) financiero, C)
   antes de impuestos, 18 impuesto sobre beneficios, D) resultado; comprobación
@@ -743,7 +780,9 @@ byte-idéntica a la anterior.
 - **ECPN**: A) ingresos y gastos reconocidos (resultado + movimientos de 13x);
   B) estado total de cambios por columna (capital, prima, reservas, resultados
   anteriores, otras aportaciones, resultado, dividendo a cuenta,
-  subvenciones): saldo inicial (`from − 1`), ajustes (no derivables: fila a
+  subvenciones): saldo inicial (`from − 1` más la apertura fechada dentro del
+  ejercicio sin cierre previo; ver «Apertura importada dentro del ejercicio»
+  arriba), ajustes (no derivables: fila a
   cero), total ingresos y gastos, operaciones con socios (100-104/110/118/557),
   otras variaciones (11x/120/121/129: incluye la distribución del resultado),
   saldo final; `reconciled` = inicial + filas = saldo del libro por columna.
@@ -917,9 +956,11 @@ Qué cambia y dónde vive:
     `taxRateCode` nulo tiraría devengos legítimos): lo es el patrón de cuentas.
     Un «Pago liquidación IVA» (4750 contra 572, sin 477/472) no entra en el
     cotejo y no se cuenta como exclusión.
-  · Topes explícitos `LEDGER_CROSS_CHECK_MAX_ENTRIES` (25.000 asientos) y
-    `LEDGER_CROSS_CHECK_MAX_LINES` (50.000 apuntes): al superarlos el cotejo usa
-    los primeros por fecha y lo dice en `avisos` («no es concluyente»).
+  · Sin topes desde FIX-1 · F3 (B-5): el cotejo se agrega en la base de datos
+    (§11.2), así que un trimestre de Faranda con Sage cargado (≈ 28.500
+    asientos · 45.000 apuntes de 477/472) se lee entero; los antiguos
+    `LEDGER_CROSS_CHECK_MAX_ENTRIES` / `LEDGER_CROSS_CHECK_MAX_LINES` y su aviso
+    «no es concluyente» ya no existen.
 - **Cómo leer `avisos` del 303**: «N asientos de ingresos de OPERA en modo
   sombra (pms_shadow_revenue) excluidos del cotejo» y «N asientos de
   liquidación importados de Sage excluidos del cotejo (patrón 4750/4700 junto a
@@ -968,6 +1009,118 @@ Qué cambia y dónde vive:
   los registros a 200 con `cuadra = true`, y se borraron después (secuencia SIM
   restaurada). El rebuild de Faranda Q3 (§6.9 del recon) sigue sin ejecutarse:
   hasta entonces el −4,55 vive solo en memoria y en `avisos`.
+
+### 11.2 Modelo 303: compensación, liquidaciones históricas, vista mensual, periodo por defecto, centros y cotejo agregado (FIX-1 · F3 · 2026-09-19)
+
+Hallazgos B-2, B-5, E-02, E-03 y E-04 del informe de la carga real de Sage
+(`INFORME-CARGA-2026-09-18.md` §15). Todo en `modelo-303.service.ts`,
+`vat-books.service.ts`, `fiscal.routes.ts` y las pantallas `FiscalModelReport`,
+`VatBooksScreen` y `AccountingSettings`; solo lectura sobre el diario y los libros.
+
+- **Compensación (casillas 110 / 78 / 87)** — `pendingVatCompensation(org, from,
+  settings)` es UNA consulta agregada (`$queryRaw`, nunca `findMany`): Σ (debe −
+  haber) de 4700x en los asientos `posted` sin reverso fechados antes del
+  periodo que sean `vat_settlement` (liquidación nativa) **o** `sage200_journal`
+  con **patrón de liquidación** (líneas en 4750x/4700x junto a 477x/472x: los
+  «LIQUI IVA 1T…4T» de Sage), excluidos los `entry_kind closing|opening` (el
+  cierre de Sage salda 4700 y la apertura lo repone: contarlos dejaría a cero la
+  compensación del primer trimestre del ejercicio siguiente). A ese saldo se suma
+  el **saldo inicial a compensar** de `VatSettings` (`openingCompensation`,
+  `openingCompensationPeriod`; migración `20260920110000_iva_compensacion_inicial`,
+  aditiva): cuotas arrastradas de periodos anteriores a la primera liquidación de
+  ehotelOS, aplicadas cuando `from ≥ from(openingCompensationPeriod)`
+  (`applyOpeningCompensation`, puro). Se edita en Configuración › Contabilidad y
+  fiscal › Contabilidad («Compensación inicial del IVA (casilla 110)») sobre
+  `PUT /fiscal/vat-settings`; el campo «Aplicar desde el periodo» se escribe como en
+  las pantallas fiscales («1T 2025» · «2025-01») y viaja como código `AAAA-Qn` /
+  `AAAA-MM` (`parseOpeningPeriod` / `formatOpeningPeriod` en `fiscal-shared.ts`,
+  FIX-1 ronda 1) (`accounting.configure`, auditado
+  `VAT_SETTINGS_UPDATED`; 400 `OPENING_COMPENSATION_INVALID` si el importe es
+  negativo, `INVALID_PERIOD` si el periodo no es `AAAA-Qn` / `AAAA-MM`,
+  `OPENING_COMPENSATION_PERIOD_REQUIRED` si hay importe sin periodo). El 390 lee
+  la misma compensación por trimestre. `compute303` no cambia: 78 = min(110, 46).
+  **Casilla 110 encadenada (corrector FIX-1, SEC-01)** — el saldo contable solo vale
+  cuando el periodo anterior tiene asiento de liquidación (nativo `vat_settlement` no
+  revertido o LIQUI de Sage fechada dentro de él); si no lo tiene, el diario no sabe
+  nada de su resultado y el mismo saldo se aplicaba en varios trimestres (piloto:
+  2.948,03 de la LIQUI 4T aplicados enteros en 2026-Q2 y otra vez 70,39 en Q3, y los
+  −52.050,57 de Q1 ignorados). `resolveCarriedCompensation` (deps de BD en
+  `compensationChainDeps`; puro con deps en memoria en los tests) recorre hacia atrás los
+  periodos sin asiento hasta el último liquidado, el periodo del saldo inicial
+  (`openingCompensationPeriod`) o el primer periodo con libros, toma allí
+  `pendingVatCompensation` y calcula hacia delante el 303 de cada periodo sin asiento:
+  la 110 del periodo pedido es el `compensacionPendienteFinal` del anterior (78 aplicada
+  y resultado negativo arrastrado una sola vez). Tope `COMPENSATION_CHAIN_MAX_DEPTH` = 60
+  periodos (aviso `COMPENSATION_CHAIN_TRUNCATED_AVISO`). El 303 avisa «Casilla 110
+  encadenada desde el Modelo 303 de <periodos> calculado por ehotelOS (n periodo(s) sin
+  asiento de liquidación)…», la vista previa de la liquidación repite el aviso (el
+  saldo de 4700 no cuadrará con la 78 hasta asentar esos periodos) y el 390 encadena
+  igual (`modelo303PeriodsOfYear`: la 110 de cada trimestre es el pendiente final del
+  anterior si este no está liquidado). Consecuencia en las suites: al revertir la
+  liquidación de un periodo, el siguiente ya NO recupera la compensación aplicada (el
+  303 calculado del periodo revertido la sigue aplicando); antes sí, y era la doble
+  aplicación. Piloto tras la corrección (`:3917`, 2026-09-19): 2026-Q1 110 2.948,03 ·
+  71 −52.050,57 → 2026-Q2 110 54.998,60 · 78 45.688,28 · 71 0 → 2026-Q3 110 9.310,32 ·
+  78 70,39 · 71 0 (Σ78 2026 = 45.758,67 ≤ 54.998,60; antes Σ78 = 3.018,42 > 2.948,03).
+- **Liquidaciones históricas** — `historicalSettlements` lista en
+  `fuentes.liquidacionesHistoricas` los asientos `sage200_journal` con patrón de
+  liquidación fechados dentro del periodo (id, número, ejercicio, fecha, concepto,
+  `resultado` = Σ 4750 (haber − debe) − Σ 4700 debe: positivo a ingresar,
+  negativo a compensar) y avisa «N liquidación(es) importada(s) de Sage en el
+  periodo (históricas, no contabilizadas por ehotelOS)»; la pantalla del 303 las
+  pinta en «Fuentes de los importes › Liquidaciones históricas (importadas de
+  Sage)». Un reverso de la LIQUI la retira de la 110 y de la lista.
+- **Vista mensual informativa (E-02)** — `GET /fiscal/models/303?period=2026-01&informativo=1`
+  para una sociedad trimestral devuelve el mes (`resolveSettlementPeriod` con
+  `allowMonthlyInformative`) con compensación 0, sin búsqueda de liquidación,
+  `fuentes.informativo = true` y el aviso «Vista mensual informativa: la sociedad
+  liquida por trimestres; no presentable»; sin el flag sigue el 400
+  `PERIOD_MISMATCH`. La pantalla ofrece «Mes (vista informativa)» junto al
+  trimestre («— trimestre completo —» por defecto) y un callout informativo.
+- **Periodo por defecto (E-04)** — `GET /fiscal/vat-books/periods`
+  (`accounting.read`, groupBy por `period` con recuento y última fecha, ordenado
+  por fecha desc) → `{ periods, latest }`; el 303 y los Libros de IVA abren en
+  `latest` (`initialPeriodPicker`, puro) y solo caen al trimestre actual sin
+  libros (antes abrían en 3T 2026 sin libros → «No cuadra»).
+- **Desglose por centro sobre lotes Sage (E-03)** — las 53.291 filas importadas
+  no llevan centro; si se pide un `propertyId` y el rango no tiene filas del
+  centro pero sí filas `sage200` sin centro, el 303 y `GET /fiscal/vat-books`
+  añaden `SAGE_NO_CENTRE_AVISO` («Desglose por centro no disponible para lotes
+  Sage sin delegación: las filas importadas no llevan centro», constante única en
+  `packages/shared/src/fiscal-types.ts`) y las pantallas pintan un callout
+  informativo y un estado vacío en vez de ceros. Los Libros de IVA muestran
+  además la columna «Régimen» (F2; «—» = sin clasificar).
+- **Cotejo libro ↔ diario agregado (B-5)** — dos `$queryRaw` sobre una CTE
+  común: la primera suma debe/haber y cuenta los apuntes por lado (477 →
+  repercutido, 472 → soportado) y tipo (`tax_rate_code`; si no, el sufijo de la
+  subcuenta `477.21`; si no, un «21 %» de la descripción; `guessed` = el tipo no
+  vino de `tax_rate_code`), la segunda cuenta los asientos excluidos por
+  naturaleza (propia o del asiento revertido: `vat_settlement`, cierre/apertura,
+  `pms_shadow_revenue`, patrón de liquidación Sage) para
+  `crossCheckExclusionAvisos`. Sin `findMany`, sin topes.
+- **Faranda por HTTP (`:3917`, `contabilidad`, 2026-09-19, solo lectura)**:
+  `periods` → `latest 2026-Q3` (37 filas nativas del rebuild de 2026-09; los lotes
+  Sage acaban en 2026-Q2 con 8.406 filas); `303 2025-Q2` → 110 = 78 =
+  **42.024,02** (LIQUI 1T25, asiento 18708) y 71 = 3.778,31, con la LIQUI 2T25
+  (43034, resultado 0) en históricas; `2025-Q3` → 110 = 78 = 1.184,07, LIQUI 3T25
+  (71463, resultado 27.883,82) e histórica, cotejo entero (44.790 apuntes, antes
+  truncado a 25.000 con «no concluyente») con diferencias reales repercutido
+  +1.054,91 (21 %) − 140,80 (10 %) = +914,11; `2026-Q1` → 110 = 2.948,03 (LIQUI
+  4T25, 92447; 46 negativo → 78 = 0, 87 = 2.948,03); `2026-Q2` → 110 = 78 =
+  2.948,03; `2026-01&informativo=1` → 27 = 21.736,70 · 45 = 33.273,24 ·
+  `informativo: true`; sin flag 400 `PERIOD_MISMATCH`; `2026-Q2&propertyId=<centro>`
+  → `SAGE_NO_CENTRE_AVISO`, registros 0. El aviso «N apunte(s) de IVA heredados
+  sin tipo» cuenta ahora todos los apuntes Sage (no traen `tax_rate_code`; el
+  tipo sale de la subcuenta): es informativo, no una diferencia.
+- **Tests**: `accounting/__tests__/modelo-303.test.mts` (compensación inicial,
+  78 = min(110, 46), mes informativo, tipo de fila agregada, avisos),
+  `vat-book-periods.test.mts` (`latestPeriodOf`, `resolveOpeningCompensationPatch`),
+  `tests/integration/fiscal-models.test.mts` (tenant aislado: LIQUI Sage →
+  históricas y 110 del periodo siguiente, saldo inicial desde su periodo, cotejo
+  agregado con exclusiones y sin aviso de topes, `GET /fiscal/vat-books/periods`,
+  mes informativo 200 / 400, aviso de centro, reverso de la LIQUI), front
+  `screens/fiscal/__tests__/fiscal-shared.test.mts` (`initialPeriodPicker`,
+  `quarterMonthOptions`, `regimeRowLabel`, `openingCompensationDraft`).
 
 ## 12. Correcciones de la revisión adversarial (fix lots, 2026-09-16)
 
@@ -1056,7 +1209,7 @@ reservas, Tanda 7) y 15 del partial `pms-shadow` (OPERA Cloud en modo sombra, Ta
 | | `POST /accounting/journal` | `accounting.journal.post` | high |
 | | `POST /accounting/journal/:id/reverse`, `POST /accounting/replay` | `accounting.journal.post` + `ai.high_risk.confirm` | critical |
 | | `POST /accounting/chart`, `PATCH /accounting/chart/:code`, `PATCH /accounting/settings` | `accounting.configure` | high |
-| accounting (fiscal) | `GET /fiscal/vat-settings`, `GET /fiscal/regime` (Tanda 6b), `GET /fiscal/vat-books`, `GET /fiscal/models/:modelo`, `GET …/:modelo/pdf`, `GET /fiscal/vat-settlement` | `accounting.reports.read` | medium |
+| accounting (fiscal) | `GET /fiscal/vat-settings`, `GET /fiscal/regime` (Tanda 6b), `GET /fiscal/vat-books`, `GET /fiscal/vat-books/periods` (FIX-1 · F3), `GET /fiscal/models/:modelo` (303: `&informativo=1`), `GET …/:modelo/pdf`, `GET /fiscal/vat-settlement` | `accounting.reports.read` | medium |
 | | `PUT /fiscal/vat-settings`, `POST /fiscal/vat-books/rebuild` | `accounting.configure` | high |
 | | `POST /fiscal/vat-settlement`, `POST /fiscal/vat-settlement/reverse` | `accounting.journal.post` | critical |
 | invoicing | `GET /invoices/:id/pdf` | `invoice.read` | medium |
@@ -2559,6 +2712,66 @@ el diario. Clientes tipados en `services/payrollApi.ts`; mensajes por código en
   garantizar que solo se persisten agregados: solo si el CSV falla en la práctica. Decisión
   de César (informe de cierre §6).
 
+### 18.13 Fichas de personal (FIX-1 · F10 · 2026-09-19) y decisión sobre el 2FA (M6)
+
+Hasta FIX-1 no existía alta de `staff_profiles` (`model StaffProfile`: `userId`, `propertyId`,
+`employeeCode`, `departmentId`, `employmentType`, `hourlyCost`, `active`): los dashboards
+solo las leían y `POST /payroll/contracts` exige un `staffProfileId` existente (404 «Perfil de
+empleado no encontrado.»), así que el cajón «Nuevo contrato» de Nóminas no podía completarse
+en ningún hotel sin plantilla importada. Módulo `apps/api/src/modules/payroll/
+staff-profiles.{service,routes}.ts`, registrado en `server.ts` tras `registerPayrollCostRoutes`
+y con sus dos entradas en `modules/payroll/route-permissions.partial.ts`:
+
+| Ruta | Permiso | Riesgo | Qué hace |
+| --- | --- | --- | --- |
+| `GET /payroll/staff-profiles?propertyId=` | `payroll.read` | medium | Fichas del centro (o de todos los centros en ámbito R11 sin `propertyId`) con `userFullName` / `userEmail` (`users`) y `departmentName` (`departments` + seed en memoria del hotel demo). Query `.strict()`. |
+| `POST /payroll/staff-profiles` | `payroll.manage` | high | Alta: `{ propertyId, userId, employeeCode?, departmentId?, employmentType?, hourlyCost? }` `.strict()` → 201 con la ficha resuelta. Sin fallback demo sin token. |
+
+Modo demo (corrector FIX-1, R2): con `HOTELOS_ALLOW_DEMO_AUTH=true` el fallback sin token
+alcanza cualquier ruta `medium`, así que `GET /payroll/staff-profiles`, `GET
+/accounting/ledger-imports/third-parties` y `GET /fiscal/vat-books/periods` responden 200 sin
+sesión con los datos de la organización demo (`org_123`; las cabeceras `x-organization-id` /
+`x-property-id` no cambian de inquilino). Es el patrón preexistente de todas las lecturas
+`medium`; en producción el modo demo está vetado (AUTH-04) y las tres exigen sesión y clave.
+Se ha subido a `high` solo `GET /reports/exports/:exportId/download` (SEC-06: sirve un fichero).
+
+Reglas del alta (`createStaffProfile`): la propiedad pasa por `grantPropertyAccess` en la ruta
+y por `propertyWithinScope` + pertenencia a la organización en el servicio (404 opaco
+«Propiedad no encontrada.»); la persona debe existir en la organización
+(`prisma.user.findFirst({ id, organizationId })` → 404 «Usuario no encontrado.»); el departamento,
+si viene, debe ser de la propiedad (400 `STAFF_PROFILE_DEPARTMENT_MISMATCH`); una ficha ACTIVA por
+`(userId, propertyId)` (409 `STAFF_PROFILE_EXISTS` con `details.staffProfileId`; una persona puede
+tener una ficha por centro y una ficha inactiva no bloquea); `employeeCode` ≤ 32; `employmentType`
+∈ indefinido · temporal · fijo_discontinuo · practicas · otro; `hourlyCost` número o texto con coma
+(«12,5»), ≥ 0, dos decimales como máximo → `Decimal(12,2)` (`hourlyCost` viaja como texto «12.50»);
+400 `STAFF_PROFILE_INVALID` con `details.field`. Auditoría `STAFF_PROFILE_CREATED`
+(`entityType staff_profile`, `afterJson` = identificadores, `departmentId`, `employeeCode` y
+`employmentType`: nunca nombre, correo ni coste). Front: `services/payrollApi.ts`
+(`listStaffProfiles`, `createStaffProfile`, `listPropertyDepartments`) y el cajón «Nueva ficha de
+personal» de `screens/payroll/PayrollScreen.tsx` (reglas puras en `staff-profile-form.ts`): «Persona»
+desde `GET /rbac/users?scopeType=property&ref=<centro>` (`users.read`), «Departamento» desde
+`GET /backoffice/properties/:id/departments` solo con `property.configure` (sin la clave el
+selector queda opcional y vacío), «Centro de trabajo» solo cuando el «Ámbito» es toda la sociedad;
+«Nuevo contrato» elige la ficha en un `CocoaSelect` (etiqueta `employeeCode ?? userFullName`) y
+las columnas «Empleado» de contratos y recibos pintan esa etiqueta en vez del id. Tests:
+`modules/payroll/__tests__/staff-profiles.test.mts` (fakes), `tests/integration/
+payroll-cost-routes.test.mts` (tenant aislado `org_sp_<run>`: 201 + auditoría, 409, 404 de otra
+organización, 400 de departamento ajeno, `POST /payroll/contracts` con el id nuevo → 200),
+`screens/payroll/__tests__/staff-profile-form.test.mts` y `payroll-cost-screen-contract.test.mts`.
+
+**Decisión 2FA (M6).** `POST /auth/login` (`server.ts`) emite el token sin consultar
+`user.mfaEnabled` y `createMfaChallenge` (`auth.service.ts`) genera un código que ningún canal
+entrega (correo, SMS y TOTP no existen); solo la invitación marca `mfaEnabled`
+(`invitations.service.ts`). Implementar la verificación exigiría un canal de entrega y un
+segundo paso de login que no están construidos, así que se RETIRA la promesa en vez de
+implementarla: la ayuda del interruptor «Exigir doble factor (2FA)» de `AssignmentDrawer.tsx`
+dice ahora «Deja la marca “2FA: Activo” en la ficha para cuando se active la verificación del
+segundo factor; hoy el acceso no la exige.» y el manual (`docs/manual/60-sistemas.md` §1.2,
+`faq.md`, ficha 08) documenta que la marca no es un control de acceso. La regla de diseño D8
+(«2FA (TOTP) obligatoria para rango ≥ 2») de `docs/runbooks/accesos-por-departamento.md` §3.2
+sigue siendo el objetivo y queda pendiente de la entrega de canales; hasta entonces los
+controles compensatorios son el PIN de supervisor, los umbrales de aprobación y la auditoría.
+
 ## 19. Importación contable desde Sage 200 (Tanda 7c · 2026-09-17)
 
 Runbook operativo completo (qué pedir a administración, formatos y cabeceras, orden de
@@ -2822,18 +3035,26 @@ troceo final; el SQL con sus valores esperados se deja junto a la carga para pod
 - **API = BD:** diario (`X-Total-Count`), mayor, sumas y saldos, balance clásico, PyG y USALI por
   centro contra las mismas consultas SQL. Los informes excluyen las parejas reversed + reversal
   (el mayor no): un cotejo bruto por sumas no es un descuadre. El balance de cuentas anuales
-  calcula «antes» a `from − 1` y excluye `opening` de «movimientos»: una apertura importada
-  fechada el primer día del ejercicio queda fuera de ambos conjuntos y el balance PGC sale
-  descuadrado por el saldo de 129 de la apertura cuando dentro del ejercicio se aplica el
-  resultado anterior; hasta corregirlo, usar `reports/balance-sheet` para ese ejercicio.
+  trata una apertura importada fechada el primer día del ejercicio como saldo inicial (§9,
+  «Apertura importada dentro del ejercicio»): comprobar que `balanced = true` y que el ECPN
+  del ejercicio sale `reconciled = true` con la fila «A. Saldo, inicio» distinta de cero. Su
+  activo NO tiene por qué coincidir con `reports/balance-sheet?asOf=<fin del ejercicio>`
+  (§9, «Balance clásico frente a cuentas anuales»): el clásico clasifica por `Account.kind`
+  del plan importado y las cuentas anuales por prefijo PGC; con el plan de Sage difieren en
+  474 / 566 (kind `liability`, activo por prefijo) y 163 (kind `equity`, pasivo por
+  prefijo). Piloto 2025: clásico 26.456.572,96 · cuentas anuales 26.501.131,97, diferencia
+  44.559,01 = 474 (38.989,26) + 566 (5.569,75); la 478 (saldo acreedor) es pasivo en ambos.
 - **IVA:** libros = Excel de origen = canónico = BD = `GET /fiscal/vat-books` por libro y
   trimestre; casillas del 303 por trimestre y corte mensual desde la BD; libro frente a diario
-  477/472 por trimestre con SQL agregado (el cotejo del API tiene topes y puede ser «no
-  concluyente»); los asientos de liquidación importados no alimentan la casilla 110 ni la
-  compensación; el volumen de operaciones del 390 y de `/fiscal/regime` incluye las
+  477/472 por trimestre con SQL agregado (desde FIX-1 · F3 el cotejo del API también es
+  agregado y sin topes, §11.2); los asientos de liquidación importados (LIQUI) alimentan la
+  casilla 110 del periodo siguiente y salen como «liquidaciones históricas» (§11.2: comprobar
+  que la 110 del primer trimestre tras la carga coincide con el saldo de 4700 de la última
+  LIQUI); el volumen de operaciones del 390 y de `/fiscal/regime` incluye las
   autofacturas ISP/AIB que Sage exporta en expedidas (no son ventas): no cambiar la
   periodicidad por esa propuesta sin restarlas; las filas de libros importadas no llevan
-  centro (el desglose por hotel sale a cero).
+  centro (el desglose por hotel avisa «no disponible para lotes Sage sin delegación» en
+  vez de mostrar ceros).
 - **Datos personales:** 465/460/64x sin títulos de persona (el preprocesado puede fallar con
   partículas de apellido que parecen siglas de sociedad y con nombres escritos en otro orden en
   comentarios de 572/626/410); nunca nombres en informes, capturas ni repo (`git status` y

@@ -16,7 +16,8 @@
 // reconciliar `accounting.journal.post` (medium: la preview nunca escribe y la
 // reconciliación solo escribe su informe); crear y contabilizar un lote
 // `accounting.journal.post` (high); lecturas de lotes, mapas y reconciliaciones
-// `accounting.read` (medium; plantilla low) → remapeadas a `accounting.reports.read`;
+// `accounting.read` (medium; plantilla low) → remapeadas a `accounting.reports.read`
+// (FIX-1 · F11: también el directorio de terceros `GET …/third-parties`);
 // mapas de cuentas y analítico `accounting.configure` (high: `create` da de alta
 // subcuentas); reverso de un lote `accounting.journal.post` + `ai.high_risk.confirm`
 // (critical, espejo de POST /accounting/journal/:id/reverse). Las high / critical
@@ -37,6 +38,7 @@ export const ledgerImportRoutePermissions: ApiRoutePermission[] = [
   { method: "GET", path: "/accounting/ledger-imports/reconciliation", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "GET", path: "/accounting/ledger-imports/reconciliation/:id", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "GET", path: "/accounting/ledger-imports/reconciliation/:id/csv", permissions: ["accounting.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/ledger-imports/third-parties", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "GET", path: "/accounting/ledger-imports/:id", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "POST", path: "/accounting/ledger-imports/:id/post", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "POST", path: "/accounting/ledger-imports/:id/reverse", permissions: ["accounting.journal.post", "ai.high_risk.confirm"], riskLevel: "critical" }

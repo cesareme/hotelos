@@ -78,6 +78,7 @@ import {
   type LedgerImportSourceType,
   type LedgerImportUnbalancedRow,
   type LedgerImportUnmappedAccount,
+  type VatBookRegimeCode,
   type LedgerImportUnmappedAnalytics,
   type LedgerReconciliationClassification,
   type LedgerReconciliationRow,
@@ -95,6 +96,7 @@ import { normalizeNif, periodCodeForDate, type VatBookRow } from "../vat-books.s
 import {
   SAGE_PERIOD_CODES,
   balancePeriodEndDate,
+  parseRateCode,
   sageEntryKeyString,
   type CanonicalBalanceRow,
   type CanonicalJournalRow,
@@ -551,7 +553,8 @@ export function buildJournalEntries(sageEntries: readonly SageJournalEntry[], ct
           ? clip(row.concepto, MAX_DESCRIPTION_LENGTH)
           : null;
       const vatAccount = /^(472|477)(\.|$)/.test(accountCode);
-      const taxRateCode = vatAccount && row.tipo_iva !== null ? String(Math.round(Number(row.tipo_iva))) : null;
+      // FIX-1 · F4 (B-7): el tipo conserva los decimales («7,5» → "7.5"; el 303 acepta `^\d+(\.\d+)?$`); antes se redondeaba a entero.
+      const taxRateCode = vatAccount && row.tipo_iva !== null ? parseRateCode(row.tipo_iva) : null;
       const taxBase = vatAccount && row.base_iva !== null ? money(row.base_iva) : null;
       // Analítica: centro de trabajo.
       let propertyId: string | null = null;
@@ -1223,12 +1226,57 @@ export type VatBookRowsContext = {
 
 /**
  * Filas canónicas del libro → VatBookRow (sourceType sage200, sourceId
- * `<empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:R]` — el NIF solo en recibidas,
- * donde el número es el del proveedor —, period por periodCodeForDate). Varias filas de la
- * misma factura con tipos distintos comparten sourceId (la clave única del libro incluye
- * `rate`). Con `nativeIndex`, una emitida cuya serie + número es una factura de Anfitorio, o
- * una recibida ya contabilizada en Anfitorio (NIF + número del proveedor), va a `skippedNative`.
+ * `<empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:<recepción>][:R]` — el NIF y la
+ * recepción solo en recibidas, donde el número es el del proveedor y un mismo proveedor puede
+ * repetirlo en fechas distintas: la recepción es `numero_recepcion` del libro o, si falta, la
+ * fecha de expedición (FIX-1 · F4, B-8); el número de Sage queda íntegro en `number` —, period
+ * por periodCodeForDate). Varias filas de la misma factura con tipos distintos comparten
+ * sourceId (la clave única del libro incluye `rate`); misma factura, misma fecha y mismo tipo
+ * se suman con aviso. Con `nativeIndex`, una emitida cuya serie + número es una factura propia,
+ * o una recibida ya contabilizada (NIF + número del proveedor), va a `skippedNative`.
  */
+/** NIF español (DNI / NIE / CIF) normalizado: letra opcional + 7-8 dígitos + carácter de control. */
+const SPANISH_NIF_RE = /^[A-Z]?\d{7,8}[A-Z0-9]$/;
+
+/**
+ * FIX-1 · F2 (B-4) · corrector: régimen de IVA de una fila canónica del libro a partir de la clave de
+ * operación, la calificación, el tipo de factura y la marca «Inversión del Sujeto Pasivo» del formato AEAT.
+ * Pura; null = sin datos para decidir (la fila queda «sin clasificar» y el 303 la trata como interior, igual
+ * que antes de F2; POST /fiscal/vat-books/reclassify o la gestoría la clasifican después).
+ *   recibidas: tipo F5 (DUA) → importacion · «Inversión del Sujeto Pasivo» = S → isp (antes que la clave) ·
+ *              clave 09 (adquisición intracomunitaria) → aib · clave 01 → interior.
+ *   emitidas:  clave 09 → isp (autofactura) · clave 01 con calificación (S1, S2, N1…) → interior · clave 01 sin
+ *              calificación → interior solo con NIF: SIN NIF es la forma de las autofacturas de Sage (clave 01,
+ *              calificación vacía) y de las ventas a particulares, y sin más datos no se decide (null).
+ * Sin clave ni calificación (columnas ausentes o vacías) NUNCA se decide: una venta simplificada sin NIF (F2) de
+ * un libro sin esas columnas quedaba clasificada `isp` (corrección F2-IMPORT-ISP-DEFAULT). Las claves distintas de
+ * 01/09 no se interpretan (null).
+ */
+export function regimeOfVatRow(row: Pick<CanonicalVatRow, "libro" | "nif" | "tipo_factura" | "clave_operacion" | "calificacion"> & Partial<Pick<CanonicalVatRow, "inversion_sujeto_pasivo">>): VatBookRegimeCode | null {
+  const clave = row.clave_operacion?.trim() ?? "";
+  const calificacion = row.calificacion?.trim() ?? "";
+  const tipoFactura = row.tipo_factura?.trim().toUpperCase() ?? "";
+  if (row.libro === "recibidas") {
+    if (tipoFactura === "F5") return "importacion";
+    if (row.inversion_sujeto_pasivo === "S") return "isp";
+    if (clave === "09") return "aib";
+    if (clave === "01") return "interior";
+    return null;
+  }
+  if (clave === "09") return "isp";
+  if (clave === "01") {
+    if (calificacion !== "") return "interior";
+    return normalizeNif(row.nif) === null ? null : "interior";
+  }
+  return null;
+}
+
+/** NIF que NO es español (extranjero o identificación de otro tipo); null cuenta como «sin NIF», no como extranjero. */
+export function isForeignNif(nif: string | null | undefined): boolean {
+  const normalized = normalizeNif(nif);
+  return normalized !== null && !SPANISH_NIF_RE.test(normalized);
+}
+
 export function buildVatBookRows(vatRows: readonly CanonicalVatRow[], ctx: VatBookRowsContext): { rows: VatBookRow[]; warnings: string[]; skippedNative: LedgerImportNativeSkippedRow[] } {
   const rows: VatBookRow[] = [];
   const warnings: string[] = [];
@@ -1238,7 +1286,8 @@ export function buildVatBookRows(vatRows: readonly CanonicalVatRow[], ctx: VatBo
   for (const row of vatRows) {
     const companyCode = ctx.companyCode ?? row.empresa;
     const counterpartyNif = normalizeNif(row.nif);
-    const sourceId = ledgerImportVatBookSourceId({ companyCode, fiscalYear: row.ejercicio, series: row.serie ?? "", number: row.numero, rectification: row.rectificativa, counterpartyNif: row.libro === "recibidas" ? counterpartyNif : null });
+    const received = row.libro === "recibidas";
+    const sourceId = ledgerImportVatBookSourceId({ companyCode, fiscalYear: row.ejercicio, series: row.serie ?? "", number: row.numero, rectification: row.rectificativa, counterpartyNif: received ? counterpartyNif : null, reception: received ? row.numero_recepcion ?? row.fecha : null });
     const native = ctx.nativeIndex ? nativeRefOfVatRow(row, counterpartyNif, ctx.nativeIndex) : null;
     if (native) {
       const skipKey = `${row.libro}|${sourceId}`;
@@ -1284,7 +1333,8 @@ export function buildVatBookRows(vatRows: readonly CanonicalVatRow[], ctx: VatBo
       sourceType: LEDGER_VAT_BOOK_SOURCE_TYPE,
       sourceId,
       period: periodCodeForDate(row.fecha, ctx.periodicity),
-      deductible: row.libro === "recibidas" ? !(row.cuota_deducible !== null && money(row.cuota_deducible).isZero() && !money(row.cuota).isZero()) : true
+      deductible: row.libro === "recibidas" ? !(row.cuota_deducible !== null && money(row.cuota_deducible).isZero() && !money(row.cuota).isZero()) : true,
+      regime: regimeOfVatRow(row)
     });
   }
   if (skippedNative.length > 0) warnings.push(`Modo sombra: ${skippedNative.length} factura(s) del libro de Sage son documentos propios de ${BRAND.name} (ya materializados en los libros) y se omiten.`);

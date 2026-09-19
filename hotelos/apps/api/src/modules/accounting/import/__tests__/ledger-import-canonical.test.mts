@@ -187,6 +187,14 @@ describe("normalizadores de celda", () => {
     assert.equal(parseRateCode("21,00 %"), "21");
     assert.equal(parseRateCode("0.21"), "21");
     assert.equal(parseRateCode(""), null);
+    // FIX-1 · F4 (B-7): decimales conservados (rate Decimal(5,2)), sin ceros finales; antes 7,5 → "8".
+    assert.equal(parseRateCode("7,5"), "7.5");
+    assert.equal(parseRateCode("7,50 %"), "7.5");
+    assert.equal(parseRateCode("0.075"), "7.5");
+    assert.equal(parseRateCode("21,00"), "21");
+    assert.equal(parseRateCode("10"), "10");
+    assert.equal(parseRateCode("5,2"), "5.2");
+    assert.equal(parseRateCode("0"), "0");
   });
 
   it("normalizeSagePeriod, normalizeBalancePeriod y balancePeriodEndDate", () => {
@@ -206,5 +214,81 @@ describe("normalizadores de celda", () => {
     assert.equal(balancePeriodEndDate("2025-Q3"), "2025-09-30");
     assert.equal(balancePeriodEndDate("2025"), "2025-12-31");
     assert.equal(balancePeriodEndDate("apertura"), null);
+  });
+});
+
+describe("vat_books · columnas opcionales clave_operacion / calificacion (FIX-1 · F2)", () => {
+  const header = CANONICAL_COLUMNS.vat_books.join(";");
+  const emitida = "emitidas;1;2026;2026-07-03;;FAC-2026;000010;A23456783;VIAJES DEMO SL;ES;1000,00;10;100,00;1100,00;;;;;F1;";
+  const recibida = "recibidas;1;2026;2026-07-10;;F;778;;;DE;500,00;21;105,00;605,00;;;;;F1;";
+  const withoutColumns = `﻿${header}\r\n${emitida}\r\n${recibida}\r\n`;
+  const withEmptyColumns = `﻿${header};clave_operacion;calificacion\r\n${emitida};;\r\n${recibida};;\r\n`;
+  const withValues = `﻿${header};clave_operacion;calificacion\r\n${emitida};1;s1\r\n${recibida};09;\r\n`;
+
+  it("se leen cuando vienen (clave a dos dígitos, calificación en mayúsculas), son null cuando faltan y no salen en unknownHeaders", () => {
+    const plain = parseCanonicalCsv("vat_books", withoutColumns);
+    assert.deepEqual(plain.unknownHeaders, []);
+    assert.deepEqual(plain.rows.map((row) => [row.clave_operacion, row.calificacion]), [[null, null], [null, null]]);
+    const valued = parseCanonicalCsv("vat_books", withValues);
+    assert.deepEqual(valued.unknownHeaders, []);
+    assert.deepEqual(valued.rows.map((row) => [row.libro, row.clave_operacion, row.calificacion]), [["emitidas", "01", "S1"], ["recibidas", "09", null]]);
+    assert.equal(parseCanonicalCsv("vat_books", withEmptyColumns).rows[1]!.clave_operacion, null);
+    // El JSON canónico las admite como número o texto.
+    const json = parseCanonicalJson("vat_books", JSON.stringify({ kind: "vat_books", rows: [{ libro: "recibidas", fecha: "2026-07-10", numero: "778", base: 500, tipo_iva: 21, cuota: 105, clave_operacion: 9, calificacion: "s1" }] }));
+    assert.deepEqual([json.rows[0]!.clave_operacion, json.rows[0]!.calificacion], ["09", "S1"]);
+    assert.deepEqual(normalizeRows("vat_books", json.rows).map((row) => [row.clave_operacion, row.calificacion]), [["09", "S1"]]);
+  });
+
+  it("inversion_sujeto_pasivo (corrector FIX-1): S / SI / X / 1 → «S», otro texto → «N», vacía o ausente → null; el hash no cambia si viene vacía", () => {
+    const withIsp = `﻿${header};inversion_sujeto_pasivo\r\n${emitida};\r\n${recibida};si\r\n`;
+    const parsed = parseCanonicalCsv("vat_books", withIsp);
+    assert.deepEqual(parsed.unknownHeaders, []);
+    assert.deepEqual(parsed.rows.map((row) => row.inversion_sujeto_pasivo), [null, "S"]);
+    assert.deepEqual(parseCanonicalCsv("vat_books", withoutColumns).rows.map((row) => row.inversion_sujeto_pasivo), [null, null]);
+    const json = parseCanonicalJson("vat_books", JSON.stringify({ kind: "vat_books", rows: [{ libro: "recibidas", fecha: "2026-07-10", numero: "778", base: 500, tipo_iva: 21, cuota: 105, inversion_sujeto_pasivo: "N" }, { libro: "recibidas", fecha: "2026-07-11", numero: "779", base: 500, tipo_iva: 21, cuota: 105, inversion_sujeto_pasivo: "X" }] }));
+    assert.deepEqual(json.rows.map((row) => row.inversion_sujeto_pasivo), ["N", "S"]);
+    assert.deepEqual(normalizeRows("vat_books", json.rows).map((row) => row.inversion_sujeto_pasivo), ["N", "S"]);
+    const emptyIsp = `﻿${header};inversion_sujeto_pasivo\r\n${emitida};\r\n${recibida};\r\n`;
+    const hashPlain = contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", withoutColumns).rows));
+    assert.equal(contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", emptyIsp).rows)), hashPlain, "vacía no cambia el hash");
+    assert.notEqual(contentHashOf("vat_books", normalizeRows("vat_books", parsed.rows)), hashPlain, "con valor sí");
+  });
+
+  it("la plantilla canónica no cambia (columnas opcionales fuera de CANONICAL_COLUMNS) y el hash es estable cuando vienen vacías y cambia con valores", () => {
+    assert.ok(!buildCanonicalTemplate("vat_books").includes("clave_operacion"));
+    const hashPlain = contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", withoutColumns).rows));
+    const hashEmpty = contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", withEmptyColumns).rows));
+    const hashValued = contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", withValues).rows));
+    assert.equal(hashEmpty, hashPlain, "un fichero anterior a F2 sigue siendo el mismo lote");
+    assert.notEqual(hashValued, hashPlain);
+  });
+});
+
+describe("vat_books · columna opcional numero_recepcion (FIX-1 · F4 · B-8)", () => {
+  const header = CANONICAL_COLUMNS.vat_books.join(";");
+  const recibida = "recibidas;1;2026;2026-07-10;;F;778;A23456783;PROVEEDOR DEMO SL;ES;500,00;7,5;37,50;537,50;;;;;F1;";
+  const withoutColumn = `\uFEFF${header}\r\n${recibida}\r\n`;
+  const withEmptyColumn = `\uFEFF${header};numero_recepcion\r\n${recibida};\r\n`;
+  const withValue = `\uFEFF${header};numero_recepcion\r\n${recibida};45.0\r\n`;
+
+  it("se lee cuando viene (código: «45.0» → «45»), es null cuando falta o viene vacía, no sale en unknownHeaders; el tipo 7,5 conserva los decimales", () => {
+    const plain = parseCanonicalCsv("vat_books", withoutColumn);
+    assert.deepEqual(plain.unknownHeaders, []);
+    assert.deepEqual(plain.rows.map((row) => [row.numero_recepcion, row.tipo_iva, row.cuota]), [[null, "7.5", "37.50"]]);
+    assert.equal(parseCanonicalCsv("vat_books", withEmptyColumn).rows[0]!.numero_recepcion, null);
+    const valued = parseCanonicalCsv("vat_books", withValue);
+    assert.deepEqual(valued.unknownHeaders, []);
+    assert.equal(valued.rows[0]!.numero_recepcion, "45");
+    // El JSON canónico la admite como número o texto.
+    const json = parseCanonicalJson("vat_books", JSON.stringify({ kind: "vat_books", rows: [{ libro: "recibidas", fecha: "2026-07-10", numero: "778", base: 500, tipo_iva: 7.5, cuota: 37.5, numero_recepcion: 45 }] }));
+    assert.deepEqual([json.rows[0]!.numero_recepcion, json.rows[0]!.tipo_iva], ["45", "7.5"]);
+    assert.deepEqual(normalizeRows("vat_books", json.rows).map((row) => [row.numero_recepcion, row.tipo_iva]), [["45", "7.5"]]);
+  });
+
+  it("la plantilla canónica no cambia y el hash es estable cuando viene vacía y cambia con valor", () => {
+    assert.ok(!buildCanonicalTemplate("vat_books").includes("numero_recepcion"));
+    const hashPlain = contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", withoutColumn).rows));
+    assert.equal(contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", withEmptyColumn).rows)), hashPlain, "un fichero anterior a F4 sigue siendo el mismo lote");
+    assert.notEqual(contentHashOf("vat_books", normalizeRows("vat_books", parseCanonicalCsv("vat_books", withValue).rows)), hashPlain);
   });
 });

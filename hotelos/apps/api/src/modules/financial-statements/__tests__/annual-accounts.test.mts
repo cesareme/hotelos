@@ -5,19 +5,22 @@
 //   node --import tsx --test src/modules/financial-statements/__tests__/annual-accounts.test.mts
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BALANCE_PREFIXES, PYG_PREFIXES, computeBalance, computeEcpn, computeMemoria, computePyg, matchPrefix, previousPeriodOf } from "../annual-accounts.service.js";
+import { Prisma } from "@prisma/client";
+import { BALANCE_PREFIXES, PYG_PREFIXES, computeBalance, computeEcpn, computeMemoria, computePyg, matchPrefix, mergeBalanceRows, previousPeriodOf } from "../annual-accounts.service.js";
 import { addDays, type AccountBalanceRow } from "../source.js";
-import { closeReferenceYear, referenceLedger, type MemorySource } from "./memory-source.mts";
+import { MemorySource, closeReferenceYear, referenceLedger } from "./memory-source.mts";
 
 const YEAR = { from: "2027-01-01", to: "2027-12-31" };
 
+/** Mirror of annual-accounts.service.readLedgerSet: rowsBefore = balance_at(from − 1) + the openings dated inside the period without their closing. */
 async function ledgerSet(source: MemorySource, period: { from: string; to: string }, propertyId: string | null = "prop_t") {
-  const [rowsAt, rowsBefore, rowsMovements] = await Promise.all([
+  const [rowsAt, before, openingInPeriod, rowsMovements] = await Promise.all([
     source.accountBalances({ organizationId: "org_t", propertyId, mode: "balance_at", to: period.to }),
     source.accountBalances({ organizationId: "org_t", propertyId, mode: "balance_at", to: addDays(period.from, -1) }),
+    source.accountBalances({ organizationId: "org_t", propertyId, mode: "opening_in_period", ...period }),
     source.accountBalances({ organizationId: "org_t", propertyId, mode: "movements", ...period })
   ]);
-  return { rowsAt, rowsBefore, rowsMovements };
+  return { rowsAt, rowsBefore: mergeBalanceRows(before, openingInPeriod), rowsMovements };
 }
 
 const lineAmount = (lines: Array<{ id: string; amount: string }>, id: string): string => lines.find((l) => l.id === id)?.amount ?? "∅";
@@ -26,6 +29,8 @@ describe("prefix classification", () => {
   it("longest prefix wins and dotted sub-accounts follow their account", () => {
     assert.equal(matchPrefix("477.21", BALANCE_PREFIXES), "C_IV");
     assert.equal(matchPrefix("4700", BALANCE_PREFIXES), "B_II");
+    assert.equal(matchPrefix("478", BALANCE_PREFIXES), "C_IV"); // HP por aplazamientos (plan de Sage): deuda aplazada con las AAPP, saldo acreedor (corrector FIX-1)
+    assert.equal(matchPrefix("4780000", BALANCE_PREFIXES), "C_IV");
     assert.equal(matchPrefix("4750", BALANCE_PREFIXES), "C_IV");
     assert.equal(matchPrefix("438", BALANCE_PREFIXES), "C_IV"); // anticipos de clientes: liability, not «43 Clientes»
     assert.equal(matchPrefix("2816", BALANCE_PREFIXES), "A_II");
@@ -222,6 +227,83 @@ describe("asientos revertidos (hallazgo t6#2): la pareja original + reverso no a
     assert.equal(lineAmount(q2.lines, "P1"), "0.00");
     const at = await source.accountBalances({ organizationId: "org_t", propertyId: "prop_t", mode: "balance_at", to: "2027-03-31" });
     assert.equal(at.find((r) => r.code === "4300")?.debit.toFixed(2), "176.00"); // the annulled 121 is not a receivable
+  });
+});
+
+describe("apertura importada el primer día del ejercicio (A-01/E-01)", () => {
+  /**
+   * A ledger loaded from another system: its FIRST entry is the opening dated
+   * `from` (society-level, like an imported Sage opening) — assets 5.000, 129
+   * credit 1.000 (prior result pending application), capital 4.000 — then the
+   * application of that result inside the year (129 → 113) and ordinary
+   * purchases and sales.
+   */
+  function importedLedger(): MemorySource {
+    const s = new MemorySource("org_t");
+    s.post({ date: YEAR.from, kind: "opening", propertyId: null, description: "Apertura importada", lines: [{ code: "572", debit: "5000.00" }, { code: "129", credit: "1000.00" }, { code: "100", credit: "4000.00" }] });
+    s.post({ date: "2027-03-10", propertyId: "prop_t", sourceType: "invoice", sourceId: "inv_1", lines: [{ code: "4300", debit: "121.00" }, { code: "705.1", credit: "100.00", taxRateCode: "21" }, { code: "477.21", credit: "21.00", taxRateCode: "21", taxBase: "100.00" }] });
+    s.post({ date: "2027-03-15", propertyId: "prop_t", sourceType: "supplier_bill", sourceId: "sb_1", lines: [{ code: "601.1", debit: "40.00" }, { code: "472.10", debit: "4.00", taxRateCode: "10", taxBase: "40.00" }, { code: "400", credit: "44.00" }] });
+    s.post({ date: "2027-06-30", propertyId: null, description: "Aplicación del resultado anterior a reservas", lines: [{ code: "129", debit: "1000.00" }, { code: "113", credit: "1000.00" }] });
+    return s;
+  }
+
+  it("counts the opening dated `from` as opening balance: balance cuadrado, 129 aplicada, reservas dotadas", async () => {
+    const source = importedLedger();
+    const ledger = await ledgerSet(source, YEAR, null);
+    assert.equal(ledger.rowsBefore.find((r) => r.code === "129")?.credit.toFixed(2), "1000.00");
+    const balance = computeBalance({ organizationId: "org_t", propertyId: null, period: YEAR, ...ledger });
+    assert.equal(balance.balanced, true, `${balance.totalAssets} vs ${balance.totalEquityAndLiabilities}`);
+    assert.equal(balance.totalAssets, "5125.00"); // 572 5.000 + 4300 121 + 472.10 4
+    assert.equal(balance.totalEquityAndLiabilities, "5125.00");
+    assert.ok(["0.00", "∅"].includes(lineAmount(balance.equity.lines, "E_V")), "129 applied inside the year: nothing pending");
+    assert.equal(lineAmount(balance.equity.lines, "E_III"), "1000.00");
+    assert.equal(lineAmount(balance.equity.lines, "E_I"), "4000.00");
+    assert.equal(lineAmount(balance.equity.lines, "E_VII"), "60.00");
+    assert.equal(balance.periodResult, "60.00");
+    assert.equal(balance.priorUnregularisedResult, "0.00");
+    assert.deepEqual(balance.warnings, []);
+
+    // Before the fix: the opening was neither in balance_at(from − 1) nor in movements, only its application was.
+    const rowsBeforeWithoutOpening = await source.accountBalances({ organizationId: "org_t", propertyId: null, mode: "balance_at", to: addDays(YEAR.from, -1) });
+    const buggy = computeBalance({ organizationId: "org_t", propertyId: null, period: YEAR, ...ledger, rowsBefore: rowsBeforeWithoutOpening });
+    assert.equal(buggy.balanced, false);
+    assert.equal(buggy.totalEquityAndLiabilities, "4125.00"); // off by the 129 of the opening
+
+    const ecpn = computeEcpn({ organizationId: "org_t", propertyId: null, period: YEAR, ...ledger });
+    assert.equal(ecpn.reconciled, true, ecpn.warnings.join("; "));
+    const opening = ecpn.rows.find((r) => r.id === "A")!;
+    assert.equal(opening.values.priorResults, "1000.00");
+    assert.equal(opening.values.capital, "4000.00");
+    assert.equal(opening.values.total, "5000.00");
+    const closing = ecpn.rows.find((r) => r.id === "C")!;
+    assert.equal(closing.values.reserves, "1000.00");
+    assert.equal(closing.values.priorResults, "0.00");
+    assert.equal(closing.values.periodResult, "60.00");
+    assert.equal(closing.values.total, "5060.00");
+  });
+
+  it("does not add the opening of a year closed inside the period (periodo a caballo de dos ejercicios)", async () => {
+    const source = referenceLedger();
+    closeReferenceYear(source); // regularización + cierre 2027-12-31, apertura 2028-01-01
+    const period = { from: "2027-07-01", to: "2028-06-30" };
+    assert.deepEqual(await source.accountBalances({ organizationId: "org_t", propertyId: "prop_t", mode: "opening_in_period", ...period }), []);
+    const ledger = await ledgerSet(source, period);
+    const balance = computeBalance({ organizationId: "org_t", propertyId: "prop_t", period, ...ledger });
+    assert.equal(balance.balanced, true, `${balance.totalAssets} vs ${balance.totalEquityAndLiabilities}`);
+    assert.equal(balance.totalAssets, "60184.80"); // closing + opening inside the period net to zero, nothing doubled
+    assert.equal(lineAmount(balance.equity.lines, "E_V"), "0.00"); // 129 not carried twice
+    assert.equal(balance.periodResult, "0.00");
+    assert.equal(balance.priorUnregularisedResult, "-1902.00"); // the 2027 result is booked before `from`
+    const ecpn = computeEcpn({ organizationId: "org_t", propertyId: "prop_t", period, ...ledger });
+    assert.equal(ecpn.reconciled, true, ecpn.warnings.join("; "));
+    assert.equal(ecpn.rows.find((r) => r.id === "A")!.values.priorResults, "0.00");
+  });
+
+  it("mergeBalanceRows adds debit and credit by code and keeps the account descriptors", () => {
+    const row = (code: string, debit: string, credit: string, name = code): AccountBalanceRow => ({ code, name, kind: "asset", isPostable: true, usaliDepartment: null, usaliLine: null, debit: new Prisma.Decimal(debit), credit: new Prisma.Decimal(credit) });
+    const merged = mergeBalanceRows([row("572", "10.00", "0.00", "Bancos"), row("100", "0.00", "5.00")], [row("572", "2.50", "1.00"), row("129", "0.00", "3.00")]);
+    assert.deepEqual(merged.map((r) => [r.code, r.name, r.debit.toFixed(2), r.credit.toFixed(2)]), [["100", "100", "0.00", "5.00"], ["129", "129", "0.00", "3.00"], ["572", "Bancos", "12.50", "1.00"]]);
+    assert.deepEqual(mergeBalanceRows([], []), []);
   });
 });
 

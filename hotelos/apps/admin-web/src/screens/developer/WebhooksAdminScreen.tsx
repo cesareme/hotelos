@@ -27,6 +27,7 @@ import {
   type WebhookDelivery
 } from "../../services/webhooksApi";
 import { copyText } from "../../services/authApi";
+import { getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
 import { dateTime, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
@@ -167,9 +168,12 @@ export function WebhooksAdminScreen() {
     setCreating(true);
     setError(null);
     try {
+      // FIX-1 (F7): the subscription hangs from the active property so the
+      // tenant guard resolves it (Pausar / Eliminar / entregas / prueba).
       const result = await createSubscription({
         targetUrl: newUrl.trim(),
-        eventTypes: Array.from(newEvents)
+        eventTypes: Array.from(newEvents),
+        propertyId: getActivePropertyId()
       });
       setCreatedSecret(result.secret);
       setSecretCopied(false);
@@ -320,7 +324,7 @@ export function WebhooksAdminScreen() {
       commands={[{ id: "webhooks-refresh", label: `${ACTIONS.refresh} webhooks`, run: () => void refresh() }]}
     >
       <CocoaCallout tone="info" title="Cómo se entregan">
-        Cada entrega es un HTTP POST firmado con HMAC-SHA256 sobre el cuerpo, en la cabecera <code className="cocoa-mono">X-HotelOS-Signature</code> (formato <code className="cocoa-mono">sha256=…</code>), usando el secret
+        Cada entrega es un HTTP POST firmado con HMAC-SHA256 sobre el cuerpo, en la cabecera <code className="cocoa-mono">X-HotelOS-Signature</code> (nombre técnico heredado del protocolo, no cambia con la marca; formato <code className="cocoa-mono">sha256=…</code>), usando el secret
         que se muestra una sola vez al crear la suscripción. Si la URL no responde 2xx, el sistema reintenta hasta 6 veces (30 s → 6 h). Hoy solo «Enviar evento de prueba» genera entregas: los eventos del PMS
         (reservas, folios, facturas, habitaciones) todavía no se publican automáticamente en las suscripciones.
       </CocoaCallout>
@@ -362,7 +366,7 @@ export function WebhooksAdminScreen() {
         }
       >
         <CocoaField label="URL de destino" required help="Debe aceptar HTTP POST con el cuerpo JSON del evento.">
-          <CocoaInput value={newUrl} onChange={setNewUrl} type="url" inputMode="url" placeholder="https://partner.example.com/anfitorio/webhook" disabled={creating} autoComplete="off" />
+          <CocoaInput value={newUrl} onChange={setNewUrl} type="url" inputMode="url" placeholder="https://partner.example.com/ehotelos/webhook" disabled={creating} autoComplete="off" />
         </CocoaField>
         <div className="cocoa-stack" data-gap="2" role="group" aria-label="Eventos a recibir">
           <div className="cocoa-row" data-gap="2" data-justify="between">

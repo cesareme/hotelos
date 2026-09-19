@@ -8,9 +8,9 @@ import { describe, it } from "node:test";
 import { Prisma } from "@prisma/client";
 import type { LegalIdentityDto } from "@hotelos/shared";
 import { ENTITY_READ_PERMISSION, assertFinanceReadScope, assertFinanceReadScopeMany, assertFinanceWriteScope, hasEntityReadScope } from "../ledger.routes.js";
-import { resolveSettlementPeriod } from "../modelo-303.service.js";
-import { proposeRegime } from "../modelo-390.service.js";
-import { LARGE_COMPANY_THRESHOLD, VERIFACTU_EXCLUDED_BY_SII_MOTIVO, declaranteBadge, declarantePair, regimeAvisos, resolveFiscalRegime, siiModelNotFiledMotivo } from "../vat-books.service.js";
+import { compute303, resolveSettlementPeriod } from "../modelo-303.service.js";
+import { aggregate390, proposeRegime, type Modelo390PeriodResult } from "../modelo-390.service.js";
+import { LARGE_COMPANY_THRESHOLD, VERIFACTU_EXCLUDED_BY_SII_MOTIVO, ZERO, declaranteBadge, declarantePair, parseFiscalPeriod, regimeAvisos, resolveFiscalRegime, siiModelNotFiledMotivo, type VatBookRow } from "../vat-books.service.js";
 
 const D = (value: string | number) => new Prisma.Decimal(value);
 
@@ -212,5 +212,85 @@ describe("assertFinanceReadScope (R11: lecturas por sociedad)", () => {
     assert.throws(() => assertFinanceReadScopeMany(director, ["prop_lt", "prop_ra"]), /Propiedad no encontrada/);
     assert.throws(() => assertFinanceReadScopeMany(director, null), /Ámbito no disponible/);
     assert.doesNotThrow(() => assertFinanceReadScopeMany(directora, null));
+  });
+});
+
+describe("aggregate390 · volumen de operaciones sin autofacturas ISP/AIB (FIX-1 · F2, B-1)", () => {
+  const SETTINGS = { prorrataPct: null, regime: "general" as const, taxFigure: "IVA" as const };
+  function row(input: { book: VatBookRow["book"]; date: string; base: string; rate: string; quota: string; regime?: VatBookRow["regime"]; nif?: string | null; sourceId: string }): VatBookRow {
+    return {
+      id: null,
+      organizationId: "org_t",
+      propertyId: null,
+      book: input.book,
+      date: input.date,
+      series: null,
+      number: input.sourceId,
+      counterpartyNif: input.nif === undefined ? "B12345674" : input.nif,
+      counterpartyName: null,
+      base: D(input.base),
+      rate: D(input.rate),
+      quota: D(input.quota),
+      total: D(input.base).plus(D(input.quota)),
+      retention: ZERO,
+      taxFigure: "IVA",
+      surchargeRate: null,
+      surchargeQuota: null,
+      sourceType: "sage200",
+      sourceId: input.sourceId,
+      period: `${input.date.slice(0, 4)}-Q${Math.floor((Number(input.date.slice(5, 7)) - 1) / 3) + 1}`,
+      deductible: true,
+      regime: input.regime ?? null
+    };
+  }
+  /** Ventas interiores 5.565.127,31 + autofacturas ISP 400.000,00 y AIB 186.855,53 (= 586.855,53) → libros 6.151.982,84 (el volumen del informe). */
+  function yearRows(): VatBookRow[] {
+    return [
+      row({ book: "emitidas", date: "2025-02-10", base: "5000000.00", rate: "21", quota: "1050000.00", sourceId: "e1" }),
+      row({ book: "emitidas", date: "2025-05-10", base: "565127.31", rate: "10", quota: "56512.73", sourceId: "e2" }),
+      row({ book: "emitidas", date: "2025-08-10", base: "400000.00", rate: "21", quota: "84000.00", regime: "isp", nif: null, sourceId: "auto-isp" }),
+      row({ book: "emitidas", date: "2025-08-11", base: "186855.53", rate: "21", quota: "39239.66", regime: "aib", nif: null, sourceId: "auto-aib" }),
+      row({ book: "recibidas", date: "2025-08-10", base: "400000.00", rate: "21", quota: "84000.00", regime: "isp", nif: "DE123456789", sourceId: "r-isp" }),
+      row({ book: "recibidas", date: "2025-08-11", base: "186855.53", rate: "21", quota: "39239.66", regime: "aib", nif: "FR12345678901", sourceId: "r-aib" }),
+      row({ book: "recibidas", date: "2025-11-05", base: "1000.00", rate: "21", quota: "210.00", sourceId: "r-int" })
+    ];
+  }
+  function periodsOf(rows: readonly VatBookRow[]): Modelo390PeriodResult[] {
+    return [1, 2, 3, 4].map((quarter) => {
+      const periodo = parseFiscalPeriod(`2025-Q${quarter}`);
+      const periodRows = rows.filter((entry) => entry.date >= periodo.from && entry.date <= periodo.to);
+      return { periodo, computation: compute303({ rows: periodRows, settings: SETTINGS, compensacionPendiente: ZERO }), liquidado: false };
+    });
+  }
+  const general = { regimen: resolveFiscalRegime(identity(), "quarterly") };
+
+  it("con régimen: volumen = 6.151.982,84 − 586.855,53 = 5.565.127,31 < umbral → la propuesta no cambia; la casilla informativa lleva lo excluido", () => {
+    const rows = yearRows();
+    const aggregated = aggregate390({ year: 2025, periods: periodsOf(rows), rows });
+    assert.equal(aggregated.totales.volumenOperaciones, 5565127.31);
+    assert.equal(aggregated.totales.autofacturasIspAibExcluidas, 586855.53);
+    assert.equal(aggregated.casillas.find((box) => box.clave === "VOLUMEN_OPERACIONES")?.importe, 5565127.31);
+    assert.equal(aggregated.casillas.find((box) => box.clave === "AUTOFACTURAS_ISP_AIB_EXCLUIDAS")?.importe, 586855.53);
+    assert.ok(aggregated.casillas.find((box) => box.clave === "VOLUMEN_OPERACIONES")?.descripcion.includes("casilla 108"));
+    assert.ok(aggregated.avisos.some((aviso) => /sin las autofacturas ISP\/AIB \(586855\.53 €/.test(aviso)));
+    // Las cuotas siguen enteras: total devengado = 1.050.000 + 56.512,73 + 84.000 + 39.239,66; deducible = 84.000 + 39.239,66 + 210.
+    assert.equal(aggregated.totales.cuotaDevengada, 1229752.39);
+    assert.equal(aggregated.totales.cuotaDeducible, 123449.66);
+    assert.equal(aggregated.casillas.find((box) => box.clave === "DEV_CUOTA_ISP")?.importe, 84000);
+    assert.equal(aggregated.casillas.find((box) => box.clave === "DED_CUOTA_AIB")?.importe, 39239.66);
+    assert.equal(aggregated.casillas.find((box) => box.clave === "DEV_BASE_21")?.importe, 5000000, "el régimen ordinario al 21 % no lleva las autofacturas");
+    const proposal = proposeRegime({ year: 2025, volumen: D(aggregated.totales.volumenOperaciones!), sociedad: general });
+    assert.deepEqual([proposal.regimen, proposal.cambia], ["general", false]);
+    assert.match(proposal.motivo, /5\.565\.127,31 € ≤ 6\.010\.121,04 €/);
+  });
+
+  it("sin régimen (filas anteriores a F2): las autofacturas siguen en el volumen (6.151.982,84 > umbral) y el producto propone gran empresa — el falso positivo B-1", () => {
+    const rows = yearRows().map((entry) => ({ ...entry, regime: null }));
+    const aggregated = aggregate390({ year: 2025, periods: periodsOf(rows), rows });
+    assert.equal(aggregated.totales.volumenOperaciones, 6151982.84);
+    assert.equal(aggregated.totales.autofacturasIspAibExcluidas, 0);
+    assert.ok(!aggregated.avisos.some((aviso) => /sin las autofacturas/.test(aviso)));
+    const proposal = proposeRegime({ year: 2025, volumen: D(aggregated.totales.volumenOperaciones!), sociedad: general });
+    assert.deepEqual([proposal.regimen, proposal.cambia], ["gran_empresa", true]);
   });
 });

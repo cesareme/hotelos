@@ -234,7 +234,7 @@ export function AssignmentDrawer(props: AssignmentDrawerProps) {
             <CocoaField label="Teléfono" hint={STATUS_LABELS.optional.toLowerCase()}>
               <CocoaInput value={phone} onChange={setPhone} type="tel" inputMode="tel" disabled={busy} autoComplete="off" />
             </CocoaField>
-            <CocoaField label="Exigir doble factor (2FA)" inline help="Obligatorio para supervisión y niveles superiores (diseño D8).">
+            <CocoaField label="Exigir doble factor (2FA)" inline help="Deja la marca “2FA: Activo” en la ficha para cuando se active la verificación del segundo factor; hoy el acceso no la exige.">
               <CocoaSwitch checked={mfa} onChange={setMfa} disabled={busy} size="small" />
             </CocoaField>
           </CocoaFormSection>

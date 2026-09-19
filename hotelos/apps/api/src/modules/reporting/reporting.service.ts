@@ -1,5 +1,6 @@
 import { prisma } from "@hotelos/database";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
+import { propertyWithinScope } from "../../lib/finance-scope.js";
 import { NotFoundError } from "../../lib/http-error.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
@@ -10,6 +11,57 @@ import { listInvoices, summarizeInvoicesByStatus, type ListInvoicesOptions } fro
 
 export type OperationalReportFormat = "pdf" | "csv" | "xlsx" | "json";
 export type OperationalReportType = "reservation" | "billing" | "revenue" | "owner";
+
+// FIX-1 · F5: the export artefact is kept in memory for a short while so the
+// front can download it again through an authenticated route
+// (GET /reports/exports/:exportId/download) without object storage. The
+// response still carries `content` for the inline download. Bounded: 15 min
+// TTL and at most REPORT_EXPORT_MAX entries (oldest evicted on insert).
+export const REPORT_EXPORT_TTL_MS = 15 * 60 * 1000;
+export const REPORT_EXPORT_MAX = 100;
+
+export type StoredReportExport = {
+  organizationId: string;
+  propertyId: string;
+  filename: string;
+  contentType: string;
+  content: string;
+  expiresAt: number;
+};
+
+export const REPORT_EXPORT_STORE = new Map<string, StoredReportExport>();
+
+export function reportExportDownloadUrl(exportId: string): string {
+  return `/reports/exports/${exportId}/download`;
+}
+
+/** Drops expired entries, then the oldest ones until a new entry fits. */
+function pruneReportExportStore(now: number): void {
+  for (const [id, entry] of REPORT_EXPORT_STORE) {
+    if (entry.expiresAt <= now) REPORT_EXPORT_STORE.delete(id);
+  }
+  while (REPORT_EXPORT_STORE.size >= REPORT_EXPORT_MAX) {
+    const oldest = REPORT_EXPORT_STORE.keys().next().value;
+    if (oldest === undefined) break;
+    REPORT_EXPORT_STORE.delete(oldest);
+  }
+}
+
+/**
+ * Stored artefact of a finished export for the download route. 404 (opaque)
+ * when the id is unknown, the entry expired or it belongs to another
+ * organisation; the permission gate is the same one the export itself uses.
+ */
+export function getReportExportFile(input: { context: UserContext; exportId: string }): StoredReportExport {
+  requirePermissions(input.context, ["analytics.export"]);
+  const entry = REPORT_EXPORT_STORE.get(input.exportId);
+  // Corrector FIX-1 (SEC-06): the organisation AND the actor's property scope (R11) decide; both answer the same opaque 404.
+  if (!entry || entry.expiresAt <= Date.now() || entry.organizationId !== input.context.organizationId || !propertyWithinScope(input.context, entry.propertyId)) {
+    if (entry && entry.expiresAt <= Date.now()) REPORT_EXPORT_STORE.delete(input.exportId);
+    throw new NotFoundError("Exportación no encontrada o caducada.");
+  }
+  return entry;
+}
 
 /**
  * Property existence gate (CFG-P0-1): Prisma-first with the in-memory seed as
@@ -261,14 +313,29 @@ export async function exportOperationalReport(input: {
   // print-to-PDF and a CSV companion, so the user always gets something useful).
   const filename = buildReportFilename(input.propertyId, input.reportType, input.format);
   const content = buildReportContent(input.reportType, input.format, payload);
+  const exportId = createId("report_export");
+  const generatedAtMs = Date.now();
+  const expiresAtMs = generatedAtMs + REPORT_EXPORT_TTL_MS;
+  const contentType = contentTypeFor(input.format);
+  pruneReportExportStore(generatedAtMs);
+  REPORT_EXPORT_STORE.set(exportId, {
+    organizationId: input.context.organizationId,
+    propertyId: input.propertyId,
+    filename,
+    contentType,
+    content,
+    expiresAt: expiresAtMs
+  });
   const exportRecord = {
-    id: createId("report_export"),
+    id: exportId,
     propertyId: input.propertyId,
     reportType: input.reportType,
     format: input.format,
-    generatedAt: nowIso(),
+    generatedAt: new Date(generatedAtMs).toISOString(),
     filename,
-    contentType: contentTypeFor(input.format)
+    contentType,
+    downloadUrl: reportExportDownloadUrl(exportId),
+    expiresAt: new Date(expiresAtMs).toISOString()
   };
   recordAuditEvent({
     organizationId: input.context.organizationId,
@@ -330,6 +397,9 @@ function buildReportContent(type: OperationalReportType, format: OperationalRepo
   if (type === "billing" && Array.isArray(data.invoices)) rows = data.invoices as Array<Record<string, unknown>>;
   else if (type === "billing" && Array.isArray(data.folios)) rows = data.folios as Array<Record<string, unknown>>;
   else if (type === "reservation" && Array.isArray(data.reservations)) rows = data.reservations as Array<Record<string, unknown>>;
+  // getReservationReport exposes its lines as `rows` (F5): without this branch
+  // the reservation CSV/XLSX export was always an empty file.
+  else if (type === "reservation" && Array.isArray(data.rows)) rows = data.rows as Array<Record<string, unknown>>;
   else if (Array.isArray(data.items)) rows = data.items as Array<Record<string, unknown>>;
   if (format === "pdf") {
     const table = rows.length

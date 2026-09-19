@@ -109,9 +109,10 @@ describe("Contabilidad › Importar desde Sage 200 · pantalla (Tanda 7c · L4)"
     assert.match(screen, /canMap \? \(\s*<CocoaButton[^>]*onClick=\{\(\) => void saveAnalyticsMap\(\)\}/);
   });
 
-  it("offers the three views on a segmented control and picks the file with CocoaFileInput (IMPORT_ACCEPT, ≤ 20 MiB, only for accounting.journal.post) sending base64, never text", () => {
+  it("offers the four views on a segmented control and picks the file with CocoaFileInput (IMPORT_ACCEPT, ≤ 20 MiB, only for accounting.journal.post) sending base64, never text", () => {
     assert.match(screen, /<CocoaSegmentedControl aria-label="Vista de la importación desde Sage 200" value=\{view\}/);
-    assert.match(helpers, /\{ value: "importar", label: "Importar" \},\s*\{ value: "reconciliacion", label: "Reconciliación" \},\s*\{ value: "lotes", label: "Lotes" \}/);
+    assert.match(helpers, /\{ value: "importar", label: "Importar" \},\s*\{ value: "reconciliacion", label: "Reconciliación" \},\s*\{ value: "lotes", label: "Lotes" \},\s*\{ value: "terceros", label: "Terceros" \}/);
+    assert.match(screen, /view === "lotes" \? renderLotsView\(\) : renderThirdPartiesView\(\)/);
     assert.match(screen, /<CocoaSelect value=\{kind\} onChange=\{changeKind\} options=\{KIND_OPTIONS\}/);
     assert.match(screen, /<CocoaFileInput accept=\{IMPORT_ACCEPT\} maxBytes=\{20 \* 1024 \* 1024\}.*disabled=\{previewing \|\| importing \|\| !canImport\} label="Elegir fichero de Sage 200"/, "FUX-10: the picker is disabled for read-only sessions (the analysis would end in 403)");
     assert.match(screen, /el XML «Datos contables» de Sage todavía no se admite/, "FUX-06");
@@ -255,6 +256,36 @@ describe("Contabilidad › Importar desde Sage 200 · pantalla (Tanda 7c · L4)"
     assert.match(helpers, /export const REVERSAL_REASON_MAX = 500;/);
   });
 
+  it("FIX-1 · F11: the «Terceros» view is a read-only directory (search + role filter, compact table with the lot, «Cargar más» by cursor, CocoaState empty / loading / error) that never prints a withheld name", () => {
+    assert.match(screen, /function renderThirdPartiesView\(\)/);
+    assert.match(screen, /listLedgerThirdParties\(\{ q: tpQuery\.trim\(\) \|\| undefined, role: tpRole \|\| undefined, limit: THIRD_PARTY_PAGE_LIMIT \}\)/, "first page on view / filter change");
+    assert.match(screen, /listLedgerThirdParties\(\{ q: tpQuery\.trim\(\) \|\| undefined, role: tpRole \|\| undefined, limit: THIRD_PARTY_PAGE_LIMIT, cursor \}\)/, "«Cargar más» sends the cursor");
+    assert.match(screen, /window\.setTimeout\(\(\) => \{[\s\S]*?listLedgerThirdParties/, "the search is debounced");
+    assert.match(screen, /<CocoaFormRow columns=\{2\} aria-label="Filtros del directorio de terceros">/);
+    assert.match(screen, /<CocoaInput value=\{tpQuery\} onChange=\{setTpQuery\} placeholder="Código, NIF, cuenta o nombre"/);
+    assert.match(screen, /<CocoaSelect value=\{tpRole\} onChange=\{\(value\) => setTpRole\(isThirdPartyRole\(value\) \? value : ""\)\} options=\{\[\.\.\.THIRD_PARTY_ROLE_FILTER_OPTIONS\]\}/);
+    assert.match(helpers, /\{ value: "", label: "Todos" \},\s*\{ value: "customer", label: "Clientes" \},\s*\{ value: "supplier", label: "Proveedores" \}/);
+    assert.match(screen, /<CocoaSection\s+title="Terceros importados"\s+padding="none"\s+meta=\{tpPage \? plural\(tpPage\.total, "tercero", "terceros"\) : undefined\}/);
+    assert.match(screen, /<CocoaTable columns=\{THIRD_PARTY_COLUMNS\} rows=\{rows\} rowKey="id" density="compact"/);
+    const columns = screen.slice(screen.indexOf("const THIRD_PARTY_COLUMNS"), screen.indexOf("/** Columns of «Lotes»"));
+    for (const label of ["Código", "NIF", "Cuenta Sage", "Rol", "Nombre", "Lote"]) assert.ok(columns.includes(`label: "${label}"`), `column ${label}`);
+    assert.match(columns, /key: "sourceAccount"[^\n]*className="cocoa-mono"/, "the Sage account is mono");
+    assert.match(columns, /render: \(row\) => row\.name \?\? EMPTY/, "a withheld name paints «—»");
+    assert.match(columns, /render: \(row\) => thirdPartyLotLabel\(row\.lote\)/);
+    assert.match(screen, /Cargar más/);
+    assert.match(screen, /tpPage\?\.nextCursor \? \(/, "«Cargar más» only while the API returns a cursor");
+    assert.match(screen, /<CocoaState kind="error" title="No se pudieron cargar los terceros"/);
+    assert.match(screen, /<CocoaState kind="loading" title="Cargando los terceros importados…" inline \/>/);
+    assert.match(screen, /<CocoaState kind="empty" title="Sin terceros" message=\{thirdPartyEmptyMessage\(filtered\)\} inline \/>/);
+    assert.match(service, /export function listLedgerThirdParties\(query: LedgerThirdPartyListQuery = \{\}\): Promise<LedgerThirdPartyPage>/);
+    assert.match(service, /apiRequest<LedgerThirdPartyPage>\(`\$\{LEDGER_IMPORTS_PATH\}\/third-parties`, \{ query: compactQuery\(\{ q: query\.q, role: query\.role, limit: query\.limit, cursor: query\.cursor \}\) \}\)/);
+    // The name rule lives in the API (ledger-third-parties.service.ts): the screen paints `name` as it arrives and never rebuilds it from other fields.
+    assert.doesNotMatch(stripComments(screen), /row\.name\.(?:split|replace|toUpperCase)/);
+    assert.match(shared, /name: string \| null;\s*supplierId: string \| null;\s*updatedAt: string;\s*lote: LedgerThirdPartyLotRef \| null;/);
+    // No new inline style with the view (rule 1 is re-asserted on the whole file in the first test).
+    assert.equal(count(screen.slice(screen.indexOf("function renderThirdPartiesView"), screen.indexOf("const lotRecord = ")), /\bstyle=\{/g), 0);
+  });
+
   it("announces with ONE live region, focuses the step content on every change of step and never puts aria-live on a badge", () => {
     assert.doesNotMatch(screen, /aria-live=/);
     assert.equal(count(screen, /<CocoaLiveRegion message=\{liveMessage\}/g), 1);
@@ -286,10 +317,10 @@ describe("Contabilidad › Importar desde Sage 200 · helpers y servicio", () =>
     assert.match(service, /export const LEDGER_IMPORTS_PATH = "\/accounting\/ledger-imports";/);
     assert.match(service, /import \{ apiRequest, apiRequestBlob \} from "\.\/api-client";/);
     assert.doesNotMatch(service, /\bfetch\s*\(/);
-    for (const fn of ["previewLedgerImport", "createLedgerImport", "listLedgerImports", "getLedgerImport", "postLedgerImport", "reverseLedgerImport", "getAccountMap", "putAccountMap", "getAnalyticsMap", "putAnalyticsMap", "reconcileLedger", "listReconciliations", "getReconciliation", "downloadReconciliationCsv", "downloadLedgerImportTemplate", "ledgerImportErrorMessage"]) {
+    for (const fn of ["previewLedgerImport", "createLedgerImport", "listLedgerImports", "getLedgerImport", "postLedgerImport", "reverseLedgerImport", "getAccountMap", "putAccountMap", "getAnalyticsMap", "putAnalyticsMap", "reconcileLedger", "listReconciliations", "getReconciliation", "downloadReconciliationCsv", "downloadLedgerImportTemplate", "listLedgerThirdParties", "ledgerImportErrorMessage"]) {
       assert.match(service, new RegExp(`export (?:async )?function ${fn}\\(`), `service exports ${fn}`);
     }
-    for (const route of ["/preview", "/post", "/reverse", "/account-map", "/analytics-map", "/reconciliation", "/csv", "/template"]) assert.ok(service.includes(route), `route ${route}`);
+    for (const route of ["/preview", "/post", "/reverse", "/account-map", "/analytics-map", "/reconciliation", "/csv", "/template", "/third-parties"]) assert.ok(service.includes(route), `route ${route}`);
     assert.match(service, /apiRequestBlob\(`\$\{LEDGER_IMPORTS_PATH\}\/template`, \{ query: \{ kind, format: "csv" \} \}\)/);
     assert.match(service, /financeErrorStatus\(error\) === 413/);
     assert.match(service, /export const LEDGER_IMPORT_ERROR_MESSAGES: Readonly<Record<LedgerImportErrorCode, string>>/);

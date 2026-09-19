@@ -233,7 +233,7 @@ Lo que muestra de verdad con los datos de la demo:
 
 **Resultado esperado:** el fichero en tu carpeta de descargas y una fila nueva en «Generados en esta sesión». Convenciones: «CSV es-ES: separador ';' y coma decimal», «Fechas ISO (YYYY-MM-DD) en los datos», «Importes EUR sin símbolo», «Cabecera con hora OTB (Europe/Madrid)». «PDF (imprimir)» descarga una página HTML lista para imprimir o guardar como PDF desde el navegador.
 
-> **En construcción:** en la pestaña «Centro de informes» (`/informes`), el bloque «Exportar informe» con «Tipo de informe» («Reservas · Facturación · Revenue · Propietario») y «Formato» («PDF · CSV · XLSX · JSON») y el botón «Generar exportación» termina hoy con el aviso «Exportación lista: undefined» y no descarga nada. Usa las exportaciones de la pestaña «Exportaciones de revenue» o «Exportar CSV / Exportar Excel» del informe de Histórico y previsión.
+En la pestaña «Centro de informes» (`/informes`), el bloque «Exportar informe» con «Tipo de informe» («Reservas · Facturación · Revenue · Propietario») y «Formato» («PDF · CSV · XLSX · JSON») y el botón «Generar exportación» descarga el fichero `informe-{tipo}-{hotel}-{fecha}` al momento («XLSX» baja hoy un CSV; «PDF», una página HTML imprimible) y deja la línea de estado en «Exportación lista: informe-…». El aviso «Exportación lista» conserva el botón «Descargar exportación» durante **15 minutos** para volver a bajar el mismo fichero; después responde «Exportación no encontrada o caducada.» y hay que generarlo de nuevo. Para los informes del ritual de revenue sigue usando la pestaña «Exportaciones de revenue» o «Exportar CSV / Exportar Excel» del informe de Histórico y previsión.
 
 ---
 

@@ -61,7 +61,8 @@ const { buildModelo347 } = await import("../../apps/api/src/modules/accounting/m
 const { buildModelo111 } = await import("../../apps/api/src/modules/accounting/modelo-111.service.js");
 const { buildModelo115 } = await import("../../apps/api/src/modules/accounting/modelo-115.service.js");
 const { buildModelo180 } = await import("../../apps/api/src/modules/accounting/modelo-180.service.js");
-const { ZERO, getVatSettings, listVatBook, money, rebuildVatBooks, updateVatSettings } = await import("../../apps/api/src/modules/accounting/vat-books.service.js");
+const { ZERO, getVatSettings, listVatBook, listVatBookPeriods, money, rebuildVatBooks, updateVatSettings } = await import("../../apps/api/src/modules/accounting/vat-books.service.js");
+const { MONTHLY_INFORMATIVE_303_AVISO, SAGE_NO_CENTRE_AVISO } = await import("../../apps/api/src/modules/accounting/modelo-303.service.js");
 const { interimLedgerEngine, previewVatSettlement, reverseVatSettlement, settleVatPeriod } = await import("../../apps/api/src/modules/accounting/vat-settlement.service.js");
 const { prisma } = await import("@hotelos/database");
 
@@ -373,7 +374,10 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
 
     const report = await buildModelo303({ context: ctx, period: "2026-Q2" });
     assert.equal(report.fuentes.origen, "libros");
-    assert.deepEqual([casilla(report, "27"), casilla(report, "45"), casilla(report, "71")], [309.2, 210, 99.2]);
+    // Corrector FIX-1 (SEC-01): Q1 (result −42, not settled yet) is CHAINED into Q2's 110, so 78 = 42 and 71 = 99,2 − 42 = 57,2.
+    // Before, the ledger knew nothing of Q1 until its settlement entry existed and Q2 showed 99,2.
+    assert.deepEqual([casilla(report, "27"), casilla(report, "45"), casilla(report, "110"), casilla(report, "78"), casilla(report, "71")], [309.2, 210, 42, 42, 57.2]);
+    assert.ok(report.avisos.some((aviso) => /Casilla 110 encadenada desde el Modelo 303 de 2026-Q1/.test(aviso)), report.avisos.join("\n"));
     assert.equal(report.fuentes.diario?.cuadra, true);
   });
 
@@ -463,7 +467,12 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
     assert.equal(await prisma.journalEntry.count({ where: { organizationId: ORG_ID } }), 11, "nothing is ever deleted");
     const afterReversal = await buildModelo303({ context: ctx, period: "2026-Q2" });
     assert.equal(afterReversal.fuentes.liquidacion?.reversed, true);
-    assert.equal(casilla(await buildModelo303({ context: ctx, period: "2026-Q3" }), "110"), 42, "Q1 compensation is pending again once Q2 is reversed");
+    assert.deepEqual([casilla(afterReversal, "110"), casilla(afterReversal, "78"), casilla(afterReversal, "71")], [42, 42, 57.2], "the reversed Q2 still computes with Q1's 42 applied");
+    // Corrector FIX-1 (SEC-01): with Q2 unsettled again, Q3's 110 is CHAINED from the Q2 303 ehotelOS computes (which
+    // applies the 42), not read from the ledger: the same 42 is never offered twice. Before, Q3 showed 42 again.
+    const q3AfterReversal = await buildModelo303({ context: ctx, period: "2026-Q3" });
+    assert.equal(casilla(q3AfterReversal, "110"), 0, "Q1 compensation was applied by the (unsettled) Q2 303: nothing is pending for Q3");
+    assert.ok(q3AfterReversal.avisos.some((aviso) => /Casilla 110 encadenada desde el Modelo 303 de 2026-Q2/.test(aviso)), q3AfterReversal.avisos.join("\n"));
   });
 
   it("Modelo 390: agrega los cuatro trimestres y marca los no liquidados", async () => {
@@ -523,7 +532,8 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
       // (declarante + régimen). This org has no LegalEntity (no backfill), so the
       // badge falls back to the deprecated Organization columns.
       const { sociedad, ...legacySettings } = JSON.parse(settings.body) as { sociedad: { source: string; taxId: string | null; regimen: { periodicity: string } } } & Record<string, unknown>;
-      assert.deepEqual(legacySettings, { organizationId: ORG_ID, periodicity: "quarterly", regime: "general", prorrataPct: null, taxFigure: "IVA", persisted: true });
+      // FIX-1 · F3 (B-2): the settings gain the opening balance to offset (0 / null until the sociedad saves one).
+      assert.deepEqual(legacySettings, { organizationId: ORG_ID, periodicity: "quarterly", regime: "general", prorrataPct: null, taxFigure: "IVA", openingCompensation: 0, openingCompensationPeriod: null, persisted: true });
       assert.deepEqual([sociedad.source, sociedad.taxId, sociedad.regimen.periodicity], ["organization_fallback", "B12345674", "quarterly"]);
       assert.equal((await mini.inject({ method: "PUT", url: "/fiscal/vat-settings", payload: { periodicity: "weekly" } })).statusCode, 400);
 
@@ -652,5 +662,155 @@ describe("fiscal · cotejo diario↔libros con la anulación en otro trimestre (
     assert.equal(q3.fuentes.libros?.emitidas?.filas, 1);
     assert.deepEqual(q3.fuentes.diario, { apuntes: 1, cuotaRepercutida: -21, cuotaSoportada: 0, diferencias: [], cuadra: true }, "only the reversal belongs to the cancellation period");
     assert.equal(await prisma.journalEntry.count({ where: { organizationId: ORG_X } }), 2, "nothing is ever deleted");
+  });
+});
+
+// FIX-1 · F3 (B-2 / B-5 / E-02 / E-03 / E-04): compensation fed by the settlement entries imported from Sage 200
+// and by the opening balance of the settings, the aggregated ledger cross-check (no bound, exclusions counted in
+// SQL), the periods route, the centre aviso over Sage rows and the monthly informative view of a quarterly sociedad.
+describe("fiscal · compensación 110/78 con liquidaciones importadas de Sage, cotejo agregado, periodos y vista mensual (FIX-1 · F3, org de test propia)", () => {
+  const ORG_S = `orgfiscs_${RAND}`;
+  const PROP_S = `propfiscs_${RAND}`;
+  const scope: LedgerScope = { organizationId: ORG_S, propertyId: PROP_S };
+  const ctxS: UserContext = { ...ctx, organizationId: ORG_S, propertyId: PROP_S };
+  let liquiId = "";
+
+  before(async () => {
+    await prisma.organization.create({ data: { id: ORG_S, name: "Fiscal Sage SL", legalName: "Fiscal Sage SL", taxId: "B12345674" } });
+    await prisma.property.create({ data: { id: PROP_S, organizationId: ORG_S, name: "Hotel Fiscal Sage", timezone: "Europe/Madrid" } });
+    await provisionOrganizationChart(ORG_S);
+    // Books as the Sage importer writes them (sourceType sage200, NO centre): emitida 100 @21 and recibida 238,10 @21 in 2026-Q2.
+    await prisma.vatBookEntry.createMany({
+      data: [
+        { organizationId: ORG_S, propertyId: null, book: "emitidas", date: day("2026-05-10"), series: "A", number: "S-1", counterpartyNif: "B00000001", counterpartyName: "Cliente Uno SL", base: D("100.00"), rate: D(21), quota: D("21.00"), total: D("121.00"), retention: D(0), sourceType: "sage200", sourceId: `sage:${RAND}:emit:1`, period: "2026-Q2", deductible: true },
+        { organizationId: ORG_S, propertyId: null, book: "recibidas", date: day("2026-05-20"), series: null, number: "P-1", counterpartyNif: "B00000003", counterpartyName: "Proveedor SL", base: D("238.10"), rate: D(21), quota: D("50.00"), total: D("288.10"), retention: D(0), sourceType: "sage200", sourceId: `sage:${RAND}:rec:1`, period: "2026-Q2", deductible: true }
+      ]
+    });
+    // The same operations in the imported journal (sage200_journal, taxRateCode filled) …
+    await post("2026-05-10", "sage200_journal", `sagej_${RAND}_1`, "Venta S-1", [["430", "121.00", "0"], ["705.1", "0", "100.00"], ["477.21", "0", "21.00", "21", "100.00"]], scope);
+    await post("2026-05-20", "sage200_journal", `sagej_${RAND}_2`, "Compra P-1", [["623", "238.10", "0"], ["472.21", "50.00", "0", "21", "238.10"], ["410", "0", "288.10"]], scope);
+    // … and the quarter's settlement as Sage exports it («LIQUI IVA 2T»): D 477.21 21 / H 472.21 50 / D 4700 29 (a compensar 29).
+    liquiId = (await post("2026-06-30", "sage200_journal", `sagej_${RAND}_liqui`, "LIQUI IVA 2T", [["477.21", "21.00", "0"], ["472.21", "0", "50.00"], ["4700", "29.00", "0"]], scope)).id;
+  });
+
+  after(async () => {
+    const entries = await prisma.journalEntry.findMany({ where: { organizationId: ORG_S }, select: { id: true } });
+    await prisma.journalLine.deleteMany({ where: { journalEntryId: { in: entries.map((entry) => entry.id) } } });
+    await prisma.journalEntry.deleteMany({ where: { organizationId: ORG_S } });
+    await prisma.vatBookEntry.deleteMany({ where: { organizationId: ORG_S } });
+    await prisma.vatSettings.deleteMany({ where: { organizationId: ORG_S } });
+    await prisma.account.deleteMany({ where: { organizationId: ORG_S } });
+    await prisma.accountingSetting.deleteMany({ where: { organizationId: ORG_S } });
+    await prisma.property.deleteMany({ where: { id: PROP_S } });
+    await prisma.organization.deleteMany({ where: { id: ORG_S } });
+  });
+
+  it("2026-Q2: la liquidación importada de Sage sale en liquidacionesHistoricas, se excluye del cotejo agregado (que cuadra sin aviso de topes) y no toca la 110 del propio periodo", async () => {
+    const q2 = await buildModelo303({ context: ctxS, period: "2026-Q2" });
+    assert.deepEqual([casilla(q2, "07"), casilla(q2, "09"), casilla(q2, "27"), casilla(q2, "28"), casilla(q2, "29"), casilla(q2, "45"), casilla(q2, "46")], [100, 21, 21, 238.1, 50, 50, -29]);
+    assert.deepEqual([casilla(q2, "110"), casilla(q2, "78"), casilla(q2, "71")], [0, 0, -29]);
+    assert.equal(q2.fuentes.origen, "libros");
+    assert.equal(q2.fuentes.informativo, undefined);
+    assert.equal(q2.fuentes.liquidacionesHistoricas?.length, 1, JSON.stringify(q2.fuentes.liquidacionesHistoricas));
+    const historica = q2.fuentes.liquidacionesHistoricas![0]!;
+    assert.deepEqual([historica.journalEntryId, historica.entryDate, historica.description, historica.resultado, historica.fiscalYearCode], [liquiId, "2026-06-30", "LIQUI IVA 2T", -29, "2026"]);
+    assert.ok(Number.isInteger(historica.entryNumber));
+    assert.ok(q2.avisos.includes("1 liquidación importada de Sage en el periodo (histórica, no contabilizada por ehotelOS)."), q2.avisos.join("\n"));
+    // B-5: aggregated cross-check — the two devengo lines count, the LIQUI is excluded by its account pattern and named, no bound aviso.
+    assert.deepEqual(q2.fuentes.diario, { apuntes: 2, cuotaRepercutida: 21, cuotaSoportada: 50, diferencias: [], cuadra: true });
+    assert.ok(q2.avisos.some((aviso) => /^1 asiento de liquidación importado de Sage excluido del cotejo/.test(aviso)), q2.avisos.join("\n"));
+    assert.equal(q2.avisos.some((aviso) => /supera|no es concluyente|los primeros/.test(aviso)), false, "no bound aviso any more (B-5)");
+    assert.equal(q2.avisos.some((aviso) => /heredados sin tipo/.test(aviso)), false, "taxRateCode present on every counted line");
+    assert.equal(q2.fuentes.liquidacion, null, "no native settlement entry");
+  });
+
+  it("2026-Q3: la LIQUI importada alimenta la casilla 110 del periodo siguiente (D 4700 29) y el cotejo agregado no tiene apuntes", async () => {
+    const q3 = await buildModelo303({ context: ctxS, period: "2026-Q3" });
+    assert.deepEqual([casilla(q3, "27"), casilla(q3, "45"), casilla(q3, "46"), casilla(q3, "110"), casilla(q3, "78"), casilla(q3, "87"), casilla(q3, "71")], [0, 0, 0, 29, 0, 29, 0]);
+    assert.equal(q3.fuentes.liquidacionesHistoricas?.length, 0);
+    assert.deepEqual(q3.fuentes.diario, { apuntes: 0, cuotaRepercutida: 0, cuotaSoportada: 0, diferencias: [], cuadra: true });
+    assert.ok(q3.avisos.some((aviso) => /El diario no tiene apuntes de IVA/.test(aviso)));
+  });
+
+  it("saldo inicial a compensar (PUT /fiscal/vat-settings): se suma a la 110 desde su periodo, nunca antes; validación de importe y periodo", async () => {
+    await expectError(updateVatSettings({ context: ctxS, patch: { openingCompensation: -5 } }), 400, "OPENING_COMPENSATION_INVALID");
+    await expectError(updateVatSettings({ context: ctxS, patch: { openingCompensation: 100 } }), 400, "OPENING_COMPENSATION_PERIOD_REQUIRED");
+    await expectError(updateVatSettings({ context: ctxS, patch: { openingCompensation: 100, openingCompensationPeriod: "2026" } }), 400, "INVALID_PERIOD");
+    const saved = await updateVatSettings({ context: ctxS, patch: { openingCompensation: 100, openingCompensationPeriod: "2026-q1" } });
+    assert.deepEqual([saved.openingCompensation, saved.openingCompensationPeriod, saved.persisted], [100, "2026-Q1", true]);
+    assert.deepEqual([(await getVatSettings(ORG_S)).openingCompensation, (await getVatSettings(ORG_S)).openingCompensationPeriod], [100, "2026-Q1"]);
+    assert.equal(casilla(await buildModelo303({ context: ctxS, period: "2025-Q4" }), "110"), 0, "before the opening period");
+    assert.equal(casilla(await buildModelo303({ context: ctxS, period: "2026-Q1" }), "110"), 100, "the opening period: settings only");
+    assert.equal(casilla(await buildModelo303({ context: ctxS, period: "2026-Q3" }), "110"), 129, "settings + the LIQUI of Q2");
+    // The 390 reads the same compensation per quarter (pendingVatCompensation without settings loads them).
+    const annual = await buildModelo390({ context: ctxS, year: 2026 });
+    assert.equal(annual.modelo, "390");
+  });
+
+  it("GET /fiscal/vat-books/periods: los periodos con filas materializadas y el último; GET 303 mensual con informativo=1 → 200 y sin el flag → 400 PERIOD_MISMATCH", async () => {
+    const periods = await listVatBookPeriods(ORG_S);
+    assert.deepEqual(periods, { organizationId: ORG_S, periods: [{ period: "2026-Q2", rows: 2, lastDate: "2026-05-20" }], latest: "2026-Q2" });
+
+    const requireFromApi = createRequire(new URL("../../apps/api/src/server.ts", import.meta.url));
+    const fastifyFactory = requireFromApi("fastify") as () => ApiApp;
+    const mini = fastifyFactory();
+    mini.decorateRequest("userContext", null);
+    mini.addHook("onRequest", async (request) => {
+      (request as unknown as { userContext: UserContext }).userContext = ctxS;
+    });
+    registerFiscalRoutes(mini);
+    await mini.ready();
+    try {
+      assert.ok(fiscalRoutePermissions.some((entry) => entry.method === "GET" && entry.path === "/fiscal/vat-books/periods" && entry.permissions.includes("accounting.read")), "permission entry of the periods route");
+      const res = await mini.inject({ method: "GET", url: "/fiscal/vat-books/periods" });
+      assert.equal(res.statusCode, 200, res.body);
+      assert.deepEqual(JSON.parse(res.body), periods);
+
+      const month = await mini.inject({ method: "GET", url: "/fiscal/models/303?period=2026-05&informativo=1" });
+      assert.equal(month.statusCode, 200, month.body);
+      const body = JSON.parse(month.body) as Report;
+      assert.deepEqual([body.periodo.code, body.periodo.type, body.fuentes.informativo], ["2026-05", "monthly", true]);
+      assert.deepEqual([casilla(body, "27"), casilla(body, "45"), casilla(body, "110"), casilla(body, "78"), casilla(body, "71")], [21, 50, 0, 0, -29], "the month is computed without compensation");
+      assert.ok(body.avisos.includes(MONTHLY_INFORMATIVE_303_AVISO), body.avisos.join("\n"));
+      assert.equal("liquidacion" in body.fuentes, false, "no settlement lookup for a view");
+      assert.equal((body.periodo as { informativo?: boolean }).informativo, undefined, "the flag never leaks into the period DTO");
+
+      const mismatch = await mini.inject({ method: "GET", url: "/fiscal/models/303?period=2026-05" });
+      assert.equal(mismatch.statusCode, 400, mismatch.body);
+      assert.equal((await mini.inject({ method: "GET", url: "/fiscal/models/303?period=2026-05&informativo=0" })).statusCode, 400);
+      assert.equal((await mini.inject({ method: "GET", url: "/fiscal/models/303?period=2026-Q2&informativo=1" })).statusCode, 200, "the flag is harmless on a quarter");
+      assert.equal((await mini.inject({ method: "GET", url: "/fiscal/models/303?period=2026-05&informativo=yes" })).statusCode, 400, "strict enum");
+      const put = await mini.inject({ method: "PUT", url: "/fiscal/vat-settings", payload: { openingCompensation: -1 } });
+      assert.equal(put.statusCode, 400, put.body);
+    } finally {
+      await mini.close();
+    }
+    await expectError(buildModelo303({ context: ctxS, period: "2026-05" }), 400, "PERIOD_MISMATCH");
+  });
+
+  it("E-03: el desglose por centro sobre un periodo de Sage (filas sin centro) avisa en el 303 y en el libro en vez de mostrar ceros", async () => {
+    const centre = await buildModelo303({ context: ctxS, period: "2026-Q2", propertyId: PROP_S });
+    assert.equal(centre.fuentes.registros, 0);
+    assert.ok(centre.avisos.includes(SAGE_NO_CENTRE_AVISO), centre.avisos.join("\n"));
+    assert.equal(centre.fuentes.liquidacionesHistoricas?.length, 0, "history is of the sociedad, not of a centre");
+    const book = await listVatBook({ context: ctxS, book: "emitidas", period: "2026-Q2", propertyId: PROP_S });
+    assert.deepEqual([book.rows.length, book.avisos.includes(SAGE_NO_CENTRE_AVISO)], [0, true]);
+    // A centre view of a period WITHOUT Sage rows stays silent (the emptiness is real).
+    const q3 = await buildModelo303({ context: ctxS, period: "2026-Q3", propertyId: PROP_S });
+    assert.equal(q3.avisos.includes(SAGE_NO_CENTRE_AVISO), false);
+  });
+
+  it("el reverso de una LIQUI importada la retira de la 110 y se excluye del cotejo con ella (naturaleza del asiento revertido)", async () => {
+    await interimLedgerEngine.reverseJournalEntry({ organizationId: ORG_S, journalEntryId: liquiId, entryDate: "2026-07-05", description: "Anulación LIQUI IVA 2T", createdBy: ctx.userId });
+    const q3 = await buildModelo303({ context: ctxS, period: "2026-Q3" });
+    // Corrector FIX-1 (SEC-01): without the LIQUI, Q2 is an unsettled period, so Q3's 110 is chained from the Q2 303
+    // ehotelOS computes: the opening balance (100) plus Q2's result to offset (29) — the ledger alone would say 100.
+    assert.equal(casilla(q3, "110"), 129, "opening balance + Q2's own result, chained once the LIQUI is reversed");
+    assert.ok(q3.avisos.some((aviso) => /Casilla 110 encadenada desde el Modelo 303 de 2026-Q2/.test(aviso)), q3.avisos.join("\n"));
+    assert.deepEqual(q3.fuentes.diario, { apuntes: 0, cuotaRepercutida: 0, cuotaSoportada: 0, diferencias: [], cuadra: true }, "the reversal (4700/477/472 mirrored) never enters the cross-check");
+    assert.ok(q3.avisos.some((aviso) => /^1 asiento de liquidación importado de Sage excluido del cotejo/.test(aviso)), q3.avisos.join("\n"));
+    const q2 = await buildModelo303({ context: ctxS, period: "2026-Q2" });
+    assert.equal(q2.fuentes.liquidacionesHistoricas?.length, 0, "a reversed import is no longer history");
+    assert.equal(await prisma.journalEntry.count({ where: { organizationId: ORG_S } }), 4, "nothing is ever deleted");
   });
 });

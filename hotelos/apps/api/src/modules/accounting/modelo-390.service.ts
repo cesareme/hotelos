@@ -4,7 +4,12 @@
 // VatSettings) from the VAT books: IVA devengado by rate, IVA deducible
 // (corriente / bienes de inversión), the result of every period (casilla 71 of
 // its 303), the compensation carried at year end and the volume of
-// operations. Box numbering: the official 390 layout is NOT asserted here —
+// operations. FIX-1 · F2 (B-1): the ISP/AIB autofacturas (emitidas with
+// regime isp / aib) are accrued and deducted at once and are NOT deliveries of
+// the sujeto pasivo (art. 121 LIVA): their bases stay out of the volumen de
+// operaciones (casilla 108, `VOLUMEN_OPERACIONES`) and are shown apart
+// (`AUTOFACTURAS_ISP_AIB_EXCLUIDAS`); `/fiscal/regime` inherits that volume.
+// Box numbering: the official 390 layout is NOT asserted here —
 // every box carries `casilla: null` and a stable `clave`, and the report says
 // so in `avisos` («validar la numeración con la gestoría»). Nothing invented.
 // Read-only.
@@ -15,7 +20,7 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { requireYear } from "../../lib/query-dates.js";
 import { assertFinanceReadScope } from "../../lib/finance-scope.js";
-import { PRESENTACION_MANUAL_NOTA, compute303, existingSettlement, pendingVatCompensation, type Modelo303Computation } from "./modelo-303.service.js";
+import { PRESENTACION_MANUAL_NOTA, compensationChainDeps, compute303, existingSettlement, resolveCarriedCompensation, type CompensationChainDeps, type Modelo303Computation } from "./modelo-303.service.js";
 import {
   LARGE_COMPANY_THRESHOLD,
   ZERO,
@@ -67,8 +72,22 @@ export function aggregate390(input: { year: number; periods: readonly Modelo390P
   let cuotaInversion = ZERO;
   let resultadoLiquidaciones = ZERO;
   let noSujetas = ZERO;
+  // FIX-1 · F2: régimen aggregates of the year (autofacturas out of the rate boxes and of the volume).
+  const sum = () => ({ base: ZERO, cuota: ZERO });
+  const ispDevengado = sum();
+  const aibDevengado = sum();
+  const ispDeducible = sum();
+  const aibDeducible = sum();
+  // Corrector FIX-1 (SEC-08): AIB de bienes de inversión (38/39 del 303) entra en el total; las ISP soportadas ya van dentro de interiores.
+  const aibInversion = sum();
+  const importacion = sum();
+  let exentoNoSujeto = ZERO;
+  const add = (acc: { base: Money; cuota: Money }, value: { base: Money; cuota: Money }): void => {
+    acc.base = acc.base.plus(value.base);
+    acc.cuota = acc.cuota.plus(value.cuota);
+  };
   for (const period of input.periods) {
-    for (const bucket of period.computation.devengado) {
+    for (const bucket of period.computation.devengadoInterior) {
       const key = bucket.rate.toFixed(2);
       const existing = devengado.get(key) ?? { rate: bucket.rate, base: ZERO, cuota: ZERO };
       existing.base = existing.base.plus(bucket.base);
@@ -81,24 +100,46 @@ export function aggregate390(input: { year: number; periods: readonly Modelo390P
     cuotaInversion = cuotaInversion.plus(period.computation.deducibleInversion.cuota);
     resultadoLiquidaciones = resultadoLiquidaciones.plus(period.computation.resultado71);
     noSujetas = noSujetas.plus(period.computation.noSujetas);
+    add(ispDevengado, period.computation.isp.devengado);
+    add(aibDevengado, period.computation.aib.devengado);
+    add(ispDeducible, period.computation.isp.deducible);
+    add(aibDeducible, period.computation.aib.deducible);
+    add(aibInversion, period.computation.aibInversion);
+    add(importacion, period.computation.importacion);
+    exentoNoSujeto = exentoNoSujeto.plus(period.computation.exentoNoSujeto.base);
   }
   const casillas: FiscalBox[] = [];
-  let totalBase = ZERO;
-  let totalCuota = ZERO;
+  let baseInterior = ZERO;
+  let cuotaInterior = ZERO;
   for (const bucket of Array.from(devengado.values()).sort((a, b) => b.rate.comparedTo(a.rate))) {
     const key = rateKey(bucket.rate);
     casillas.push(box(`DEV_BASE_${key}`, `Régimen ordinario · base imponible al ${key} %`, SECTION_DEVENGADO, bucket.base, "base"));
     casillas.push(box(`DEV_CUOTA_${key}`, `Régimen ordinario · cuota devengada al ${key} %`, SECTION_DEVENGADO, bucket.cuota, "cuota"));
-    totalBase = totalBase.plus(bucket.base);
-    totalCuota = totalCuota.plus(bucket.cuota);
+    baseInterior = baseInterior.plus(bucket.base);
+    cuotaInterior = cuotaInterior.plus(bucket.cuota);
   }
+  casillas.push(box("DEV_BASE_AIB", "Adquisiciones intracomunitarias de bienes y servicios · base", SECTION_DEVENGADO, round2(aibDevengado.base), "base"));
+  casillas.push(box("DEV_CUOTA_AIB", "Adquisiciones intracomunitarias de bienes y servicios · cuota devengada", SECTION_DEVENGADO, round2(aibDevengado.cuota), "cuota"));
+  casillas.push(box("DEV_BASE_ISP", "Otras operaciones con inversión del sujeto pasivo · base", SECTION_DEVENGADO, round2(ispDevengado.base), "base"));
+  casillas.push(box("DEV_CUOTA_ISP", "Otras operaciones con inversión del sujeto pasivo · cuota devengada", SECTION_DEVENGADO, round2(ispDevengado.cuota), "cuota"));
+  const autofacturasExcluidas = round2(ispDevengado.base.plus(aibDevengado.base));
+  const totalBase = round2(baseInterior.plus(autofacturasExcluidas));
+  const totalCuota = round2(cuotaInterior.plus(ispDevengado.cuota).plus(aibDevengado.cuota));
   casillas.push(box("DEV_TOTAL_BASE", "Total bases IVA", SECTION_DEVENGADO, totalBase, "base"));
   casillas.push(box("DEV_TOTAL_CUOTA", "Total cuotas IVA devengadas", SECTION_DEVENGADO, totalCuota, "cuota"));
   casillas.push(box("DED_BASE_CORRIENTE", "Operaciones interiores corrientes · base", SECTION_DEDUCIBLE, baseCorriente, "base"));
   casillas.push(box("DED_CUOTA_CORRIENTE", "Operaciones interiores corrientes · cuota deducible", SECTION_DEDUCIBLE, cuotaCorriente, "cuota"));
   casillas.push(box("DED_BASE_INVERSION", "Operaciones interiores con bienes de inversión · base", SECTION_DEDUCIBLE, baseInversion, "base"));
   casillas.push(box("DED_CUOTA_INVERSION", "Operaciones interiores con bienes de inversión · cuota deducible", SECTION_DEDUCIBLE, cuotaInversion, "cuota"));
-  const totalDeducible = round2(cuotaCorriente.plus(cuotaInversion));
+  casillas.push(box("DED_BASE_IMPORTACION", "Importaciones de bienes corrientes (DUA) · base", SECTION_DEDUCIBLE, round2(importacion.base), "base"));
+  casillas.push(box("DED_CUOTA_IMPORTACION", "Importaciones de bienes corrientes (DUA) · cuota deducible", SECTION_DEDUCIBLE, round2(importacion.cuota), "cuota"));
+  casillas.push(box("DED_BASE_AIB", "Adquisiciones intracomunitarias de bienes y servicios corrientes · base", SECTION_DEDUCIBLE, round2(aibDeducible.base), "base"));
+  casillas.push(box("DED_CUOTA_AIB", "Adquisiciones intracomunitarias de bienes y servicios corrientes · cuota deducible", SECTION_DEDUCIBLE, round2(aibDeducible.cuota), "cuota"));
+  casillas.push(box("DED_BASE_AIB_INVERSION", "Adquisiciones intracomunitarias de bienes de inversión · base", SECTION_DEDUCIBLE, round2(aibInversion.base), "base"));
+  casillas.push(box("DED_CUOTA_AIB_INVERSION", "Adquisiciones intracomunitarias de bienes de inversión · cuota deducible", SECTION_DEDUCIBLE, round2(aibInversion.cuota), "cuota"));
+  casillas.push(box("DED_BASE_ISP", "Operaciones con inversión del sujeto pasivo · base (informativa: incluida en operaciones interiores)", SECTION_DEDUCIBLE, round2(ispDeducible.base), "info"));
+  casillas.push(box("DED_CUOTA_ISP", "Operaciones con inversión del sujeto pasivo · cuota deducible (informativa: incluida en operaciones interiores)", SECTION_DEDUCIBLE, round2(ispDeducible.cuota), "info"));
+  const totalDeducible = round2(cuotaCorriente.plus(cuotaInversion).plus(importacion.cuota).plus(aibDeducible.cuota).plus(aibInversion.cuota));
   casillas.push(box("DED_TOTAL", "Total IVA deducible", SECTION_DEDUCIBLE, totalDeducible, "cuota"));
   const resultadoRegimenGeneral = round2(totalCuota.minus(totalDeducible));
   casillas.push(box("RESULTADO_REGIMEN_GENERAL", "Resultado régimen general (devengado − deducible)", SECTION_RESULTADO, resultadoRegimenGeneral, "resultado"));
@@ -106,9 +147,14 @@ export function aggregate390(input: { year: number; periods: readonly Modelo390P
   const last = input.periods[input.periods.length - 1];
   const pendienteFin = last ? last.computation.compensacionPendienteFinal : ZERO;
   casillas.push(box("COMPENSACION_PENDIENTE_FIN", "Cuotas pendientes de compensación al término del ejercicio", SECTION_RESULTADO, pendienteFin, "cuota"));
-  const volumen = round2(totalBase.plus(noSujetas));
-  casillas.push(box("VOLUMEN_OPERACIONES", "Volumen de operaciones (bases, incluidas las operaciones al 0 %)", SECTION_VOLUMEN, volumen, "info"));
+  // Volumen de operaciones (casilla 108, art. 121 LIVA): deliveries of the sujeto pasivo — interior bases, the
+  // 0 % rows and the exentas / no sujetas por localización — WITHOUT the ISP/AIB autofacturas (B-1).
+  const volumen = round2(baseInterior.plus(noSujetas).plus(exentoNoSujeto));
+  casillas.push(box("VOLUMEN_OPERACIONES", "Volumen de operaciones (casilla 108: bases del régimen general, incluidas las operaciones al 0 % y las exentas / no sujetas; sin las autofacturas ISP/AIB)", SECTION_VOLUMEN, volumen, "info"));
+  casillas.push(box("AUTOFACTURAS_ISP_AIB_EXCLUIDAS", "Autofacturas ISP/AIB excluidas del volumen de operaciones (bases; art. 121 LIVA)", SECTION_VOLUMEN, autofacturasExcluidas, "info"));
   if (!noSujetas.isZero()) casillas.push(box("OPERACIONES_0", "Operaciones al 0 % (exentas / no sujetas) incluidas en el volumen", SECTION_VOLUMEN, round2(noSujetas), "info"));
+  if (!exentoNoSujeto.isZero()) casillas.push(box("OPERACIONES_EXENTAS_NO_SUJETAS", "Operaciones exentas / no sujetas por reglas de localización (casilla 120 del 303) incluidas en el volumen", SECTION_VOLUMEN, round2(exentoNoSujeto), "info"));
+  if (!autofacturasExcluidas.isZero()) avisos.push(`Volumen de operaciones sin las autofacturas ISP/AIB (${autofacturasExcluidas.toFixed(2)} € de base): no son entregas del sujeto pasivo (art. 121 LIVA).`);
   const liquidados = input.periods.filter((period) => period.liquidado).length;
   if (liquidados < input.periods.length) {
     avisos.push(`${input.periods.length - liquidados} de ${input.periods.length} periodos del ejercicio ${input.year} sin asiento de liquidación (POST /fiscal/vat-settlement).`);
@@ -124,6 +170,8 @@ export function aggregate390(input: { year: number; periods: readonly Modelo390P
       resultadoLiquidaciones: toWire(resultadoLiquidaciones),
       compensacionPendienteFin: toWire(pendienteFin),
       volumenOperaciones: toWire(volumen),
+      autofacturasIspAibExcluidas: toWire(autofacturasExcluidas),
+      baseExentoNoSujeto: toWire(round2(exentoNoSujeto)),
       periodos: input.periods.length,
       periodosLiquidados: liquidados
     },
@@ -137,12 +185,21 @@ export async function modelo303PeriodsOfYear(input: { organizationId: string; ye
   const loaded = await loadVatBookRows({ organizationId: input.organizationId, from: year.from, to: year.to, propertyId: input.propertyId, periodicity: input.settings.periodicity, taxFigure: input.settings.taxFigure });
   const rows = loaded.rows.filter((row) => row.taxFigure === "IVA");
   const periods: Modelo390PeriodResult[] = [];
+  // Corrector FIX-1 (SEC-01): the 110 of each period is chained like the 303's — the previous period's final
+  // balance when it has no settlement entry, the ledger balance (through the chain resolver) otherwise.
+  const deps: CompensationChainDeps | null = input.propertyId ? null : compensationChainDeps(input.organizationId, input.settings);
+  let previous: Modelo390PeriodResult | null = null;
   for (const periodo of periodsOfYear(input.year, input.settings.periodicity)) {
     const periodRows = rows.filter((row) => row.date >= periodo.from && row.date <= periodo.to);
-    const compensacion = input.propertyId ? ZERO : await pendingVatCompensation(input.organizationId, periodo.from);
+    let compensacion = ZERO;
+    if (deps) {
+      compensacion = previous && !(await deps.isSettled(previous.periodo)) ? previous.computation.compensacionPendienteFinal : (await resolveCarriedCompensation(periodo, deps)).compensacion;
+    }
     const computation = compute303({ rows: periodRows, settings: input.settings, compensacionPendiente: compensacion });
     const settlement = input.propertyId ? null : await existingSettlement(input.organizationId, periodo.code);
-    periods.push({ periodo, computation, liquidado: Boolean(settlement && !settlement.reversed) });
+    const result: Modelo390PeriodResult = { periodo, computation, liquidado: Boolean(settlement && !settlement.reversed) };
+    periods.push(result);
+    previous = result;
   }
   const anyDerived = (Object.values(loaded.origen) as Array<"libros" | "documentos">).some((origen) => origen === "documentos");
   return { periods, rows, avisos: loaded.avisos, origen: anyDerived ? "documentos" : "libros" };
@@ -251,7 +308,7 @@ export async function buildFiscalRegimeReport(input: { context: UserContext; yea
   const aggregated = aggregate390({ year, periods: loaded.periods, rows: loaded.rows });
   const volumen = loaded.rows.length === 0 ? null : new Prisma.Decimal(aggregated.totales.volumenOperaciones ?? 0);
   const propuesta = proposeRegime({ year, volumen, sociedad: settings.sociedad });
-  const avisos = [...regimeAvisos(settings.sociedad.regimen, "303"), ...loaded.avisos];
+  const avisos = [...regimeAvisos(settings.sociedad.regimen, "303"), ...loaded.avisos, ...aggregated.avisos.filter((aviso) => /autofacturas ISP\/AIB/.test(aviso))];
   if (settings.sociedad.source === "organization_fallback") avisos.push("Sociedad pendiente de alta (sin backfill de estructura societaria): el régimen se lee de los valores por defecto.");
   return {
     organizationId,

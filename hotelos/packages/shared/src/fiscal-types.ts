@@ -32,6 +32,19 @@ export type VatBookName = "emitidas" | "recibidas" | "bienes_inversion";
 /** `sage200` (Tanda 7c): fila importada de los libros de IVA de Sage 200 (`rebuildVatBooks` la conserva). */
 export type VatBookSourceTypeCode = "invoice" | "rectification" | "simplified" | "supplier_bill" | "expense" | "sage200";
 
+/**
+ * FIX-1 · F2: régimen de IVA de una fila del libro (enum `VatBookRegime` de Prisma). `null` = sin
+ * clasificar (filas anteriores a F2 y escritores nativos): el 303 la trata como operación interior.
+ *   interior         régimen general (casillas 01-09 / 28-31)
+ *   isp              inversión del sujeto pasivo: autofactura emitida (12/13) y cuota soportada (38/39)
+ *   aib              adquisición intracomunitaria: autofactura emitida (10/11) y cuota soportada (36/37)
+ *   importacion      DUA / tipo de factura F5 (32/33)
+ *   exento_no_sujeto 0 % exenta o no sujeta por reglas de localización (120, sin cuota)
+ */
+export type VatBookRegimeCode = "interior" | "isp" | "aib" | "importacion" | "exento_no_sujeto";
+
+export const VAT_BOOK_REGIME_CODES: readonly VatBookRegimeCode[] = ["interior", "isp", "aib", "importacion", "exento_no_sujeto"];
+
 export type VatPeriodicityCode = "quarterly" | "monthly";
 
 export type VatRegimeCode = "general" | "redeme" | "recargo";
@@ -96,12 +109,33 @@ export type FiscalLedgerCrossCheck = {
   cuadra: boolean;
 };
 
+/**
+ * FIX-1 · F3 (B-2): a settlement entry imported from Sage 200 («LIQUI IVA 1T», pattern 4750/4700 together with
+ * 477/472) dated inside the period of the 303. `resultado` = Σ 4750 (haber − debe) − Σ 4700 debe: positive =
+ * a ingresar, negative = a compensar. Historical: shown, never posted by ehotelOS.
+ */
+export type FiscalHistoricalSettlementDto = {
+  journalEntryId: string;
+  entryNumber: number | null;
+  fiscalYearCode: string | null;
+  entryDate: string;
+  description: string | null;
+  resultado: number;
+};
+
+/** FIX-1 · F3 (E-03): aviso (API and screens) of a centre breakdown over books imported from Sage without a delegation. */
+export const SAGE_NO_CENTRE_AVISO = "Desglose por centro no disponible para lotes Sage sin delegación: las filas importadas no llevan centro.";
+
 export type FiscalReportSources = {
   /** `libros` = materialised VatBookEntry rows; `documentos` = derived in memory from invoices/bills/expenses (not materialised yet). */
   origen: "libros" | "documentos" | "retenciones" | "modelos_303";
   libros?: Partial<Record<VatBookName, VatBookSummary>>;
   diario?: FiscalLedgerCrossCheck;
   liquidacion?: { journalEntryId: string; entryNumber: number | null; fiscalYearCode: string | null; entryDate: string; reversed: boolean } | null;
+  /** FIX-1 · F3: settlement entries imported from Sage 200 inside the period (303 only; empty when none). */
+  liquidacionesHistoricas?: FiscalHistoricalSettlementDto[];
+  /** FIX-1 · F3: true for the monthly informative view of a quarterly sociedad (303 only): no compensation, not filable. */
+  informativo?: boolean;
   /** Number of source documents / withholding records read. */
   registros?: number;
   periodos?: Array<{ periodo: string; resultado: number }>;
@@ -227,6 +261,8 @@ export type VatBookRowDto = {
   period: string;
   deductible: boolean;
   propertyId: string | null;
+  /** FIX-1 · F2: régimen de la operación; null = sin clasificar. */
+  regime: VatBookRegimeCode | null;
 };
 
 export type VatBookResponse = {
@@ -247,10 +283,22 @@ export type VatSettingsDto = {
   regime: VatRegimeCode;
   prorrataPct: number | null;
   taxFigure: "IVA" | "IGIC" | "IPSI";
+  /** FIX-1 · F3 (B-2): saldo inicial a compensar (casilla 110) arrastrado de periodos anteriores a la primera liquidación de ehotelOS; ≥ 0. */
+  openingCompensation: number;
+  /** FIX-1 · F3: settlement period code (`2025-Q1` · `2025-01`) from which the opening balance applies; null = never. */
+  openingCompensationPeriod: string | null;
   /** false when the organisation has no row yet (defaults shown). */
   persisted: boolean;
   /** Tanda 6b: the sociedad behind the settings and its regime (the badge every fiscal screen shows). */
   sociedad: FiscalDeclaranteBadge;
+};
+
+/** FIX-1 · F3: `GET /fiscal/vat-books/periods` — the settlement periods with materialised book rows, newest first. */
+export type VatBookPeriodsResponse = {
+  organizationId: string;
+  periods: Array<{ period: string; rows: number; lastDate: string | null }>;
+  /** Period code of the newest materialised rows; null when the organisation has no book rows at all. */
+  latest: string | null;
 };
 
 export type VatBooksRebuildResponse = {
@@ -262,6 +310,51 @@ export type VatBooksRebuildResponse = {
   created: Record<VatBookName, number>;
   documentos: { facturas: number; anulaciones: number; facturasRecibidas: number; gastos: number };
   avisos: string[];
+};
+
+/**
+ * FIX-1 · F2: recuento de una regla de `POST /fiscal/vat-books/reclassify` (importes en euros, ids ≤ 5 ejemplos).
+ * Reglas: 1 autofacturas intracomunitarias (parejas → `aib`), 2 DUA (`importacion`), 3 ventas al 0 % con NIF
+ * extranjero (`exento_no_sujeto`, solo con includeZeroRate), 4 autofacturas con inversión del sujeto pasivo
+ * (parejas con NIF extranjero no intracomunitario → `isp`). `reglas[]` viene siempre en el orden 1, 2, 3, 4.
+ */
+export type VatBooksReclassifyRuleDto = {
+  regla: 1 | 2 | 3 | 4;
+  regimen: VatBookRegimeCode;
+  descripcion: string;
+  /** Filas que la regla clasifica = `filasEmitidas` + `filasRecibidas` (las dos caras en las reglas 1 y 4); `porPeriodo[].filas` suma lo mismo. */
+  filas: number;
+  filasEmitidas: number;
+  filasRecibidas: number;
+  /** Reglas 1 y 4: parejas autofactura ↔ recibida (= emitidas clasificadas). */
+  parejas?: number;
+  /** Importes de UNA cara (la emitida en las parejas; la recibida tiene los mismos), total y por periodo. */
+  base: number;
+  cuota: number;
+  ids: string[];
+  porPeriodo: Array<{ periodo: string; filas: number; base: number; cuota: number }>;
+};
+
+/**
+ * FIX-1 · F2: respuesta de `POST /fiscal/vat-books/reclassify` (dry-run por defecto; el mismo objeto con
+ * `apply: true` y `actualizadas` tras escribir). Solo filas `sourceType sage200` con `regime` null.
+ */
+export type VatBooksReclassifyResponse = {
+  organizationId: string;
+  apply: boolean;
+  includeZeroRate: boolean;
+  periodo: FiscalPeriodDto;
+  /** Filas candidatas leídas (sage200, sin régimen, en el periodo). */
+  candidatas: { emitidas: number; recibidas: number };
+  reglas: VatBooksReclassifyRuleDto[];
+  /** Emitidas sin NIF que ninguna recibida empareja (posibles autofacturas sin pareja o ventas a particulares). */
+  sinPareja: { filas: number; cuota: number };
+  /** Recibidas sin NIF que ni la regla 1 ni la regla 2 clasifican (tickets sin NIF…). */
+  recibidasSinNifNoClasificadas: { filas: number; cuota: number };
+  /** Filas escritas (0 en dry-run). */
+  actualizadas: number;
+  avisos: string[];
+  generatedAt: string;
 };
 
 export type VatSettlementLineDto = {

@@ -75,7 +75,7 @@ En la demo solo hay un usuario (el de demostración, con un rol «Local Super Ad
    - «Nombre completo» (obligatorio).
    - «Correo electrónico» (obligatorio): será su usuario.
    - «Teléfono» (opcional).
-   - «Exigir doble factor (2FA)»: interruptor. Texto de ayuda literal: «Obligatorio para supervisión y niveles superiores (diseño D8).» Para jefaturas, gobernanta, encargado de mantenimiento, dirección y todo lo que esté por encima, déjalo activado.
+   - «Exigir doble factor (2FA)»: interruptor. Texto de ayuda literal: «Deja la marca “2FA: Activo” en la ficha para cuando se active la verificación del segundo factor; hoy el acceso no la exige.» Para jefaturas, gobernanta, encargado de mantenimiento, dirección y todo lo que esté por encima, déjalo activado (ver la regla «Doble factor» del apartado 1.2).
 4. Rellena la sección **«Rol y ámbito»** (texto literal: «Solo puedes asignar roles de nivel igual o inferior al tuyo y dentro de tu ámbito; la API lo comprueba de nuevo.»):
    - «Rol (plantilla)»: la lista muestra los roles de tu organización disponibles para este hotel con su nivel, por ejemplo «Recepción · Operativo (N1)», «Dirección · Dirección de hotel (N3)», «Contabilidad · Administración central (N7)». Solo aparecen los de nivel igual o inferior al tuyo.
    - «Ámbito»: «Hotel», «Grupo de hoteles», «Sociedad» u «Organización». Elige «Hotel» para recepción, pisos, mantenimiento, punto de venta, comercial y dirección de hotel; «Sociedad» u «Organización» para contabilidad, RRHH, cumplimiento, revenue y dirección general.
@@ -134,7 +134,7 @@ Reglas que aplica la pantalla y la API:
 
 - Solo asignas roles de nivel **igual o inferior** al tuyo y ámbitos **contenidos** en el tuyo. Nadie se asigna un rol a sí mismo.
 - Los permisos de una persona en un hotel son la **unión** de todas sus asignaciones que cubren ese hotel; una persona puede ser Recepción en un hotel y Contabilidad en la sociedad.
-- **Doble factor (2FA).** El diseño lo exige a partir del nivel N2 (supervisión) y el interruptor «Exigir doble factor (2FA)» de la invitación deja la marca «2FA: Activo» en la ficha de la persona al aceptar el enlace. **En construcción:** la verificación del segundo factor al iniciar sesión no está activada todavía en la aplicación: hoy una persona con «2FA: Activo» entra solo con su contraseña. Deja el interruptor activado igualmente (la marca quedará lista para cuando se active la verificación) y no cuentes con el doble factor como control de acceso hasta que el proveedor lo confirme.
+- **Doble factor (2FA): la marca no es un control de acceso.** El interruptor «Exigir doble factor (2FA)» de la invitación deja la marca «2FA: Activo» en la ficha de la persona al aceptar el enlace, y la columna «2FA» de la tabla la muestra. **Decisión (19/09/2026):** la aplicación no verifica un segundo factor al iniciar sesión (no hay entrega de códigos por correo, SMS ni aplicación de autenticación), así que una persona con «2FA: Activo» entra solo con su contraseña; por eso el cajón ya no dice «Obligatorio…» y esta guía retira la promesa. Deja el interruptor activado en jefaturas y dirección (la marca quedará lista para cuando se active la verificación) y, mientras tanto, apóyate en el PIN de supervisor, los umbrales de aprobación y el registro de auditoría. El diseño de accesos (D8) sigue previendo el doble factor a partir del nivel N2: cuando el proveedor lo active, se anunciará en las notas de la versión y este apartado cambiará.
 
 > **Nota:** en la demo el selector «Rol (plantilla)» ofrece 10 roles (los enlazados al hotel de demostración), no las 22 plantillas de organización. En tu organización aparecen los roles que el proveedor haya materializado (por defecto, las 22 de organización; «Administración de sistema» se añade a petición).
 
@@ -164,7 +164,14 @@ Nada se borra: una revocación es una marca con autor, motivo y fecha, y queda e
 
 ### 1.5 Comparar plantillas
 
-> **En construcción:** el botón «Comparar plantillas» abre hoy la pantalla de error «Algo ha fallado en la interfaz · El error ya ha sido reportado al equipo. Puedes intentarlo de nuevo.» (detalle técnico «b is not iterable»). Reproducido tres veces el 19/09/2026 con la sesión de demo. Pulsa «Reintentar» para volver a la lista. Mientras se corrige, usa la tabla de plantillas del apartado 1.2 y pide al proveedor la tabla de accesos por departamento (qué puede hacer cada plantilla en cada módulo).
+Botón de cabecera «Comparar plantillas» (también en la paleta de acciones). Abre el cajón «Comparar plantillas» (subtítulo «Claves por módulo del diccionario de RBAC y roles con permisos idénticos.»), una vista de consulta que no modifica nada:
+
+- «Plantilla A» y «Plantilla B»: desplegables con todas las plantillas del catálogo salvo la de emergencia, rotuladas «nombre · nivel» (por ejemplo «Recepción · Operativo (N1)»); debajo de cada uno, «N claves · rango R». Al abrir se comparan las dos primeras plantillas del catálogo; cambia cualquiera de las dos y la tabla se recalcula al instante.
+- Resumen: «N claves solo en A», «N claves comunes» y «N claves solo en B».
+- Tabla «Claves por módulo del diccionario §4.3», columnas «MÓDULO», «SOLO <plantilla A>», «COMUNES» y «SOLO <plantilla B>»: una fila por módulo (Reservas y recepción, Folios y cobros, Facturación… Plataforma y emergencia) en el que alguna de las dos plantillas tenga claves; cada celda muestra el recuento («12 claves») y la lista de claves, o «—». Es la tabla de accesos por departamento: qué puede hacer cada plantilla en cada módulo.
+- «Roles con permisos idénticos» (revisión trimestral): pares de roles de la organización cuyas claves coinciden exactamente, candidatos a fusionarse; si no hay ninguno, «Ningún par de roles de la organización comparte exactamente las mismas claves.».
+
+Para cambiar la plantilla de una persona usa «Cambiar rol» (apartado 1.3).
 
 ## 2. Comunicaciones
 
@@ -297,7 +304,7 @@ Pasos para investigar quién cambió un rol:
 
 **Menú › Configuración › Sistema › Webhooks** · `/configuracion/sistema/webhooks`
 
-Un webhook avisa a otro sistema (tu partner, tu CRM, un panel propio) cuando ocurre algo en ehotelOS. El aviso «Cómo se entregan» de la pantalla lo resume así: cada entrega es un HTTP POST firmado con HMAC-SHA256 sobre el cuerpo, en una cabecera de firma con formato `sha256=…` (la pantalla muestra el nombre técnico exacto de la cabecera, que es el que debe leer tu partner), usando el secret que se muestra una sola vez al crear la suscripción; si la URL no responde 2xx, el sistema reintenta hasta 6 veces (30 s → 6 h); y, literalmente, «Hoy solo "Enviar evento de prueba" genera entregas: los eventos del PMS (reservas, folios, facturas, habitaciones) todavía no se publican automáticamente en las suscripciones.»
+Un webhook avisa a otro sistema (tu partner, tu CRM, un panel propio) cuando ocurre algo en ehotelOS. El aviso «Cómo se entregan» de la pantalla lo resume así: cada entrega es un HTTP POST firmado con HMAC-SHA256 sobre el cuerpo, en una cabecera de firma con formato `sha256=…` (la pantalla muestra el nombre técnico exacto de la cabecera, que es el que debe leer tu partner: es un nombre heredado del protocolo, anterior a la marca actual, y no cambia con ella —cambiarlo rompería las integraciones ya conectadas—; junto a ella viajan las cabeceras del tipo de evento y del identificador de la entrega, con el mismo prefijo heredado), usando el secret que se muestra una sola vez al crear la suscripción; si la URL no responde 2xx, el sistema reintenta hasta 6 veces (30 s → 6 h); y, literalmente, «Hoy solo "Enviar evento de prueba" genera entregas: los eventos del PMS (reservas, folios, facturas, habitaciones) todavía no se publican automáticamente en las suscripciones.»
 
 Crear una suscripción (recorrido y verificado el 19/09/2026 con una URL de prueba):
 
@@ -306,12 +313,12 @@ Crear una suscripción (recorrido y verificado el 19/09/2026 con una URL de prue
 3. En «EVENTOS A RECIBIR · 0 DE 17» marca los eventos pulsando sus etiquetas (`reservation.created`, `reservation.checked_in`, `invoice.issued`, `room.status.changed`…) o usa «Seleccionar todo» / «Quitar selección». El contador cambia a «1 DE 17», «5 DE 17»…
 4. Pulsa «Crear suscripción».
 5. **Resultado esperado:** aparece el aviso «Secret generado · Cópialo ahora: no se mostrará de nuevo. El partner lo necesita para verificar la firma.» con el secret, los botones «Copiar» y «Cerrar», y la suscripción entra en la tabla «Suscripciones a eventos» (columnas «URL · EVENTOS · ESTADO · SECRET · CREADA» y acciones «Pausar», «Eliminar») con estado «Activa» y el secret enmascarado (`whsec_…`). Auditoría registra «WebhookSubscriptionCreated».
-6. Selecciona la fila para ver el bloque «Entregas» (con la URL, los botones «Enviar evento de prueba» y «Cerrar» y, mientras no hay ninguna, el texto «No hay entregas registradas todavía. Pulsa «Enviar evento de prueba» para validar la URL.») y pulsa «Enviar evento de prueba» para validar la URL. Según el diseño de la pantalla, cada intento aparece con «Evento · Estado (Entregada / Reintentando / Fallida) · HTTP» y sus columnas de fecha y error; en la demo no se ha podido verificar la tabla con datos (ver «En construcción»).
+6. Selecciona la fila para ver el bloque «Entregas» (con la URL, los botones «Enviar evento de prueba» y «Cerrar» y, mientras no hay ninguna, el texto «No hay entregas registradas todavía. Pulsa «Enviar evento de prueba» para validar la URL.») y pulsa «Enviar evento de prueba» para validar la URL. Cada intento aparece en la tabla «Entregas de la suscripción» con «Cuándo · Evento · Estado (Entregada / Pendiente / Reintentando / Fallida / Fallo definitivo) · HTTP · Error»; el pie del bloque resume el último intento («Entrega correcta · HTTP 200» o «Falló · …»).
 
 ![Sistema · Webhooks](img/sistemas/webhooks.png)
 *Webhooks: el formulario «Nueva suscripción» (con una dirección de ejemplo escrita, sin crear nada) y la tabla de suscripciones. Encima del formulario, la pantalla muestra el aviso «Cómo se entregan» con el nombre técnico de la cabecera de firma.*
 
-> **En construcción:** las acciones «Pausar» y «Eliminar» de una suscripción creada desde esta pantalla responden hoy «Error al cargar · Suscripción de webhook no encontrada.» (verificado el 19/09/2026 con la URL de prueba `https://example.invalid/ehotelos/MANUAL-SIS-prueba`, que por ese motivo sigue en la lista de la demo); al seleccionar esa misma fila, la carga de sus entregas también falla (la pantalla queda en «No hay entregas registradas todavía» y el navegador registra un error 404), así que la tabla de entregas no se ha podido ver con datos. Y, como dice el aviso de la pantalla, los eventos del PMS todavía no se publican solos: hoy solo llega el evento de prueba. No des una suscripción por operativa hasta que el proveedor confirme la publicación automática.
+> **Nota:** «Pausar», «Eliminar» y la carga de «Entregas» funcionan también sobre las suscripciones creadas desde esta pantalla (corregido el 19/09/2026: cada suscripción nueva queda ligada a la propiedad activa, y las creadas antes de esa fecha se reconocen por su organización sin que tengas que rehacerlas). Lo que sigue pendiente es la publicación automática: como dice el aviso de la pantalla, los eventos del PMS todavía no se publican solos y hoy solo llega el evento de prueba. No des una suscripción por operativa hasta que el proveedor confirme la publicación automática.
 
 ### 4.3 Aplicaciones
 
@@ -367,7 +374,7 @@ Texto literal al pie: «La aprobación de la salida en vivo recalcula todas las 
 
 **Importar desde documentos** (`/configuracion/puesta-en-marcha/importar-documentos`). Texto literal: «Mapeador de propiedad asistido por IA. Mapea tu propiedad desde documentos: sube tu lista de habitaciones, planos o exportaciones (CSV, hoja de cálculo, texto, PDF) y el mapeador propone la estructura completa —edificios, plantas, zonas, tipos de habitación y habitaciones— para que la revises antes de crear nada.» Botones «Elegir documentos», «Descargar CSV de ejemplo», «Mapear con IA»; bloque «Mapa de propiedad propuesto» («Aún no hay propuesta») y «Lo que hay mapeado ahora» con la tabla «HABITACIÓN · PLANTA · TIPO DE HABITACIÓN · ESTADO · VENDIBLE» (en la demo, «4 tipos de habitación · 19 habitaciones»). Los CSV y hojas de cálculo se leen sin IA; «Los PDF e imágenes necesitan un proveedor de visión IA configurado.»
 
-> **Nota:** la propiedad de demostración está **bloqueada** para salir en vivo por el modo de pruebas de SES.Hospedajes; la declaración VeriFactu del software (razón social, NIF y número de instalación del productor) y el certificado de firma los aporta el proveedor técnico. Mientras tanto, el aviso «Faltan 1 comprobación para poner la propiedad en marcha.» (así, con el verbo en plural: es el texto actual de la aplicación) aparece en todas las pantallas; se oculta por sesión con «Ahora no».
+> **Nota:** la propiedad de demostración está **bloqueada** para salir en vivo por el modo de pruebas de SES.Hospedajes; la declaración VeriFactu del software (razón social, NIF y número de instalación del productor) y el certificado de firma los aporta el proveedor técnico. Mientras tanto, el aviso «Falta 1 comprobación para poner la propiedad en marcha.» aparece en todas las pantallas; se oculta por sesión con «Ahora no».
 
 ### 5.2 Modo sombra OPERA
 
@@ -455,11 +462,9 @@ Si `status` no es `healthy`, o `checks.audit` acumula fallos, o `postgres` / `re
 | «No hay ninguno a tu alcance.» / «Sin opciones» en el campo del ámbito | Intentas asignar un ámbito fuera del tuyo | Elige «Hotel» y uno de tus hoteles, o pide a dirección |
 | La persona invitada no recibe el correo | Correo saliente no configurado | Copia el enlace («Copiar enlace») y entrégaselo; si caducó, «Reenviar invitación» |
 | Pulsas «Invitar con ámbito», «Añadir plantilla» o una fila de usuario y no aparece ningún panel | Defecto conocido (19/09/2026): los cajones laterales de la aplicación se abren pero quedan ocultos por una regla de estilo de la barra lateral | Pulsa Esc para cerrarlo; pide la operación a dirección o al proveedor técnico hasta que se corrija |
-| «Algo ha fallado en la interfaz … b is not iterable» al pulsar «Comparar plantillas» | Defecto conocido de la pantalla | «Reintentar»; usa la tabla de plantillas de esta guía |
 | «Gmail no está configurado en el servidor» (o Microsoft 365 / IMAP) | Proveedor de correo entrante sin credenciales | Usa «Manual (pegar un correo)» y pide la configuración al proveedor técnico |
-| «Suscripción de webhook no encontrada.» al pulsar «Pausar» o «Eliminar» | Defecto conocido de Webhooks | Anota el id y pídeselo al proveedor técnico; la suscripción sigue activa |
 | El módulo activado no aparece en el menú | Falta una dependencia o la sesión no se ha recargado | Pestaña «Salud», filtro «Con incidencias», sigue la «ACCIÓN RECOMENDADA»; recarga la página |
-| «Faltan 1 comprobación para poner la propiedad en marcha.» (aviso permanente) | Salida en vivo bloqueada (SES.Hospedajes en modo de pruebas) | Solo lo resuelve el proveedor técnico con el certificado y el modo real; «Ahora no» lo oculta durante la sesión |
+| «Falta 1 comprobación para poner la propiedad en marcha.» (aviso permanente) | Salida en vivo bloqueada (SES.Hospedajes en modo de pruebas) | Solo lo resuelve el proveedor técnico con el certificado y el modo real; «Ahora no» lo oculta durante la sesión |
 
 ## Qué no hace todavía
 
@@ -467,9 +472,8 @@ Si `status` no es `healthy`, o `checks.audit` acumula fallos, o `postgres` / `re
 - **Copias de seguridad desde la aplicación**: no existen; las hace el proveedor en el servidor.
 - **Presentación telemática a la AEAT**: los modelos se calculan en Cumplimiento › Modelos AEAT con resumen para presentación manual; VeriFactu y SES.Hospedajes están en modo de pruebas hasta que el proveedor cargue certificado y declaración del software.
 - **Integración OPERA real**: solo por ficheros (correo, SFTP o manual) y sin cortes en la demo; nunca escribe en OPERA; no hay conexión por API (OHIP).
-- **Webhooks**: los eventos del PMS no se publican automáticamente (solo el evento de prueba) y «Pausar» / «Eliminar» fallan.
+- **Webhooks**: los eventos del PMS no se publican automáticamente (solo el evento de prueba).
 - **Cajones laterales** («Invitar con ámbito», «Añadir plantilla», ficha de usuario y el resto de paneles que se abren desde el lado derecho): a 19/09/2026 se abren ocultos por una regla de estilo de la barra lateral; las ventanas de confirmación sí se ven.
-- **Comparar plantillas**: rompe la interfaz.
 - **Correo entrante**: Gmail, Microsoft 365 e IMAP sin configurar; solo el conector manual.
 - **Integraciones**: catálogo vacío; sin aplicaciones certificadas de terceros.
 - **Inteligencia artificial**: sin proveedor; todo lo «IA» funciona por reglas.

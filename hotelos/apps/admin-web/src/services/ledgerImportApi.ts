@@ -19,6 +19,7 @@
 //   GET  /accounting/ledger-imports/reconciliation/:id     getReconciliation                              accounting.read
 //   GET  /accounting/ledger-imports/reconciliation/:id/csv downloadReconciliationCsv → NamedDownload      accounting.read
 //   GET  /accounting/ledger-imports/template               downloadLedgerImportTemplate → NamedDownload   accounting.read
+//   GET  /accounting/ledger-imports/third-parties          listLedgerThirdParties (FIX-1 · F11, directorio) accounting.read
 //
 // The browser ALWAYS sends the bytes as `contentBase64` (CSV included): the API
 // decides the encoding (utf-8 → windows-1252) and the format (`format` >
@@ -51,7 +52,9 @@ import type {
   LedgerImportReverseBody,
   LedgerReconciliationBody,
   LedgerReconciliationDto,
-  LedgerReconciliationListQuery
+  LedgerReconciliationListQuery,
+  LedgerThirdPartyListQuery,
+  LedgerThirdPartyPage
 } from "@hotelos/shared";
 import { date, number, plural } from "../lib/format";
 import type { NamedDownload } from "./accountingApi";
@@ -77,12 +80,17 @@ export type {
   LedgerReconciliationBody,
   LedgerReconciliationDto,
   LedgerReconciliationListQuery,
-  LedgerReconciliationRow
+  LedgerReconciliationRow,
+  LedgerThirdPartyDto,
+  LedgerThirdPartyListQuery,
+  LedgerThirdPartyLotRef,
+  LedgerThirdPartyPage,
+  LedgerThirdPartyRole
 } from "@hotelos/shared";
 
 const enc = encodeURIComponent;
 
-/** Base path of the fifteen routes (organisation-level: the sociedad, never a property). */
+/** Base path of the sixteen routes (organisation-level: the sociedad, never a property). */
 export const LEDGER_IMPORTS_PATH = "/accounting/ledger-imports";
 
 /** File name of the canonical template per lot kind (the API names it in Content-Disposition; this is the fallback). */
@@ -181,6 +189,15 @@ export function getReconciliation(reconciliationId: string): Promise<LedgerRecon
 export async function downloadReconciliationCsv(reconciliationId: string): Promise<NamedDownload> {
   const response = await apiRequestBlob(`${LEDGER_IMPORTS_PATH}/reconciliation/${enc(reconciliationId)}/csv`);
   return { blob: response.blob, filename: downloadFilename(response.contentDisposition, reconciliationCsvFileName(reconciliationId)), contentType: response.contentType };
+}
+
+// ---------------------------------------------------------------------------
+// Terceros importados (FIX-1 · F11)
+// ---------------------------------------------------------------------------
+
+/** Read-only directory of the imported third parties: keyset page (role, Sage code) with `total` and `nextCursor`; `q` over code / NIF / Sage account / name, `role` customer | supplier; `lote` per row; `name` null for personal accounts (465 / 460 / 555) and masked employees. accounting.read. */
+export function listLedgerThirdParties(query: LedgerThirdPartyListQuery = {}): Promise<LedgerThirdPartyPage> {
+  return apiRequest<LedgerThirdPartyPage>(`${LEDGER_IMPORTS_PATH}/third-parties`, { query: compactQuery({ q: query.q, role: query.role, limit: query.limit, cursor: query.cursor }) });
 }
 
 // ---------------------------------------------------------------------------

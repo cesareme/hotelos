@@ -22,3 +22,37 @@ export function uniqueByFolio<Row extends { folioId: string }>(rows: readonly Ro
   }
   return unique;
 }
+
+// ---------------------------------------------------------------------------
+// Export download (FIX-1 · F5). The status line names the file, never the
+// download URL (the old copy interpolated `export.downloadUrl`, which the API
+// did not send → «Exportación lista: undefined»). Pure except for the DOM
+// anchor that `saveBlobAs` needs to trigger the browser download.
+// ---------------------------------------------------------------------------
+
+export type ReportExportLike = {
+  export: { filename: string; contentType: string };
+  content: string;
+};
+
+/** Status line of a finished export: «Exportación lista: informe-….csv». */
+export function exportStatusMessage(result: { export: { filename: string } }): string {
+  return `Exportación lista: ${result.export.filename}`;
+}
+
+/** Browser download of a blob under `filename` (same pattern as revenueExportApi.downloadGeneratedExport). */
+export function saveBlobAs(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Inline download of the export just generated (the response carries the file body). */
+export function downloadReportExport(result: ReportExportLike): void {
+  saveBlobAs(new Blob([result.content], { type: result.export.contentType }), result.export.filename);
+}

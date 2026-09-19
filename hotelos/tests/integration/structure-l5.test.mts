@@ -838,7 +838,11 @@ describe("C9 · equivalencia (solo lectura): Faranda y org_123 tras L1-L5", () =
       const superseded = await missingSupersededQuota(FARANDA_ORG, { from: "2026-07-01", to: "2026-10-01" });
       assert.equal(report.fuentes.origen, "libros");
       assert.equal(casilla(report, "27"), Number((Number(emitidas._sum.quota ?? 0) - superseded).toFixed(2)), "27 = Σ cuotas de emitidas del trimestre en los libros − originales sustituidas sin contrafila (derivadas en memoria, corrector L3 · DS-06)");
-      assert.equal(Number((casilla(report, "27") - casilla(report, "45")).toFixed(2)), casilla(report, "71"));
+      // FIX-1 · F3 (B-2): 71 = 69 − 70 = 27 − 45 − 78, con 78 = min(110, 27 − 45) si el resultado es positivo (110 = saldo de
+      // 4700 arrastrado al trimestre + saldo inicial configurado); la equivalencia 71 = 27 − 45 solo vale sin compensación.
+      const resultado = Number((casilla(report, "27") - casilla(report, "45")).toFixed(2));
+      assert.equal(casilla(report, "78"), resultado > 0 ? Math.min(casilla(report, "110"), resultado) : 0, "78 = compensación de periodos anteriores aplicada");
+      assert.equal(Number((resultado - casilla(report, "78")).toFixed(2)), casilla(report, "71"), "71 = 27 − 45 − 78");
       // Corrector L5 (ronda 2): la carga real de Sage 200 trae libros de 2025 (2025-Q1..Q4), no de 2026: el 390 de
       // 2026 solo suma emitidas importadas si hay filas de Sage fechadas en 2026; sin ellas, basta con que se calcule.
       const sageBookRows2026 = await prisma.vatBookEntry.count({ where: { organizationId: FARANDA_ORG, sourceType: "sage200", date: { gte: new Date("2026-01-01T00:00:00.000Z"), lte: new Date("2026-12-31T00:00:00.000Z") } } });

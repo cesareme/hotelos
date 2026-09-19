@@ -63,15 +63,39 @@ Qué hay en la pantalla:
 
 ---
 
-## 2. Contratos: «Nuevo contrato»
+## 2. Contratos: «Nueva ficha» y «Nuevo contrato»
 
 **Menú › Finanzas › Nóminas › pestaña «Contratos»** · `/finanzas/nominas`
 
-Un contrato dice cuánto cobra cada empleado al mes; al calcular un periodo, ehotelOS genera un recibo por cada contrato activo. Para dar de alta uno:
+Un contrato dice cuánto cobra cada empleado al mes; al calcular un periodo, ehotelOS genera un recibo por cada contrato activo. Cada contrato cuelga de una **ficha de personal** (la persona y su centro de trabajo), así que el alta tiene dos pasos: primero la ficha, después el contrato.
 
-1. En la pestaña «Contratos» pulsa **«Nuevo contrato»** (arriba a la derecha o en el bloque vacío). Se abre el cajón «Nuevo contrato» con el aviso: «El empleado debe existir como ficha de personal de la propiedad; el contrato entra en el siguiente periodo que se calcule.»
+### 2.1 Paso previo: la ficha de personal («Nueva ficha»)
+
+La ficha vincula a una persona **con acceso a ehotelOS** (ver la ficha de formación «Dar de alta un usuario») con el centro de trabajo. Sin ficha no hay contrato: el cajón «Nuevo contrato» solo ofrece las fichas ya creadas.
+
+1. Pulsa **«Nueva ficha»** (arriba a la derecha, junto a «Nuevo contrato»; también en el bloque vacío «Aún no hay contratos» cuando no existe ninguna ficha). Se abre el cajón «Nueva ficha de personal» («La ficha vincula a una persona con acceso a la aplicación con su centro de trabajo; el contrato se da de alta después sobre la ficha.»).
+2. Bloque **«Persona y centro»**:
+   - **«Centro de trabajo»** (solo aparece cuando el «Ámbito» de la pantalla es toda la sociedad; con un centro elegido en el ámbito, la ficha es de ese centro).
+   - **«Persona»** (obligatorio): lista «nombre · correo» de las personas con acceso en ese centro. Si la persona no aparece, primero hay que invitarla en Configuración › Usuarios y roles.
+   - **«Código de empleado»** (opcional, hasta 32 caracteres): el código de tu convenio o de la gestoría; es lo que verás en las tablas en vez del identificador interno.
+   - **«Departamento»** (opcional): los departamentos del centro. Si tu plantilla no tiene el permiso de configuración del centro, el selector queda vacío y la ficha se crea sin departamento.
+   - **«Modalidad»**: Indefinido · Temporal · Fijo discontinuo · Prácticas · Otro.
+   - **«Coste hora (€)»** (opcional): coste para la empresa por hora trabajada, con dos decimales como máximo.
+3. Pulsa **«Crear ficha»** («Cancelar» cierra sin guardar).
+
+**Resultado esperado:** aviso «Ficha creada.»; el cajón se cierra y «Nuevo contrato» se abre ya con esa ficha seleccionada. En **Menú › Configuración › Sistema › Auditoría** queda el evento «STAFF_PROFILE_CREATED» con tu usuario como actor (sin nombre ni correo de la persona: solo identificadores y el código de empleado).
+
+**Si algo falla:**
+- «Elige la persona de la ficha.» / el botón «Crear ficha» sigue gris → falta la persona, o el código supera 32 caracteres, o el coste hora no es un importe válido («El coste hora debe ser un importe mayor o igual que 0 con dos decimales como máximo.»).
+- «No se pudo crear la ficha · Ya existe una ficha de personal activa para esta persona en la propiedad.» → esa persona ya tiene ficha en ese centro: úsala en «Nuevo contrato» (una persona puede tener una ficha por centro).
+- «No hay personas con acceso en este centro: invítalas en Configuración › Usuarios y roles.» → la persona todavía no es usuario de ehotelOS en ese centro.
+- «El departamento no pertenece a la propiedad de la ficha.» → has cambiado de centro con un departamento del centro anterior seleccionado: vuelve a elegir el departamento.
+
+### 2.2 El contrato («Nuevo contrato»)
+
+1. En la pestaña «Contratos» pulsa **«Nuevo contrato»** (arriba a la derecha o en el bloque vacío). Se abre el cajón «Nuevo contrato» con el aviso: «El empleado debe tener una ficha de personal en el centro («Nueva ficha»); el contrato entra en el siguiente periodo que se calcule.»
 2. Bloque **«Empleado y modalidad»**:
-   - **«Identificador de la ficha de personal»** (obligatorio): el identificador de la ficha del empleado en ehotelOS (no su nombre ni su DNI). Ver la nota de abajo.
+   - **«Ficha de personal»** (obligatorio): selector con las fichas del ámbito, rotuladas con el código de empleado (o el nombre de la persona si la ficha no tiene código); si acabas de crear una, viene seleccionada. Sin fichas el selector está desactivado con la nota «Aún no hay fichas en este ámbito: créala con «Nueva ficha».».
    - **«Modalidad de contrato»** (obligatorio): Indefinido · Temporal · Fijo discontinuo · Prácticas · Formación · Sustitución.
    - **«Inicio»** (obligatorio; por defecto, hoy) y **«Fin»** (opcional; no puede ser anterior al inicio).
 3. Bloque **«Retribución»**:
@@ -83,17 +107,16 @@ Un contrato dice cuánto cobra cada empleado al mes; al calcular un periodo, eho
 4. Pulsa **«Guardar contrato»** («Cancelar» cierra sin guardar).
 
 ![Cajón «Nuevo contrato» relleno con datos ficticios](img/rrhh/nuevo-contrato.png)
-*El cajón «Nuevo contrato» con un identificador de ficha ficticio, 1.650 € de bruto mensual y grupo de cotización de ejemplo, justo antes de «Guardar contrato».*
+*El cajón «Nuevo contrato» con datos ficticios, 1.650 € de bruto mensual y grupo de cotización de ejemplo, justo antes de «Guardar contrato» (captura anterior a esta versión: el campo del empleado es ahora el selector «Ficha de personal»).*
 
-**Resultado esperado:** aviso «Contrato guardado»; el contrato aparece en la tabla con las columnas EMPLEADO (identificador de la ficha y grupo de cotización), MODALIDAD, BRUTO MENSUAL, PAGAS, IRPF («automático» si lo dejaste vacío), VIGENCIA («desde <fecha>» o el rango) y ESTADO (Activo). El indicador CONTRATOS ACTIVOS sube en uno.
+**Resultado esperado:** aviso «Contrato guardado»; el contrato aparece en la tabla con las columnas EMPLEADO (código de empleado de la ficha —o el nombre de la persona si la ficha no tiene código— y grupo de cotización), MODALIDAD, BRUTO MENSUAL, PAGAS, IRPF («automático» si lo dejaste vacío), VIGENCIA («desde <fecha>» o el rango) y ESTADO (Activo). El indicador CONTRATOS ACTIVOS sube en uno. Comprobado en la demostración el 19/09/2026: ficha `MANUAL-F10-001` (temporal, departamento Reception, 12,50 €/hora) y su contrato indefinido de 1.800 € con 14 pagas.
 
 **Dar de baja un contrato:** en su fila pulsa **«Desactivar»** y confirma en «¿Desactivar el contrato de …?» («El contrato dejará de entrar en los próximos periodos de nómina. Los recibos ya calculados no cambian.»). Además de sacar al empleado de las próximas nóminas, la baja retira los accesos a ehotelOS del usuario vinculado a esa ficha.
 
 **Si algo falla:**
-- El botón «Guardar contrato» sigue gris → falta el identificador de la ficha, el bruto o el inicio, o hay un error debajo de un campo: «El identificador de la ficha de personal es obligatorio.», «Indica el bruto mensual.», «El bruto debe ser un importe mayor o igual que 0.», «La fecha de fin no puede ser anterior a la de inicio.», «El IRPF debe estar entre 0 y 100.», «Entre 12 y 16 pagas anuales.».
-- «No se pudo guardar · Perfil de empleado no encontrado.» → el identificador no corresponde a ninguna ficha de personal del hotel (o de tu ámbito).
-
-> **En construcción:** hoy **no hay pantalla para crear fichas de personal**: el identificador que pide el formulario solo existe si sistemas cargó la plantilla por importación, y en el hotel de demostración no hay ninguna. Por eso el alta de la captura termina en «No se pudo guardar · Perfil de empleado no encontrado.» y el resto de esta guía trabaja con un periodo sin contratos. En cuanto exista el alta de fichas, este apartado se completa con el paso previo.
+- El botón «Guardar contrato» sigue gris → falta la ficha, el bruto o el inicio, o hay un error debajo de un campo: «Elige la ficha de personal.», «Indica el bruto mensual.», «El bruto debe ser un importe mayor o igual que 0.», «La fecha de fin no puede ser anterior a la de inicio.», «El IRPF debe estar entre 0 y 100.», «Entre 12 y 16 pagas anuales.».
+- El selector «Ficha de personal» está desactivado con «Aún no hay fichas en este ámbito: créala con «Nueva ficha».» → vuelve al apartado 2.1.
+- «No se pudo guardar · Perfil de empleado no encontrado.» → la ficha se borró o pertenece a un centro fuera de tu ámbito: pulsa «Actualizar» y vuelve a elegirla.
 
 > **Nota:** las **pagas extras** se guardan en «Pagas anuales» pero todavía no se prorratean en el recibo mensual: el recibo lleva el bruto mensual completo (o la parte proporcional a los días del contrato dentro del mes).
 

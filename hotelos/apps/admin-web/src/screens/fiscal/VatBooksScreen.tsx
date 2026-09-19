@@ -17,14 +17,18 @@
 // <NIF>» comes from `settings.sociedad`, a centre can be picked as «Desglose
 // por centro» (informative partial book) and the SII / gran empresa regime
 // paints a warning callout.
+//
+// FIX-1 · F3: the screen opens on the last period with materialised rows (GET
+// /fiscal/vat-books/periods, E-04), a centre view over a Sage period paints the
+// `SAGE_NO_CENTRE_AVISO` callout (E-03) and every row shows its «Régimen» (F2).
 
-import { useMemo, useState, type ReactNode } from "react";
-import type { VatBookName, VatBookResponse, VatBookRowDto, VatBookTotalsByRate } from "@hotelos/shared";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { SAGE_NO_CENTRE_AVISO, type VatBookName, type VatBookResponse, type VatBookRowDto, type VatBookTotalsByRate } from "@hotelos/shared";
 import { useToast } from "../../components/Toast";
 import { ACTIONS, UI_STATES } from "../../content/actions";
 import { date, money, number, percent, plural } from "../../lib/format";
 import { FinanceDeclaranteBadge, FinanceRegimeCallout, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
-import { getVatBook, getVatSettings, rebuildVatBooks } from "../../services/fiscalApi";
+import { getVatBook, getVatBookPeriods, getVatSettings, rebuildVatBooks } from "../../services/fiscalApi";
 import { centreNameFor, centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { useTabHost } from "../tabs/TabHost";
 import {
@@ -56,10 +60,11 @@ import {
   REGIME_LABELS,
   SOURCE_TYPE_LABELS,
   bookPeriodOptions,
-  currentQuarter,
   fiscalErrorText,
+  initialPeriodPicker,
   matchesVatBookSearch,
   periodRangeLabel,
+  regimeRowLabel,
   saveDownload,
   sumVatBookRows,
   vatBookCsv,
@@ -139,6 +144,8 @@ function columnsFor(book: VatBookName): CocoaTableColumn<VatBookRowDto>[] {
     });
   }
   columns.push({ key: "sourceType", label: "Origen", hideOnNarrow: true, render: (row) => SOURCE_TYPE_LABELS[row.sourceType] ?? row.sourceType });
+  // FIX-1 · F2/F3: the regime of the operation (interior · ISP · AIB · importación · exenta/no sujeta); «—» = sin clasificar.
+  columns.push({ key: "regime", label: "Régimen", hideOnNarrow: true, width: "12ch", render: (row) => regimeRowLabel(row.regime) });
   return columns;
 }
 
@@ -154,7 +161,18 @@ export function VatBooksScreen() {
   const years = useMemo(() => yearOptions(), []);
   const [book, setBook] = useState<VatBookName>("emitidas");
   const [year, setYear] = useState(() => years[0]?.value ?? String(new Date().getUTCFullYear()));
-  const [period, setPeriod] = useState(() => `${years[0]?.value ?? String(new Date().getUTCFullYear())}-Q${currentQuarter()}`);
+  // FIX-1 · F3 (E-04): the period starts unset and opens on the last one with materialised rows once the periods
+  // (and the settings, for the periodicity) answer — or fail, which falls back to the current quarter / month.
+  const periodsResource = useFiscalResource("vat-book-periods", getVatBookPeriods);
+  const [period, setPeriod] = useState<string | null>(null);
+  const pickersReady = (periodsResource.data !== null || periodsResource.error !== null) && (settings.data !== null || settings.error !== null);
+  useEffect(() => {
+    if (period !== null || !pickersReady) return;
+    const latest = periodsResource.data?.latest ?? null;
+    const initial = initialPeriodPicker(latest);
+    setYear(initial.year);
+    setPeriod(latest && bookPeriodOptions(initial.year, periodicity).some((option) => option.value === latest) ? latest : periodicity === "monthly" ? `${initial.year}-${initial.month}` : `${initial.year}-Q${initial.quarter}`);
+  }, [period, pickersReady, periodsResource.data, periodicity]);
   // Informative breakdown of one centre («vista parcial»); "" = the whole book of the sociedad.
   const [breakdown, setBreakdown] = useState("");
   const [search, setSearch] = useState("");
@@ -167,10 +185,12 @@ export function VatBooksScreen() {
   const breakdownOptions = useMemo(() => [WHOLE_BOOK_OPTION, ...centreSelectOptions(finance.structure, finance.active).map((option) => ({ ...option, label: `Desglose · ${option.label}` }))], [finance.structure, finance.active]);
   const propertyId = breakdown || undefined;
   const breakdownName = centreNameFor(finance.structure, propertyId);
-  const key = `${book}|${period}|${propertyId ?? ""}`;
-  const resource = useFiscalResource<VatBookResponse>(key, () => getVatBook({ book, period, propertyId }));
+  const key = period === null ? null : `${book}|${period}|${propertyId ?? ""}`;
+  const resource = useFiscalResource<VatBookResponse>(key, () => getVatBook({ book, period: period ?? undefined, propertyId }));
   const data = resource.data;
   const errorText = resource.error ? fiscalErrorText(resource.error, "No hemos podido cargar el libro. Inténtalo de nuevo.") : null;
+  // FIX-1 · F3 (E-03): a centre view over a Sage period is empty because the imported rows carry no centre.
+  const noCentreBreakdown = Boolean(propertyId) && (data?.avisos.includes(SAGE_NO_CENTRE_AVISO) ?? false);
 
   const columns = useMemo(() => columnsFor(book), [book]);
   const allRows = data?.rows ?? [];
@@ -182,7 +202,7 @@ export function VatBooksScreen() {
 
   function changeYear(next: string) {
     setYear(next);
-    setPeriod((current) => (current.startsWith(year) ? next + current.slice(year.length) : next));
+    setPeriod((current) => (current === null ? next : current.startsWith(year) ? next + current.slice(year.length) : next));
   }
 
   function downloadCsv() {
@@ -193,7 +213,7 @@ export function VatBooksScreen() {
   }
 
   async function rebuild() {
-    if (rebuilding) return;
+    if (rebuilding || period === null) return;
     setRebuilding(true);
     try {
       const result = await rebuildVatBooks({ period, propertyId });
@@ -266,7 +286,7 @@ export function VatBooksScreen() {
         }
         rightSlot={
           <>
-            <CocoaSelect size="small" inline aria-label="Periodo" value={period} onChange={setPeriod} options={periodOptions} />
+            <CocoaSelect size="small" inline aria-label="Periodo" value={period ?? ""} onChange={setPeriod} options={periodOptions} disabled={period === null} />
             <CocoaSelect size="small" inline aria-label="Ejercicio" value={year} onChange={changeYear} options={years} />
             <FinanceScopeSelector scope={finance} />
             {breakdownOptions.length > 1 ? <CocoaSelect size="small" inline aria-label="Desglose por centro" value={breakdown} onChange={setBreakdown} options={breakdownOptions} /> : null}
@@ -275,7 +295,11 @@ export function VatBooksScreen() {
       />
 
       <FinanceRegimeCallout regimen={sociedad?.regimen} />
-      {propertyId ? (
+      {noCentreBreakdown ? (
+        <CocoaCallout tone="info" title="Desglose por centro no disponible para lotes Sage sin delegación">
+          Las filas del periodo importadas de Sage 200 no llevan centro, así que el libro de {breakdownName} no puede desglosarse: consulta el libro de la sociedad {sociedad?.legalName ?? finance.entityName}.
+        </CocoaCallout>
+      ) : propertyId ? (
         <CocoaCallout tone="warning" title="Desglose por centro: vista parcial, no liquidable">
           El libro de {breakdownName} es un auxiliar informativo: los libros registro y los modelos son de la sociedad {sociedad?.legalName ?? finance.entityName} por todos sus centros.
         </CocoaCallout>
@@ -295,7 +319,7 @@ export function VatBooksScreen() {
         </CocoaCallout>
       ) : null}
 
-      {resource.loading ? (
+      {resource.loading || period === null ? (
         <CocoaSkeleton.Strip count={4} label="Cargando totales del libro…" />
       ) : data ? (
         <CocoaKpiStrip stagger aria-label={`Totales de ${BOOK_LABELS[book]}`}>
@@ -321,8 +345,8 @@ export function VatBooksScreen() {
           <CocoaState
             kind="empty"
             illustration={search ? "search" : "box"}
-            title={search ? UI_STATES.noResults.title : `Sin filas en ${BOOK_LABELS[book].toLowerCase()} para este periodo`}
-            message={search ? UI_STATES.noResults.message : "Los documentos emitidos, contabilizados o registrados en el periodo aparecerán aquí con su tipo de IVA."}
+            title={search ? UI_STATES.noResults.title : noCentreBreakdown ? "Desglose por centro no disponible" : `Sin filas en ${BOOK_LABELS[book].toLowerCase()} para este periodo`}
+            message={search ? UI_STATES.noResults.message : noCentreBreakdown ? "Las filas importadas de Sage 200 no llevan centro: elige «Libro de la sociedad» para ver el libro completo del periodo." : "Los documentos emitidos, contabilizados o registrados en el periodo aparecerán aquí con su tipo de IVA."}
             primaryAction={search ? { label: ACTIONS.clearFilters, onClick: () => setSearch("") } : undefined}
           />
         ) : (
@@ -340,8 +364,8 @@ export function VatBooksScreen() {
             footer={rows.length > 0 ? footerCells : undefined}
             virtualize
             density="compact"
-            caption={`${BOOK_LABELS[book]} · ${data?.periodo.code ?? period}`}
-            aria-label={`${BOOK_LABELS[book]} del periodo ${data?.periodo.code ?? period}`}
+            caption={`${BOOK_LABELS[book]} · ${data?.periodo.code ?? period ?? ""}`}
+            aria-label={`${BOOK_LABELS[book]} del periodo ${data?.periodo.code ?? period ?? ""}`}
           />
         )}
       </CocoaSection>
@@ -389,6 +413,7 @@ export function VatBooksScreen() {
             <CocoaStat label="Serie y número" value={`${selected.series ?? "—"} · ${selected.number ?? "—"}`} tabular={false} />
             <CocoaStat label="Origen" value={SOURCE_TYPE_LABELS[selected.sourceType] ?? selected.sourceType} hint={selected.sourceId} tabular={false} />
             <CocoaStat label="Figura impositiva" value={selected.taxFigure} tabular={false} />
+            <CocoaStat label="Régimen" value={regimeRowLabel(selected.regime)} hint={selected.regime ? undefined : "Sin clasificar: operación interior a efectos del Modelo 303."} tabular={false} />
             <CocoaStat label="Deducible" value={selected.deductible ? "Sí" : "No"} tone={selected.deductible ? undefined : "warning"} tabular={false} />
             <CocoaStat label="Periodo de liquidación" value={selected.period} />
             <CocoaStat label="Centro de trabajo" value={centreNameFor(finance.structure, selected.propertyId)} tabular={false} />
@@ -401,8 +426,8 @@ export function VatBooksScreen() {
         open={askRebuild}
         onClose={() => setAskRebuild(false)}
         tone="destructive"
-        title={`¿Reconstruir los libros de ${period}?`}
-        description={`Se eliminan las filas materializadas de los tres libros en ${periodRangeLabel(period) ?? period}${propertyId ? ` para ${breakdownName}` : " de toda la sociedad"} y se vuelven a generar desde los documentos. Los modelos leerán después las filas guardadas; los importes solo cambian si los documentos han cambiado.`}
+        title={`¿Reconstruir los libros de ${period ?? ""}?`}
+        description={`Se eliminan las filas materializadas de los tres libros en ${periodRangeLabel(period ?? "") ?? period ?? ""}${propertyId ? ` para ${breakdownName}` : " de toda la sociedad"} y se vuelven a generar desde los documentos. Los modelos leerán después las filas guardadas; los importes solo cambian si los documentos han cambiado.`}
         confirmLabel="Reconstruir libros"
         busy={rebuilding}
         onConfirm={rebuild}

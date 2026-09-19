@@ -566,6 +566,8 @@ export type MarkFiscalYearClosedFromImportInput = {
   netResult: string | number;
   /** Lote que trae el cierre (queda en `closingNotes` de los periodos que se cierran). */
   importId: string;
+  /** FIX-1 · F4 (A-04): actor de la importación → `closedBy` de los periodos; sin actor, `import:<importId>`. */
+  closedBy?: string | null;
 };
 
 /** Nota con la que el cierre importado cierra los periodos que seguían abiertos. */
@@ -578,9 +580,9 @@ export function importClosingNote(importId: string): string {
  * SIN generar regularización, cierre ni apertura propios (design §5.3): el lote ya los
  * contabilizó con su `entryKind`. Rehúsa un ejercicio ya cerrado
  * (409 FISCAL_YEAR_ALREADY_CLOSED) y cierra los periodos del ejercicio que sigan
- * abiertos con la nota «cerrado por importación <importId>» (el reverso del lote los
- * reabre). Se ejecuta dentro de la transacción del lote: no audita (lo hace el lote
- * tras el commit).
+ * abiertos con la nota «cerrado por importación <importId>» y `closedBy` = actor de la
+ * importación o `import:<importId>` (el reverso del lote los reabre y deja closedBy null).
+ * Se ejecuta dentro de la transacción del lote: no audita (lo hace el lote tras el commit).
  */
 export async function markFiscalYearClosedFromImport(tx: FiscalYearImportCloseClient, input: MarkFiscalYearClosedFromImportInput): Promise<{ fiscalYearId: string; code: string; closedPeriods: number }> {
   const year = await tx.fiscalYear.findUnique({ where: { id: input.fiscalYearId } });
@@ -599,7 +601,7 @@ export async function markFiscalYearClosedFromImport(tx: FiscalYearImportCloseCl
       endDate: { lte: year.endDate },
       status: { not: "closed" }
     },
-    data: { status: "closed", closedAt: new Date(), closingNotes: importClosingNote(input.importId) }
+    data: { status: "closed", closedAt: new Date(), closedBy: input.closedBy ?? `import:${input.importId}`, closingNotes: importClosingNote(input.importId) }
   });
   return { fiscalYearId: year.id, code: year.code, closedPeriods: closed.count };
 }

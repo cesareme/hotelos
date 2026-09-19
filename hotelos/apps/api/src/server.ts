@@ -93,6 +93,9 @@ import { listSwitchableProperties } from "./modules/structure/legal-entity.servi
 // /payroll/cost-report (modules/payroll/cost-import.routes.ts; permisos en su
 // route-permissions.partial.ts).
 import { registerPayrollCostRoutes } from "./modules/payroll/cost-import.routes.js";
+// Fichas de personal (FIX-1 · F10): GET/POST /payroll/staff-profiles
+// (modules/payroll/staff-profiles.routes.ts; permisos en el mismo partial).
+import { registerStaffProfileRoutes } from "./modules/payroll/staff-profiles.routes.js";
 // Importación masiva de reservas (Tanda 7 · L3): /properties/:propertyId/
 // reservations/imports* (modules/pms/reservation-import.routes.ts; permisos en
 // modules/pms/route-permissions.partial.ts).
@@ -804,6 +807,7 @@ import {
   exportOperationalReport,
   getBillingReport,
   getReportCatalog,
+  getReportExportFile,
   getReservationReport
 } from "./modules/reporting/reporting.service.js";
 import {
@@ -2896,6 +2900,10 @@ export async function buildApiServer() {
   // contabilizar el informe de RRHH agregado, revertir lotes e informe
   // centros × meses (GET /payroll/cost-report).
   registerPayrollCostRoutes(app);
+  // Fichas de personal (FIX-1 · F10): listar y dar de alta las fichas que
+  // exige POST /payroll/contracts (antes no había alta y el cajón «Nuevo
+  // contrato» acababa en 404 «Perfil de empleado no encontrado.»).
+  registerStaffProfileRoutes(app);
   // Importación masiva de reservas (Tanda 7 · L3): previsualizar, importar,
   // listar, ver un lote, descargar la plantilla y deshacer
   // (/properties/:propertyId/reservations/imports*).
@@ -5422,6 +5430,17 @@ export async function buildApiServer() {
       query: body.query,
       correlationId: createId("corr")
     });
+  });
+
+  // FIX-1 · F5: authenticated download of a finished export (in-memory store,
+  // 15 min TTL) — the front links here instead of an absent object-storage URL.
+  app.get("/reports/exports/:exportId/download", async (request, reply) => {
+    const params = request.params as { exportId: string };
+    const file = getReportExportFile({ context: request.userContext, exportId: params.exportId });
+    return reply
+      .header("content-type", file.contentType)
+      .header("content-disposition", `attachment; filename="${file.filename}"`)
+      .send(file.content);
   });
 
   app.get("/organizations/:organizationId/accounts", async (request) => {

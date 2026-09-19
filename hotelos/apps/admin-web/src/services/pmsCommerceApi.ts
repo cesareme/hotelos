@@ -892,6 +892,22 @@ export function fetchBillingReport(propertyId: string) {
   return apiRequest<unknown>(`/reports/properties/${propertyId}/billing`);
 }
 
+/**
+ * POST /reports/properties/:id/export (FIX-1 · F5). `content` is the file body
+ * for the inline download; `downloadUrl` is the authenticated route
+ * (GET /reports/exports/:id/download) that serves the same artefact again until
+ * `expiresAt` (15 min in the API's in-memory store).
+ */
+export type ReportExportResult = {
+  export: { id: string; filename: string; contentType: string; downloadUrl: string; expiresAt: string };
+  content: string;
+};
+
 export function exportOperationalReport(propertyId: string, payload: Record<string, unknown>) {
-  return apiRequest<unknown>(`/reports/properties/${propertyId}/export`, { method: "POST", body: payload });
+  return apiRequest<ReportExportResult>(`/reports/properties/${propertyId}/export`, { method: "POST", body: payload });
+}
+
+/** The stored artefact of a finished export (404 «Exportación no encontrada o caducada.» once expired). */
+export function fetchReportExportFile(downloadUrl: string) {
+  return apiRequestBlob(downloadUrl);
 }

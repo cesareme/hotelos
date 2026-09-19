@@ -3,9 +3,13 @@
 // estado de cambios en el patrimonio neto and memoria, plus persisted
 // snapshots (FinancialStatementSnapshot).
 //
-// Everything is a pure function over three ledger reads (see source.ts):
+// Everything is a pure function over three ledger sets (four reads, see
+// source.ts and `readLedgerSet` below):
 //   rowsAt        = balance_at(to)            cumulative balances at the close
 //   rowsBefore    = balance_at(from − 1 day)  opening balances
+//                   + opening_in_period(from, to): the openings dated inside
+//                     the period whose closing is not already reflected (an
+//                     imported ledger opens on the first day of the year)
 //   rowsMovements = movements(from, to)       the period, without
 //                                             regularization/closing/opening
 // Presentation rules:
@@ -55,6 +59,7 @@ import { D, ZERO, money, round2, sameCents, sumDec, type Dec } from "./money.js"
 import {
   WORK_CENTRE_KIND_LABELS_ES,
   addDays,
+  compareAccountBalanceRows,
   entityBadgeOf,
   entityLabelOf,
   isHotelCentre,
@@ -187,7 +192,10 @@ export const BALANCE_PREFIXES: Record<string, string> = {
   "181": "L_V",
   "499": "C_I", "529": "C_I",
   "50": "C_II", "51": "C_II", "52": "C_II", "55": "C_II", "560": "C_II", "561": "C_II",
-  "40": "C_IV", "41": "C_IV", "438": "C_IV", "465": "C_IV", "466": "C_IV", "475": "C_IV", "476": "C_IV", "477": "C_IV",
+  // 478 «Hacienda Pública, deudora por aplazamientos y otros conceptos» (plan de Sage, fuera del PGC 2007): la deuda
+  // aplazada con Hacienda, saldo acreedor en el piloto (213.575,15) → C.IV «otras deudas con las Administraciones
+  // Públicas», como 475/476/477; sin epígrafe caía en «sin clasificar» (corrector FIX-1, F1-CLASSIC-VS-ANNUAL-TOTALS).
+  "40": "C_IV", "41": "C_IV", "438": "C_IV", "465": "C_IV", "466": "C_IV", "475": "C_IV", "476": "C_IV", "477": "C_IV", "478": "C_IV",
   "485": "C_V", "568": "C_V"
 };
 
@@ -314,8 +322,9 @@ function accumulateBalance(input: Pick<BalanceInput, "rowsAt" | "rowsBefore" | "
     warnings.push(`Cuenta ${row.code} «${row.name}» sin epígrafe PGC: presentada en «sin clasificar» (${money(amount)})`);
   }
 
-  // 129: carried result of previous years = balance at from − 1 + its movements of the period (distribution),
-  // regularization excluded by the movements mode.
+  // 129: carried result of previous years = balance at from − 1 (plus the opening dated inside the period, if any:
+  // readLedgerSet merges it into rowsBefore) + its movements of the period (distribution), regularization excluded
+  // by the movements mode.
   const carried129 = sumDec(input.rowsBefore.filter((r) => is129(r.code)).map(creditNatural)).plus(
     sumDec(input.rowsMovements.filter((r) => is129(r.code)).map(creditNatural))
   );
@@ -501,6 +510,7 @@ function rowOf(id: string, label: string, level: number, values: ColumnValues): 
 
 export function computeEcpn(input: BalanceInput): PgcEquityChanges {
   const warnings: string[] = [];
+  // Column «A. SALDO, INICIO»: rowsBefore already carries an opening dated inside the period (readLedgerSet).
   const opening = columnsFromRows(input.rowsBefore);
   opening.periodResult = plNet(input.rowsBefore); // prior unregularised P&L, 0 in a clean ledger
   const periodResult = plNet(input.rowsMovements);
@@ -821,13 +831,45 @@ export async function resolvePeriod(input: { organizationId: string; fiscalYearI
 
 type LedgerSet = { rowsAt: AccountBalanceRow[]; rowsBefore: AccountBalanceRow[]; rowsMovements: AccountBalanceRow[] };
 
+/**
+ * Sum of two plain balance reads by account code (debit and credit added;
+ * name, kind, isPostable and the USALI hints kept from the first row seen),
+ * sorted like the SQL reader. Used to fold the opening dated inside the
+ * period into the opening balances; rows partitioned by cost centre are not
+ * merged here (every annual-accounts read is plain).
+ */
+export function mergeBalanceRows(a: AccountBalanceRow[], b: AccountBalanceRow[]): AccountBalanceRow[] {
+  const byCode = new Map<string, AccountBalanceRow>();
+  for (const row of [...a, ...b]) {
+    const existing = byCode.get(row.code);
+    if (!existing) {
+      byCode.set(row.code, { ...row });
+      continue;
+    }
+    existing.debit = existing.debit.plus(row.debit);
+    existing.credit = existing.credit.plus(row.credit);
+  }
+  return Array.from(byCode.values()).sort(compareAccountBalanceRows);
+}
+
+/**
+ * The three ledger sets of a period. `rowsBefore` = balance_at(from − 1) plus
+ * the opening entries dated inside [from, to] whose closing is not in the
+ * read (source.ts, mode `opening_in_period`): an imported ledger starts with
+ * an opening dated the first day of the year, invisible to balance_at(from −
+ * 1) and excluded from movements, while the application of its 129 inside
+ * the year does count — without the merge the balance was off by that 129
+ * and the ECPN opened at zero. A year that opens with the mirror of a closing
+ * dated from − 1 is unchanged: that opening is not returned.
+ */
 async function readLedgerSet(source: FinancialStatementsSource, organizationId: string, propertyId: string | null, from: string, to: string): Promise<LedgerSet> {
-  const [rowsAt, rowsBefore, rowsMovements] = await Promise.all([
+  const [rowsAt, before, openingInPeriod, rowsMovements] = await Promise.all([
     source.accountBalances({ organizationId, propertyId, mode: "balance_at", to }),
     source.accountBalances({ organizationId, propertyId, mode: "balance_at", to: addDays(from, -1) }),
+    source.accountBalances({ organizationId, propertyId, mode: "opening_in_period", from, to }),
     source.accountBalances({ organizationId, propertyId, mode: "movements", from, to })
   ]);
-  return { rowsAt, rowsBefore, rowsMovements };
+  return { rowsAt, rowsBefore: mergeBalanceRows(before, openingInPeriod), rowsMovements };
 }
 
 /** The previous period of the same length ending the day before `from` (comparative column). */

@@ -110,6 +110,8 @@ export type GuestRegisterRecord = {
   id: string;
   propertyId: string;
   reservationId: string;
+  /** Código RES-… de la reserva (FIX-1 · F9): lo resuelve GET /properties/:id/guest-register-records; la tabla pinta `reservationCode ?? reservationId`. */
+  reservationCode?: string;
   guestId?: string;
   recordType: string;
   status: GuestRegisterStatus;

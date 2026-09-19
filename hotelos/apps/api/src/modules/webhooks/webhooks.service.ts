@@ -43,14 +43,35 @@ function generateSecret(): string {
   return SECRET_PREFIX + randomBytes(32).toString("base64url");
 }
 
+/**
+ * Corrector FIX-1 (SEC-02): the subscriptions an organisation may see — hung
+ * from one of its properties, from one of its developer apps or from the
+ * synthetic `app_<organizationId>` (no developer_apps row) that
+ * createSubscription writes. Without it, a list without `propertyId`
+ * returned every organisation's rows (targetUrl, eventTypes, masked secret).
+ */
+export async function organizationSubscriptionWhere(organizationId: string) {
+  const [properties, apps] = await Promise.all([
+    prisma.property.findMany({ where: { organizationId }, select: { id: true } }),
+    prisma.developerApp.findMany({ where: { organizationId }, select: { id: true } })
+  ]);
+  return {
+    OR: [
+      { propertyId: { in: properties.map((property) => property.id) } },
+      { developerAppId: { in: [...apps.map((app) => app.id), `app_${organizationId}`] } }
+    ]
+  };
+}
+
 export async function listSubscriptions(input: {
   context: UserContext;
   propertyId?: string;
 }) {
   requirePermissions(input.context, ["developer.manage_webhooks"]);
+  const organization = await organizationSubscriptionWhere(input.context.organizationId);
   const where = input.propertyId
-    ? { OR: [{ propertyId: input.propertyId }, { propertyId: null }] }
-    : {};
+    ? { AND: [organization, { OR: [{ propertyId: input.propertyId }, { propertyId: null }] }] }
+    : organization;
   const rows = await prisma.webhookSubscription.findMany({
     where,
     orderBy: { createdAt: "desc" }
@@ -90,11 +111,32 @@ export async function createSubscription(input: {
   if (invalid.length > 0) {
     throw new BadRequestError(`Unknown event types: ${invalid.join(", ")}`);
   }
+  // FIX-1 (F7): the row must hang from something lib/tenancy.ts can resolve.
+  // With a developer app in the body it must be one of THIS organisation
+  // (400 otherwise); without it, the subscription hangs from the property of
+  // the body or, failing that, the caller's active one, and keeps the
+  // synthetic `app_<organizationId>` (no developer_apps row) that the tenant
+  // guard resolves by suffix. Before, `propertyId` null + synthetic app
+  // answered 404 on PATCH/DELETE/deliveries/test to every row created from
+  // the screen.
+  const organizationId = input.context.organizationId;
+  let developerAppId = `app_${organizationId}`;
+  let propertyId: string | null = p.propertyId ?? null;
+  if (typeof p.developerAppId === "string" && p.developerAppId.length > 0) {
+    const app = await prisma.developerApp.findFirst({
+      where: { id: p.developerAppId, organizationId },
+      select: { id: true }
+    });
+    if (!app) throw new BadRequestError("La aplicación indicada no pertenece a esta organización.");
+    developerAppId = app.id;
+  } else {
+    propertyId = p.propertyId ?? input.context.propertyId ?? null;
+  }
   const secret = generateSecret();
   const row = await prisma.webhookSubscription.create({
     data: {
-      developerAppId: p.developerAppId ?? `app_${input.context.organizationId}`,
-      propertyId: p.propertyId ?? null,
+      developerAppId,
+      propertyId,
       eventTypes: p.eventTypes,
       targetUrl: p.targetUrl,
       secretRef: secret,

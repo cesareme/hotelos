@@ -77,9 +77,7 @@ En el Tablero de habitaciones de recepción el mismo vocabulario se muestra con 
    - En cada tarea de la lista: **«Empezar»** si está «pendiente» (pasa a «en curso») y **«Completar»** si está «en curso» (pasa a hecha y desaparece de la tarjeta).
 5. Las tareas se describen así: tipo («Salida (limpieza)», «Cliente alojado», «Inspección», «Limpieza a fondo»), prioridad con un punto de color («baja», «normal», «alta») y estado («pendiente», «asignada», «en curso», «hecha», «rechazada»).
 
-**Resultado esperado.** Tras cada botón ves un aviso verde abajo y la tarjeta se actualiza sin recargar la página. Los indicadores de arriba cambian a la vez (por ejemplo «SUCIAS» baja y «LIMPIAS» sube).
-
-> **Nota:** los avisos de las tareas dicen literalmente «Tarea empezar.» y «Tarea completar.»; es el texto actual, no un error tuyo.
+**Resultado esperado.** Tras cada botón ves un aviso verde abajo («Tarea empezada.», «Tarea completada.», «Habitación 204 marcada limpia.»…) y la tarjeta se actualiza sin recargar la página. Los indicadores de arriba cambian a la vez (por ejemplo «SUCIAS» baja y «LIMPIAS» sube).
 
 **Si algo falla.**
 - Si el aviso es rojo con «No se pudo completar la acción.», pulsa «Actualizar» y repite: lo normal es que otra persona haya cambiado la habitación antes que tú.
@@ -198,7 +196,7 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 3. «Salud operativa» (5 módulos): **HOUSEKEEPING** (limpias; «sucias n · insp. n · OOO n»), **MANTENIMIENTO** (activas; «abiertas · en curso · crítica»), **PERSONAL** (turnos), **SEGURIDAD** (incidentes) y **F&B / TPV HOY**. «OOO» es «fuera de servicio».
 4. «Detalle operativo», con pestañas **«Tareas HK (n)» · «Órdenes de trabajo (n)» · «Turnos (n)» · «Incidentes (n)»** y una tabla por pestaña.
 
-> **En construcción:** la tabla «Tareas de housekeeping de hoy» muestra hoy el identificador interno de la habitación en vez del número, el tipo de tarea en clave («departure_clean») y el estado en mayúsculas («IN_PROGRESS»). Para trabajar usa el tablero de pisos; esta pantalla sirve para el vistazo general.
+> La tabla «Tareas de housekeeping de hoy» muestra el número de habitación, el tipo de tarea («Limpieza de salida», «Repaso», «Inspección», «Cobertura», «Limpieza a fondo»), la prioridad («BAJA», «NORMAL», «ALTA») y el estado («PENDIENTE», «ASIGNADA», «EN CURSO», «HECHA»). Para trabajar usa el tablero de pisos; esta pantalla sirve para el vistazo general.
 
 ### Errores frecuentes (pisos)
 
@@ -216,7 +214,7 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 ### Qué no hace todavía (pisos)
 
 - **Cajones que no se abren.** Los formularios laterales de la aplicación («Nueva tarea», «Reportar incidencia», el detalle de una casilla del Tablero de habitaciones, entre otros) no se muestran hoy por un defecto de estilo (la regla del velo de la barra lateral móvil oculta también el velo de los cajones). Afecta a toda la aplicación, no solo a pisos. Las capturas de esta guía marcadas «forzada» muestran cómo son.
-- No hay asignación de tareas a una persona desde la pantalla: «Asignada a» sale «Sin asignar» y la tarjeta de ayuda que habla de asignar tareas a un miembro del equipo se refiere a algo que aún no existe.
+- No hay asignación de tareas de pisos a una persona desde la pantalla: «Asignada a» sale «Sin asignar» y la tarjeta de ayuda que habla de asignar tareas a un miembro del equipo se refiere a algo que aún no existe (en Mantenimiento sí: «Tomar» asigna la orden a quien la toma, tarea 10).
 - No hay filtro por planta en Mi turno (la ayuda in-app lo menciona, pero solo existe el filtro por prioridad); sí lo hay en el Tablero de habitaciones.
 - «Limpia» / «Inspeccionada» no cierran la tarea de limpieza (defecto conocido); hay que pulsar «Completar» en el tablero.
 - Marcar una habitación como sucia a mano, bloquearla sin orden de trabajo y desbloquearla solo existen dentro del cajón del Tablero de habitaciones (inaccesible hoy).
@@ -233,7 +231,7 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 - Plantilla **«Mantenimiento»** (técnico): órdenes de trabajo (crear, cambiar de estado, anotar y resolver), incidentes de seguridad, energía y sostenibilidad, pedidos de compra. **No puede bloquear habitaciones.**
 - Plantilla **«Encargado de mantenimiento»**: las mismas pantallas que «Mantenimiento» (el menú de 10 entradas que se describe a continuación) y, además, bloquear y liberar habitaciones desde la orden y los turnos del equipo. Los permisos de lectura adicionales de la plantilla (estado de pisos, recepciones de compra, facturas de proveedor) no abren hoy ninguna pantalla en su menú: el tablero de pisos y Proveedores y gastos no aparecen en él.
 
-Como en pisos, en la demo no hay usuarios con estas plantillas y las órdenes salen «Sin asignar».
+Como en pisos, en la demo no hay usuarios con estas plantillas; las órdenes nacen «Sin asignar» hasta que un técnico las toma desde Mis averías (tarea 10).
 
 ### Qué verás en tu menú
 
@@ -267,7 +265,7 @@ Con la plantilla «Mantenimiento» el menú tiene **3 categorías · 10 entradas
 1. Indicadores: **«EMERGENCIAS» · «ABIERTAS» · «EN CURSO» · «ESPERANDO PROVEEDOR» · «BLOQUEAN HABITACIÓN»** («EMERGENCIAS» y «BLOQUEAN HABITACIÓN» cuentan solo órdenes no resueltas; «EN CURSO» incluye las asignadas). Se refrescan cada 30 segundos; «Actualizar» lo hace al momento.
 2. Filtros con recuento: **«Activas · n» · «Todas · n» · «Abiertas · n» · «En curso · n» · «Esperando proveedor · n» · «Bloquean habitación · n» · «Resueltas · n»**. Por defecto ves «Activas».
 3. A la izquierda, la lista «Órdenes» («n órdenes»): cada fila lleva el título, la prioridad con un punto de color, el estado («ABIERTA», «EN CURSO»…) y la marca roja «BLOQUEA» si saca la habitación de la venta. Están ordenadas por prioridad (emergencias primero) y, a igual prioridad, las más nuevas arriba.
-4. A la derecha, «Elige una orden · La ficha aparece aquí: estado, habitación, descripción y acciones.». Pulsa una fila para abrir su **ficha**: «Estado», «Prioridad», «Habitación» («Hab. 204» o «—» si no tiene), «Bloquea habitación» («Sí (fuera de servicio)» / «No»), «Asignada a» («Sin asignar»), «Creada», «Resuelta» (si lo está) y «Descripción».
+4. A la derecha, «Elige una orden · La ficha aparece aquí: estado, habitación, descripción y acciones.». Pulsa una fila para abrir su **ficha**: «Estado», «Prioridad», «Habitación» («Hab. 204» o «—» si no tiene), «Bloquea habitación» («Sí (fuera de servicio)» / «No»), «Asignada a» («Sin asignar» o el nombre de quien la tomó desde Mis averías), «Creada», «Resuelta» (si lo está) y «Descripción».
 5. En la ficha de una orden activa tienes el desplegable **«Estado»** («Abierta», «Asignada», «En curso», «Esperando proveedor»; «El cambio se guarda al elegirlo.») y, al pie, los botones **«Bloquear habitación»** (solo si la orden tiene habitación y aún no la bloquea) y **«Resolver»**.
 
 **Resultado esperado.** Al cambiar el estado ves «Estado actualizado.» y la fila cambia de etiqueta al instante.
@@ -292,7 +290,7 @@ Flujo completo comprobado en la demo con la orden «Persiana del balcón atascad
 
 **Resultado esperado.** Aviso «Orden creada.»; la orden aparece en la lista como «ABIERTA» con su prioridad. Si activaste el interruptor, nace ya bloqueando la habitación (hace falta el permiso del punto 9c).
 
-**9b · Tomarla y cambiar el estado.** En el tablero, pulsa la orden y elige «En curso» en el desplegable «Estado» (aviso «Estado actualizado.»). Desde el móvil es el botón «Tomar» de Mis averías (tarea 10). Ninguna de las dos acciones te asigna la orden: «Asignada a» sigue «Sin asignar» (no hay asignación de técnico en la pantalla).
+**9b · Tomarla y cambiar el estado.** En el tablero, pulsa la orden y elige «En curso» en el desplegable «Estado» (aviso «Estado actualizado.»). Desde el móvil es el botón «Tomar» de Mis averías (tarea 10). El desplegable del tablero solo cambia el estado; «Tomar» además te asigna la orden: «Asignada a» pasa de «Sin asignar» a tu nombre (no hay selector de persona en la pantalla).
 
 **9c · Bloquear la habitación.** Con la orden abierta en la ficha, pulsa **«Bloquear habitación»**.
 
@@ -326,9 +324,9 @@ Flujo completo comprobado en la demo con la orden «Persiana del balcón atascad
 1. La primera vez cierra con la «×» la tarjeta de ayuda «Mis averías».
 2. Arriba a la derecha, el aviso rojo **«n HABITACIÓN BLOQUEADA»** (o «n HABITACIONES BLOQUEADAS») y «Actualizar». La lista se refresca sola cada 20 segundos.
 3. Filtros: **«Todo · n» · «Urgente · n» · «Alta · n» · «Normal · n» · «Baja · n»** (escala calculada; ver vocabulario).
-4. Cada tarjeta muestra el número de habitación y la planta (nada si la orden no tiene habitación, como «Revisión preventiva de la caldera»), la prioridad, el título, el estado («ABIERTA», «EN CURSO»…), la antigüedad («56 min», «1661 h 5 min»), «BLOQUEA LA HABITACIÓN», «SLA vencido» si tiene plazo pasado, «n fotos», el motivo («Marcada urgente», «En cola», «Habitación bloqueada por avería», «Mantenimiento preventivo planificado»), «<huésped> está en la habitación» si hay alguien alojado y la descripción. La tarjeta no muestra a quién está asignada la orden (ese dato solo está en la ficha del tablero, y hoy siempre dice «Sin asignar»).
+4. Cada tarjeta muestra el número de habitación y la planta (nada si la orden no tiene habitación, como «Revisión preventiva de la caldera»), la prioridad, el título, el estado («ABIERTA», «EN CURSO»…), la antigüedad («56 min», «1661 h 5 min»), «BLOQUEA LA HABITACIÓN», «SLA vencido» si tiene plazo pasado, «n fotos», el motivo («Marcada urgente», «En cola», «Habitación bloqueada por avería», «Mantenimiento preventivo planificado»), «<huésped> está en la habitación» si hay alguien alojado y la descripción. Si la orden está asignada, la tarjeta muestra «Asignada a <nombre>» (el mismo dato que «Asignada a» en la ficha del tablero).
 5. Botones:
-   - **«Tomar»**: pasa la orden a «En curso». Aviso «Avería a0sp4g → En curso» (las seis letras son el final del identificador de la orden). El botón se convierte en **«Resuelta»**.
+   - **«Tomar»**: pasa la orden a «En curso» y te la asigna. Aviso «Avería a0sp4g → En curso · asignada a ti» (las seis letras son el final del identificador de la orden); la tarjeta muestra «Asignada a <tu nombre>» y el botón se convierte en **«Resuelta»**.
    - **«Nota»**: abre el cajón «Añadir nota» («Se añade a la descripción de la avería con la fecha y la hora.»); escribe y pulsa «Guardar nota». Aviso «Nota guardada»; la descripción muestra la nota precedida de la fecha y la hora, por ejemplo «[19/09/2026, 09:33] Era la bombilla; sustituida por una LED de 4 W.».
    - **«Resuelta»**: resuelve la orden (y libera la habitación si la bloqueaba). Aviso «Avería a0sp4g → Resuelta»; la tarjeta desaparece de Mis averías.
 
@@ -379,7 +377,7 @@ Cuatro pantallas de consulta que te ayudan a planificar; ninguna cambia el estad
 ### Qué no hace todavía (mantenimiento)
 
 - **Cajones que no se abren**: «Nueva orden», «Añadir nota», la ficha de la orden en pantallas estrechas y, previsiblemente, «Registrar incidente» (mismo defecto de estilo que en pisos).
-- No hay asignación de técnico: «Tomar» y «En curso» no rellenan «Asignada a» y no existe un selector de persona.
+- No hay selector de técnico: «Tomar» asigna la orden a quien la toma (cambiar el estado a «En curso» desde el tablero no toca la asignación) y no se puede asignar a otra persona desde la pantalla.
 - No hay fotos ni adjuntos desde la pantalla (la tarjeta muestra «n fotos» si existen, pero no se pueden añadir aquí), ni plazos (SLA) editables: «SLA vencido» solo aparece si la orden tiene fecha límite cargada por otra vía.
 - Sin cierre formal: el estado «Cerrada» existe, pero desde la pantalla solo llegas hasta «Resuelta».
 - Activos, Energía y agua y Sostenibilidad son de solo lectura desde tu menú; el inmovilizado se da de alta en Finanzas. Energía sin contadores en la demo (0 kWh).

@@ -5,7 +5,7 @@
 ## Antes de empezar
 
 - El parte de cada huésped se crea **solo** con el check-in (ficha [01 · Entrada de huésped](01-entrada-de-huesped.md)); esta ficha sirve para revisarlo, reintentarlo o crear uno a mano.
-- Para un parte manual: el identificador de la reserva (el que aparece en la dirección del detalle, `/recepcion/reservas/<id>`, no el código «RES-…»), los datos del documento de identidad, la residencia y un contacto del viajero.
+- Para un parte manual: el identificador de la reserva (el que aparece en la dirección del detalle, `/recepcion/reservas/<id>`; la columna «RESERVA» de la tabla muestra el código «RES-…», que no sirve en el formulario), los datos del documento de identidad, la residencia y un contacto del viajero.
 - SES.Hospedajes en la demo está en **modo de pruebas** y el conector en «CONFIGURACIÓN PENDIENTE»: nada llega al Ministerio del Interior.
 
 ## Pasos
@@ -34,7 +34,7 @@
 |---|---|
 | «DATOS INCOMPLETOS» en todos los partes y «CONFIGURACIÓN PENDIENTE» en el conector | Faltan «Código de establecimiento*» y «Código de arrendador*» en la pestaña «SES.Hospedajes» (los rellena Cumplimiento con «Guardar configuración»); después «Reintentar envío». |
 | «FALLIDO (MÁX. INTENTOS)» con «SES_DISCARDED» en el historial | Son envíos descartados a propósito (residuos de pruebas antiguas): no los reintentes. |
-| No sabes qué poner en «Identificador de la reserva*» | Es el identificador interno de la reserva (el de la dirección `/recepcion/reservas/<id>` y el de la columna «RESERVA» de la tabla), no el código «RES-…». |
+| No sabes qué poner en «Identificador de la reserva*» | Es el identificador interno de la reserva (el de la dirección `/recepcion/reservas/<id>`), no el código «RES-…» que muestra la columna «RESERVA» de la tabla; la ayuda bajo el campo lo recuerda. |
 
 ## Más detalle
 

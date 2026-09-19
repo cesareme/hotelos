@@ -28,7 +28,11 @@ export const fiscalRoutePermissions: ApiRoutePermission[] = [
   { method: "PUT", path: "/fiscal/vat-settings", permissions: ["accounting.configure"], riskLevel: "high" },
   { method: "GET", path: "/fiscal/regime", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "GET", path: "/fiscal/vat-books", permissions: ["accounting.read"], riskLevel: "medium" },
+  // FIX-1 · F3 (E-04): periods with materialised book rows (groupBy, no amounts beyond row counts).
+  { method: "GET", path: "/fiscal/vat-books/periods", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "POST", path: "/fiscal/vat-books/rebuild", permissions: ["accounting.configure"], riskLevel: "high" },
+  // FIX-1 · F2: reclasificación de régimen de las filas sage200 (dry-run por defecto; apply escribe y audita).
+  { method: "POST", path: "/fiscal/vat-books/reclassify", permissions: ["accounting.configure"], riskLevel: "high" },
   { method: "GET", path: "/fiscal/models/:modelo", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "GET", path: "/fiscal/models/:modelo/pdf", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "GET", path: "/fiscal/vat-settlement", permissions: ["accounting.read"], riskLevel: "medium" },

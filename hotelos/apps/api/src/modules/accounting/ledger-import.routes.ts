@@ -1,5 +1,6 @@
 // Importación contable desde Sage 200 · Tanda 7c · L3 · superficie HTTP (diseño §7.1
-// con las correcciones de §10.4.1: prefijo `/accounting/ledger-imports*`, 15 rutas).
+// con las correcciones de §10.4.1: prefijo `/accounting/ledger-imports*`, 15 rutas; FIX-1 · F11
+// añade la 16.ª, `GET /accounting/ledger-imports/third-parties`).
 //
 // Registradas desde server.ts con `registerLedgerImportRoutes(app)` justo después de
 // registerPmsShadowRoutes(app). Permisos: ledger-import-route-permissions.partial.ts
@@ -10,7 +11,8 @@
 // HTTP, content XOR contentBase64, reason corto…).
 //
 // Orden de registro: las estáticas (`preview`, `template`, `account-map`,
-// `analytics-map`, `reconciliation`, `reconciliation/:id`, `reconciliation/:id/csv`)
+// `analytics-map`, `reconciliation`, `reconciliation/:id`, `reconciliation/:id/csv`,
+// `third-parties`)
 // antes que `/:id` (find-my-way prioriza las estáticas; el orden documenta la
 // intención). Tenencia: `:id` pasa por assertEntityAccess(ledgerImport |
 // ledgerReconciliation) → 404 opaco fuera de la organización (lib/tenancy.ts); el
@@ -27,8 +29,11 @@
 // servicios de modules/accounting/import/; aquí solo se valida la frontera y se enruta.
 
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
+import { LEDGER_THIRD_PARTY_LIST_DEFAULT_LIMIT, LEDGER_THIRD_PARTY_LIST_MAX_LIMIT, LEDGER_THIRD_PARTY_QUERY_MAX, LEDGER_THIRD_PARTY_ROLES } from "@hotelos/shared";
 import { BadRequestError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
+import { pageHeaders, parsePageQuery } from "../../lib/pagination.js";
 import { assertEntityAccess } from "../../lib/tenancy.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import {
@@ -58,6 +63,7 @@ import {
   reverseLedgerImport
 } from "./import/ledger-import.service.js";
 import { getReconciliation, listReconciliations, reconcileLedger, reconciliationCsv } from "./import/ledger-reconciliation.service.js";
+import { listLedgerThirdParties } from "./import/ledger-third-parties.service.js";
 
 type IdParams = { id: string };
 
@@ -68,6 +74,21 @@ function rejectCursor(raw: Record<string, unknown>): void {
 
 /** Cuerpos de hasta 30 MiB (28 MiB de base64 + JSON) y 30 subidas por minuto en las tres rutas de carga. */
 const UPLOAD_OPTIONS = { bodyLimit: 30 * 1024 * 1024, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } };
+
+/**
+ * FIX-1 · F11: consulta de `GET /accounting/ledger-imports/third-parties` (declarada aquí y no en
+ * schemas/ledger-import.schemas.ts para no tocar ese fichero): `q` ≤ LEDGER_THIRD_PARTY_QUERY_MAX,
+ * `role` del catálogo; `limit` y `cursor` los interpreta parsePageQuery (lib/pagination.ts: limit
+ * recortado a LEDGER_THIRD_PARTY_LIST_MAX_LIMIT sin error, cursor opaco → 400 si no es válido).
+ */
+const ThirdPartiesQuerySchema = z
+  .object({
+    q: z.string({ invalid_type_error: "q debe ser un texto." }).trim().max(LEDGER_THIRD_PARTY_QUERY_MAX, { message: `q no puede superar ${LEDGER_THIRD_PARTY_QUERY_MAX} caracteres.` }).optional(),
+    role: z.enum(LEDGER_THIRD_PARTY_ROLES).optional(),
+    limit: z.string().optional(),
+    cursor: z.string().optional()
+  })
+  .strict({ message: "Campo no admitido en la consulta." });
 
 /** Copia local de `sendCsv` de ledger.routes.ts (privada allí): adjunto CSV UTF-8 sin caché. */
 function sendCsv(reply: FastifyReply, filename: string, csv: string): string {
@@ -142,6 +163,17 @@ export function registerLedgerImportRoutes(app: FastifyInstance): void {
     await assertEntityAccess(request, { entity: "ledgerReconciliation", id });
     const file = await reconciliationCsv({ context: request.userContext, reconciliationId: id });
     return sendCsv(reply, file.fileName, file.content);
+  });
+
+  // ---- Terceros importados (FIX-1 · F11): directorio de solo lectura, antes que /:id ----
+  // Página keyset (rol, código Sage, id) con `total` y `nextCursor` en el cuerpo y las cabeceras X-Total-Count / X-Next-Cursor.
+  app.get("/accounting/ledger-imports/third-parties", async (request, reply) => {
+    const raw = (request.query ?? {}) as Record<string, unknown>;
+    const query = parseOr400(ThirdPartiesQuerySchema, raw, "query");
+    const page = parsePageQuery(raw, { limit: LEDGER_THIRD_PARTY_LIST_DEFAULT_LIMIT, max: LEDGER_THIRD_PARTY_LIST_MAX_LIMIT });
+    const result = await listLedgerThirdParties({ context: request.userContext, q: query.q, role: query.role, limit: page.limit, cursor: page.cursor });
+    for (const [name, value] of Object.entries(pageHeaders({ items: result.rows, nextCursor: result.nextCursor, total: result.total }))) reply.header(name, value);
+    return result;
   });
 
   // ---- Un lote: detalle, contabilizar un borrador y reverso entero ----------

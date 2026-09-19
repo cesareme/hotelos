@@ -12,7 +12,9 @@ import { describe, it } from "node:test";
 // `payroll.manage` through canDo(useNavGate(), …), the range / group pickers
 // as small inline selects, the expandable centres, the two bar charts, the
 // drawer's file input and switch, the destructive reversal dialog with a
-// mandatory reason, and the services surface behind them.
+// mandatory reason, and the services surface behind them. FIX-1 · F10 pins the
+// «Nueva ficha de personal» drawer, the ficha select of «Nuevo contrato» and
+// the retired 2FA promise of AssignmentDrawer (M6).
 
 const source = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 const count = (src: string, re: RegExp) => (src.match(re) ?? []).length;
@@ -177,6 +179,54 @@ describe("Nóminas · cajón «Importar informe» (PayrollCostImportDrawer.tsx)"
     assert.match(drawer, /Aplicado en la previsualización: /);
     assert.match(drawer, /<CocoaCallout tone="danger" title="No se pudo leer el fichero" role="alert">/);
     assert.match(drawer, /disabled=\{!canPreview\}/);
+  });
+});
+
+describe("Nóminas · cajón «Nueva ficha de personal» (FIX-1 · F10)", () => {
+  const usersDrawer = source("../../users/AssignmentDrawer.tsx");
+
+  it("adds «Nueva ficha» to the header actions and the palette, gated on payroll.manage, and keeps the frozen style budget (≤ 9, no new inline styles)", () => {
+    assert.match(screen, /const newProfileLabel = newLabel\("f", "ficha"\);/);
+    assert.match(screen, /<CocoaButton variant="bordered" tone="accent" size="small" onClick=\{openProfileDrawer\} disabled=\{!manage\}/);
+    assert.match(screen, /\{ id: "payroll-new-profile", label: `\$\{newProfileLabel\} de personal`, run: openProfileDrawer \}/);
+    assert.ok(count(screen, /\bstyle=\{/g) <= 9, "the drawer is born without inline styles");
+    assertCocoaRules("PayrollScreen.tsx", screen);
+  });
+
+  it("is a CocoaDrawer «Nueva ficha de personal» with Persona (listUsersInScope), código, departamento (property.configure), modalidad and coste hora", () => {
+    assert.match(screen, /<CocoaDrawer\s+open=\{profileOpen\}[\s\S]*?title="Nueva ficha de personal"/);
+    assert.match(screen, /import \{ listUsersInScope \} from "\.\.\/\.\.\/services\/rbacApi";/);
+    assert.match(screen, /listUsersInScope\(\{ scopeType: "property", ref: centre \}\)/);
+    assert.match(screen, /const configure = canDo\(useNavGate\(\), "property\.configure"\);/);
+    assert.match(screen, /configure \? listPropertyDepartments\(centre\) : Promise\.resolve\(\[\] as PropertyDepartmentRecord\[\]\)/);
+    for (const label of ["Persona", "Código de empleado", "Departamento", "Modalidad", "Coste hora \\(€\\)"]) assert.match(screen, new RegExp(`<CocoaField\\s+label="${label}"|<CocoaField label="${label}"`), `field ${label}`);
+    assert.match(screen, /<CocoaField label="Centro de trabajo" required fullWidth/);
+    assert.match(screen, /<CocoaSelect value=\{profileForm\.userId\} onChange=\{\(value\) => updateProfile\("userId", value\)\} options=\{peopleOptions\} placeholder="Elige a la persona"/);
+    assert.match(screen, /<CocoaSelect value=\{profileForm\.employmentType\} onChange=\{\(value\) => updateProfile\("employmentType", value\)\} options=\{employmentTypeOptions\} \/>/);
+    assert.match(screen, /<CocoaInput value=\{profileForm\.hourlyCost\} onChange=\{\(value\) => updateProfile\("hourlyCost", value\)\} type="number" inputMode="decimal" min=\{0\} step="0\.01"/);
+    assert.match(screen, /<CocoaInput value=\{profileForm\.employeeCode\} onChange=\{\(value\) => updateProfile\("employeeCode", value\)\} maxLength=\{32\}/);
+    assert.match(screen, /validateStaffProfileForm\(profileForm\)/);
+    assert.match(screen, /createStaffProfile\(toStaffProfileBody\(profileForm, profilePropertyId\)\)/);
+    assert.match(screen, /showToast\("Ficha creada\.", \{ variant: "success" \}\)/);
+    assert.match(screen, /profilesState\.refresh\(\);\s*\/\/ «Nuevo contrato» opens with the ficha just created already selected\.\s*setStaffProfileId\(created\.id\);/);
+    assert.match(screen, /<CocoaCallout tone="danger" title="No se pudo crear la ficha" role="alert">/);
+  });
+
+  it("«Nuevo contrato» picks the ficha from a CocoaSelect (label employeeCode ?? userFullName) and never asks for the id by hand; the tables paint the same label", () => {
+    assert.doesNotMatch(screen, /Identificador de la ficha/);
+    assert.match(screen, /<CocoaField label="Ficha de personal" required error=\{staffProfileId === "" \? undefined : contractErrors\.staffProfileId\}/);
+    assert.match(screen, /<CocoaSelect value=\{staffProfileId\} onChange=\{setStaffProfileId\} options=\{profileOptions\} placeholder="Elige una ficha de personal"/);
+    assert.match(screen, /useApiData<StaffProfileRecord\[\]>\("\/payroll\/staff-profiles", \{ query: \{ propertyId \} \}\)/);
+    assert.match(screen, /const profileLabels = useMemo\(\(\) => staffProfileLabelMap\(profiles\), \[profiles\]\);/);
+    assert.match(screen, /<strong>\{employeeLabel\(labels, c\.staffProfileId\)\}<\/strong>/);
+    assert.match(screen, /<strong>\{employeeLabel\(labels, s\.staffProfileId\)\}<\/strong>/);
+    assert.match(screen, /employeeLabel\(profileLabels, pendingDeactivate\.staffProfileId\)/);
+    assert.doesNotMatch(screen, /<strong>\{c\.staffProfileId\}<\/strong>|<strong>\{s\.staffProfileId\}<\/strong>/);
+  });
+
+  it("M6: the invitation drawer no longer promises a mandatory second factor (the login does not verify it)", () => {
+    assert.doesNotMatch(usersDrawer, /Obligatorio para supervisión/);
+    assert.match(usersDrawer, /help="Deja la marca “2FA: Activo” en la ficha para cuando se active la verificación del segundo factor; hoy el acceso no la exige\."/);
   });
 });
 

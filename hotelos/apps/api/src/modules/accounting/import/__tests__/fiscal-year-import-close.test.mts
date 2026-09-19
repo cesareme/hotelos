@@ -1,7 +1,8 @@
 // Unit tests · Tanda 7c · L2 — cierre importado del ejercicio (`fiscal-year.service.ts`):
 // `markFiscalYearClosedFromImport` con una transacción falsa (update del ejercicio y de sus
-// periodos abiertos con la nota «cerrado por importación <importId>»; rehúsa un ejercicio ya
-// cerrado; 404 si no existe) y pin de fuente: en `reopenFiscalYear` la comprobación
+// periodos abiertos con la nota «cerrado por importación <importId>» y closedBy = actor de la
+// importación o `import:<importId>` (FIX-1 · F4, A-04); rehúsa un ejercicio ya cerrado; 404 si
+// no existe) y pin de fuente: en `reopenFiscalYear` la comprobación
 // sage200_* (409 FISCAL_YEAR_CLOSED_FROM_IMPORT) precede a la búsqueda de closeEntries. El
 // 409 real se cubre en tests/integration/ledger-import.test.mts. Desde apps/api:
 //   node --import tsx --test src/modules/accounting/import/__tests__/fiscal-year-import-close.test.mts
@@ -41,7 +42,7 @@ const openYear: YearRow = { id: "fy_2024", organizationId: "org_li", propertyId:
 describe("markFiscalYearClosedFromImport (transacción falsa)", () => {
   it("deja el ejercicio closed con los asientos importados y cierra los periodos abiertos con la nota del lote, sin generar asientos", async () => {
     const tx = fakeTx(openYear, 12);
-    const result = await markFiscalYearClosedFromImport(tx, { fiscalYearId: "fy_2024", closingEntryId: "je_close", openingEntryId: "je_open", netResult: "60000.00", importId: "imp_bal" });
+    const result = await markFiscalYearClosedFromImport(tx, { fiscalYearId: "fy_2024", closingEntryId: "je_close", openingEntryId: "je_open", netResult: "60000.00", importId: "imp_bal", closedBy: "user_contabilidad" });
     assert.deepEqual(result, { fiscalYearId: "fy_2024", code: "2024", closedPeriods: 12 });
     assert.equal(tx.updates.length, 1);
     const data = tx.updates[0]!.data as Record<string, unknown>;
@@ -53,8 +54,18 @@ describe("markFiscalYearClosedFromImport (transacción falsa)", () => {
     assert.deepEqual(where.startDate, { gte: openYear.startDate });
     assert.deepEqual(where.endDate, { lte: openYear.endDate });
     const periodData = tx.periodUpdates[0]!.data as Record<string, unknown>;
-    assert.deepEqual({ status: periodData.status, closingNotes: periodData.closingNotes }, { status: "closed", closingNotes: "cerrado por importación imp_bal" });
+    assert.deepEqual({ status: periodData.status, closingNotes: periodData.closingNotes, closedBy: periodData.closedBy }, { status: "closed", closingNotes: "cerrado por importación imp_bal", closedBy: "user_contabilidad" });
+    assert.ok(periodData.closedAt instanceof Date);
     assert.equal(importClosingNote("imp_bal"), "cerrado por importación imp_bal");
+  });
+
+  it("FIX-1 · F4 (A-04): sin actor (closedBy ausente o null) los periodos quedan con closedBy `import:<importId>`", async () => {
+    const tx = fakeTx(openYear, 12);
+    await markFiscalYearClosedFromImport(tx, { fiscalYearId: "fy_2024", closingEntryId: "je_close", netResult: "0.00", importId: "imp_bal" });
+    assert.equal((tx.periodUpdates[0]!.data as Record<string, unknown>).closedBy, "import:imp_bal");
+    const explicitNull = fakeTx(openYear, 12);
+    await markFiscalYearClosedFromImport(explicitNull, { fiscalYearId: "fy_2024", closingEntryId: "je_close", netResult: "0.00", importId: "imp_cli", closedBy: null });
+    assert.equal((explicitNull.periodUpdates[0]!.data as Record<string, unknown>).closedBy, "import:imp_cli");
   });
 
   it("netResult numérico se guarda con dos decimales y openingEntryId ausente queda null", async () => {
@@ -118,5 +129,12 @@ describe("reopenFiscalYear · pin de fuente (design §10.4.2 #3)", () => {
     const markBody = source.slice(markStart, source.indexOf("/** Net result of a year", markStart));
     assert.doesNotMatch(markBody, /postJournalEntry|reverseJournalEntry/, "sin asientos propios");
     assert.match(markBody, /status: "closed", closedAt: new Date\(\), closingEntryId: input\.closingEntryId, openingEntryId: input\.openingEntryId \?\? null, netResult/);
+    assert.match(markBody, /closedBy: input\.closedBy \?\? `import:\$\{input\.importId\}`/, "FIX-1 · F4: closed_by del periodo = actor o import:<lote>");
+  });
+
+  it("FIX-1 · F4 (A-04): el lote pasa su actor (createdBy) como closedBy y el reverso deja closedBy null", () => {
+    const service = readFileSync(fileURLToPath(new URL("../ledger-import.service.ts", import.meta.url)), "utf8");
+    assert.match(service, /markFiscalYearClosedFromImport\(tx, \{[^}]*importId: importRow\.id, closedBy: input\.createdBy \?\? null \}\)/);
+    assert.match(service, /closingNotes: importClosingNote\(importRow\.id\) \}, data: \{ status: "open", closedAt: null, closedBy: null, closingNotes: null \}/);
   });
 });

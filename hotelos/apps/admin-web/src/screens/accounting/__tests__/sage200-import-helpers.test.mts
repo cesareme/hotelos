@@ -20,6 +20,10 @@ import {
   RECON_CLASSIFICATION_LABELS,
   RECON_STATUS_LABELS,
   SAGE200_SYSTEM_ACTOR_LABEL,
+  THIRD_PARTY_PAGE_LIMIT,
+  THIRD_PARTY_QUERY_MAX,
+  THIRD_PARTY_ROLE_FILTER_OPTIONS,
+  THIRD_PARTY_ROLE_LABELS,
   USALI_DEPARTMENT_LABELS,
   accountActionOptions,
   accountRowIssue,
@@ -49,6 +53,7 @@ import {
   importStatusTone,
   isImportView,
   isReversalReasonValid,
+  isThirdPartyRole,
   isUnassignedPolicy,
   isValidAccountCode,
   nativeSkippedLine,
@@ -78,6 +83,9 @@ import {
   stepTone,
   stepsForKind,
   suggestedAccountLabel,
+  thirdPartyEmptyMessage,
+  thirdPartyLotLabel,
+  thirdPartyRoleLabel,
   unassignedPolicyLabel,
   unassignedPolicyOptions,
   unbalancedLine,
@@ -295,13 +303,37 @@ describe("Sage 200 · vocabularios (espejo del contrato compartido)", () => {
     assert.match(IMPORT_STEPS[0]!.description, /XML «Datos contables» todavía no se admite/);
   });
 
-  it("the three views are Importar · Reconciliación · Lotes", () => {
+  it("the four views are Importar · Reconciliación · Lotes · Terceros (FIX-1 · F11)", () => {
     assert.deepEqual(
       IMPORT_VIEWS.map((view) => view.label),
-      ["Importar", "Reconciliación", "Lotes"]
+      ["Importar", "Reconciliación", "Lotes", "Terceros"]
     );
     assert.ok(isImportView("lotes"));
+    assert.ok(isImportView("terceros"));
     assert.ok(!isImportView("otro"));
+  });
+
+  it("the third-party directory vocabulary mirrors the shared contract (roles, query max) and labels the lot as «fichero · fecha»", () => {
+    assert.deepEqual(THIRD_PARTY_ROLE_LABELS, { customer: "Cliente", supplier: "Proveedor" });
+    assert.deepEqual(
+      THIRD_PARTY_ROLE_FILTER_OPTIONS.map((option) => [option.value, option.label]),
+      [
+        ["", "Todos"],
+        ["customer", "Clientes"],
+        ["supplier", "Proveedores"]
+      ]
+    );
+    assert.ok(isThirdPartyRole("supplier") && isThirdPartyRole("customer") && !isThirdPartyRole("") && !isThirdPartyRole("proveedor"));
+    assert.equal(thirdPartyRoleLabel("customer"), "Cliente");
+    assert.equal(THIRD_PARTY_QUERY_MAX, 80);
+    assert.match(shared, /LEDGER_THIRD_PARTY_QUERY_MAX = 80;/);
+    assert.ok(THIRD_PARTY_PAGE_LIMIT >= 1 && THIRD_PARTY_PAGE_LIMIT <= 200);
+    assert.match(shared, /LEDGER_THIRD_PARTY_LIST_MAX_LIMIT = 200;/);
+    assert.equal(thirdPartyLotLabel(null), "—");
+    assert.equal(thirdPartyLotLabel({ importId: "imp_1", fileName: "terceros-2026-09.xlsx", createdAt: "2026-09-18T10:30:00.000Z" }), "terceros-2026-09.xlsx · 18/09/2026");
+    assert.equal(thirdPartyLotLabel({ importId: "imp_2", fileName: null, createdAt: "2026-09-18T10:30:00.000Z" }), "imp_2 · 18/09/2026");
+    assert.equal(thirdPartyEmptyMessage(true), "Ningún tercero coincide con la búsqueda.");
+    assert.match(thirdPartyEmptyMessage(false), /^Todavía no hay terceros importados desde Sage 200/);
   });
 });
 

@@ -153,6 +153,15 @@ const VAT_SYNONYMS: HeaderSynonyms = Object.freeze({
   tipo_iva: ["tipo_iva", "por_iva", "porcentaje_iva", "tipo_impositivo"],
   cuota: ["cuota_iva_repercutida", "cuota_iva_soportada", "cuota_iva", "cuota", "cuota_repercutida", "cuota_soportada"],
   cuota_deducible: ["cuota_deducible"],
+  // FIX-1 · F2: cabeceras AEAT «Clave de Operación» / «Calificación de la Operación» (plegadas sin partículas:
+  // foldHeader quita «de» / «la»; la comparación es en forma compacta, sin «_»).
+  clave_operacion: ["clave_operacion", "clave_de_operacion", "clave_op", "claveoperacion"],
+  calificacion: ["calificacion_operacion", "calificacion_de_la_operacion", "calificacion", "calificacionoperacion"],
+  // FIX-1 (corrector): «Inversión del Sujeto Pasivo» (S/N) del libro AEAT de recibidas → inversion_sujeto_pasivo
+  // («del» es partícula: la cabecera real pliega a inversion_sujeto_pasivo). Alimenta regimeOfVatRow (isp, antes que la clave).
+  inversion_sujeto_pasivo: ["inversion_sujeto_pasivo", "inversion_del_sujeto_pasivo", "inv_sujeto_pasivo", "isp", "inversionsujetopasivo"],
+  // FIX-1 · F4: «Número Recepción» de recibidas (AEAT) → numero_recepcion (entra en el sourceId de la fila).
+  numero_recepcion: ["numero_recepcion", "numero_de_recepcion", "n_recepcion", "num_recepcion", "no_recepcion", "numero_recepcion_factura"],
   total: ["total_factura", "total", "importe_total", "total_operacion"],
   tipo_recargo: ["tipo_recargo_eq", "tipo_recargo_equivalencia", "tipo_recargo", "recargo_eq_tipo", "por_recargo_equivalencia"],
   cuota_recargo: ["cuota_recargo_eq", "cuota_recargo_equivalencia", "cuota_recargo", "recargo_eq_cuota", "recargo_equivalencia"],
@@ -195,7 +204,7 @@ const IME_KNOWN_UNUSED: readonly string[] = Object.freeze([
 ]);
 
 /** Columnas del libro AEAT que el lote conoce y no usa (no se avisan). */
-const AEAT_KNOWN_UNUSED = /^(actividad_|factura_rectificada_|cobro_|pago_|inmueble_|bien_inversion(_|$)|identificacion_factura_numero_final|identificacion_factura_expedidor_numero_final|numero_final|clave_operacion|calificacion_operacion|operacion_exenta|concepto_ingreso|concepto_gasto|ingreso_computable|gasto_deducible|registro_acuerdo_facturacion|referencia_externa|medio_utilizado|identificacion_medio_utilizado|fecha_recepcion|numero_recepcion|codigo$|tipo$|grupo(_o)?_epigrafe_iae|situacion_inmueble|referencia_catastral)/;
+const AEAT_KNOWN_UNUSED = /^(actividad_|factura_rectificada_|cobro_|pago_|inmueble_|bien_inversion(_|$)|identificacion_factura_numero_final|identificacion_factura_expedidor_numero_final|numero_final|operacion_exenta|concepto_ingreso|concepto_gasto|ingreso_computable|gasto_deducible|registro_acuerdo_facturacion|referencia_externa|medio_utilizado|identificacion_medio_utilizado|fecha_recepcion|codigo$|tipo$|grupo(_o)?_epigrafe_iae|situacion_inmueble|referencia_catastral)/;
 
 // ---------------------------------------------------------------------------
 // Detección de formato

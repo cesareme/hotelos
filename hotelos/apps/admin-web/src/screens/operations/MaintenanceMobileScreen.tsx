@@ -20,6 +20,7 @@ import { useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { getUser } from "../../services/auth-storage";
 import { toArray } from "../../utils/toArray";
 import { useToast } from "../../components/Toast";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
@@ -164,13 +165,19 @@ export function MaintenanceMobileScreen() {
 
   async function setStatus(item: Item, status: string) {
     setBusy(item.workOrderId);
+    // «Tomar» (in_progress) también asigna la orden a quien la toma (FIX-1 · F9):
+    // el PATCH lleva `assignedTo` con el nombre (o el correo) de la sesión, la
+    // tarjeta pinta «Asignada a …» y el tablero de escritorio «Asignada a».
+    const user = getUser();
+    const assignedTo = status === "in_progress" ? user?.fullName || user?.email || undefined : undefined;
     // Si status === resolved, usa el endpoint dedicado; si no, PATCH genérico.
     const result = status === "resolved"
       ? await mutate(`/work-orders/${item.workOrderId}/resolve`, "POST", { releaseRoom: item.blocksRoom })
-      : await mutate(`/work-orders/${item.workOrderId}`, "PATCH", { status });
+      : await mutate(`/work-orders/${item.workOrderId}`, "PATCH", assignedTo ? { status, assignedTo } : { status });
     setBusy(null);
     if (result.ok) {
-      showToast(`Avería ${item.workOrderId.slice(-6)} → ${STATUS_LABEL[status] ?? status}`, { variant: "success" });
+      const label = STATUS_LABEL[status] ?? status;
+      showToast(`Avería ${item.workOrderId.slice(-6)} → ${label}${assignedTo ? " · asignada a ti" : ""}`, { variant: "success" });
       refresh();
     } else {
       showToast(result.message || "No se pudo actualizar la avería", { variant: "error" });

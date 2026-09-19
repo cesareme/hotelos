@@ -166,6 +166,8 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "cancellation-policies": "la política de cancelación",
   "tour-operators": "el turoperador",
   contracts: "el contrato",
+  // FIX-1 · F10: fichas de personal «/payroll/staff-profiles».
+  "staff-profiles": "la ficha de personal",
   upsells: "la venta adicional",
   "upsell-offers": "la oferta de venta adicional",
   "service-requests": "la solicitud de servicio",
@@ -274,8 +276,12 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "cost-imports": "la importación de costes",
   // Sage 200 (Tanda 7c): lotes de importación contable «/accounting/ledger-imports*».
   "ledger-imports": "la importación contable",
+  // FIX-1 · F11: directorio de terceros «GET /accounting/ledger-imports/third-parties».
+  "third-parties": "el tercero",
   imports: "la importación",
   "gestoria-exports": "la exportación para la gestoría",
+  // FIX-1 · F5: «GET /reports/exports/:exportId/download» (Centro de informes sin almacenamiento de objetos).
+  exports: "la exportación",
   formats: "el formato",
   "vat-books": "el libro de IVA",
   models: "el modelo",
@@ -589,6 +595,7 @@ export const ACTION_LABELS: Record<string, string> = {
   import: "Importar",
   "import-csv": "Importar un fichero CSV.",
   reverse: "Revertir",
+  reclassify: "Reclasificar", // FIX-1 · F2: POST /fiscal/vat-books/reclassify
   revert: "Revertir",
   deactivate: "Desactivar",
   disable: "Desactivar",

@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 import { LEDGER_IMPORT_MAX_LINES_PER_ENTRY, LEDGER_IMPORT_SOURCE_TYPES, LEDGER_VAT_BOOK_SOURCE_TYPE, ledgerUnassignedPolicyForProperty, type LedgerAccountMapDto, type LedgerAnalyticsMapDto } from "@hotelos/shared";
 import { PGC_PYMES_HOTEL_TEMPLATE, isPostableCode, splitUsaliRef } from "../../chart-of-accounts.service.js";
 import { money, sumMoney } from "../../accounting.service.js";
-import { groupJournalRows, parseCanonicalCsv, type CanonicalBalanceRow, type CanonicalJournalRow } from "../ledger-import.canonical.js";
+import { groupJournalRows, parseCanonicalCsv, type CanonicalBalanceRow, type CanonicalJournalRow, type CanonicalVatRow } from "../ledger-import.canonical.js";
 import { nativeInvoiceKey, resolveAccountMapping, type ChartLookup } from "../ledger-import.mapping.js";
 import {
   NATIVE_PAYMENT_DATE_TOLERANCE_DAYS,
@@ -19,12 +19,14 @@ import {
   buildVatBookRows,
   checkOpeningContinuity,
   distributeSharedLines,
+  isForeignNif,
+  regimeOfVatRow,
   splitProportionally,
   type JournalPostingContext,
   type PlannedEntry
 } from "../ledger-import.posting.js";
 import { parseLedgerImportFile, parseSageVatBook } from "../sage200.parser.js";
-import { BALANCES_2025, JOURNAL_OPENING_AND_JANUARY, JOURNAL_YEAR_END, NIF_LAVANDERIA, NIF_SUMINISTROS, PROPERTIES, aeatVatBookXlsx, balancesCanonicalCsv, journalImeCsv, journalXlsxCargoAbono, openingRows2026 } from "./fixtures/sage200-fixtures.mjs";
+import { BALANCES_2025, JOURNAL_OPENING_AND_JANUARY, JOURNAL_YEAR_END, NIF_LAVANDERIA, NIF_SUMINISTROS, PROPERTIES, VAT_RECIBIDAS_2026_Q3, aeatVatBookXlsx, balancesCanonicalCsv, journalImeCsv, journalXlsxCargoAbono, openingRows2026 } from "./fixtures/sage200-fixtures.mjs";
 
 // ---------------------------------------------------------------------------
 // Contexto común
@@ -480,7 +482,7 @@ describe("buildBalanceEntries · §6", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildVatBookRows", () => {
-  it("filas VatBookRow con sourceType sage200, sourceId empresa:ejercicio:serie:factura[:NIF en recibidas][:R], periodo por periodicidad y NIF normalizado", () => {
+  it("filas VatBookRow con sourceType sage200, sourceId empresa:ejercicio:serie:factura[:NIF:recepción|fecha en recibidas][:R], periodo por periodicidad y NIF normalizado", () => {
     const vat = parseSageVatBook(aeatVatBookXlsx()).rows;
     const quarterly = buildVatBookRows(vat, { periodicity: "quarterly", organizationId: "org_test", propertyId: null });
     assert.deepEqual(quarterly.warnings, []);
@@ -488,8 +490,8 @@ describe("buildVatBookRows", () => {
       ["emitidas", "1:2026:FAC-2026:000010", "2026-Q3", "10", true],
       ["emitidas", "1:2026:FAC-2026:000011", "2026-Q3", "21", true],
       ["emitidas", "1:2026:REC-2026:000003:R", "2026-Q3", "10", true],
-      ["recibidas", `1:2026:F:778:${NIF_SUMINISTROS}`, "2026-Q3", "21", true],
-      ["recibidas", `1:2026:L:91:${NIF_LAVANDERIA}`, "2026-Q3", "21", true]
+      ["recibidas", `1:2026:F:778:${NIF_SUMINISTROS}:2026-09-03`, "2026-Q3", "21", true],
+      ["recibidas", `1:2026:L:91:${NIF_LAVANDERIA}:2026-09-05`, "2026-Q3", "21", true]
     ]);
     const first = quarterly.rows[0]!;
     assert.equal(first.sourceType, LEDGER_VAT_BOOK_SOURCE_TYPE);
@@ -505,7 +507,7 @@ describe("buildVatBookRows", () => {
     const duplicated = buildVatBookRows([vat[3]!, vat[3]!, { ...vat[4]!, cuota_deducible: "0.00" }], { periodicity: "quarterly", organizationId: "org_test", companyCode: "7" });
     assert.equal(duplicated.rows.length, 2);
     assert.equal(duplicated.rows[0]!.base.toFixed(2), "500.00");
-    assert.equal(duplicated.rows[0]!.sourceId, `7:2026:F:778:${NIF_SUMINISTROS}`);
+    assert.equal(duplicated.rows[0]!.sourceId, `7:2026:F:778:${NIF_SUMINISTROS}:2026-09-03`);
     assert.equal(duplicated.rows[1]!.deductible, false);
     assert.equal(duplicated.warnings.length, 1);
   });
@@ -572,7 +574,7 @@ describe("correcciones ronda 1 · libros de IVA (C1, C6)", () => {
     ];
     const built = buildVatBookRows(rows, { periodicity: "quarterly", organizationId: "org_test", companyCode: "1" });
     assert.deepEqual(built.warnings, []);
-    assert.deepEqual(built.rows.map((r) => [r.sourceId, r.counterpartyNif, r.base.toFixed(2)]), [["1:2026::1:A12345674", "A12345674", "100.00"], ["1:2026::1:A23456783", "A23456783", "100.00"]]);
+    assert.deepEqual(built.rows.map((r) => [r.sourceId, r.counterpartyNif, r.base.toFixed(2)]), [["1:2026::1:A12345674:2026-09-03", "A12345674", "100.00"], ["1:2026::1:A23456783:2026-09-03", "A23456783", "100.00"]]);
     // Emitidas: la serie + número propios ya son únicos; sin NIF en la clave.
     assert.equal(built.rows.every((r) => r.book === "recibidas"), true);
     assert.equal(buildVatBookRows([vat[0]!], { periodicity: "quarterly", organizationId: "org_test" }).rows[0]!.sourceId, "1:2026:FAC-2026:000010");
@@ -584,7 +586,7 @@ describe("correcciones ronda 1 · libros de IVA (C1, C6)", () => {
       supplierBillKeys: new Map([[`${NIF_SUMINISTROS}|:778`, { invoiceId: null, invoiceNumber: "778", sourceType: "supplier_bill", sourceId: "sb_1" }]])
     };
     const built = buildVatBookRows(vat, { periodicity: "quarterly", organizationId: "org_test", nativeIndex });
-    assert.deepEqual(built.rows.map((r) => r.sourceId), ["1:2026:FAC-2026:000011", "1:2026:REC-2026:000003:R", `1:2026:L:91:${NIF_LAVANDERIA}`]);
+    assert.deepEqual(built.rows.map((r) => r.sourceId), ["1:2026:FAC-2026:000011", "1:2026:REC-2026:000003:R", `1:2026:L:91:${NIF_LAVANDERIA}:2026-09-05`]);
     assert.deepEqual(built.skippedNative.map((r) => [r.sourceChannel, r.sourceEntryNumber, r.invoiceNumber, r.sourceType, r.sourceId, r.sourcePeriod]), [
       ["emitidas", "000010", "FAC-2026-000010", "invoice", "inv_10", "2026-Q3"],
       ["recibidas", "778", "778", "supplier_bill", "sb_1", "2026-Q3"]
@@ -717,5 +719,105 @@ describe("correcciones ronda 1 · apertura / cierre por estructura (C9) y cobros
     const both = buildJournalEntries(groupJournalRows(rows), context({ rows, nativeIndex: { invoiceKeys: new Map(), paymentAmounts: two } }));
     assert.deepEqual(both.skippedNative.map((item) => [item.sourceEntryNumber, item.sourceId]), [["1601", "pay_a"], ["1602", "pay_b"]]);
     assert.deepEqual(both.entries.map((entry) => entry.source!.entryNumber), ["1603"]);
+  });
+});
+
+describe("regimeOfVatRow · régimen al importar (FIX-1 · F2)", () => {
+  const vat = (over: Partial<Pick<CanonicalVatRow, "libro" | "nif" | "tipo_factura" | "clave_operacion" | "calificacion">>): Pick<CanonicalVatRow, "libro" | "nif" | "tipo_factura" | "clave_operacion" | "calificacion"> => ({ libro: "recibidas", nif: "B12345674", tipo_factura: "F1", clave_operacion: null, calificacion: null, ...over });
+
+  it("recibidas: F5 → importacion (antes que la clave), «Inversión del Sujeto Pasivo» S → isp (antes que la clave), clave 09 → aib, clave 01 → interior, sin datos → null", () => {
+    assert.equal(regimeOfVatRow(vat({ tipo_factura: "F5", clave_operacion: "09" })), "importacion");
+    assert.equal(regimeOfVatRow(vat({ tipo_factura: "f5", nif: null })), "importacion");
+    assert.equal(regimeOfVatRow(vat({ clave_operacion: "09", nif: "DE123456789" })), "aib");
+    assert.equal(regimeOfVatRow(vat({ clave_operacion: "01" })), "interior");
+    assert.equal(regimeOfVatRow(vat({})), null);
+    assert.equal(regimeOfVatRow(vat({ clave_operacion: "07" })), null, "otras claves no se interpretan");
+    // Corrector FIX-1 (F2-IMPORT-NO-ISP-RECIBIDAS): la columna AEAT «Inversión del Sujeto Pasivo» decide isp aunque la clave sea 01 (CH / CO de la carga real).
+    assert.equal(regimeOfVatRow({ ...vat({ clave_operacion: "01", nif: "CHE123456789" }), inversion_sujeto_pasivo: "S" }), "isp");
+    assert.equal(regimeOfVatRow({ ...vat({ clave_operacion: "09", nif: "DE123456789" }), inversion_sujeto_pasivo: "S" }), "isp", "la marca S manda sobre la clave 09");
+    assert.equal(regimeOfVatRow({ ...vat({ clave_operacion: "01" }), inversion_sujeto_pasivo: "N" }), "interior");
+    assert.equal(regimeOfVatRow({ ...vat({ tipo_factura: "F5" }), inversion_sujeto_pasivo: "S" }), "importacion", "el DUA sigue mandando");
+  });
+
+  it("emitidas: clave 09 → isp; clave 01 con calificación → interior; clave 01 sin calificación → interior solo con NIF; sin clave ni calificación → null SIEMPRE (F2-IMPORT-ISP-DEFAULT)", () => {
+    // Corrector FIX-1: una emitida sin NIF de un libro SIN columnas clave / calificación (F2 simplificada) ya no sale «isp».
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: null })), null, "sin clave ni calificación no se decide");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: null, tipo_factura: "F2" })), null, "venta simplificada sin NIF: sin clasificar");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: " ", clave_operacion: "" })), null, "NIF y clave en blanco cuentan como ausentes: sin clasificar");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: null, clave_operacion: "09" })), "isp", "clave 09 en emitidas: autofactura");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: null, calificacion: "S1" })), null, "una emitida calificada S1 sin NIF y sin clave es una venta a particular sin clave: sin clasificar");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: null, calificacion: "S1", clave_operacion: "01" })), "interior");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: "A23456783", clave_operacion: "01", calificacion: "S1" })), "interior");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: "A23456783", clave_operacion: "01" })), "interior", "clave 01 sin calificación pero con NIF: interior");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: null, clave_operacion: "01" })), null, "clave 01 sin calificación y sin NIF: forma de las autofacturas de Sage, la decide reclassify");
+    assert.equal(regimeOfVatRow(vat({ libro: "emitidas", nif: "A23456783" })), null);
+  });
+
+  it("buildVatBookRows asigna regime desde las columnas del libro; el libro AEAT del fixture (clave 01 / S1 en las dos hojas) da interior; sin clave queda null; isForeignNif", () => {
+    const fixture = parseSageVatBook(aeatVatBookXlsx()).rows;
+    assert.deepEqual(fixture.map((row) => [row.clave_operacion, row.calificacion]), Array.from({ length: 5 }, () => ["01", "S1"]), "«Clave de Operación» y «Calificación de la Operación» del formato AEAT se leen");
+    assert.deepEqual(buildVatBookRows(fixture, { periodicity: "quarterly", organizationId: "org_test" }).rows.map((row) => row.regime), ["interior", "interior", "interior", "interior", "interior"]);
+    const unclassified = fixture.map((row) => ({ ...row, clave_operacion: null, calificacion: null }));
+    assert.deepEqual(buildVatBookRows(unclassified, { periodicity: "quarterly", organizationId: "org_test" }).rows.map((row) => row.regime), [null, null, null, null, null]);
+    const classified = buildVatBookRows(
+      [
+        { ...fixture[0]!, clave_operacion: "01", calificacion: "S1" },
+        { ...fixture[1]!, nif: null, clave_operacion: null, calificacion: null },
+        { ...fixture[2]!, nif: null, clave_operacion: "09", calificacion: null },
+        { ...fixture[3]!, clave_operacion: "09" },
+        { ...fixture[4]!, tipo_factura: "F5" },
+        { ...fixture[4]!, numero: "779", clave_operacion: "01", inversion_sujeto_pasivo: "S" }
+      ],
+      { periodicity: "quarterly", organizationId: "org_test" }
+    );
+    // Corrector FIX-1: sin clave ni calificación la emitida sin NIF queda null (antes «isp»); la clave 09 sí es autofactura; la marca ISP S de recibidas → isp.
+    assert.deepEqual(classified.rows.map((row) => [row.book, row.regime]), [["emitidas", "interior"], ["emitidas", null], ["emitidas", "isp"], ["recibidas", "aib"], ["recibidas", "importacion"], ["recibidas", "isp"]]);
+    // El libro AEAT de recibidas con la columna «Inversión del Sujeto Pasivo» = S se lee y clasifica isp desde el fichero.
+    const withIsp = parseSageVatBook(aeatVatBookXlsx({ recibidas: [{ ...VAT_RECIBIDAS_2026_Q3[0]!, isp: true }, VAT_RECIBIDAS_2026_Q3[1]!] })).rows.filter((row) => row.libro === "recibidas");
+    assert.deepEqual(withIsp.map((row) => row.inversion_sujeto_pasivo), ["S", "N"]);
+    assert.deepEqual(buildVatBookRows(withIsp, { periodicity: "quarterly", organizationId: "org_test" }).rows.map((row) => row.regime), ["isp", "interior"]);
+    assert.deepEqual([isForeignNif("DE123456789"), isForeignNif("B12345674"), isForeignNif(null), isForeignNif("")], [true, false, false, false]);
+  });
+});
+
+describe("buildVatBookRows · sourceId de recibidas con recepción / fecha (FIX-1 · F4 · B-8) y tipo con decimales (B-7)", () => {
+  const vat = parseSageVatBook(aeatVatBookXlsx()).rows;
+  const template = vat.find((row) => row.libro === "recibidas")!;
+  const received = (over: Partial<CanonicalVatRow>): CanonicalVatRow => ({ ...template, serie: null, numero: "77", nif: "A12345674", nombre: "PROVEEDOR UNO SL", base: "100.00", tipo_iva: "21", cuota: "21.00", total: "121.00", numero_recepcion: null, ...over });
+
+  it("el mismo proveedor repite su número en dos fechas → dos sourceId distintos, sin fusión ni aviso, y el número de Sage queda íntegro en number", () => {
+    const built = buildVatBookRows([received({ fecha: "2026-09-03" }), received({ fecha: "2026-09-17" })], { periodicity: "quarterly", organizationId: "org_test", companyCode: "1" });
+    assert.deepEqual(built.warnings, []);
+    assert.deepEqual(built.rows.map((r) => [r.sourceId, r.number, r.date, r.base.toFixed(2)]), [["1:2026::77:A12345674:2026-09-03", "77", "2026-09-03", "100.00"], ["1:2026::77:A12345674:2026-09-17", "77", "2026-09-17", "100.00"]]);
+  });
+
+  it("misma fecha, mismo número y mismo tipo → se fusionan como hasta ahora (una fila, aviso de repetida)", () => {
+    const built = buildVatBookRows([received({ fecha: "2026-09-03" }), received({ fecha: "2026-09-03" })], { periodicity: "quarterly", organizationId: "org_test", companyCode: "1" });
+    assert.equal(built.rows.length, 1);
+    assert.deepEqual([built.rows[0]!.sourceId, built.rows[0]!.base.toFixed(2)], ["1:2026::77:A12345674:2026-09-03", "200.00"]);
+    assert.equal(built.warnings.length, 1);
+    assert.match(built.warnings[0]!, /repetida con el mismo tipo 21 %/);
+  });
+
+  it("con numero_recepcion el sourceId lo usa en vez de la fecha; la R de rectificativa sigue al final; emitidas no llevan recepción ni fecha", () => {
+    const built = buildVatBookRows([received({ fecha: "2026-09-03", numero_recepcion: "45" }), received({ fecha: "2026-09-03", numero_recepcion: "46", rectificativa: true })], { periodicity: "quarterly", organizationId: "org_test", companyCode: "1" });
+    assert.deepEqual(built.warnings, []);
+    assert.deepEqual(built.rows.map((r) => r.sourceId), ["1:2026::77:A12345674:45", "1:2026::77:A12345674:46:R"]);
+    const issued = buildVatBookRows([{ ...vat[0]!, numero_recepcion: "45" }], { periodicity: "quarterly", organizationId: "org_test" });
+    assert.equal(issued.rows[0]!.sourceId, "1:2026:FAC-2026:000010");
+  });
+
+  it("B-7 · tipo 7,5 % del libro → rate 7.50 (Decimal(5,2)); la clave de fusión distingue 7.5 de 21 en la misma factura", () => {
+    const built = buildVatBookRows([received({ fecha: "2026-09-03", tipo_iva: "7.5", cuota: "7.50", total: "107.50" }), received({ fecha: "2026-09-03" })], { periodicity: "quarterly", organizationId: "org_test", companyCode: "1" });
+    assert.deepEqual(built.warnings, []);
+    assert.deepEqual(built.rows.map((r) => [r.sourceId, r.rate.toFixed(2), r.quota.toFixed(2)]), [["1:2026::77:A12345674:2026-09-03", "7.50", "7.50"], ["1:2026::77:A12345674:2026-09-03", "21.00", "21.00"]]);
+  });
+
+  it("B-7 · diario: un apunte de 472 con tipo 7,5 conserva taxRateCode «7.5» (antes se redondeaba a «8»)", () => {
+    const rows = fixtureRows.map((r) => (r.asiento === "1501" && r.cuenta === "4720021" ? { ...r, tipo_iva: "7.5" } : r));
+    const built = buildJournalEntries(groupJournalRows(rows), context({ rows: fixtureRows, nativeIndex }));
+    const entry = built.entries.find((candidate) => candidate.sourceId === "1:2026:9:1501")!;
+    assert.ok(entry);
+    assert.deepEqual(entry.lines.map((line) => line.taxRateCode), [null, "7.5", null]);
   });
 });
