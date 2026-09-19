@@ -167,6 +167,12 @@ function formatLabel(spec) {
       if (spec.max !== undefined) bounds.push(`≤${spec.max}`);
       return bounds.length ? `entero ${bounds.join(" ")}` : "entero";
     }
+    case "decimal": {
+      const bounds = [];
+      if (spec.min !== undefined) bounds.push(`≥${spec.min}`);
+      if (spec.max !== undefined) bounds.push(`≤${spec.max}`);
+      return bounds.length ? `número con punto decimal ${bounds.join(" ")}` : "número con punto decimal";
+    }
     case "bool":
       return "true|false";
     case "url":

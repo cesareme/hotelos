@@ -14,6 +14,8 @@
       "@hotelos/compliance": ["packages/compliance/src/index.ts"],
       "@hotelos/database": ["packages/database/src/index.ts"],
       "@hotelos/ai-tools": ["packages/ai-tools/src/index.ts"],
+      "@hotelos/ai-core": ["packages/ai-core/src/index.ts"],
+      "@hotelos/ai-core/runner": ["packages/ai-core/src/runner/index.ts"],
       "@hotelos/integrations": ["packages/integrations/src/index.ts"],
       "@hotelos/onboarding": ["packages/onboarding/src/index.ts"],
       "@hotelos/product": ["packages/product/src/index.ts"],

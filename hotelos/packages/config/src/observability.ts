@@ -6,7 +6,6 @@ export const OBSERVABILITY_HEADERS = {
 
 export const SERVICE_NAMES = {
   api: "hotelos-api",
-  aiGateway: "hotelos-ai-gateway",
   worker: "hotelos-worker",
   mobile: "hotelos-mobile"
 } as const;

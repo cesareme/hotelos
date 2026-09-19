@@ -6,9 +6,34 @@
 // is enriched by the LLM only when a provider is configured; otherwise a
 // rules-based narrative is returned. Every response declares its `narrativeSource`
 // ("ai" | "rules") so the UI can label it truthfully.
-import { llmComplete, isLlmConfigured, llmProviderName } from "../../lib/llm.js";
-import { llmExtractJsonFromImage } from "../../lib/llm.js";
+//
+// Tanda L6a (lote 4): la llamada al modelo pasa por el tool runner (runAiTool →
+// ai-core): summarizeComplianceStatus para la narrativa y extractIncomingDocumentFields
+// para las fechas por OCR. El runner evalúa las puertas (aiEnabled, módulo, permisos,
+// matriz de riesgo, gate, presupuesto) y registra la telemetría; una denegación mantiene
+// la narrativa por reglas (`narrativeSource: "rules"`) con la misma forma de respuesta.
+// Ambas funciones aceptan el contexto del usuario como segundo argumento opcional
+// (server.ts:5782 y :5787 todavía llaman solo con propertyId / imageDataUrl; sin
+// contexto no hay runner y, por tanto, no se llama al modelo).
+import { parseDataUrl } from "@hotelos/ai-core";
+import type { JsonSchema } from "@hotelos/ai-core";
+import { getAiCore } from "../../lib/ai-client.js";
+import type { UserContext } from "../../lib/demo-store.js";
+import { ForbiddenError, TooManyRequestsError } from "../../lib/http-error.js";
+import { createId } from "../../lib/ids.js";
+import { isLlmConfigured, llmProviderName } from "../../lib/llm.js";
+import { runAiTool } from "../ai-operations/tool-runner.service.js";
+import { aiContextFor, apiToolContextFromRunner, fromAiResult } from "../ai-operations/tools/context.js";
+import type { NotConfiguredOutput } from "../ai-operations/tools/context.js";
 import { getComplianceCenter } from "./compliance-center.service.js";
+
+/** Contexto opcional para que la llamada al modelo pase por el tool runner. */
+export type ComplianceAiOptions = { context?: UserContext; correlationId?: string };
+
+function isRunnerDenial(error: unknown): boolean {
+  if (error instanceof TooManyRequestsError) return true;
+  return error instanceof ForbiddenError && typeof error.details === "object" && error.details !== null && (error.details as { code?: unknown }).code === "AI_BUDGET_EXCEEDED";
+}
 
 export type SuggestionKind = "MISSING_DOCUMENT" | "RENEW" | "CORRECT" | "REVIEW";
 export type SuggestionPriority = "HIGH" | "MEDIUM" | "LOW";
@@ -27,7 +52,10 @@ export type ComplianceSuggestion = {
 
 const PRIO_RANK: Record<SuggestionPriority, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
-export async function getComplianceAssistant(propertyId: string) {
+const NARRATIVE_SYSTEM =
+  "Eres un asesor de cumplimiento normativo de hoteles en España. Responde en español, en 3-4 frases, tono claro y accionable. No inventes obligaciones; usa solo los datos proporcionados.";
+
+export async function getComplianceAssistant(propertyId: string, options: ComplianceAiOptions = {}) {
   const center = await getComplianceCenter(propertyId);
   const suggestions: ComplianceSuggestion[] = [];
 
@@ -59,23 +87,43 @@ export async function getComplianceAssistant(propertyId: string) {
   const k = center.kpis;
   let narrative = rulesNarrative(k, top);
   let narrativeSource: "ai" | "rules" = "rules";
-  if (isLlmConfigured()) {
+  if (isLlmConfigured() && options.context) {
+    const context: UserContext = { ...options.context, propertyId };
+    const correlationId = options.correlationId ?? createId("corr");
     try {
-      const res = await llmComplete({
-        system: "Eres un asesor de cumplimiento normativo de hoteles en España. Responde en español, en 3-4 frases, tono claro y accionable. No inventes obligaciones; usa solo los datos proporcionados.",
-        prompt: buildPrompt(k, top),
-        maxTokens: 320,
-        temperature: 0.3
+      const result = await runAiTool<{ propertyId: string; suggestions: number }, { text: string } | NotConfiguredOutput>({
+        context,
+        toolName: "summarizeComplianceStatus",
+        input: { propertyId, suggestions: top.length },
+        correlationId,
+        execute: async (_value, ctx) => {
+          // temperature: ai-core la reenvía solo a los modelos con sampling (Haiku 4.5) y la descarta en Sonnet 5.
+          const aiResult = await getAiCore().complete(
+            { system: NARRATIVE_SYSTEM, prompt: buildPrompt(k, top), maxTokens: 320 },
+            aiContextFor(apiToolContextFromRunner(ctx, context), "summarizeComplianceStatus", "complete"),
+            { temperature: 0.3 }
+          );
+          return fromAiResult(aiResult, (value) => ({ text: value.text.trim() }));
+        }
       });
-      if (res.configured && res.text.trim()) { narrative = res.text.trim(); narrativeSource = "ai"; }
+      if (result.status === "executed" && result.configured && (result.output as { text: string }).text) {
+        narrative = (result.output as { text: string }).text;
+        narrativeSource = "ai";
+      } else if (result.status === "denied") {
+        console.warn("[compliance.assistant] runner denied the model call, rules fallback", { propertyId, reason: result.reason, correlationId });
+      }
     } catch (err) {
-      // Best-effort: keep the rules-based narrative (narrativeSource "rules")
-      // on any provider error, but log it so a dead LLM provider is visible.
+      // Presupuesto agotado / límite de peticiones (denegación tipada del runner) y cualquier otro
+      // fallo mantienen la narrativa por reglas (narrativeSource "rules"); el fallo se registra
+      // para que un proveedor caído sea visible. La fila de telemetría ya la escribió el runner.
       console.warn("[compliance.assistant] llm failed, rules fallback", {
         propertyId,
+        denied: isRunnerDenial(err),
         error: err instanceof Error ? err.message : String(err)
       });
     }
+  } else if (isLlmConfigured()) {
+    console.warn("[compliance.assistant] sin contexto de usuario: la narrativa se genera por reglas (pase { context } para usar el tool runner)", { propertyId });
   }
 
   const byPriority = top.reduce<Record<string, number>>((acc, s) => { acc[s.priority] = (acc[s.priority] ?? 0) + 1; return acc; }, {});
@@ -133,24 +181,86 @@ const DATE_OCR_INSTRUCTION =
   "issuingAuthority (organismo o empresa emisora), issueDate (fecha de emisión, formato YYYY-MM-DD), " +
   "expiryDate (fecha de caducidad o próxima revisión, formato YYYY-MM-DD). Omite las claves que no puedas leer con seguridad. No inventes datos.";
 
-export async function extractComplianceDocumentDates(imageDataUrl: string) {
-  const res = await llmExtractJsonFromImage(imageDataUrl, DATE_OCR_INSTRUCTION);
-  if (!res.configured) {
-    return { aiGenerated: false, provider: llmProviderName(), reason: res.reason, fields: {} as Record<string, string> };
+const DATE_FIELD_KEYS = ["documentType", "issuingAuthority", "issueDate", "expiryDate"] as const;
+
+/** Salida estructurada de las fechas (todas las claves presentes, nulas si no se leen). */
+const DATE_OCR_SCHEMA: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [...DATE_FIELD_KEYS],
+  properties: Object.fromEntries(DATE_FIELD_KEYS.map((key) => [key, { anyOf: [{ type: "string" }, { type: "null" }] }]))
+};
+
+export type ComplianceDocumentDates = {
+  aiGenerated: boolean;
+  provider: string;
+  model?: string;
+  reason?: string;
+  fields: Record<string, string | undefined>;
+};
+
+export async function extractComplianceDocumentDates(imageDataUrl: string, options: ComplianceAiOptions = {}): Promise<ComplianceDocumentDates> {
+  const core = getAiCore();
+  if (!core.isConfigured()) {
+    return { aiGenerated: false, provider: llmProviderName(), reason: core.config.reason ?? "not_configured", fields: {} };
   }
-  const pick = (key: string): string | undefined => {
-    const v = res.data[key];
-    return typeof v === "string" && v.trim() ? v.trim() : undefined;
-  };
-  return {
-    aiGenerated: true,
-    provider: res.provider,
-    model: res.model,
-    fields: {
-      documentType: pick("documentType"),
-      issuingAuthority: pick("issuingAuthority"),
-      issueDate: pick("issueDate"),
-      expiryDate: pick("expiryDate")
+  const image = parseDataUrl(imageDataUrl);
+  if (!image) {
+    // Misma respuesta que el envoltorio lib/llm.ts ante una imagen que no es una URL de datos.
+    return { aiGenerated: false, provider: llmProviderName(), reason: "invalid_image", fields: {} };
+  }
+  if (!options.context) {
+    console.warn("[compliance.assistant] sin contexto de usuario: el OCR de fechas no se ejecuta (pase { context } para usar el tool runner)");
+    return { aiGenerated: false, provider: llmProviderName(), reason: "context_required", fields: {} };
+  }
+  const context = options.context;
+  type DatesOutput = { data: Record<string, unknown>; model: string };
+  try {
+    const result = await runAiTool<{ hasImage: true }, DatesOutput | NotConfiguredOutput>({
+      context,
+      toolName: "extractIncomingDocumentFields",
+      input: { hasImage: true },
+      correlationId: options.correlationId ?? createId("corr"),
+      source: "image",
+      execute: async (_value, ctx) => {
+        const aiResult = await core.extractFromDocument<Record<string, unknown>>(
+          { pages: [{ mediaType: image.mediaType, base64: image.base64 }], schema: DATE_OCR_SCHEMA, instruction: DATE_OCR_INSTRUCTION, maxTokens: 400 },
+          aiContextFor(apiToolContextFromRunner(ctx, context), "extractIncomingDocumentFields", "extract"),
+          // CFC-08: visión sobre un documento → timeout de documentos (120 s), no el de texto (20 s).
+          { timeoutMs: core.config.documentTimeoutMs }
+        );
+        const wrapped = fromAiResult(aiResult, (value) => ({ data: value.data, model: value.model }));
+        if (!("output" in wrapped)) return wrapped;
+        // La imagen y los valores leídos no se persisten: solo las claves con dato.
+        return { ...wrapped, record: { fieldsRead: Object.keys(wrapped.output.data).filter((key) => typeof wrapped.output.data[key] === "string"), pages: 1 } };
+      }
+    });
+    if (result.status === "executed" && result.configured) {
+      const output = result.output as DatesOutput;
+      const pick = (key: string): string | undefined => {
+        const v = output.data[key];
+        return typeof v === "string" && v.trim() ? v.trim() : undefined;
+      };
+      return {
+        aiGenerated: true,
+        provider: llmProviderName(),
+        model: output.model,
+        fields: {
+          documentType: pick("documentType"),
+          issuingAuthority: pick("issuingAuthority"),
+          issueDate: pick("issueDate"),
+          expiryDate: pick("expiryDate")
+        }
+      };
     }
-  };
+    if (result.status === "executed") {
+      return { aiGenerated: false, provider: llmProviderName(), reason: (result.output as NotConfiguredOutput | undefined)?.reason ?? "not_configured", fields: {} };
+    }
+    return { aiGenerated: false, provider: llmProviderName(), reason: result.status === "denied" ? result.reason : "awaiting_confirmation", fields: {} };
+  } catch (error) {
+    if (isRunnerDenial(error)) {
+      return { aiGenerated: false, provider: llmProviderName(), reason: error instanceof TooManyRequestsError ? "rate_limited" : "budget_exceeded", fields: {} };
+    }
+    throw error;
+  }
 }

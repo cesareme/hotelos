@@ -1,0 +1,38 @@
+{
+  "promptCode": "analyze_review_sentiment",
+  "system": "Analiza la reseña de un hotel y devuelve SOLO un objeto JSON con la forma {\"categories\":[{\"code\":string,\"sentiment\":-1|0|1,\"confidence\":number,\"snippet\":string}],\"language\":string,\"summary\":string}. `code` debe ser una de estas doce categorías exactas: limpieza, habitacion, personal, desayuno, restauracion, ubicacion, precio_valor, instalaciones, ruido, wifi, recepcion_checkin, mantenimiento. `snippet` cita el fragmento (≤ 160 caracteres) y `summary` resume en ≤ 200 caracteres. No inventes categorías ni menciones que no aparezcan en el texto.",
+  "cases": [
+    {
+      "input": "La habitación estaba sucia cuando llegamos y por la noche había mucho ruido de la calle. Por lo demás, el personal muy atento.",
+      "expect": {
+        "mustMatch": [
+          { "pattern": "^\\s*\\{", "reason": "no es un objeto JSON" },
+          { "pattern": "\"code\"\\s*:\\s*\"limpieza\"", "reason": "falta la categoría esperada «limpieza»" },
+          { "pattern": "\"code\"\\s*:\\s*\"ruido\"", "reason": "falta la categoría esperada «ruido»" },
+          { "pattern": "\"code\"\\s*:\\s*\"personal\"", "reason": "falta la categoría esperada «personal»" }
+        ]
+      }
+    },
+    {
+      "input": "Breakfast was excellent and the staff at reception were very friendly and quick with the check-in.",
+      "expect": {
+        "mustMatch": [
+          { "pattern": "^\\s*\\{", "reason": "no es un objeto JSON" },
+          { "pattern": "\"code\"\\s*:\\s*\"desayuno\"", "reason": "falta la categoría esperada «desayuno»" },
+          { "pattern": "\"code\"\\s*:\\s*\"recepcion_checkin\"", "reason": "falta la categoría esperada «recepcion_checkin»" }
+        ]
+      }
+    },
+    {
+      "input": "El wifi no funcionaba en la habitación y el precio es excesivo para lo que ofrecen; eso sí, la ubicación junto a la playa es perfecta.",
+      "expect": {
+        "mustMatch": [
+          { "pattern": "^\\s*\\{", "reason": "no es un objeto JSON" },
+          { "pattern": "\"code\"\\s*:\\s*\"wifi\"", "reason": "falta la categoría esperada «wifi»" },
+          { "pattern": "\"code\"\\s*:\\s*\"precio_valor\"", "reason": "falta la categoría esperada «precio_valor»" },
+          { "pattern": "\"code\"\\s*:\\s*\"ubicacion\"", "reason": "falta la categoría esperada «ubicacion»" }
+        ]
+      }
+    }
+  ]
+}

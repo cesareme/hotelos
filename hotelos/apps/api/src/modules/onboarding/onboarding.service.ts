@@ -32,8 +32,8 @@ import {
   type OnboardingDataQualityInput
 } from "@hotelos/onboarding";
 import type { ExtractedEntity, MappingSuggestion } from "@hotelos/ai-tools";
-import { classifyDocumentDualMode, extractEntitiesDualMode } from "./ai-engine/extraction-engine.js";
-import { generateMappingsDualMode } from "./ai-engine/mapping-engine.js";
+import { classifyDocument, extractEntities } from "./ai-engine/extraction-engine.js";
+import { generateMappings, summariseMappings } from "./ai-engine/mapping-engine.js";
 
 // Cap how much raw uploaded text we retain on the file metadata so a parsed
 // file always has something to extract from without unbounded memory growth.
@@ -638,7 +638,7 @@ export async function classifyOnboardingFileApi(input: { context: UserContext; f
   const file = demoFiles.find((candidate) => candidate.id === input.fileId);
   if (!file) throw new Error(`Onboarding file not found: ${input.fileId}`);
   const content = typeof file.metadataJson.content === "string" ? file.metadataJson.content : "";
-  const classification = await classifyDocumentDualMode({
+  const classification = classifyDocument({
     fileName: file.fileName,
     fileType: file.fileType,
     content
@@ -664,7 +664,7 @@ export async function extractOnboardingFileApi(input: { context: UserContext; fi
   // Real extraction: parse the stored raw content into typed entities and
   // persist them (replacing any prior extraction for this file).
   const content = typeof file.metadataJson.content === "string" ? file.metadataJson.content : "";
-  const extraction = await extractEntitiesDualMode({
+  const extraction = extractEntities({
     fileName: file.fileName,
     fileType: file.fileType,
     content,
@@ -784,7 +784,8 @@ export async function analyzeOnboardingProject(input: { context: UserContext; pr
     const projectEntities: ExtractedEntity[] = engineExtractedEntities
       .filter((entity) => entity.onboardingProjectId === project.id)
       .map(({ onboardingProjectId: _projectId, onboardingFileId: _fileId, ...entity }) => entity);
-    const { suggestions, summary } = await generateMappingsDualMode({ entities: projectEntities, target: "auto" });
+    const suggestions = generateMappings({ entities: projectEntities, target: "auto" });
+    const summary = summariseMappings(suggestions);
 
     // Replace prior engine suggestions for this project.
     for (let i = engineMappingSuggestions.length - 1; i >= 0; i -= 1) {

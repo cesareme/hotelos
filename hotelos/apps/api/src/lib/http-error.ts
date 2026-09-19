@@ -31,8 +31,9 @@ export class UnauthorizedError extends HttpError {
 }
 
 export class ForbiddenError extends HttpError {
-  constructor(message = "Forbidden") {
-    super(403, message);
+  /** Tanda L6a: `details` opcional (p. ej. { code: "AI_BUDGET_EXCEEDED", propertyId, budgetEur, spentEur }). */
+  constructor(message = "Forbidden", details?: unknown) {
+    super(403, message, true, details);
   }
 }
 
@@ -72,6 +73,20 @@ export class RbacForbiddenError extends HttpError {
 export class ApprovalRequiredError extends HttpError {
   constructor(message: string, details: { kind: ApprovalKind; tier: ThresholdTier; requestId?: string }) {
     super(409, message, true, { code: "APPROVAL_REQUIRED", kind: details.kind, tier: details.tier, ...(details.requestId ? { requestId: details.requestId } : {}) });
+  }
+}
+
+/**
+ * Tanda L6a (lote 3): the AI rate limiter of @hotelos/ai-core (token bucket
+ * per organization) refused the call — 429 with `details.code = "AI_RATE_LIMITED"`
+ * and, when known, the seconds to wait before retrying. `statusCodeForError`
+ * already propagates `statusCode`, so the global handler needs no change; the
+ * route that maps it may also set the Retry-After header from
+ * `details.retryAfterSeconds`.
+ */
+export class TooManyRequestsError extends HttpError {
+  constructor(message = "Demasiadas peticiones", details?: { retryAfterSeconds?: number; code?: string }) {
+    super(429, message, true, { code: "AI_RATE_LIMITED", ...details });
   }
 }
 

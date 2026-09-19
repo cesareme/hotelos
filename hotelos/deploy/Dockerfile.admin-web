@@ -27,7 +27,7 @@ RUN test -n "$VITE_API_URL" || { echo "VITE_API_URL build-arg is required (e.g. 
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY apps/admin-web/package.json ./apps/admin-web/
-COPY apps/ai-gateway/package.json ./apps/ai-gateway/
+COPY packages/ai-core/package.json ./packages/ai-core/
 COPY apps/api/package.json ./apps/api/
 COPY apps/guest-web/package.json ./apps/guest-web/
 COPY apps/mobile/package.json ./apps/mobile/

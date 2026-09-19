@@ -1,16 +1,22 @@
-import type { CheckInFromScanRequest, CheckInFromScanResponse } from "@hotelos/shared";
-import { buildCheckInConfirmationCard } from "@hotelos/ai-tools";
+import type { CheckInFromScanRequest, CheckInFromScanResponse, PermissionKey } from "@hotelos/shared";
+import { AI_ERROR_CODES, labelFor } from "@hotelos/ai-core";
+import type { AiErrorCode } from "@hotelos/ai-core";
+import { evaluateToolGates } from "@hotelos/ai-core/runner";
+import type { RunnerContext, ToolGateDecision } from "@hotelos/ai-core/runner";
+import { buildCheckInConfirmationCard, TOOL_DEFINITIONS } from "@hotelos/ai-tools";
 import { enforceSpanishIdScanPolicy } from "@hotelos/compliance";
 import { prisma, type Prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { recordToolCall } from "../ai-operations/pipeline.service.js";
+import { buildRunnerPorts } from "../ai-operations/tool-runner.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { checkGuestRegisterCompleteness, markGuestRegisterSigned, prepareGuestRegisterRecord, queueSesHospedajesSubmission } from "../compliance/compliance.service.js";
 import { canAssignRoom } from "../pms/inventory.engine.js";
 import { checkInReservation, matchGuestToReservation } from "../pms/pms.service.js";
 import { sendWelcomeMessage } from "../messaging/messaging.service.js";
+import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
 
 // Tanda L2 (L2-04): la confirmación HITL del check-in por escaneo vive en
 // `ai_pending_confirmations` (AiPendingConfirmation, L2-01) con caducidad de
@@ -18,12 +24,63 @@ import { sendWelcomeMessage } from "../messaging/messaging.service.js";
 // recordToolCall (pipeline.service, vocabulario real: pending|completed|
 // rejected). La ejecución busca la confirmación por id + organización +
 // estado `pending` (404 opaco en cualquier otro caso) y cierra las dos filas.
+//
+// Tanda L6a (lote 4): antes de crear la confirmación se evalúan las puertas del
+// tool runner (evaluateToolGates de @hotelos/ai-core/runner: aiEnabled de la
+// propiedad, ajuste por herramienta, matriz de riesgo con los hechos del escaneo,
+// gate de gobernanza y presupuesto). Una denegación responde `rejected` con la
+// etiqueta en español, deja una fila `rejected` en ai_tool_calls y un evento de
+// auditoría AI_TOOL_DENIED (actorType "ai"). El vocabulario pending → completed y
+// el enlace outputJson.confirmationId se conservan tal cual (tests L2).
 
 const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
 const CHECK_IN_TOOL_NAME = "checkInReservation";
+const CHECK_IN_CONFIDENCE = 0.92;
+/** Campos del parte de viajeros que ningún documento de identidad aporta (se piden en recepción). */
+const CONTACT_FIELDS: ReadonlySet<string> = new Set(["phone", "email"]);
+
+/**
+ * El comando llega por POST /ai/commands/check-in-from-scan, que el manifiesto
+ * (route-permissions.ts:935-940) no condiciona al módulo `ai_front_desk` de la definición
+ * (registry.ts:65) y que tests/integration/l2-persistencia-plataforma.test.mts:217-244
+ * ejercita sobre un hotel recién creado, sin ese módulo (no está en
+ * DEFAULT_ENABLED_MODULE_CODES). Mientras César no decida condicionar la ruta al módulo,
+ * la puerta de módulo del runner se sustituye aquí por la comprobación de los permisos de la
+ * definición; el resto de puertas se aplican íntegras. Poner a `true` exige activar
+ * `ai_front_desk` en la propiedad (enableModules) antes de llamar al comando.
+ */
+export const CHECK_IN_REQUIRES_FRONT_DESK_MODULE = false;
 
 function asJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value ?? {})) as Prisma.InputJsonValue;
+}
+
+function checkInRunnerContext(user: UserContext, propertyId: string, correlationId: string): RunnerContext {
+  return {
+    organizationId: user.organizationId,
+    propertyId,
+    userId: user.userId,
+    permissions: [...user.permissions],
+    enabledModules: getEnabledModuleCodes(propertyId),
+    correlationId,
+    source: "image",
+    locale: "es-ES",
+    ...(user.deviceId ? { deviceId: user.deviceId } : {})
+  };
+}
+
+/** Solo permisos de la definición (ver CHECK_IN_REQUIRES_FRONT_DESK_MODULE). */
+function permissionsOnlyGate(input: { toolName: string; userPermissions: PermissionKey[] }): { allowed: true } | { allowed: false; reason: string } {
+  const definition = TOOL_DEFINITIONS.find((candidate) => candidate.name === input.toolName);
+  const missing = (definition?.requiredPermissions ?? []).filter((permission) => !input.userPermissions.includes(permission));
+  return missing.length === 0 ? { allowed: true } : { allowed: false, reason: `Missing permissions: ${missing.join(", ")}.` };
+}
+
+/** Etiqueta en español de una denegación de las puertas del runner. */
+export function checkInDenialMessage(decision: Extract<ToolGateDecision, { mode: "deny" }>): string {
+  if ((AI_ERROR_CODES as readonly string[]).includes(decision.reason)) return `${labelFor(decision.reason as AiErrorCode)}.`;
+  if (decision.reason === "safety") return `La política de seguridad de IA bloquea el check-in: ${decision.message}`;
+  return decision.message;
 }
 
 export async function createCheckInFromScanConfirmation(input: {
@@ -72,6 +129,50 @@ export async function createCheckInFromScanConfirmation(input: {
   }
 
   const completeness = checkGuestRegisterCompleteness(input.request.documentExtractedFields);
+
+  // Puertas del tool runner ANTES de escribir nada (parte de viajeros incluido):
+  // una denegación no deja efectos en el dominio, solo la fila rejected y su auditoría.
+  // Hecho de seguridad: los campos del parte que faltan y que un documento de identidad
+  // SÍ aporta (nombre, documento, nacionalidad, nacimiento); los de contacto (phone en
+  // REQUIRED_GUEST_REGISTER_FIELDS) se recogen en recepción antes del envío a SES y no
+  // bloquean el check-in (tests/integration/l2-persistencia-plataforma.test.mts:226-235).
+  const decision = await evaluateToolGates({
+    toolName: CHECK_IN_TOOL_NAME,
+    ctx: checkInRunnerContext(input.context, input.request.propertyId, input.correlationId),
+    facts: { storesIdImage: input.request.documentImageStored !== false, guestRegisterMissingFields: completeness.missingFields.filter((field) => !CONTACT_FIELDS.has(field)) },
+    confidence: CHECK_IN_CONFIDENCE,
+    ports: buildRunnerPorts(CHECK_IN_REQUIRES_FRONT_DESK_MODULE ? {} : { canExecuteToolForModules: permissionsOnlyGate }, { user: input.context, correlationId: input.correlationId })
+  });
+  if (decision.mode === "deny") {
+    const message = checkInDenialMessage(decision);
+    const denied = await recordToolCall({
+      organizationId: input.context.organizationId,
+      propertyId: input.request.propertyId,
+      userId: input.context.userId,
+      toolName: CHECK_IN_TOOL_NAME,
+      inputJson: asJson({ propertyId: input.request.propertyId, roomNumber: input.request.roomNumber, reservationId: reservation.id, extractedFields: Object.keys(input.request.documentExtractedFields) }),
+      outputJson: asJson({ denied: { reason: decision.reason, message, riskLevel: decision.riskLevel, ...(decision.details ? { details: decision.details } : {}) } }),
+      confidence: CHECK_IN_CONFIDENCE,
+      requiredConfirmation: true,
+      status: "rejected",
+      errorMessage: decision.reason,
+      ...(decision.automationLevel ? { automationLevel: decision.automationLevel } : {})
+    });
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: input.request.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "ai",
+      action: "AI_TOOL_DENIED",
+      entityType: "ai_tool_call",
+      entityId: denied.id,
+      afterJson: { toolName: CHECK_IN_TOOL_NAME, reason: decision.reason, message, riskLevel: decision.riskLevel, reservationId: reservation.id },
+      deviceId: input.context.deviceId,
+      correlationId: input.correlationId
+    });
+    return { status: "rejected", errors: [message] };
+  }
+
   const guestRegisterRecord = await prepareGuestRegisterRecord({
     context: input.context,
     propertyId: input.request.propertyId,
@@ -243,6 +344,29 @@ export async function executeConfirmation(input: {
           }
         })
       }
+    });
+    // Tanda L6a (lote 4): la ejecución de la herramienta queda auditada como acto de la IA
+    // confirmado por la persona (mismo vocabulario que el tool runner).
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: confirmation.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "ai",
+      action: "AI_TOOL_EXECUTED",
+      entityType: "ai_tool_call",
+      entityId: toolCall.id,
+      afterJson: {
+        toolName: CHECK_IN_TOOL_NAME,
+        status: "completed",
+        confirmedBy: input.context.userId,
+        confirmationId: confirmation.id,
+        reservationId: reservation.id,
+        roomId,
+        queuedSubmissionId: submission?.id ?? null,
+        executedAt: executedAt.toISOString()
+      },
+      deviceId: input.context.deviceId,
+      correlationId: input.correlationId
     });
   }
 

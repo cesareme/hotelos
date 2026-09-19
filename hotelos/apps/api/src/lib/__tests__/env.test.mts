@@ -14,6 +14,9 @@ import {
   resolveCorsOrigins,
   validateEnv
 } from "../env.js";
+// Lista viva de variables retiradas (JS sin tipos: el test no pasa por tsc).
+// @ts-expect-error módulo JS sin declaración de tipos
+import { RETIRED_KEYS } from "../../../../../scripts/validate-env.mjs";
 
 const VALID_KEY = Buffer.alloc(32, 9).toString("base64");
 const PROD_BASE: NodeJS.ProcessEnv = {
@@ -111,11 +114,11 @@ describe("validateEnv · production policy", () => {
   });
 
   it("flags blank values whose readers would keep the empty string (PORT= → port 0, interval 0)", () => {
-    const report = prod({ PORT: "", SES_SCHEDULER_INTERVAL_MS: "", AI_GATEWAY_URL: "", SENTRY_DSN: "", EMAIL_PROVIDER: "" });
+    const report = prod({ PORT: "", SES_SCHEDULER_INTERVAL_MS: "", GUEST_WEB_BASE_URL: "", SENTRY_DSN: "", EMAIL_PROVIDER: "" });
     const errors = joined(report.errors);
     assert.match(errors, /PORT está definida pero vacía/);
     assert.match(errors, /SES_SCHEDULER_INTERVAL_MS está definida pero vacía/);
-    assert.match(errors, /AI_GATEWAY_URL está definida pero vacía/);
+    assert.match(errors, /GUEST_WEB_BASE_URL está definida pero vacía/);
     assert.doesNotMatch(errors, /SENTRY_DSN/, "readers of SENTRY_DSN handle ''");
     assert.doesNotMatch(errors, /EMAIL_PROVIDER/, "EMAIL_PROVIDER='' means simulated/disabled by design");
   });
@@ -170,6 +173,34 @@ describe("validateEnv · URLs, CORS and email", () => {
   it("warns when an AI key is set without a provider", () => {
     assert.match(joined(prod({ AI_PROVIDER_API_KEY: "sk-real" }).warnings), /AI_PROVIDER_API_KEY está definida pero AI_PROVIDER=none/);
     assert.match(joined(prod({ AI_PROVIDER: "anthropic" }).errors), /Falta AI_PROVIDER_API_KEY \(obligatoria cuando AI_PROVIDER!=none\)/);
+  });
+
+  it("requires the USD→EUR rate with anthropic and bounds the AI limits (Tanda L6a)", () => {
+    assert.match(joined(prod({ AI_PROVIDER: "anthropic", AI_PROVIDER_API_KEY: "sk-real" }).errors), /Falta AI_USD_EUR_RATE \(obligatoria cuando AI_PROVIDER=anthropic\)/);
+    assert.deepEqual(prod({ AI_PROVIDER: "anthropic", AI_PROVIDER_API_KEY: "sk-real", AI_USD_EUR_RATE: "0.92" }).errors, []);
+    assert.deepEqual(prod({ AI_PROVIDER: "none" }).errors, [], "sin proveedor el tipo de cambio es opcional");
+    // Corrección L6a (WT-02): formato decimal con punto; la coma y el texto se rechazan en vez de degradar en silencio.
+    assert.match(joined(prod({ AI_PROVIDER: "anthropic", AI_PROVIDER_API_KEY: "sk-real", AI_USD_EUR_RATE: "0,92" }).errors), /AI_USD_EUR_RATE debe ser un número con punto decimal/);
+    assert.match(joined(prod({ AI_PROVIDER: "anthropic", AI_PROVIDER_API_KEY: "sk-real", AI_USD_EUR_RATE: "0" }).errors), /AI_USD_EUR_RATE debe ser ≥ 0.01/);
+    assert.match(joined(prod({ AI_MONTHLY_BUDGET_EUR_DEFAULT: "abc" }).errors), /AI_MONTHLY_BUDGET_EUR_DEFAULT debe ser un número con punto decimal/);
+    assert.deepEqual(prod({ AI_MONTHLY_BUDGET_EUR_DEFAULT: "12.5" }).errors, []);
+    assert.equal(ENV_CONTRACT.AI_USD_EUR_RATE!.format, "decimal");
+    assert.equal(ENV_CONTRACT.AI_MONTHLY_BUDGET_EUR_DEFAULT!.format, "decimal");
+    // Corrección L6a (WT-03): openai se admite por compatibilidad pero avisa (el runtime lo trata como none).
+    assert.match(joined(prod({ AI_PROVIDER: "openai", AI_PROVIDER_API_KEY: "sk-real" }).warnings), /AI_PROVIDER=openai está retirado/);
+    assert.match(joined(prod({ AI_RATE_LIMIT_PER_MINUTE: "0" }).errors), /AI_RATE_LIMIT_PER_MINUTE debe ser ≥ 1/);
+    assert.match(joined(prod({ AI_RATE_LIMIT_PER_MINUTE: "20000" }).errors), /AI_RATE_LIMIT_PER_MINUTE debe ser ≤ 10000/);
+    assert.match(joined(prod({ AI_DOCUMENT_TIMEOUT_MS: "500" }).errors), /AI_DOCUMENT_TIMEOUT_MS debe ser ≥ 1000/);
+    assert.match(joined(prod({ AI_DOCUMENT_TIMEOUT_MS: "900000" }).errors), /AI_DOCUMENT_TIMEOUT_MS debe ser ≤ 600000/);
+    assert.equal(ENV_CONTRACT.AI_MODEL_CLASSIFY!.default, "claude-haiku-4-5-20251001");
+    assert.equal(ENV_CONTRACT.AI_MODEL_INSIGHTS!.default, "claude-opus-5");
+    // Las cinco variables del gateway retirado (Tanda L6a) viven en RETIRED_KEYS de
+    // scripts/validate-env.mjs (única lista) y no deben volver al contrato.
+    const retiredInL6a = RETIRED_KEYS.filter((name: string) => name.startsWith("AI_") || name.endsWith("_PROVIDER_API_KEY") || name === "API_BASE_URL");
+    assert.equal(retiredInL6a.length, 5, retiredInL6a.join(","));
+    for (const retired of RETIRED_KEYS) {
+      assert.equal(retired in ENV_CONTRACT, false, `${retired} retirada y no debe volver al contrato`);
+    }
   });
 });
 

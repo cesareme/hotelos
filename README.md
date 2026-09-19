@@ -151,7 +151,6 @@ flowchart LR
   subgraph servicios ["Servicios Node 22"]
     API["api<br/>Fastify + Prisma · 935 rutas · 58 módulos<br/>schedulers solo en la instancia líder"]
     WK["worker<br/>pg-boss · 4 colas · ejecuciones durables"]
-    AI["ai-gateway<br/>Fastify sin acceso a BD · onboarding"]
   end
   PG[("PostgreSQL 16<br/>274 tablas · esquema pgboss")]
   subgraph externos ["Sistemas externos, todos condicionados por variables de entorno"]
@@ -167,7 +166,6 @@ flowchart LR
   MB --> API
   API --> PG
   WK --> PG
-  API -. "AI_GATEWAY_MODE=real" .-> AI
   API --> AEAT & SES & OTA & PSP & MSG
   API -. "AI_PROVIDER" .-> LLM
   WK --> HOOK["Webhooks salientes firmados HMAC-SHA256"]
@@ -180,7 +178,6 @@ flowchart LR
 | `apps/api` | `@hotelos/api` | Fastify 5 + Prisma 6 + zod + Sentry. 58 módulos de dominio y 935 rutas registradas contra un manifiesto de permisos por ruta (nivel de riesgo público, autenticado, bajo, medio, alto o crítico) que un test de contrato mantiene igual al servidor. 20 CLI (`rbac:sync`, `reservations:import`, `sage200:import`, `pms-shadow:pull`, `payroll:import-cost`, `accounting:*`, `demo:refresh`…). Runtime oficial `node --import tsx`, sin `dist`. |
 | `apps/admin-web` | `@hotelos/admin-web` | React 19 + Vite 6. 226 pantallas Cocoa 22 (93.251 líneas), búsqueda global, ayuda integrada (primeros pasos, glosario, atajos, cumplimiento español, resolución de problemas) y 9 guías por persona. |
 | `apps/worker` | `@hotelos/worker` | pg-boss 10 sobre el mismo PostgreSQL. Exactamente 4 colas (`notifications.scheduled`, `notifications.retry`, `notifications.sending-sweep`, `webhooks.deliver`); cada ejecución escribe una fila `WorkerJobRun` con retención de 7 días, consultable desde el API. |
-| `apps/ai-gateway` | `@hotelos/ai-gateway` | Fastify sin acceso a base de datos (puerto 3100): parser de intenciones por reglas, comandos de texto, check-in desde escaneo y agentes de onboarding. Solo lo llama el API cuando `AI_GATEWAY_MODE=real`; el asistente del back office usa las rutas `/assistant/*` del API. |
 | `apps/guest-web` | `@hotelos/guest-web` | Portal del huésped React + Vite: acceso por enlace, resumen de estancia, pre-check-in y solicitudes de servicio. Demo interna (ver §5). |
 | `apps/mobile` | `@hotelos/mobile` | Expo 53 / React Native 0.79 con pestañas Hoy, Timeline, IA, Operaciones y Más y flujo de check-in por IA (escaneo, revisión OCR, cruce con la reserva, firma). Demo interna (ver §5). |
 | `packages/*` | `shared` · `database` · `compliance` · `product` · `revenue` · `ai-tools` · `integrations` · `ui` · `config` · `onboarding` | Permisos y tipos RBAC (`shared`); esquema Prisma con 274 modelos, 38 enums y 14 migraciones versionadas más los seeds (`database`); constructores VeriFactu, TicketBAI, SES y políticas de retención (`compliance`); manifiesto de 33 módulos y navegación móvil (`product`); agregador del cuadro histórico y previsión (History & Forecast) (`revenue`); contratos de herramientas IA (`ai-tools`). |
@@ -289,7 +286,6 @@ pnpm --filter @hotelos/api rbac:sync
 pnpm dev:api        # http://localhost:3000
 pnpm dev:web        # http://localhost:5173 (VITE_API_URL apunta por defecto a :3000)
 pnpm --filter @hotelos/worker dev   # opcional: webhooks y notificaciones
-pnpm dev:ai         # opcional: ai-gateway en :3100
 ```
 
 Los seeds pasan por un guard que solo acepta los identificadores de demo; cualquier otro objetivo exige confirmación explícita. El usuario de demo que crea el seed tiene una credencial pública documentada en la guía de instalación: no lo uses en una instalación real, que se inicializa con `POST /onboarding/bootstrap` y un `BOOTSTRAP_TOKEN` de un solo uso. Puertas antes de un commit: `pnpm typecheck:all`, `pnpm test`, `pnpm test:unit`, `pnpm discoverability:check` y, con base de datos, `pnpm test:integration` y `pnpm db:install:check`; el hook se activa con `git config core.hooksPath .husky` y nunca se salta. Los seeds adicionales (`db:seed:snapshots`, `db:seed:compliance`, `db:seed:operations`, `db:seed:cancellation`, `db:seed:allotments`, `db:seed:fnb`) y el refresco del dataset (`demo:refresh`) están descritos en `hotelos/CLAUDE.md`. Instalación en servidor: [`hotelos/deploy/README-INSTALL.md`](hotelos/deploy/README-INSTALL.md).

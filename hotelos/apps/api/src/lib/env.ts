@@ -61,6 +61,7 @@ export type EnvFormat =
   | "postgres-url"
   | "base64-32"
   | "int"
+  | "decimal"
   | "bool"
   | "enum"
   | "nif"
@@ -88,7 +89,7 @@ export type EnvVarSpec = {
   doc: string;
   /** enum only. */
   values?: readonly string[];
-  /** int only. */
+  /** int | decimal only. */
   min?: number;
   max?: number;
   /** string only. */
@@ -150,7 +151,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     min: 1,
     max: 65535,
     default: "3000",
-    doc: "Puerto TCP del API (el ai-gateway usa 3100 por defecto)."
+    doc: "Puerto TCP del API."
   },
   HOST: {
     section: "Proceso",
@@ -712,7 +713,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     format: "enum",
     values: ["none", "anthropic", "openai"],
     default: "none",
-    doc: "Proveedor LLM de los asistentes. none = respuestas basadas en reglas. Sin este valor la API key no sirve."
+    doc: "Proveedor LLM: none (respuestas por reglas) | anthropic. openai está RETIRADO (L6a): se admite solo por compatibilidad, se trata como none y validate-env lo avisa."
   },
   AI_PROVIDER_API_KEY: {
     section: "IA",
@@ -721,19 +722,28 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     tags: ["secret"],
     doc: "API key del proveedor LLM."
   },
-  AI_MODEL: { section: "IA", format: "string", doc: "Modelo a usar. Vacío = claude-3-5-sonnet-latest (anthropic) o gpt-4o-mini (openai)." },
+  AI_MODEL: { section: "IA", format: "string", doc: "Modelo por defecto para respuestas. Vacío = claude-sonnet-5. Nunca claude-fable-* (retención 30 días)." },
+  AI_MODEL_CLASSIFY: { section: "IA", format: "string", default: "claude-haiku-4-5-20251001", doc: "Modelo de clasificación/enrutado (barato)." },
+  AI_MODEL_INSIGHTS: { section: "IA", format: "string", default: "claude-opus-5", doc: "Modelo para informes e insights (L6b)." },
   AI_REQUEST_TIMEOUT_MS: { section: "IA", format: "int", min: 1000, max: 600_000, default: "20000", doc: "Timeout de cada llamada al LLM (ms)." },
-  AI_GATEWAY_MODE: {
+  AI_DOCUMENT_TIMEOUT_MS: { section: "IA", format: "int", min: 1000, max: 600_000, default: "120000", doc: "Timeout de extracción de documentos/imágenes (ms)." },
+  AI_MONTHLY_BUDGET_EUR_DEFAULT: {
     section: "IA",
-    format: "enum",
-    values: ["stub", "real"],
-    default: "stub",
-    doc: "Motor de onboarding con IA: stub (en proceso) o real (llama al ai-gateway)."
+    format: "decimal",
+    min: 0,
+    default: "25",
+    doc: "Presupuesto mensual de IA por propiedad en EUR (punto decimal) cuando PropertyAiSetting.configurationJson.monthlyBudgetEur es null; 0 bloquea."
   },
-  AI_GATEWAY_URL: { section: "IA", format: "url", default: "http://localhost:4000", doc: "URL del ai-gateway cuando AI_GATEWAY_MODE=real." },
-  API_BASE_URL: { section: "IA", format: "url", default: "http://localhost:3000", doc: "Solo la lee el ai-gateway: URL del API contra el que ejecuta las herramientas." },
-  OCR_PROVIDER_API_KEY: { section: "IA", format: "string", tags: ["secret"], doc: "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured." },
-  SPEECH_PROVIDER_API_KEY: { section: "IA", format: "string", tags: ["secret"], doc: "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured." },
+  AI_RATE_LIMIT_PER_MINUTE: { section: "IA", format: "int", min: 1, max: 10_000, default: "60", doc: "Llamadas al modelo por minuto y organización (token bucket en memoria por proceso)." },
+  AI_USD_EUR_RATE: {
+    section: "IA",
+    format: "decimal",
+    min: 0.01,
+    max: 10,
+    required: { when: "AI_PROVIDER=anthropic" },
+    doc: "Tipo de cambio USD→EUR (punto decimal, p. ej. 0.92) para persistir cost_eur desde usage y aplicar el presupuesto mensual; sin él la IA queda desactivada (budget_unavailable)."
+  },
+  AI_INFERENCE_GEO: { section: "IA", format: "string", doc: "Opcional: región de inferencia (inference_geo) para modelos 4.6+; Haiku 4.5 no la admite." },
 
   // ------------------------------------------------------------------- OTA
   // Rate grid v2 (2026-09-14): the channel manager owns its contract (mode cap,
@@ -933,6 +943,13 @@ function schemaFor(name: string, spec: EnvVarSpec, production: boolean): z.ZodTy
       if (spec.max !== undefined) schema = schema.max(spec.max, `${name} debe ser ≤ ${spec.max}.`);
       return z.string().regex(/^-?\d+$/, `${name} debe ser un entero.`).pipe(schema);
     }
+    case "decimal": {
+      // Corrección L6a (WT-02): número con punto decimal (0.92); la coma («0,92») se rechaza en vez de degradar en silencio.
+      let schema = z.coerce.number({ invalid_type_error: `${name} debe ser un número con punto decimal (p. ej. 0.92).` });
+      if (spec.min !== undefined) schema = schema.min(spec.min, `${name} debe ser ≥ ${spec.min}.`);
+      if (spec.max !== undefined) schema = schema.max(spec.max, `${name} debe ser ≤ ${spec.max}.`);
+      return z.string().regex(/^-?\d+(\.\d+)?$/, `${name} debe ser un número con punto decimal (p. ej. 0.92), sin coma.`).pipe(schema);
+    }
     case "bool":
       return z.enum(["true", "false"], { errorMap: () => ({ message: `${name} debe ser exactamente "true" o "false" (ni 1, ni yes).` }) });
     case "enum":
@@ -1124,7 +1141,11 @@ export function validateEnv(env: NodeJS.ProcessEnv, opts: { production: boolean 
 
   // AI key without provider.
   if (readValue(env, "AI_PROVIDER_API_KEY") !== undefined && effectiveValue(env, "AI_PROVIDER") === "none") {
-    warnings.push("AI_PROVIDER_API_KEY está definida pero AI_PROVIDER=none: el LLM sigue desactivado. Define AI_PROVIDER=anthropic|openai.");
+    warnings.push("AI_PROVIDER_API_KEY está definida pero AI_PROVIDER=none: el LLM sigue desactivado. Define AI_PROVIDER=anthropic.");
+  }
+  // Corrección L6a (WT-03): openai sigue en el enum por compatibilidad, pero el runtime lo trata como none.
+  if (effectiveValue(env, "AI_PROVIDER") === "openai") {
+    warnings.push("AI_PROVIDER=openai está retirado (Tanda L6a): el API lo trata como none y responde por reglas. Usa AI_PROVIDER=anthropic.");
   }
 
   // Production-only advisories.

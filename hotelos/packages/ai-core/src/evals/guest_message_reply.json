@@ -1,0 +1,26 @@
+{
+  "promptCode": "guest_message_reply",
+  "system": "Eres el asistente de recepción de un hotel en España. Responde breve, cordial y profesional, en el mismo idioma del huésped. No inventes datos concretos (precios, disponibilidad, políticas): si no los sabes, indica que recepción lo confirmará. Máximo 4 frases.",
+  "cases": [
+    {
+      "input": "¿A qué hora es el check-out?",
+      "expect": { "maxChars": 800, "mustNotMatch": [{ "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "inventa un precio" }] }
+    },
+    {
+      "input": "Do you have parking at the hotel?",
+      "expect": { "maxChars": 800, "mustNotMatch": [{ "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "inventa un precio" }] }
+    },
+    {
+      "input": "Necesito una cuna para el bebé, ¿es posible?",
+      "expect": { "maxChars": 800, "mustNotMatch": [{ "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "inventa un precio" }] }
+    },
+    {
+      "input": "Quiero cancelar mi reserva y que me devuelvan el dinero.",
+      "expect": { "maxChars": 800, "mustNotMatch": [{ "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "inventa un precio" }] }
+    },
+    {
+      "input": "¿Cuánto cuesta exactamente la habitación esta noche?",
+      "expect": { "maxChars": 800, "mustNotMatch": [{ "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "inventa un precio" }] }
+    }
+  ]
+}

@@ -9,9 +9,8 @@ Monorepo pnpm de ehotelOS, PMS + ERP para grupos hoteleros españoles. `hotelos/
 | `apps/api` | API Fastify + Prisma (58 módulos, 935 rutas con manifiesto de permisos, 20 CLI). Runtime `node --import tsx`. |
 | `apps/admin-web` | Back office React + Vite (226 pantallas Cocoa 22, 9 categorías de menú). |
 | `apps/worker` | Worker pg-boss sobre PostgreSQL: 4 colas (webhooks y notificaciones) con ejecuciones durables. |
-| `apps/ai-gateway` | Fastify sin acceso a base de datos: parser de intenciones y onboarding; solo lo usa el API con `AI_GATEWAY_MODE=real`. |
 | `apps/guest-web` · `apps/mobile` | Portal del huésped (React + Vite) y app Expo / React Native. Demo interna en este commit; ver el apartado 5 del README de la raíz. |
-| `packages/` | `shared` (permisos RBAC), `database` (esquema Prisma, 14 migraciones en `99dc3c3`, 15 en `main` con la Tanda L3, seeds), `compliance` (VeriFactu, TicketBAI, SES, retención), `product` (33 módulos, navegación móvil), `revenue` (agregador del cuadro histórico y previsión), `ai-tools`, `integrations`, `ui`, `config`, `onboarding`. |
+| `packages/` | `ai-core` (cliente de IA, tool runner con confirmación humana, enmascarado de datos personales), `shared` (permisos RBAC), `database` (esquema Prisma, 14 migraciones en `99dc3c3`, 15 en `main` con la Tanda L3, seeds), `compliance` (VeriFactu, TicketBAI, SES, retención), `product` (33 módulos, navegación móvil), `revenue` (agregador del cuadro histórico y previsión), `ai-tools`, `integrations`, `ui`, `config`, `onboarding`. |
 | `deploy/` | Guía de instalación, scripts idempotentes, unidades systemd, Caddy y la vía Docker secundaria. |
 | `docs/` | `design/` (diseños y Cocoa 22), `runbooks/`, `audits/` (informes de cierre por tanda), `compliance/`, `api-contracts.md`. |
 | `scripts/` · `tests/` | Puertas de calidad (typecheck de todos los workspaces, discoverability, árbol de navegación, migraciones ↔ esquema, contrato de entorno) y contratos raíz (`node --test tests/*.test.mjs`); `tests/integration/` necesita PostgreSQL. |
@@ -30,7 +29,7 @@ Requisitos: Node 22.x (≥ 22.9, la versión de la CI, las imágenes y la guía 
 7. Seeds comerciales y usuarios de departamento ficticios: `pnpm db:seed:commercial && pnpm db:seed:rbac-demo`, después `pnpm --filter @hotelos/api rbac:sync`.
 8. `pnpm dev:api` (API en `http://localhost:3000`).
 9. `pnpm dev:web` (back office en `http://localhost:5173`; `VITE_API_URL` apunta por defecto al API local).
-10. Opcional: `pnpm --filter @hotelos/worker dev` (webhooks y notificaciones) y `pnpm dev:ai` (ai-gateway en `:3100`).
+10. Opcional: `pnpm --filter @hotelos/worker dev` (webhooks y notificaciones). El núcleo de IA (`packages/ai-core`) va dentro del API; sin `AI_PROVIDER` responde por reglas.
 
 Los seeds solo aceptan los identificadores de demo; cualquier otro objetivo exige confirmación explícita. La credencial del usuario de demo está documentada en `deploy/README-INSTALL.md` y no debe usarse en una instalación real, que se inicializa con `POST /onboarding/bootstrap`.
 

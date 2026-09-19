@@ -2,6 +2,16 @@ import type { PermissionKey, RiskLevel } from "@hotelos/shared";
 import type { HotelModuleCode } from "@hotelos/product";
 import type { HotelOsToolName } from "./tool-names.js";
 
+/**
+ * Tanda L6a (lote 3): efecto de la herramienta sobre el dominio.
+ *   · "read"  → consultas, borradores y clasificaciones: no mutan nada; el tool runner las ejecuta
+ *               al instante (la persona revisa el borrador antes de usarlo si requiresConfirmation).
+ *   · "write" → mutación del dominio: el runner SIEMPRE deja la llamada en awaiting_confirmation.
+ * Es explícito en toda definición con implementación (apps/api/src/modules/ai-operations/tools);
+ * la heurística `requiresConfirmation → write` solo cubre las definiciones sin execute.
+ */
+export type ToolEffect = "read" | "write";
+
 export type ToolDefinition = {
   name: HotelOsToolName;
   moduleCode: HotelModuleCode;
@@ -9,22 +19,25 @@ export type ToolDefinition = {
   riskLevel: RiskLevel;
   requiredPermissions: PermissionKey[];
   requiresConfirmation: boolean;
+  effect: ToolEffect;
 };
 
 function advancedTool(
   name: HotelOsToolName,
   moduleCode: HotelModuleCode,
-  permission: PermissionKey,
+  permission: PermissionKey | null,
   riskLevel: RiskLevel = "medium",
-  requiresConfirmation = false
+  requiresConfirmation = false,
+  effect?: ToolEffect
 ): ToolDefinition {
   return {
     name,
     moduleCode,
     description: `${name} uses the ${moduleCode} typed backend tool contract and cannot execute when the module is disabled.`,
     riskLevel,
-    requiredPermissions: [permission, "ai.tool.execute"],
-    requiresConfirmation
+    requiredPermissions: permission ? [permission, "ai.tool.execute"] : ["ai.tool.execute"],
+    requiresConfirmation,
+    effect: effect ?? (requiresConfirmation ? "write" : "read")
   };
 }
 
@@ -35,7 +48,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Find the most likely reservation for extracted guest identity fields.",
     riskLevel: "medium",
     requiredPermissions: ["pms.reservation.read", "ai.tool.execute"],
-    requiresConfirmation: false
+    requiresConfirmation: false,
+    effect: "read"
   },
   {
     name: "validateRoomAssignment",
@@ -43,7 +57,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Validate whether a room can be assigned for a reservation date range.",
     riskLevel: "medium",
     requiredPermissions: ["pms.reservation.read", "ai.tool.execute"],
-    requiresConfirmation: false
+    requiresConfirmation: false,
+    effect: "read"
   },
   {
     name: "checkInReservation",
@@ -51,7 +66,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Execute check-in after confirmation and required signature.",
     riskLevel: "high",
     requiredPermissions: ["pms.checkin.execute", "ai.tool.execute"],
-    requiresConfirmation: true
+    requiresConfirmation: true,
+    effect: "write"
   },
   {
     name: "queueSesHospedajesSubmission",
@@ -59,11 +75,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Queue the guest register record for authority submission.",
     riskLevel: "high",
     requiredPermissions: ["compliance.ses.submit", "ai.tool.execute"],
-    requiresConfirmation: false
+    requiresConfirmation: true,
+    effect: "write"
   },
-  advancedTool("extractGuestIdentityFieldsTemporary", "spain_guest_register_compliance", "guest_register.create", "medium", true),
-  advancedTool("prepareGuestRegisterRecord", "spain_guest_register_compliance", "guest_register.create", "high", true),
-  advancedTool("validateSpainGuestRegister", "spain_guest_register_compliance", "guest_register.read", "medium"),
+  advancedTool("extractGuestIdentityFieldsTemporary", "spain_guest_register_compliance", "guest_register.create", "medium", true, "read"),
+  advancedTool("prepareGuestRegisterRecord", "spain_guest_register_compliance", "guest_register.create", "high", true, "write"),
+  advancedTool("validateSpainGuestRegister", "spain_guest_register_compliance", "guest_register.read", "medium", false, "read"),
   advancedTool("requestGuestRegisterSignature", "spain_guest_register_compliance", "guest_register.sign", "high", true),
   advancedTool("queueGuestAuthoritySubmission", "spain_guest_register_compliance", "guest_register.submit", "high", true),
   advancedTool("generateSesBatchFile", "spain_guest_register_compliance", "compliance.ses.export", "high", true),
@@ -75,7 +92,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Issue an immutable invoice using the invoice compliance workflow.",
     riskLevel: "high",
     requiredPermissions: ["invoice.issue", "ai.high_risk.confirm"],
-    requiresConfirmation: true
+    requiresConfirmation: true,
+    effect: "write"
   },
   {
     name: "createSupplierBillDraft",
@@ -83,7 +101,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: "Create a supplier bill draft from OCR and coding suggestions.",
     riskLevel: "medium",
     requiredPermissions: ["ai.tool.execute"],
-    requiresConfirmation: true
+    requiresConfirmation: true,
+    effect: "write"
   },
   advancedTool("analyzePickup", "revenue_profit_engine", "revenue.read", "low"),
   advancedTool("analyzePace", "revenue_profit_engine", "revenue.read", "low"),
@@ -129,8 +148,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   advancedTool("prepareMobileCheckout", "guest_self_service", "guest_self_service.manage", "high", true),
   advancedTool("answerGuestPortalQuestion", "guest_self_service", "guest_self_service.read", "low"),
   advancedTool("issueDigitalKeyRequest", "guest_self_service", "digital_key.configure", "critical", true),
-  advancedTool("analyzeReviewSentiment", "reputation_quality", "reputation.read", "low"),
-  advancedTool("draftReviewResponse", "reputation_quality", "reputation.respond", "medium", true),
+  advancedTool("analyzeReviewSentiment", "reputation_quality", "reputation.read", "low", false, "read"),
+  advancedTool("draftReviewResponse", "reputation_quality", "reputation.respond", "medium", true, "read"),
   advancedTool("detectQualityTrends", "reputation_quality", "quality_cases.read", "low"),
   advancedTool("createRecoveryCase", "reputation_quality", "quality_cases.manage", "medium", true),
   advancedTool("detectEnergyAnomalies", "energy_sustainability", "energy.read", "low"),
@@ -153,7 +172,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   advancedTool("detectAiPolicyViolation", "ai_governance", "ai_governance.read", "medium"),
   advancedTool("createAiIncident", "ai_governance", "ai_incidents.manage", "high", true),
   advancedTool("summarizeAiToolRisk", "ai_governance", "ai_governance.read", "low"),
-  advancedTool("classifyOnboardingFile", "ai_onboarding_migration", "onboarding.ai_extract", "medium"),
+  advancedTool("classifyOnboardingFile", "ai_onboarding_migration", "onboarding.ai_extract", "medium", false, "read"),
   advancedTool("extractRoomListFromDocument", "ai_onboarding_migration", "onboarding.ai_extract", "medium", true),
   advancedTool("extractFloorPlanStructure", "ai_onboarding_migration", "onboarding.ai_extract", "medium", true),
   advancedTool("extractRatePlansFromSheet", "ai_onboarding_migration", "onboarding.ai_extract", "medium", true),
@@ -170,7 +189,66 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   advancedTool("suggestGuestDeduplication", "ai_onboarding_migration", "onboarding.ai_map", "high", true),
   advancedTool("detectMigrationConflicts", "ai_onboarding_migration", "onboarding.review", "high", true),
   advancedTool("generateGoLiveChecklist", "ai_onboarding_migration", "onboarding.go_live", "medium", true),
-  advancedTool("explainOnboardingIssue", "ai_onboarding_migration", "onboarding.read", "low")
+  advancedTool("explainOnboardingIssue", "ai_onboarding_migration", "onboarding.read", "low"),
+  // --- Tanda L6a (lote 3): definiciones para los 41 nombres del catálogo que no la tenían más los
+  // 5 nombres nuevos (parseReservationRequest, summarizeComplianceStatus, extractPropertyMap,
+  // classifyIncomingDocument, extractIncomingDocumentFields). Permisos existentes de
+  // packages/shared/src/types.ts; toda escritura con requiresConfirmation y effect "write";
+  // dinero/fiscal (folio, pagos, facturas, contabilidad, capex) queda SIN execute en esta tanda.
+  // PMS (pms_core)
+  advancedTool("findReservation", "pms_core", "pms.reservation.read", "low", false, "read"),
+  advancedTool("assignRoom", "pms_core", "pms.reservation.modify", "medium", true, "write"),
+  advancedTool("checkOutReservation", "pms_core", "pms.checkout.execute", "high", true, "write"),
+  advancedTool("moveRoom", "pms_core", "pms.reservation.modify", "medium", true, "write"),
+  advancedTool("cancelReservation", "pms_core", "pms.reservation.modify", "high", true, "write"),
+  advancedTool("createReservation", "pms_core", "pms.reservation.create", "medium", true, "write"),
+  advancedTool("quoteAvailability", "pms_core", "pms.reservation.read", "medium", false, "read"),
+  advancedTool("parseReservationRequest", "pms_core", "pms.reservation.read", "low", false, "read"),
+  // Parte de viajeros (spain_guest_register_compliance / compliance_hub)
+  advancedTool("extractGuestIdentityFields", "spain_guest_register_compliance", "guest_register.create", "medium", true, "read"),
+  advancedTool("requestGuestSignature", "spain_guest_register_compliance", "guest_register.sign", "high", true, "write"),
+  advancedTool("checkGuestRegisterCompleteness", "spain_guest_register_compliance", "guest_register.read", "low", false, "read"),
+  advancedTool("summarizeComplianceStatus", "compliance_hub", "compliance.read", "low", false, "read"),
+  // Folio, pagos y facturas (dinero/fiscal: definidas para el catálogo, sin execute en L6a)
+  advancedTool("getFolioBalance", "pms_core", "folio.read", "low", false, "read"),
+  advancedTool("postFolioCharge", "pms_core", "folio.charge.post", "high", true, "write"),
+  advancedTool("createPaymentLink", "payment_vault", "payments.create_link", "high", true, "write"),
+  advancedTool("recordPayment", "payment_vault", "payment.capture", "high", true, "write"),
+  advancedTool("createRectifyingInvoice", "compliance_billing", "invoice.issue", "high", true, "write"),
+  // Housekeeping y mantenimiento
+  advancedTool("getHousekeepingBoard", "housekeeping", "housekeeping.read", "low", false, "read"),
+  advancedTool("createHousekeepingTask", "housekeeping", "housekeeping.task.manage", "low", true, "write"),
+  advancedTool("assignHousekeepingTask", "housekeeping", "housekeeping.task.manage", "low", true, "write"),
+  advancedTool("markRoomClean", "housekeeping", "housekeeping.task.manage", "medium", true, "write"),
+  advancedTool("markRoomInspected", "housekeeping", "housekeeping.task.manage", "medium", true, "write"),
+  advancedTool("createLostAndFoundRecord", "housekeeping", "housekeeping.task.manage", "low", true, "write"),
+  advancedTool("createWorkOrder", "maintenance", "maintenance.workorder.create", "low", true, "write"),
+  advancedTool("attachWorkOrderPhoto", "maintenance", "maintenance.workorder.manage", "low", true, "write"),
+  advancedTool("blockRoomForMaintenance", "maintenance", "maintenance.workorder.manage", "high", true, "write"),
+  advancedTool("resolveWorkOrder", "maintenance", "maintenance.workorder.manage", "medium", true, "write"),
+  advancedTool("suggestPreventiveMaintenance", "maintenance", "maintenance.read", "low", false, "read"),
+  // Contabilidad, activos y capex (dinero/fiscal: sin execute en L6a)
+  advancedTool("extractSupplierBill", "erp_accounting", "payables.read", "medium", true, "read"),
+  advancedTool("suggestAccountingCoding", "erp_accounting", "accounting.read", "low", false, "read"),
+  advancedTool("matchBankTransaction", "erp_accounting", "banking.reconcile", "high", true, "write"),
+  advancedTool("createJournalEntryDraft", "erp_accounting", "accounting.journal.post", "critical", true, "write"),
+  advancedTool("explainFinancialVariance", "erp_accounting", "accounting.read", "low", false, "read"),
+  advancedTool("createCapexProject", "capex_manager", "asset.capex.approve", "critical", true, "write"),
+  advancedTool("createCapexItem", "capex_manager", "capex.create", "high", true, "write"),
+  advancedTool("linkAssetToRoom", "asset_intelligence", "assets.manage", "medium", true, "write"),
+  advancedTool("scoreRoomCondition", "asset_intelligence", "assets.read", "low", false, "read"),
+  advancedTool("estimateRenovationImpact", "asset_intelligence", "assets.read", "low", false, "read"),
+  // Conserjería y mensajería (ai_concierge): solo ai.tool.execute, como POST /conversations/:id/messages
+  advancedTool("answerGuestQuestion", "ai_concierge", null, "low", true, "read"),
+  advancedTool("sendGuestMessage", "ai_concierge", null, "medium", true, "write"),
+  advancedTool("createServiceRequest", "ai_concierge", null, "medium", true, "write"),
+  advancedTool("suggestUpsell", "ai_concierge", null, "low", false, "read"),
+  advancedTool("handoffToHuman", "ai_concierge", null, "low", true, "write"),
+  // Documentos (compliance_hub): clasificación y extracción sin persistencia (módulo documents de otra tanda)
+  advancedTool("classifyIncomingDocument", "compliance_hub", null, "low", false, "read"),
+  advancedTool("extractIncomingDocumentFields", "compliance_hub", null, "medium", true, "read"),
+  // Onboarding
+  advancedTool("extractPropertyMap", "ai_onboarding_migration", "property.map.read", "medium", false, "read")
 ];
 
 export function getToolDefinition(name: HotelOsToolName): ToolDefinition {

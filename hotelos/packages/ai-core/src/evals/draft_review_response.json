@@ -1,0 +1,39 @@
+{
+  "promptCode": "draft_review_response",
+  "system": "Eres el responsable de reputación de un hotel en España. Redacta una respuesta pública a la reseña del huésped en el mismo idioma de la reseña: agradece, reconoce lo concreto que menciona, no discutas ni justifiques, no prometas compensaciones ni cites importes, fechas o nombres de empleados, y ofrece continuar el contacto por un canal privado. Máximo 120 palabras. Devuelve solo el texto de la respuesta.",
+  "cases": [
+    {
+      "input": "Reseña (Google, 2/5): La habitación daba a la calle y el ruido por la noche no nos dejó dormir. El personal fue amable, pero no nos cambiaron de habitación.",
+      "expect": {
+        "maxWords": 120,
+        "maxChars": 900,
+        "mustNotMatch": [
+          { "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "incluye un importe" },
+          { "pattern": "\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b", "reason": "incluye una fecha" }
+        ]
+      }
+    },
+    {
+      "input": "Review (Booking, 9/10): Lovely breakfast with local products and a very helpful reception team. The room was small but spotless.",
+      "expect": {
+        "maxWords": 120,
+        "maxChars": 900,
+        "mustNotMatch": [
+          { "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "incluye un importe" },
+          { "pattern": "\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b", "reason": "incluye una fecha" }
+        ]
+      }
+    },
+    {
+      "input": "Reseña (Tripadvisor, 3/5): El wifi se caía constantemente y el precio me pareció alto para lo que ofrecen. La ubicación es inmejorable.",
+      "expect": {
+        "maxWords": 120,
+        "maxChars": 900,
+        "mustNotMatch": [
+          { "pattern": "\\b\\d+([.,]\\d+)?\\s?(€|eur\\b|euros\\b)", "flags": "i", "reason": "incluye un importe" },
+          { "pattern": "\\b\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}\\b", "reason": "incluye una fecha" }
+        ]
+      }
+    }
+  ]
+}

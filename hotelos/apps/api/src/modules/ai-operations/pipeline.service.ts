@@ -1,5 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
+import { isAwaiting, isSuccess } from "@hotelos/ai-core/runner";
+import type { ToolCallStatus } from "@hotelos/ai-core/runner";
 
 // AI Pipeline Status — tool-call telemetry surface (Sprint 48).
 //
@@ -21,22 +23,21 @@ import type { Prisma } from "@hotelos/database";
 //     and are coerced via `dec()`; `latencyMs`/tokens are nullable Ints.
 //   * Cost MTD / tokens MTD are scoped to the current *calendar* month
 //     (UTC) regardless of the `days` window used for the rest of the view.
-//   * `successRatePct` counts status === "succeeded" over the total calls in
-//     scope; a 0-call denominator yields 0 (not NaN).
+//   * `successRatePct` counts isSuccess(status) (succeeded | completed) over the
+//     total calls in scope; a 0-call denominator yields 0 (not NaN). Waiting =
+//     isAwaiting(status) (awaiting_confirmation | pending). Tanda L6a (lote 3):
+//     the vocabulary is the 7-value union of @hotelos/ai-core/runner (the two
+//     legacy values completed | skipped are what the historic callers and
+//     tests/integration/l2-modulos-ia.test.mts:148 persist).
 //   * Everything defaults to 0 / [] for an empty org so the UI never has to
 //     special-case nulls.
 
-export type ToolCallStatus =
-  | "succeeded"
-  | "failed"
-  | "pending"
-  | "awaiting_confirmation"
-  | "rejected";
+export type { ToolCallStatus } from "@hotelos/ai-core/runner";
 
 export type RecordToolCallInput = {
   organizationId: string;
   toolName: string;
-  status: ToolCallStatus | string;
+  status: ToolCallStatus;
   inputJson: Prisma.InputJsonValue;
   propertyId?: string;
   userId?: string;
@@ -195,6 +196,143 @@ export async function recordToolCall(input: RecordToolCallInput) {
   return prisma.aiToolCall.create({ data });
 }
 
+// ---------------------------------------------------------------------------
+// Tanda L6a (lote 3): escrituras del tool runner sobre una fila existente
+// (confirmación HITL) y presupuesto mensual por propiedad.
+// ---------------------------------------------------------------------------
+
+export type ToolCallPatch = {
+  status?: ToolCallStatus;
+  confirmedBy?: string;
+  /** Corrección L6a (SEC-06): al cerrar una fila pendiente la entrada ejecutable se sustituye por la copia redactada. */
+  inputJson?: Prisma.InputJsonValue;
+  outputJson?: Prisma.InputJsonValue;
+  /** null borra el mensaje de error (éxito tras una confirmación). */
+  errorMessage?: string | null;
+  model?: string;
+  latencyMs?: number;
+  tokensInput?: number;
+  tokensOutput?: number;
+  /** null = coste desconocido (columna NULL); nunca se escribe 0 sin una llamada real a coste cero. */
+  costEur?: number | null;
+};
+
+/** Condición de una escritura sobre ai_tool_calls (misma forma que ToolCallGuard del runner). */
+export type ToolCallGuard = { status: ToolCallStatus; unclaimed?: boolean };
+
+/**
+ * Actualiza los campos indicados de una llamada (los ausentes no se tocan). Con `guard` la escritura es
+ * CONDICIONAL en una sola sentencia (UPDATE … WHERE id AND status = guard.status [AND confirmed_by IS NULL]):
+ * `count` = 0 significa que otra petición cambió la fila antes (corrección L6a · SEC-02: dos
+ * aprobaciones concurrentes de la misma fila ya no ejecutan dos veces). Devuelve `{ count }`.
+ */
+export async function updateToolCall(id: string, patch: ToolCallPatch, guard?: ToolCallGuard): Promise<{ count: number }> {
+  const data: Prisma.AiToolCallUncheckedUpdateManyInput = {};
+  if (patch.status !== undefined) data.status = patch.status;
+  if (patch.confirmedBy !== undefined) data.confirmedBy = patch.confirmedBy;
+  if (patch.inputJson !== undefined) data.inputJson = patch.inputJson;
+  if (patch.outputJson !== undefined) data.outputJson = patch.outputJson;
+  if (patch.errorMessage !== undefined) data.errorMessage = patch.errorMessage;
+  if (patch.model !== undefined) data.model = patch.model;
+  if (patch.latencyMs !== undefined) data.latencyMs = patch.latencyMs;
+  if (patch.tokensInput !== undefined) data.tokensInput = patch.tokensInput;
+  if (patch.tokensOutput !== undefined) data.tokensOutput = patch.tokensOutput;
+  if (patch.costEur !== undefined) data.costEur = patch.costEur;
+  const where: Prisma.AiToolCallWhereInput = { id, ...(guard ? { status: guard.status, ...(guard.unclaimed ? { confirmedBy: null } : {}) } : {}) };
+  const result = await prisma.aiToolCall.updateMany({ where, data });
+  return { count: result.count };
+}
+
+/** Inicio del mes natural (UTC) que contiene `at`. */
+export function monthStartUtc(at: Date = new Date()): Date {
+  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1));
+}
+
+/**
+ * Gasto de IA del mes natural (UTC): SUM(cost_eur) de ai_tool_calls de la organización y,
+ * si se indica, de la propiedad (las filas sin propiedad — org-wide — también cuentan).
+ * Las filas con cost_eur NULL (coste desconocido) no suman: el presupuesto compara solo
+ * coste real conocido.
+ */
+export async function monthToDateCostEur(input: { organizationId: string; propertyId?: string; now?: Date }): Promise<number> {
+  if (!input.organizationId) return 0;
+  const where: Prisma.AiToolCallWhereInput = input.propertyId
+    ? { organizationId: input.organizationId, OR: [{ propertyId: input.propertyId }, { propertyId: null }], createdAt: { gte: monthStartUtc(input.now) } }
+    : { organizationId: input.organizationId, createdAt: { gte: monthStartUtc(input.now) } };
+  const aggregate = await prisma.aiToolCall.aggregate({ where, _sum: { costEur: true } });
+  const sum = dec(aggregate._sum.costEur);
+  return sum === null || !Number.isFinite(sum) ? 0 : sum;
+}
+
+export type ToolCallSummaryRow = {
+  status: string;
+  model?: string | null;
+  costEur?: Prisma.Decimal | number | null;
+  tokensInput?: number | null;
+  tokensOutput?: number | null;
+  latencyMs?: number | null;
+};
+
+export type ToolCallSummary = {
+  total: number;
+  /** succeeded | completed. */
+  succeeded: number;
+  /** awaiting_confirmation | pending. */
+  awaiting: number;
+  failed: number;
+  rejected: number;
+  skipped: number;
+  successRatePct: number;
+  costEur: number;
+  tokens: number;
+  /** true si alguna fila lleva model no nulo y cost_eur no nulo (coste real, no ceros fabricados). */
+  hasRealCost: boolean;
+  byStatus: Array<{ status: string; count: number }>;
+};
+
+/** Resumen puro de un conjunto de filas (lo usa buildPipelineDashboard y los paneles honestos). */
+export function summarizeToolCalls(calls: ToolCallSummaryRow[]): ToolCallSummary {
+  const statusAgg = new Map<string, number>();
+  let succeeded = 0;
+  let awaiting = 0;
+  let failed = 0;
+  let rejected = 0;
+  let skipped = 0;
+  let cost = 0;
+  let tokens = 0;
+  let hasRealCost = false;
+  for (const call of calls) {
+    statusAgg.set(call.status, (statusAgg.get(call.status) ?? 0) + 1);
+    if (isSuccess(call.status)) succeeded += 1;
+    else if (isAwaiting(call.status)) awaiting += 1;
+    else if (call.status === "failed") failed += 1;
+    else if (call.status === "rejected") rejected += 1;
+    else if (call.status === "skipped") skipped += 1;
+    const callCost = dec(call.costEur);
+    if (callCost !== null) {
+      cost += callCost;
+      if (call.model) hasRealCost = true;
+    }
+    tokens += (call.tokensInput ?? 0) + (call.tokensOutput ?? 0);
+  }
+  const total = calls.length;
+  return {
+    total,
+    succeeded,
+    awaiting,
+    failed,
+    rejected,
+    skipped,
+    successRatePct: total > 0 ? round1((succeeded / total) * 100) : 0,
+    costEur: round2(cost),
+    tokens,
+    hasRealCost,
+    byStatus: Array.from(statusAgg.entries())
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count)
+  };
+}
+
 export async function buildPipelineDashboard(input: {
   organizationId: string;
   propertyId?: string;
@@ -248,11 +386,12 @@ export async function buildPipelineDashboard(input: {
   // toolName -> moduleCode, built once to avoid an N+1 join while grouping.
   const moduleByTool = new Map(registry.map((r) => [r.toolName, r.moduleCode] as const));
 
-  const callsTotal = calls.length;
+  // Tanda L6a (lote 3): completed cuenta como éxito y pending como espera (summarizeToolCalls).
+  const summary = summarizeToolCalls(calls);
+  const callsTotal = summary.total;
   const calls24h = calls.filter((c) => c.createdAt >= last24hStart).length;
-  const succeeded = calls.filter((c) => c.status === "succeeded").length;
-  const successRatePct = callsTotal > 0 ? round1((succeeded / callsTotal) * 100) : 0;
-  const awaitingConfirmation = calls.filter((c) => c.status === "awaiting_confirmation").length;
+  const successRatePct = summary.successRatePct;
+  const awaitingConfirmation = summary.awaiting;
   const failed24h = calls.filter((c) => c.status === "failed" && c.createdAt >= last24hStart).length;
 
   // avgLatency / avgConfidence average only over non-null rows.
@@ -298,7 +437,7 @@ export async function buildPipelineDashboard(input: {
       toolAgg.set(c.toolName, agg);
     }
     agg.calls += 1;
-    if (c.status === "succeeded") agg.succeeded += 1;
+    if (isSuccess(c.status)) agg.succeeded += 1;
     if (typeof c.latencyMs === "number") {
       agg.latencySum += c.latencyMs;
       agg.latencyN += 1;
@@ -333,7 +472,7 @@ export async function buildPipelineDashboard(input: {
       moduleAgg.set(moduleCode, agg);
     }
     agg.calls += 1;
-    if (c.status === "succeeded") agg.succeeded += 1;
+    if (isSuccess(c.status)) agg.succeeded += 1;
   }
   const byModule = Array.from(moduleAgg.entries())
     .map(([moduleCode, agg]) => ({
@@ -343,14 +482,8 @@ export async function buildPipelineDashboard(input: {
     }))
     .sort((a, b) => b.calls - a.calls);
 
-  // byStatus — simple count per status, descending.
-  const statusAgg = new Map<string, number>();
-  for (const c of calls) {
-    statusAgg.set(c.status, (statusAgg.get(c.status) ?? 0) + 1);
-  }
-  const byStatus = Array.from(statusAgg.entries())
-    .map(([status, count]) => ({ status, count }))
-    .sort((a, b) => b.count - a.count);
+  // byStatus — simple count per status, descending (summarizeToolCalls).
+  const byStatus = summary.byStatus;
 
   // confidenceBuckets — fixed four-bucket histogram over rows with a
   // confidence value. Upper bound inclusive on the top bucket only.

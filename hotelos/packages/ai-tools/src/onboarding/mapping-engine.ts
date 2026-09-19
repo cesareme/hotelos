@@ -1,5 +1,5 @@
 // Deterministic mapping engine. Takes extracted entities and proposes
-// HotelOS target values for room types, rate plans and channels using a
+// ehotelOS target values for room types, rate plans and channels using a
 // small built-in catalog of aliases + Levenshtein fuzzy matching.
 //
 // Confidence model (Sprint 52):
@@ -19,7 +19,7 @@ type CatalogEntry = {
   aliases: string[]; // normalised
 };
 
-// Built-in HotelOS catalog. Aliases are stored normalised (uppercase, stripped).
+// Built-in ehotelOS catalog. Aliases are stored normalised (uppercase, stripped).
 const ROOM_TYPE_CATALOG: CatalogEntry[] = [
   { target: "Double Room", aliases: ["DBL", "DOUBLE", "DBLSTD", "DOUBLESTANDARD", "DOUBLEROOM", "DOB"] },
   { target: "Twin Room", aliases: ["TWIN", "TWN", "TWINROOM"] },

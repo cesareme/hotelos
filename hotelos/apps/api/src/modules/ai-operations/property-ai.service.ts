@@ -1,6 +1,12 @@
+import { labelFor } from "@hotelos/ai-core";
+import { budgetStatus, monthlyBudgetEurOf } from "@hotelos/ai-core/runner";
 import { prisma } from "@hotelos/database";
+import { aiConfigSummary } from "../../lib/ai-config.js";
+import type { AiConfigSummary } from "../../lib/ai-config.js";
+import { BadRequestError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
 import { recordDomainEvent } from "../audit/audit.service.js";
+import { monthToDateCostEur } from "./pipeline.service.js";
 
 // Sprint 51 — Property AI settings. Per-property master switch + defaults for
 // the whole AI surface. Per-tool overrides live in PropertyAiToolSetting
@@ -156,12 +162,12 @@ export async function updatePropertyAiSettings(
 ): Promise<PropertyAiSettings> {
   const { propertyId } = input;
   if (!propertyId) {
-    throw new Error("propertyId is required.");
+    throw new BadRequestError("Falta propertyId.");
   }
 
   if (input.defaultAutomationLevel !== undefined && !isAutomationLevel(input.defaultAutomationLevel)) {
-    throw new Error(
-      `Invalid automation level. Expected one of: ${AUTOMATION_LEVELS.join(", ")}.`
+    throw new BadRequestError(
+      `Nivel de automatización no válido. Valores admitidos: ${AUTOMATION_LEVELS.join(", ")}.`
     );
   }
 
@@ -181,9 +187,9 @@ export async function updatePropertyAiSettings(
   if (effectiveLevel === "autonomous") {
     const approvedBy = effectiveConfig.autonomousApprovedBy;
     if (!approvedBy || (typeof approvedBy === "string" && approvedBy.trim() === "")) {
-      throw new Error(
-        "Autonomous automation requires configurationJson.autonomousApprovedBy to be set. " +
-          "Running fully autonomous AI for the property is a deliberate decision and must record who approved it."
+      throw new BadRequestError(
+        "El modo autónomo exige registrar quién lo aprueba en configurationJson.autonomousApprovedBy: " +
+          "activar la IA totalmente autónoma en la propiedad es una decisión deliberada y debe constar su responsable."
       );
     }
   }
@@ -249,13 +255,32 @@ export const AUTOMATION_LEVEL_LABELS: Record<AutomationLevel, string> = {
   autonomous: "autónomo"
 };
 
+/** Proveedor y gasto del mes con los que se completa el checklist (Tanda L6a, lote 4). */
+export type AiReadinessRuntime = {
+  provider: AiConfigSummary;
+  /** Suma de cost_eur del mes natural; undefined = no calculado (el check no lo afirma). */
+  mtdCostEur?: number;
+};
+
+const EUR = new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+export function formatEur(value: number): string {
+  return `${EUR.format(value)} €`;
+}
+
+/** Umbral (fracción del presupuesto) a partir del cual el check de presupuesto avisa. */
+export const BUDGET_WARN_RATIO = 0.8;
+
 /**
- * Pure (Cocoa 22 · ola 11 · qa#3): the four readiness checks of a property's
- * AI settings with `label` / `detail` in Spanish. The keys are the stable
- * contract of GET /ai-operations/property/readiness (the front maps by key);
- * the texts are what the API shows when the front knows no key.
+ * Pure (Cocoa 22 · ola 11 · qa#3): the readiness checks of a property's AI
+ * settings with `label` / `detail` in Spanish. The keys are the stable contract
+ * of GET /ai-operations/property/readiness (the front maps by key); the texts are
+ * what the API shows when the front knows no key. Tanda L6a (lote 4): after the
+ * four setting checks come, in this order, `provider` (model configured?) and
+ * `budget` (monthly budget vs month-to-date cost). `runtime` defaults to the
+ * process configuration without month-to-date cost.
  */
-export function buildAiReadinessChecks(settings: PropertyAiSettings): ReadinessCheck[] {
+export function buildAiReadinessChecks(settings: PropertyAiSettings, runtime: AiReadinessRuntime = { provider: aiConfigSummary() }): ReadinessCheck[] {
   const checks: ReadinessCheck[] = [];
 
   // 1. Master switch.
@@ -340,16 +365,74 @@ export function buildAiReadinessChecks(settings: PropertyAiSettings): ReadinessC
     };
   }
   checks.push(automationCheck);
+
+  // 5. Model provider (Tanda L6a): without a usable key the AI answers by rules and every
+  //    model function is skipped — the checklist says so instead of reporting «correcto».
+  const provider = runtime.provider;
+  let providerCheck: ReadinessCheck;
+  if (provider.configured) {
+    providerCheck = {
+      key: "provider",
+      label: "Proveedor de IA",
+      status: "ok",
+      detail: `Proveedor ${provider.provider} con modelo ${provider.models.default} (clasificación: ${provider.models.classify}).`
+    };
+  } else if (provider.reason === "provider_unsupported" || provider.reason === "model_forbidden" || provider.reason === "budget_unavailable") {
+    providerCheck = {
+      key: "provider",
+      label: "Proveedor de IA",
+      status: "error",
+      detail: `${labelFor(provider.reason)}: la IA responde por reglas hasta corregir la configuración.`
+    };
+  } else {
+    providerCheck = {
+      key: "provider",
+      label: "Proveedor de IA",
+      status: "warn",
+      detail: "Sin modelo configurado: la IA responde por reglas y las funciones de modelo quedan omitidas."
+    };
+  }
+  checks.push(providerCheck);
+
+  // 6. Monthly budget (Tanda L6a): configurationJson.monthlyBudgetEur or the configured default,
+  //    against the month-to-date cost of ai_tool_calls.
+  const budgetEur = monthlyBudgetEurOf(settings.configurationJson, provider.monthlyBudgetEurDefault);
+  let budgetCheck: ReadinessCheck;
+  if (runtime.mtdCostEur === undefined) {
+    budgetCheck = {
+      key: "budget",
+      label: "Presupuesto de IA",
+      status: "ok",
+      detail: `Presupuesto mensual: ${formatEur(budgetEur)} (gasto del mes no calculado).`
+    };
+  } else {
+    const status = budgetStatus(runtime.mtdCostEur, budgetEur);
+    const amounts = `${formatEur(budgetEur)} (gastado ${formatEur(status.spentEur)})`;
+    if (status.exceeded) {
+      budgetCheck = { key: "budget", label: "Presupuesto de IA", status: "error", detail: `Presupuesto mensual agotado: ${amounts}.` };
+    } else if (budgetEur > 0 && status.spentEur >= budgetEur * BUDGET_WARN_RATIO) {
+      budgetCheck = { key: "budget", label: "Presupuesto de IA", status: "warn", detail: `Presupuesto mensual casi agotado: ${amounts}.` };
+    } else {
+      budgetCheck = { key: "budget", label: "Presupuesto de IA", status: "ok", detail: `Presupuesto mensual: ${amounts}.` };
+    }
+  }
+  checks.push(budgetCheck);
   return checks;
 }
 
 /**
  * Surface whether the property's AI is safely configured. These are the
- * minimum bars before AI should be relied on in front of guests.
+ * minimum bars before AI should be relied on in front of guests. Tanda L6a: the
+ * runtime part (provider summary without secrets and month-to-date cost) comes
+ * from lib/ai-config.ts and pipeline.service (monthToDateCostEur).
  */
 export async function aiReadiness(propertyId: string): Promise<AiReadiness> {
-  const settings = await getPropertyAiSettings(propertyId);
-  const checks = buildAiReadinessChecks(settings);
+  const [settings, property] = await Promise.all([
+    getPropertyAiSettings(propertyId),
+    propertyId ? prisma.property.findUnique({ where: { id: propertyId }, select: { organizationId: true } }) : Promise.resolve(null)
+  ]);
+  const mtdCostEur = property ? await monthToDateCostEur({ organizationId: property.organizationId, propertyId }) : 0;
+  const checks = buildAiReadinessChecks(settings, { provider: aiConfigSummary(), mtdCostEur });
   const ready = checks.every((check) => check.status === "ok");
   return { propertyId, checks, ready };
 }

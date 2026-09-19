@@ -1,8 +1,7 @@
-// Sprint 52: the pure mapping engine lives in @hotelos/ai-tools
-// (packages/ai-tools/src/onboarding/mapping-engine.ts) so the SAME logic runs
-// in both the API (stub mode) and the ai-gateway (real mode). This file
-// re-exports it at the path the sprint plan references, plus the dual-mode
-// wrapper.
+// Sprint 52 → Tanda L6a: the pure mapping engine lives in @hotelos/ai-tools
+// (packages/ai-tools/src/onboarding/mapping-engine.ts) and runs in process
+// (synchronous, deterministic). This file re-exports it at the path the sprint
+// plan references; the dual-mode wrapper and the gateway were retired.
 
 export {
   generateMappings,
@@ -12,5 +11,3 @@ export {
   type MappingType,
   type GenerateMappingsInput
 } from "@hotelos/ai-tools";
-
-export { generateMappingsDualMode } from "./dual-mode-engine.js";

@@ -3,8 +3,12 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { demoStore, type ConversationRecord, type MessageRecord, type ServiceRequestRecord, type UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import { isLlmConfigured, llmComplete } from "../../lib/llm.js";
-import { recordToolCall } from "../ai-operations/pipeline.service.js";
+import { ForbiddenError, TooManyRequestsError } from "../../lib/http-error.js";
+import { getPropertyAiSettings } from "../ai-operations/property-ai.service.js";
+import { runAiTool } from "../ai-operations/tool-runner.service.js";
+import { apiToolContextFromRunner } from "../ai-operations/tools/context.js";
+import type { NotConfiguredOutput } from "../ai-operations/tools/context.js";
+import { answerGuestQuestionTool } from "../ai-operations/tools/messaging.tools.js";
 import type { ChatAttachment, ChatAttachmentDraft, ChatAttachmentType } from "@hotelos/shared";
 
 export const GUEST_AI_DISCLOSURE =
@@ -301,72 +305,70 @@ export async function createAiReplyDraft(input: {
 
   let answer = ruleAnswer;
   let source: "ai" | "rules" = "rules";
-  let model: string | undefined;
-  let tokensInput: number | undefined;
-  let tokensOutput: number | undefined;
-  let errorMessage: string | undefined;
-  const startedAt = Date.now();
+  /** Por qué se respondió por reglas (auditoría); undefined cuando el modelo respondió. */
+  let note: string | undefined;
 
-  if (isLlmConfigured()) {
+  // Tanda L6a (lote 4): interruptores de IA de la propiedad (PropertyAiSetting.aiEnabled) y de la
+  // conversación (Conversation.aiEnabled). Con cualquiera en false se responde por reglas sin
+  // llamar al modelo ni al runner; en el resto de casos la llamada pasa por runAiTool, que evalúa
+  // las puertas (módulo, permisos, matriz de riesgo, gate, presupuesto) y es el ÚNICO que registra
+  // la fila guest_message_reply (model, tokens, costEur, latencia) y la auditoría de la herramienta.
+  const [propertyAi, conversation] = await Promise.all([
+    getPropertyAiSettings(input.context.propertyId),
+    prisma.conversation.findUnique({ where: { id: input.conversationId }, select: { aiEnabled: true } })
+  ]);
+  if (!propertyAi.aiEnabled) {
+    note = "IA desactivada en esta propiedad: respuesta por reglas.";
+  } else if (conversation && !conversation.aiEnabled) {
+    note = "IA desactivada en esta conversación: respuesta por reglas.";
+  } else {
+    // Solo idiomas del catálogo (REPLY_LANGUAGES); "auto" u otro valor = idioma del huésped.
+    const language = input.language && input.language !== "auto" && REPLY_LANGUAGES[input.language] ? input.language : undefined;
+    type ReplyInput = { guestQuestion: string; tone?: string; language?: string; conversationId: string };
+    type ReplyOutput = { text: string; model: string };
     try {
-      const langName = input.language && input.language !== "auto" ? REPLY_LANGUAGES[input.language] : undefined;
-      const languageHint = langName ? ` Responde SIEMPRE en ${langName}.` : " Responde en el mismo idioma del huésped.";
-      const toneHint = input.tone ? ` Usa un tono ${input.tone}.` : "";
-      const result = await llmComplete({
-        system:
-          "Eres el asistente de recepción de un hotel en España. Responde al mensaje del huésped de forma breve, " +
-          "cordial y profesional." +
-          languageHint +
-          toneHint +
-          " No inventes datos concretos (precios, disponibilidad, políticas): si no los sabes, indica que recepción lo confirmará. Máximo 4 frases.",
-        prompt: input.guestQuestion,
-        maxTokens: 250
+      const result = await runAiTool<ReplyInput, ReplyOutput | NotConfiguredOutput>({
+        context: input.context,
+        toolName: "answerGuestQuestion",
+        recordAs: "guest_message_reply",
+        legacyStatus: { succeeded: "completed", notConfigured: "completed" },
+        input: { guestQuestion: input.guestQuestion, ...(input.tone ? { tone: input.tone } : {}), ...(language ? { language } : {}), conversationId: input.conversationId },
+        correlationId: input.correlationId,
+        source: "chat",
+        conversationId: input.conversationId,
+        execute: async (value, ctx) => {
+          // El execute del lote 3 usa promptFrom("guest_message_reply", <texto en código>): la
+          // versión publicada de ai_prompt_versions (hoy v2) sustituye al prompt en código.
+          const wrapped = await answerGuestQuestionTool.execute(value, apiToolContextFromRunner(ctx, input.context));
+          if (!("output" in wrapped)) return wrapped;
+          const text = wrapped.output.text.trim();
+          // SEC-06: la fila de telemetría no guarda el borrador (la PII vuelve restaurada del modelo): solo su tamaño y el modelo.
+          return { output: { text, model: wrapped.output.model }, telemetry: wrapped.telemetry ?? null, record: { draftChars: text.length, model: wrapped.output.model, source: "ai" } };
+        }
       });
-      if (result.configured && result.text) {
-        answer = result.text;
+      if (result.status === "executed" && result.configured && (result.output as ReplyOutput).text) {
+        answer = (result.output as ReplyOutput).text;
         source = "ai";
-        model = result.model;
-        tokensInput = result.tokensInput;
-        tokensOutput = result.tokensOutput;
+      } else if (result.status === "executed") {
+        const output = result.output as NotConfiguredOutput | undefined;
+        note = output?.reason === "refusal" ? "El modelo rechazó la petición: respuesta por reglas." : "Sin modelo configurado: respuesta por reglas.";
+      } else if (result.status === "denied") {
+        note = `${result.message.replace(/\.$/, "")}: respuesta por reglas.`;
+      } else {
+        note = "El borrador ha quedado pendiente de confirmación: respuesta por reglas.";
       }
     } catch (error) {
-      // Provider/network failure — keep the deterministic fallback, but record it.
-      errorMessage = error instanceof Error ? error.message : String(error);
+      // Presupuesto agotado (403) o límite de peticiones (429): el runner ya registró la fila;
+      // el borrador se responde por reglas con la misma forma.
+      const budget = error instanceof ForbiddenError && typeof error.details === "object" && error.details !== null && (error.details as { code?: unknown }).code === "AI_BUDGET_EXCEEDED";
+      if (!budget && !(error instanceof TooManyRequestsError)) throw error;
+      note = `${(error as Error).message.replace(/\.$/, "")}: respuesta por reglas.`;
     }
   }
 
   const draft = `${GUEST_AI_DISCLOSURE}\n\n${answer}`;
   const requiresHumanReview = /complaint|angry|refund|unsafe|emergency|queja|reembolso|urgente|emergencia/i.test(
     input.guestQuestion
-  );
-
-  // Real pipeline telemetry — this is what makes the AI Pipeline dashboard reflect reality.
-  await recordToolCall({
-    organizationId: input.context.organizationId,
-    propertyId: input.context.propertyId,
-    userId: input.context.userId,
-    conversationId: input.conversationId,
-    toolName: "guest_message_reply",
-    status: errorMessage ? "failed" : "completed",
-    inputJson: { guestQuestion: input.guestQuestion },
-    outputJson: { draft, source },
-    confidence: source === "ai" ? 0.9 : undefined,
-    requiredConfirmation: true,
-    automationLevel: "suggest_and_confirm",
-    model,
-    latencyMs: Date.now() - startedAt,
-    tokensInput,
-    tokensOutput,
-    errorMessage
-    // Best-effort telemetry: a failed insert must never break the guest reply,
-    // but it is logged so a broken AI-telemetry table does not go unnoticed.
-  }).catch((err: unknown) =>
-    console.warn("[ai.telemetry] insert failed", {
-      toolName: "guest_message_reply",
-      conversationId: input.conversationId,
-      correlationId: input.correlationId,
-      error: err instanceof Error ? err.message : String(err)
-    })
   );
 
   recordAuditEvent({
@@ -377,7 +379,7 @@ export async function createAiReplyDraft(input: {
     action: "AI_GUEST_REPLY_DRAFTED",
     entityType: "conversation",
     entityId: input.conversationId,
-    afterJson: { guestQuestion: input.guestQuestion, draft, source },
+    afterJson: { guestQuestion: input.guestQuestion, draft, source, ...(note ? { note } : {}) },
     correlationId: input.correlationId
   });
 

@@ -36,6 +36,7 @@
   "dependencies": {
     "@fastify/cors": "^11.2.0",
     "@fastify/rate-limit": "^10.3.0",
+    "@hotelos/ai-core": "workspace:*",
     "@hotelos/ai-tools": "workspace:*",
     "@hotelos/compliance": "workspace:*",
     "@hotelos/config": "workspace:*",

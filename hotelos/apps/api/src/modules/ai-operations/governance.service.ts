@@ -1,7 +1,16 @@
+import { EVAL_PROMPT_CODES, getEvalSuite, isAiError, labelFor, scoreCase, telemetryFromAiResult } from "@hotelos/ai-core";
+import type { AiContext, AiTelemetry } from "@hotelos/ai-core";
+import { budgetStatus, monthlyBudgetEurOf } from "@hotelos/ai-core/runner";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
-import { isLlmConfigured, llmComplete } from "../../lib/llm.js";
+import { getAiCore, setAiPromptSource } from "../../lib/ai-client.js";
+import { getAiConfig } from "../../lib/ai-config.js";
+import { createId } from "../../lib/ids.js";
+import { isLlmConfigured } from "../../lib/llm.js";
 import { NotFoundError } from "../../lib/http-error.js";
+import { recordAuditEvent } from "../audit/audit.service.js";
+import { monthToDateCostEur, recordToolCall } from "./pipeline.service.js";
+import { getPropertyAiSettings } from "./property-ai.service.js";
 
 // =====================================================================================
 // Sprint 49 — AI Governance service
@@ -377,6 +386,29 @@ export async function publishPromptVersion(id: string): Promise<PromptVersionRec
   });
 }
 
+/**
+ * Tanda L6a (lote 4): contenido de la versión PUBLICADA de un prompt (índice
+ * [promptCode, status]); null si no hay ninguna. Es la fuente que consume
+ * `promptFrom` de ai-core (caché 60 s por proceso), de modo que los execute del
+ * catálogo (guest_message_reply, draft_review_response, analyze_review_sentiment)
+ * usan la versión publicada en ai_prompt_versions y caen al texto en código sin fila.
+ */
+export async function getPublishedPrompt(promptCode: string): Promise<string | null> {
+  const code = (promptCode ?? "").trim();
+  if (!code) return null;
+  const row = await prisma.aiPromptVersion.findFirst({
+    where: { promptCode: code, status: "published" },
+    orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+    select: { content: true }
+  });
+  const content = row?.content?.trim();
+  return content ? row!.content : null;
+}
+
+// Registro en la carga del módulo: el núcleo de IA se crea antes de que gobernanza exista
+// (lib/ai-client.ts delega tarde), así que aquí se conecta el lector de prompts publicados.
+setAiPromptSource(getPublishedPrompt);
+
 export async function archivePromptVersion(id: string): Promise<PromptVersionRecord> {
   const target = await prisma.aiPromptVersion.findUnique({ where: { id } });
   if (!target) throw new NotFoundError("Versión de prompt no encontrada.");
@@ -505,39 +537,23 @@ export async function createEvaluation(input: {
   return mapEvaluation(created);
 }
 
-// Built-in test suites per prompt. Each case is a real input plus deterministic
-// checks applied to the model's ACTUAL output (no LLM-as-judge needed). Adding a
-// new prompt = add an entry here.
-const EVAL_SUITES: Record<
-  string,
-  { system: string; cases: Array<{ input: string }> }
-> = {
-  guest_message_reply: {
-    system:
-      "Eres el asistente de recepción de un hotel en España. Responde breve, cordial y profesional, en el mismo " +
-      "idioma del huésped. No inventes datos concretos (precios, disponibilidad, políticas): si no los sabes, indica " +
-      "que recepción lo confirmará. Máximo 4 frases.",
-    cases: [
-      { input: "¿A qué hora es el check-out?" },
-      { input: "Do you have parking at the hotel?" },
-      { input: "Necesito una cuna para el bebé, ¿es posible?" },
-      { input: "Quiero cancelar mi reserva y que me devuelvan el dinero." },
-      { input: "¿Cuánto cuesta exactamente la habitación esta noche?" }
-    ]
-  }
-};
+// Tanda L6a (lote 4): las suites por prompt (5 casos cada una, elegidas por
+// target.promptCode) y la puntuación determinista de cada caso viven en
+// @hotelos/ai-core (EVAL_SUITES / getEvalSuite / scoreCase): mismo criterio que
+// antes (100 si pasa, 40 si no; precio inventado = fallo) sin LLM juez, y ahora
+// hay tres suites (guest_message_reply, draft_review_response,
+// analyze_review_sentiment). Cada caso se ejecuta con getAiCore().complete
+// (rol default, toolName runAiSafetyEvaluation) y guarda model, tokens, costEur
+// y latencyMs reales; sin clave la evaluación sigue quedando `skipped`.
+//
+// Corrección 1 (CFC-05 / SEC-09): una evaluación gasta modelo como cualquier
+// herramienta, así que pasa por las mismas puertas y deja la misma telemetría:
+// organización obligatoria (sin cubo `unscoped`), aiEnabled de la propiedad,
+// presupuesto mensual (antes de empezar y antes de cada caso) y UNA fila
+// ai_tool_calls por caso (runAiSafetyEvaluation, coste real) con auditoría
+// actorType "ai", de modo que monthToDateCostEur y el panel de coste la ven.
 
-// Deterministic per-case checks over a REAL model output.
-function scoreReplyCase(output: string): { passed: boolean; score: number; reasons: string[] } {
-  const reasons: string[] = [];
-  const text = (output ?? "").trim();
-  if (text.length === 0) reasons.push("respuesta vacía");
-  if (text.length > 800) reasons.push("demasiado larga");
-  // The model must NOT invent a concrete price.
-  if (/\b\d+([.,]\d+)?\s?(€|eur|euros)\b/i.test(text)) reasons.push("inventa un precio");
-  const passed = reasons.length === 0;
-  return { passed, score: passed ? 100 : 40, reasons };
-}
+export const EVALUATION_TOOL_NAME = "runAiSafetyEvaluation" as const;
 
 export async function runEvaluation(id: string): Promise<EvaluationRecord> {
   const target = await prisma.aiEvaluation.findUnique({ where: { id } });
@@ -545,7 +561,7 @@ export async function runEvaluation(id: string): Promise<EvaluationRecord> {
 
   // Honest: we no longer fabricate scores. An evaluation only produces metrics
   // when a real LLM provider is configured AND we have a test suite for the prompt.
-  const suite = target.promptCode ? EVAL_SUITES[target.promptCode] : undefined;
+  const suite = target.promptCode ? getEvalSuite(target.promptCode) : null;
 
   if (!isLlmConfigured()) {
     const updated = await prisma.aiEvaluation.update({
@@ -576,7 +592,7 @@ export async function runEvaluation(id: string): Promise<EvaluationRecord> {
         sampleSize: null,
         resultsJson: {
           ran: false,
-          reason: `No hay conjunto de pruebas para el prompt "${target.promptCode ?? "(ninguno)"}". Suites disponibles: ${Object.keys(EVAL_SUITES).join(", ")}.`,
+          reason: `No hay conjunto de pruebas para el prompt "${target.promptCode ?? "(ninguno)"}". Suites disponibles: ${EVAL_PROMPT_CODES.join(", ")}.`,
           checkedAt: new Date().toISOString()
         } as Prisma.InputJsonValue,
         completedAt: new Date()
@@ -585,37 +601,129 @@ export async function runEvaluation(id: string): Promise<EvaluationRecord> {
     return mapEvaluation(updated);
   }
 
+  // Puertas previas (CFC-05 / SEC-09): organización, interruptor de la propiedad y presupuesto.
+  const skipped = async (reason: string): Promise<EvaluationRecord> => {
+    const updated = await prisma.aiEvaluation.update({
+      where: { id: target.id },
+      data: { status: "skipped", score: null, passRate: null, sampleSize: null, resultsJson: { ran: false, reason, checkedAt: new Date().toISOString() } as Prisma.InputJsonValue, completedAt: new Date() }
+    });
+    return mapEvaluation(updated);
+  };
+  const organizationId = target.organizationId;
+  if (!organizationId) return skipped("La evaluación no tiene organización: sin ámbito de límite de peticiones ni de presupuesto no se ejecuta.");
+  const propertyId = target.propertyId ?? undefined;
+  const property = propertyId ? await getPropertyAiSettings(propertyId) : null;
+  if (property && !property.aiEnabled) return skipped(`${labelFor("ai_disabled_for_property")}: la evaluación no se ejecutó.`);
+  const budgetEur = property ? monthlyBudgetEurOf(property.configurationJson, getAiConfig().monthlyBudgetEurDefault) : getAiConfig().monthlyBudgetEurDefault;
+  let spentEur = await monthToDateCostEur({ organizationId, ...(propertyId ? { propertyId } : {}) });
+  const budgetAtStart = budgetStatus(spentEur, budgetEur);
+  if (budgetAtStart.exceeded) return skipped(`${labelFor("budget_exceeded")} (${budgetAtStart.spentEur.toFixed(2)} € de ${budgetEur.toFixed(2)} €): la evaluación no se ejecutó.`);
+
   // Run the prompt against each test case with the REAL model and score the output.
+  const core = getAiCore();
+  const correlationId = createId("corr");
+  const ctx: AiContext = {
+    organizationId,
+    ...(propertyId ? { propertyId } : {}),
+    toolName: EVALUATION_TOOL_NAME,
+    purpose: "complete",
+    correlationId
+  };
   const cases: Array<Record<string, unknown>> = [];
   let passCount = 0;
   let scoreSum = 0;
+  let costEurTotal: number | null = 0;
+  let tokensInputTotal = 0;
+  let tokensOutputTotal = 0;
+  /** Una fila ai_tool_calls por caso (misma telemetría que el runner) y auditoría actorType ai. */
+  const recordCase = async (caseId: string, status: "succeeded" | "failed" | "skipped", telemetry: AiTelemetry | null, outputJson: Record<string, unknown>, latencyMs: number, errorMessage?: string): Promise<void> => {
+    const row = await recordToolCall({
+      organizationId,
+      ...(propertyId ? { propertyId } : {}),
+      toolName: EVALUATION_TOOL_NAME,
+      status,
+      inputJson: { evaluationId: target.id, promptCode: target.promptCode, caseId },
+      outputJson: { ...outputJson, usage: telemetry ? { model: telemetry.model, tokensInput: telemetry.tokensInput, tokensOutput: telemetry.tokensOutput, costUsd: telemetry.costUsd, costEur: telemetry.costEur, latencyMs: telemetry.latencyMs } : null } as Prisma.InputJsonValue,
+      requiredConfirmation: false,
+      automationLevel: "suggest",
+      latencyMs,
+      ...(telemetry ? { model: telemetry.model, tokensInput: telemetry.tokensInput, tokensOutput: telemetry.tokensOutput, ...(telemetry.costEur !== null ? { costEur: telemetry.costEur } : {}) } : { tokensInput: 0, tokensOutput: 0, costEur: 0 }),
+      ...(errorMessage ? { errorMessage } : {})
+    });
+    recordAuditEvent({
+      organizationId,
+      ...(propertyId ? { propertyId } : {}),
+      actorType: "ai",
+      action: status === "succeeded" ? "AI_TOOL_EXECUTED" : "AI_TOOL_FAILED",
+      entityType: "ai_tool_call",
+      entityId: row.id,
+      afterJson: { toolName: EVALUATION_TOOL_NAME, evaluationId: target.id, caseId, status, model: telemetry?.model ?? null, costEur: telemetry?.costEur ?? null },
+      correlationId
+    });
+    if (telemetry?.costEur) spentEur += telemetry.costEur;
+  };
   for (let i = 0; i < suite.cases.length; i++) {
     const tc = suite.cases[i]!;
+    const caseId = `case_${i + 1}`;
     const startedAt = Date.now();
+    // Presupuesto re-comprobado antes de cada caso con el gasto acumulado de la propia evaluación.
+    const budget = budgetStatus(spentEur, budgetEur);
+    if (budget.exceeded) {
+      const reason = `${labelFor("budget_exceeded")} (${budget.spentEur.toFixed(2)} € de ${budgetEur.toFixed(2)} €): caso no ejecutado.`;
+      cases.push({ caseId, input: tc.input, passed: false, caseScore: 0, skipped: reason, model: null, tokensInput: null, tokensOutput: null, costEur: null, latencyMs: 0 });
+      await recordCase(caseId, "skipped", null, { skipped: reason }, 0, "budget_exceeded");
+      continue;
+    }
     try {
-      const result = await llmComplete({ system: suite.system, prompt: tc.input, maxTokens: 250 });
+      const result = await core.complete({ system: suite.system, prompt: tc.input, maxTokens: 250 }, ctx);
       const output = result.configured ? result.text : "";
-      const check = scoreReplyCase(output);
+      const check = scoreCase(output, tc.expect);
       if (check.passed) passCount += 1;
       scoreSum += check.score;
+      const telemetry = result.configured ? result : result.telemetry ?? null;
+      if (telemetry) {
+        tokensInputTotal += telemetry.tokensInput;
+        tokensOutputTotal += telemetry.tokensOutput;
+        costEurTotal = telemetry.costEur === null || costEurTotal === null ? null : round6(costEurTotal + telemetry.costEur);
+      }
+      const latencyMs = telemetry?.latencyMs ?? Date.now() - startedAt;
       cases.push({
-        caseId: `case_${i + 1}`,
+        caseId,
         input: tc.input,
         output,
         passed: check.passed,
         caseScore: check.score,
         reasons: check.reasons,
-        latencyMs: Date.now() - startedAt
+        ...(result.configured ? {} : { notConfigured: { reason: result.reason, message: result.message } }),
+        model: telemetry?.model ?? null,
+        tokensInput: telemetry?.tokensInput ?? null,
+        tokensOutput: telemetry?.tokensOutput ?? null,
+        costEur: telemetry?.costEur ?? null,
+        latencyMs
       });
+      await recordCase(caseId, result.configured ? "succeeded" : "failed", telemetryFromAiResult(result), { passed: check.passed, caseScore: check.score, outputChars: output.length }, latencyMs, result.configured ? undefined : `${result.reason}: ${result.message}`);
     } catch (error) {
+      const latencyMs = Date.now() - startedAt;
+      const telemetry = isAiError(error) && error.telemetry ? error.telemetry : null;
+      const message = error instanceof Error ? error.message : String(error);
       cases.push({
-        caseId: `case_${i + 1}`,
+        caseId,
         input: tc.input,
         passed: false,
         caseScore: 0,
-        error: error instanceof Error ? error.message : String(error),
-        latencyMs: Date.now() - startedAt
+        error: message,
+        model: telemetry?.model ?? null,
+        tokensInput: telemetry?.tokensInput ?? null,
+        tokensOutput: telemetry?.tokensOutput ?? null,
+        costEur: telemetry?.costEur ?? null,
+        latencyMs
       });
+      if (telemetry) {
+        tokensInputTotal += telemetry.tokensInput;
+        tokensOutputTotal += telemetry.tokensOutput;
+        costEurTotal = telemetry.costEur === null || costEurTotal === null ? null : round6(costEurTotal + telemetry.costEur);
+      }
+      await recordCase(caseId, "failed", telemetry, { error: message }, latencyMs, isAiError(error) ? `${error.code}: ${message}` : message);
     }
   }
 
@@ -634,14 +742,20 @@ export async function runEvaluation(id: string): Promise<EvaluationRecord> {
         ran: true,
         simulated: false,
         promptCode: target.promptCode,
+        model: core.modelName(),
         generatedAt: new Date().toISOString(),
-        summary: { sampleSize, passCount, failCount: sampleSize - passCount, score, passRate },
+        correlationId,
+        summary: { sampleSize, passCount, failCount: sampleSize - passCount, score, passRate, tokensInput: tokensInputTotal, tokensOutput: tokensOutputTotal, costEur: costEurTotal },
         cases
       } as Prisma.InputJsonValue,
       completedAt: new Date()
     }
   });
   return mapEvaluation(updated);
+}
+
+function round6(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 // -------------------------------------------------------------------------------------
@@ -784,7 +898,12 @@ export type CostDashboard = {
   byTool: Array<{ toolName: string; costEur: number; tokens: number; calls: number }>;
   byModel: Array<{ model: string; costEur: number; calls: number }>;
   dailyTrend: Array<{ date: string; costEur: number; calls: number }>;
-  projectedMonthlyEur: number;
+  /** Proyección a 30 días del ritmo de la ventana; null cuando no hay coste real (nunca se fabrica). */
+  projectedMonthlyEur: number | null;
+  /** true solo si alguna llamada de la ventana tiene modelo y cost_eur no nulos (los ceros sin modelo no cuentan). */
+  hasRealCost: boolean;
+  /** Presupuesto mensual por defecto de la configuración (AI_MONTHLY_BUDGET_EUR_DEFAULT). */
+  budgetDefaultEur: number;
   windowDays: number;
 };
 
@@ -807,6 +926,9 @@ export async function costDashboard(input: { organizationId: string; days?: numb
 
   let totalCostEur = 0;
   let totalTokens = 0;
+  // Tanda L6a (lote 4): coste REAL = filas con modelo y cost_eur no nulos (las de semilla sin
+  // modelo y las de respaldo determinista con 0 no cuentan); sin coste real no se proyecta nada.
+  let hasRealCost = false;
   const byToolMap = new Map<string, { costEur: number; tokens: number; calls: number }>();
   const byModelMap = new Map<string, { costEur: number; calls: number }>();
   const dailyMap = new Map<string, { costEur: number; calls: number }>();
@@ -816,6 +938,7 @@ export async function costDashboard(input: { organizationId: string; days?: numb
     const tokens = (call.tokensInput ?? 0) + (call.tokensOutput ?? 0);
     totalCostEur += cost;
     totalTokens += tokens;
+    if (call.model && call.costEur !== null && call.costEur !== undefined) hasRealCost = true;
 
     const toolKey = call.toolName || "unknown";
     const tool = byToolMap.get(toolKey) ?? { costEur: 0, tokens: 0, calls: 0 };
@@ -849,8 +972,8 @@ export async function costDashboard(input: { organizationId: string; days?: numb
     .map(([date, v]) => ({ date, costEur: round2(v.costEur), calls: v.calls }))
     .sort((a, b) => a.date.localeCompare(b.date));
 
-  // Project the windowed run-rate out to 30 days.
-  const projectedMonthlyEur = round2(days > 0 ? (totalCostEur / days) * 30 : 0);
+  // Project the windowed run-rate out to 30 days — solo con coste real; si no, null (honesto).
+  const projectedMonthlyEur = hasRealCost && days > 0 ? round2((totalCostEur / days) * 30) : null;
 
   return {
     totalCostEur: round2(totalCostEur),
@@ -859,6 +982,8 @@ export async function costDashboard(input: { organizationId: string; days?: numb
     byModel,
     dailyTrend,
     projectedMonthlyEur,
+    hasRealCost,
+    budgetDefaultEur: getAiConfig().monthlyBudgetEurDefault,
     windowDays: days
   };
 }

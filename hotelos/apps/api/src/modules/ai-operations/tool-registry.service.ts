@@ -343,8 +343,8 @@ export async function setPropertyToolSetting(input: {
     (registry.riskLevel === "critical" || registry.riskLevel === "high") &&
     !(requiresApprovalRole && requiresApprovalRole.trim())
   ) {
-    throw new Error(
-      `Tool "${input.toolName}" has riskLevel "${registry.riskLevel}". Autonomous automation requires an approval role (requiresApprovalRole).`
+    throw new BadRequestError(
+      `La herramienta «${input.toolName}» es de riesgo ${registry.riskLevel}: el modo autónomo exige un rol de aprobación (requiresApprovalRole).`
     );
   }
 

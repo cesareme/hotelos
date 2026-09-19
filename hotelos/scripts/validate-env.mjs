@@ -26,10 +26,11 @@
  * REDIS_URL reserved/optional, JWT_SECRET ≥32 chars and not change-me,
  * ENCRYPTION_KEY (or HOTELOS_FIELD_KEY) base64 of 32 bytes in production,
  * NODE_ENV ∈ development|test|production, booleans exactly true|false, integer
- * ranges (RATE_LIMIT_MAX, *_INTERVAL_MS ≥ 10000), enums (EMAIL_PROVIDER,
- * AI_PROVIDER, fiscal *_MODE), URLs/origins (APP_BASE_URL https in
- * production, CORS_ALLOWED_ORIGINS list), AI_PROVIDER_API_KEY required when
- * AI_PROVIDER≠none, SENTRY_DSN advisory, SES_HOSPEDAJES_CLIENT_ID /
+ * ranges (RATE_LIMIT_MAX, *_INTERVAL_MS ≥ 10000), decimals with a dot
+ * (AI_USD_EUR_RATE, AI_MONTHLY_BUDGET_EUR_DEFAULT), enums (EMAIL_PROVIDER,
+ * AI_PROVIDER — openai is retired and only warns —, fiscal *_MODE), URLs/origins
+ * (APP_BASE_URL https in production, CORS_ALLOWED_ORIGINS list),
+ * AI_PROVIDER_API_KEY required when AI_PROVIDER≠none, SENTRY_DSN advisory, SES_HOSPEDAJES_CLIENT_ID /
  * SES_HOSPEDAJES_CLIENT_SECRET / certificates required outside sandbox,
  * VeriFactu SistemaInformatico block + mTLS certificate outside sandbox,
  * production-forbidden flags (HOTELOS_ALLOW_DEMO_AUTH, RBAC_STRICT=false,
@@ -67,7 +68,12 @@ export const RETIRED_KEYS = [
   "OBJECT_STORAGE_ACCESS_KEY",
   "OBJECT_STORAGE_SECRET_KEY",
   "PAYMENT_PROVIDER_SECRET",
-  "APP_PUBLIC_API_URL"
+  "APP_PUBLIC_API_URL",
+  "AI_GATEWAY_MODE",
+  "AI_GATEWAY_URL",
+  "API_BASE_URL",
+  "OCR_PROVIDER_API_KEY",
+  "SPEECH_PROVIDER_API_KEY"
 ];
 const PLACEHOLDER_VALUES = ["", "change-me", "changeme", "todo", "your-key-here", "placeholder"];
 const DNI_CONTROL_LETTERS = "TRWAGMYFPDXBNJZSQVHLCKE";
@@ -173,6 +179,14 @@ export function checkFormat(name, spec, value, { production, pathSeverityWarn })
       return decodesTo32Bytes(value) ? null : `${name} debe ser base64 que decodifique a exactamente 32 bytes (openssl rand -base64 32).`;
     case "int": {
       if (!/^-?\d+$/.test(value)) return `${name} debe ser un entero.`;
+      const n = Number(value);
+      if (spec.min !== undefined && n < spec.min) return `${name} debe ser ≥ ${spec.min}.`;
+      if (spec.max !== undefined && n > spec.max) return `${name} debe ser ≤ ${spec.max}.`;
+      return null;
+    }
+    case "decimal": {
+      // Corrección L6a (WT-02): punto decimal obligatorio; «0,92» falla aquí en vez de degradar en silencio en el API.
+      if (!/^-?\d+(\.\d+)?$/.test(value)) return `${name} debe ser un número con punto decimal (p. ej. 0.92), sin coma.`;
       const n = Number(value);
       if (spec.min !== undefined && n < spec.min) return `${name} debe ser ≥ ${spec.min}.`;
       if (spec.max !== undefined && n > spec.max) return `${name} debe ser ≤ ${spec.max}.`;
@@ -349,7 +363,11 @@ export function validateValues(values, declared, contract, { role, isExample }) 
     warnings.push("Sin EMAIL_PROVIDER/EMAIL_PROVIDER_KEY/EMAIL_FROM las invitaciones y el reset de contraseña quedan en modo 'disabled': habrá que entregar los enlaces a mano.");
   }
   if (read("AI_PROVIDER_API_KEY") !== undefined && effective("AI_PROVIDER") === "none") {
-    warnings.push("AI_PROVIDER_API_KEY está definida pero AI_PROVIDER=none: el LLM sigue desactivado. Define AI_PROVIDER=anthropic|openai.");
+    warnings.push("AI_PROVIDER_API_KEY está definida pero AI_PROVIDER=none: el LLM sigue desactivado. Define AI_PROVIDER=anthropic.");
+  }
+  // Corrección L6a (WT-03): openai sigue en el enum por compatibilidad, pero el runtime lo trata como none.
+  if (effective("AI_PROVIDER") === "openai") {
+    warnings.push("AI_PROVIDER=openai está retirado (Tanda L6a): el API lo trata como none y responde por reglas. Usa AI_PROVIDER=anthropic.");
   }
   if (production) {
     if (read("CORS_ALLOWED_ORIGINS") === undefined && read("PILOT_PUBLIC_ORIGIN") === undefined) {

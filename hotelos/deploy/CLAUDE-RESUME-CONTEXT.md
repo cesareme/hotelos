@@ -38,7 +38,6 @@ escribas paths para git/CI, recuerda el prefijo.
 
 - apps/admin-web   · 389 archivos · ~108.000 LOC · 202 pantallas
 - apps/api         · 202 archivos · ~72.000 LOC  · 772 endpoints
-- apps/ai-gateway  · ~378 LOC
 - apps/mobile      · ~9.200 LOC (React Native + Expo)
 - apps/guest-web   · ~1.000 LOC
 - apps/worker      · scheduler de jobs
@@ -73,7 +72,7 @@ Backend api:
   (en dev · cambia en prod via .env.production)
 
 Mobile: React Native + Expo (mobile check-in con Apple/Google Wallet)
-AI: Claude provider en ai-gateway + OCR + AI booking agent + Property
+AI: núcleo @hotelos/ai-core (cliente Anthropic sobre fetch) + OCR + AI booking agent + Property
     Mapper + Front Desk Copilot
 
 # HITOS COMPLETADOS (los grandes)

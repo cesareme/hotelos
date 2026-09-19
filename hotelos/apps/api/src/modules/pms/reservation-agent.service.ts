@@ -7,10 +7,18 @@
 //              board). Works offline so the agent is useful without AI.
 //   - "none":  couldn't understand the request — we say so, no guessing.
 
+import type { JsonSchema } from "@hotelos/ai-core";
+import type { ToolRunResult } from "@hotelos/ai-core/runner";
 import { prisma } from "@hotelos/database";
+import { getAiCore } from "../../lib/ai-client.js";
 import type { UserContext } from "../../lib/demo-store.js";
+import { ForbiddenError, TooManyRequestsError } from "../../lib/http-error.js";
+import { createId } from "../../lib/ids.js";
+import { isLlmConfigured } from "../../lib/llm.js";
+import { runAiTool } from "../ai-operations/tool-runner.service.js";
+import { aiContextFor, apiToolContextFromRunner, fromAiResult } from "../ai-operations/tools/context.js";
+import type { NotConfiguredOutput } from "../ai-operations/tools/context.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import { isLlmConfigured, llmComplete } from "../../lib/llm.js";
 
 export type ReservationDraft = {
   arrivalDate?: string;
@@ -246,28 +254,108 @@ const AI_SYSTEM = `You are a hotel booking assistant. Extract a reservation from
 {"arrivalDate":"YYYY-MM-DD","departureDate":"YYYY-MM-DD","adults":2,"children":0,"roomTypeName":"Double","boardType":"BB","guestName":"Jane Doe","email":"","phone":"","specialRequests":""}
 boardType is one of RO,BB,HB,FB,AI. Omit unknown fields. Today is ${ISO(today())}. Return strictly valid JSON, no prose.`;
 
-async function parseWithAi(text: string, roomTypes: Array<{ id: string; name: string }>): Promise<ReservationParseResult | null> {
-  const result = await llmComplete({ system: AI_SYSTEM, prompt: text.slice(0, 2000), maxTokens: 400, temperature: 0.1 });
-  if (!result.configured) return null;
-  try {
-    const s = result.text.indexOf("{");
-    const e = result.text.lastIndexOf("}");
-    if (s < 0 || e < 0) return null;
-    const j = JSON.parse(result.text.slice(s, e + 1)) as ReservationDraft;
-    const rt = j.roomTypeName ? matchRoomType(j.roomTypeName, roomTypes) : {};
-    const draft: ReservationDraft = {
-      ...j,
-      roomTypeId: rt.id,
-      roomTypeName: rt.name ?? j.roomTypeName,
-      nights: j.arrivalDate && j.departureDate
-        ? Math.max(1, Math.round((Date.parse(j.departureDate) - Date.parse(j.arrivalDate)) / 86_400_000))
-        : j.nights
-    };
-    if (!draft.arrivalDate && !draft.adults && !draft.guestName) return null;
-    return { source: "ai", modelVersion: `ai-${result.model}`, confidence: 0.85, draft };
-  } catch {
-    return null;
+// Tanda L6a (lote 4): salida estructurada (output_config json_schema + validación local en
+// ai-core) en lugar de recortar llaves del texto; la llamada pasa por el tool runner
+// (parseReservationRequest, lectura low), que evalúa las puertas y registra la telemetría.
+// La fila no guarda el texto de la petición (nombre, correo, teléfono): solo su longitud y
+// las claves que el modelo rellenó. `source: "ai" | "rules" | "none"` y modelVersion intactos.
+
+const BOARD_TYPES = ["RO", "BB", "HB", "FB", "AI"] as const;
+const PARSE_STRING_KEYS = ["arrivalDate", "departureDate", "roomTypeName", "guestName", "email", "phone", "specialRequests"] as const;
+const PARSE_NUMBER_KEYS = ["adults", "children"] as const;
+
+type ParsedReservation = {
+  arrivalDate: string | null;
+  departureDate: string | null;
+  adults: number | null;
+  children: number | null;
+  roomTypeName: string | null;
+  boardType: (typeof BOARD_TYPES)[number] | null;
+  guestName: string | null;
+  email: string | null;
+  phone: string | null;
+  specialRequests: string | null;
+};
+
+const nullable = (schema: JsonSchema): JsonSchema => ({ anyOf: [schema, { type: "null" }] });
+
+export const RESERVATION_PARSE_SCHEMA: JsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [...PARSE_STRING_KEYS, ...PARSE_NUMBER_KEYS, "boardType"],
+  properties: {
+    arrivalDate: nullable({ type: "string", description: "YYYY-MM-DD" }),
+    departureDate: nullable({ type: "string", description: "YYYY-MM-DD" }),
+    adults: nullable({ type: "integer" }),
+    children: nullable({ type: "integer" }),
+    roomTypeName: nullable({ type: "string" }),
+    boardType: nullable({ type: "string", enum: [...BOARD_TYPES] }),
+    guestName: nullable({ type: "string" }),
+    email: nullable({ type: "string" }),
+    phone: nullable({ type: "string" }),
+    specialRequests: nullable({ type: "string" })
   }
+};
+
+/** Salida estructurada (nulos) → ReservationDraft (claves ausentes), como el JSON libre de antes. */
+export function draftFromParsed(parsed: ParsedReservation): ReservationDraft {
+  const draft: ReservationDraft = {};
+  for (const key of PARSE_STRING_KEYS) {
+    const value = parsed[key];
+    if (typeof value === "string" && value.trim()) draft[key] = value.trim();
+  }
+  for (const key of PARSE_NUMBER_KEYS) {
+    const value = parsed[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) draft[key] = Math.round(value);
+  }
+  if (parsed.boardType && (BOARD_TYPES as readonly string[]).includes(parsed.boardType)) draft.boardType = parsed.boardType;
+  return draft;
+}
+
+function isRunnerDenial(error: unknown): boolean {
+  if (error instanceof TooManyRequestsError) return true;
+  return error instanceof ForbiddenError && typeof error.details === "object" && error.details !== null && (error.details as { code?: unknown }).code === "AI_BUDGET_EXCEEDED";
+}
+
+async function parseWithAi(text: string, roomTypes: Array<{ id: string; name: string }>, context: UserContext, propertyId: string): Promise<ReservationParseResult | null> {
+  const scoped: UserContext = { ...context, propertyId };
+  type ParseOutput = { draft: ReservationDraft; model: string };
+  let result: ToolRunResult<ParseOutput | NotConfiguredOutput>;
+  try {
+    result = await runAiTool<{ chars: number }, ParseOutput | NotConfiguredOutput>({
+      context: scoped,
+      toolName: "parseReservationRequest",
+      input: { chars: Math.min(text.length, 2000) },
+      correlationId: createId("corr"),
+      execute: async (_value, ctx) => {
+        // temperature: ai-core la reenvía solo a los modelos con sampling (Haiku 4.5) y la descarta en Sonnet 5.
+        const aiResult = await getAiCore().structured<ParsedReservation>(
+          { system: AI_SYSTEM, prompt: text.slice(0, 2000), schema: RESERVATION_PARSE_SCHEMA, maxTokens: 400 },
+          aiContextFor(apiToolContextFromRunner(ctx, scoped), "parseReservationRequest", "extract"),
+          { temperature: 0.1 }
+        );
+        const wrapped = fromAiResult(aiResult, (value) => ({ draft: draftFromParsed(value.data), model: value.model }));
+        if (!("output" in wrapped)) return wrapped;
+        return { ...wrapped, record: { fieldsRead: Object.keys(wrapped.output.draft), model: wrapped.output.model } };
+      }
+    });
+  } catch (error) {
+    if (isRunnerDenial(error)) return null;
+    throw error;
+  }
+  if (result.status !== "executed" || !result.configured) return null;
+  const { draft: j, model } = result.output as ParseOutput;
+  const rt = j.roomTypeName ? matchRoomType(j.roomTypeName, roomTypes) : {};
+  const draft: ReservationDraft = {
+    ...j,
+    roomTypeId: rt.id,
+    roomTypeName: rt.name ?? j.roomTypeName,
+    nights: j.arrivalDate && j.departureDate
+      ? Math.max(1, Math.round((Date.parse(j.departureDate) - Date.parse(j.arrivalDate)) / 86_400_000))
+      : j.nights
+  };
+  if (!draft.arrivalDate && !draft.adults && !draft.guestName) return null;
+  return { source: "ai", modelVersion: `ai-${model}`, confidence: 0.85, draft };
 }
 
 export async function parseReservationRequest(input: {
@@ -286,9 +374,9 @@ export async function parseReservationRequest(input: {
     return { source: "none", modelVersion: "none", confidence: 0, message: "Say or type a request, e.g. \"double room for 2 adults, 3 nights from next Friday, under María García\".", draft: {} };
   }
 
-  // 1) AI when configured.
+  // 1) AI when configured (a través del tool runner; una denegación cae al parser por reglas).
   if (isLlmConfigured()) {
-    const ai = await parseWithAi(text, roomTypes);
+    const ai = await parseWithAi(text, roomTypes, input.context, input.propertyId);
     if (ai) return ai;
   }
 

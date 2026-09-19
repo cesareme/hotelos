@@ -1,7 +1,7 @@
 // Shared cursor pagination contract (Tanda 2 · REC-05 / QC-04).
 //
 // Compatibility rule: list endpoints keep returning a bare array by default
-// (every existing consumer — admin-web, mobile, ai-gateway — reads arrays).
+// (every existing consumer — admin-web, mobile — reads arrays).
 // Clients that send `?cursor=` or `?envelope=1` get `{ items, nextCursor, total }`,
 // a shape utils/toArray.ts already unwraps. Handlers always add the
 // `X-Total-Count` and `X-Next-Cursor` headers so header-aware clients can page
