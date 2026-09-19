@@ -2789,3 +2789,55 @@ por defecto de esta tanda (diseño §10.1 y runbook nuevo §10): colapso de terc
 nómina real frente a coste importado solo avisada, exclusión de las facturas de RA emitidas en
 ehotelOS, saldos para los ejercicios sin diario, relevo tras dos cierres `ok` + un trimestre
 declarado, `vat_settings` nunca creada por el importador.
+
+### 19.9 Comprobaciones tras una carga real (2026-09-19)
+
+Después de una carga real completa (plan, aperturas, diarios, libros de IVA, terceros y
+nómina) conviene repetir, en **solo lectura** (`SELECT` y `GET`), estas comprobaciones antes de
+dar la contabilidad por buena. Cada una debe tener su consulta y una cifra esperada que salga
+del preprocesado (manifiesto, canónicos, balances), nunca de un recuento escrito antes del
+troceo final; el SQL con sus valores esperados se deja junto a la carga para poder repetirlo.
+
+- **Lotes frente al manifiesto:** el número de lotes `journal` es el de partes del troceado, no
+  el de ficheros de origen (un fichero grande puede ir en dos partes; la regularización y el
+  cierre viajan dentro del diario del último mes y no son lotes). Comprobar además que ningún
+  lote quede sin la nota que identifica la carga y que filas y Σ debe bruto por parte coincidan
+  con el canónico.
+- **Cuadre por mes y por cuenta:** Σ debe = Σ haber por mes; por cuenta y mes, debe, haber y
+  neto iguales al balance canónico de Sage. El importador pasa los negativos de lado, así que
+  Σ debe = DebeP + Σ|negativos| y el invariante es el neto por cuenta.
+- **Reparto por centro:** líneas 6/7 por ejercicio, centro y grupo iguales al esperado del
+  preprocesado; 0 líneas 6/7 de asientos normales sin centro.
+- **Apertura, regularización y cierre:** apertura del ejercicio siguiente espejo del cierre
+  cuenta a cuenta; ejercicio cerrado a cero; resultado = Σ7 − Σ6 = `net_result`. Un cierre
+  importado cierra también los periodos del ejercicio (sin `closed_by`): decidir con
+  administración si se mantienen cerrados.
+- **Trazabilidad:** el número de asiento de ehotelOS no es el de Sage (partes por centro,
+  asientos a cero descartados, renumerados por fecha); la traza es `source_id` y `reference`.
+  Un recuento de «renumerados» debe filtrar por lote `journal` y patrón `N-MMDD`: los números
+  de factura de los libros de IVA también llevan guion.
+- **Eventos:** asientos `posted` de la carga frente a eventos `JournalEntryPosted`; los `.err`
+  del CLI registran las colisiones de `event_id` (no abortan el lote, pero dejan huecos en la
+  cadena de eventos que hay que anotar).
+- **API = BD:** diario (`X-Total-Count`), mayor, sumas y saldos, balance clásico, PyG y USALI por
+  centro contra las mismas consultas SQL. Los informes excluyen las parejas reversed + reversal
+  (el mayor no): un cotejo bruto por sumas no es un descuadre. El balance de cuentas anuales
+  calcula «antes» a `from − 1` y excluye `opening` de «movimientos»: una apertura importada
+  fechada el primer día del ejercicio queda fuera de ambos conjuntos y el balance PGC sale
+  descuadrado por el saldo de 129 de la apertura cuando dentro del ejercicio se aplica el
+  resultado anterior; hasta corregirlo, usar `reports/balance-sheet` para ese ejercicio.
+- **IVA:** libros = Excel de origen = canónico = BD = `GET /fiscal/vat-books` por libro y
+  trimestre; casillas del 303 por trimestre y corte mensual desde la BD; libro frente a diario
+  477/472 por trimestre con SQL agregado (el cotejo del API tiene topes y puede ser «no
+  concluyente»); los asientos de liquidación importados no alimentan la casilla 110 ni la
+  compensación; el volumen de operaciones del 390 y de `/fiscal/regime` incluye las
+  autofacturas ISP/AIB que Sage exporta en expedidas (no son ventas): no cambiar la
+  periodicidad por esa propuesta sin restarlas; las filas de libros importadas no llevan
+  centro (el desglose por hotel sale a cero).
+- **Datos personales:** 465/460/64x sin títulos de persona (el preprocesado puede fallar con
+  partículas de apellido que parecen siglas de sociedad y con nombres escritos en otro orden en
+  comentarios de 572/626/410); nunca nombres en informes, capturas ni repo (`git status` y
+  `git ls-files` sin la carpeta del piloto).
+- **Nóminas y nativos:** 640/642 por mes y origen con un solo origen por mes (Sage o lote de
+  nómina, nunca ambos); reverso del lote sintético espejo exacto; nativos idénticos a la foto
+  previa; cada diferencia de reconciliación explicada documento a documento.
