@@ -1,6 +1,22 @@
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
+import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
+import { REPUTATION_MODULE_CODE } from "../reputation/reputation-context.js";
+import { REPUTATION_LOAD_LIMIT, REPUTATION_LOAD_WINDOW_DAYS } from "../reputation/reputation-score.service.js";
+import { buildReputationSummary, emptyReputationSummary, type ReputationSummary } from "../reputation/reputation-summary.js";
+import type { ReputationDashboardDto, ReputationDashboardLegacy } from "../reputation/reputation-types.js";
+import { toReviewSourceDto } from "../reputation/review-sources.service.js";
 
-export type ReputationDashboard = {
+// Contrato heredado de `/dashboards/reputation` (776782a, líneas 3-22): se
+// conserva íntegro y se AMPLÍA de forma aditiva (Tanda T8 · lote T8-E) con el
+// índice de reputación, la distribución sobre 10, el desglose por fuente con
+// estado honesto, las categorías con impacto, la bandeja y `degraded[]`.
+// Privacidad (corrección ronda 1, HP-06): la ruta solo exige analytics.read
+// (24 plantillas) y server.ts es de otro dueño, así que aquí (a) con el módulo
+// reputation_quality apagado se responde `module_off` sin leer reseñas y (b)
+// `recentReviews[].body` es un extracto ≤ RECENT_BODY_EXCERPT caracteres (el
+// texto completo solo lo sirve GET /reputation/reviews/:id con reputation.read).
+export type ReputationDashboardLegacyShape = {
   kpis: {
     avgRating: number;
     reviewsLast7d: number;
@@ -21,164 +37,106 @@ export type ReputationDashboard = {
   }>;
 };
 
+/**
+ * Dashboard de reputación: bloque heredado + resumen T8-E (reputation-summary.ts)
+ * + `degraded` (etiquetas `reputation.reviews`, `reputation.sources`).
+ */
+export type ReputationDashboard = ReputationSummary & {
+  /** Lecturas que cayeron a su valor por defecto en esta respuesta (QC-06). */
+  degraded: string[];
+};
+
+type AssertExtends<T extends U, U> = T;
+/** Garantías de tipo: el dashboard sigue siendo el contrato heredado y el DTO compartido de reputation-types.ts. */
+export type ReputationDashboardIsLegacyCompatible = AssertExtends<ReputationDashboard, ReputationDashboardLegacyShape>;
+export type ReputationDashboardIsSharedLegacyCompatible = AssertExtends<ReputationDashboard, ReputationDashboardLegacy>;
+export type ReputationDashboardIsDtoCompatible = AssertExtends<ReputationDashboard, ReputationDashboardDto>;
+
 export type BuildReputationDashboardInput = {
   propertyId: string;
   days?: number;
 };
 
 const DEFAULT_DAYS = 30;
+const MS_PER_DAY = 86_400_000;
+/** Longitud del extracto de `recentReviews[].body` (el detalle completo exige reputation.read). */
+export const RECENT_BODY_EXCERPT = 160;
 
-function emptyDashboard(): ReputationDashboard {
-  return {
-    kpis: {
-      avgRating: 0,
-      reviewsLast7d: 0,
-      reviewsLast30d: 0,
-      pendingResponses: 0,
-      sentimentScore: 0
-    },
-    ratingDistribution: { star1: 0, star2: 0, star3: 0, star4: 0, star5: 0 },
-    reviewsBySource: [],
-    recentReviews: []
-  };
+function emptyDashboard(now: Date, days: number, status: "no_sources" | "module_off" = "no_sources"): ReputationDashboard {
+  return { ...emptyReputationSummary({ now, days, status }), degraded: [] };
 }
 
-function toNumber(value: unknown): number | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
+function excerptOf(body: string | undefined): string | undefined {
+  if (!body) return body;
+  const text = body.trim();
+  return text.length > RECENT_BODY_EXCERPT ? `${text.slice(0, RECENT_BODY_EXCERPT - 1)}…` : text;
+}
+
+/** Módulo activo según el espejo síncrono (product-modules.service.ts); un fallo de lectura cuenta como apagado, nunca lanza. */
+function moduleEnabledFor(propertyId: string): boolean {
+  try {
+    return (getEnabledModuleCodes(propertyId) as readonly string[]).includes(REPUTATION_MODULE_CODE);
+  } catch {
+    return false;
   }
-  // Prisma Decimal exposes toNumber()
-  const maybeDecimal = value as { toNumber?: () => number };
-  if (typeof maybeDecimal.toNumber === "function") {
-    const parsed = maybeDecimal.toNumber();
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function round1(value: number): number {
-  return Math.round(value * 10) / 10;
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
 }
 
 export async function buildReputationDashboard(
   input: BuildReputationDashboardInput
 ): Promise<ReputationDashboard> {
   const { propertyId } = input;
-  if (!propertyId) return emptyDashboard();
-
   const days = input.days && input.days > 0 ? Math.floor(input.days) : DEFAULT_DAYS;
   const now = new Date();
-  const since = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (!propertyId) return emptyDashboard(now, days);
+  // Módulo apagado: panel honesto `module_off` sin leer una sola reseña.
+  if (!moduleEnabledFor(propertyId)) return emptyDashboard(now, days, "module_off");
 
-  // Fetch reviews within the configured window. We use createdAt as the
-  // reference timestamp because receivedAt is optional on the model.
-  const [reviews, sources] = await Promise.all([
-    prisma.guestReview.findMany({
-      where: { propertyId, createdAt: { gte: since } },
-      orderBy: { createdAt: "desc" }
-    }),
-    prisma.reviewSource.findMany({ where: { propertyId } })
+  // Ventana de carga: 365 días para el índice (la mayor de INDEX_WINDOWS) o la
+  // pedida si es mayor; la fecha efectiva es receivedAt ?? createdAt (las filas
+  // anteriores a T8-C no tienen receivedAt). Una lectura fallida no oculta el
+  // panel: `safe` registra la etiqueta y el resumen se construye con lo que hay.
+  const loadDays = Math.max(days, REPUTATION_LOAD_WINDOW_DAYS);
+  const since = new Date(now.getTime() - loadDays * MS_PER_DAY);
+  const { safe, degraded } = createDegradedCollector("dashboards.reputation", { propertyId, days });
+
+  const [reviews, sourceRows] = await Promise.all([
+    safe(
+      "reputation.reviews",
+      prisma.guestReview.findMany({
+        where: {
+          propertyId,
+          OR: [{ receivedAt: { gte: since } }, { receivedAt: null, createdAt: { gte: since } }]
+        },
+        select: {
+          id: true,
+          source: true,
+          rating: true,
+          title: true,
+          body: true,
+          topicsJson: true,
+          createdAt: true,
+          receivedAt: true,
+          respondedAt: true
+        },
+        orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }],
+        take: REPUTATION_LOAD_LIMIT
+      }),
+      []
+    ),
+    safe(
+      "reputation.sources",
+      prisma.reviewSource.findMany({
+        where: { propertyId, status: { not: "disabled" } },
+        orderBy: { createdAt: "asc" }
+      }),
+      []
+    )
   ]);
 
-  if (reviews.length === 0) {
-    return emptyDashboard();
-  }
-
-  // Build a lookup from source/provider key → display name. Provider strings
-  // on ReviewSource match the `source` string on GuestReview.
-  const sourceNameByKey = new Map<string, string>();
-  for (const source of sources) {
-    sourceNameByKey.set(source.provider, source.provider);
-  }
-
-  const ratings: number[] = [];
-  const distribution = { star1: 0, star2: 0, star3: 0, star4: 0, star5: 0 };
-  let reviewsLast7d = 0;
-  let reviewsLast30d = 0;
-  let pendingResponses = 0;
-
-  const bySource = new Map<string, { count: number; ratingSum: number; ratingCount: number }>();
-
-  for (const review of reviews) {
-    const rating = toNumber(review.rating);
-    if (rating !== null) {
-      ratings.push(rating);
-      const bucket = Math.max(1, Math.min(5, Math.round(rating)));
-      if (bucket === 1) distribution.star1 += 1;
-      else if (bucket === 2) distribution.star2 += 1;
-      else if (bucket === 3) distribution.star3 += 1;
-      else if (bucket === 4) distribution.star4 += 1;
-      else distribution.star5 += 1;
-    }
-
-    if (review.createdAt >= sevenDaysAgo) reviewsLast7d += 1;
-    if (review.createdAt >= thirtyDaysAgo) reviewsLast30d += 1;
-
-    // Pending responses: any rated review still missing a respondedAt.
-    if (review.respondedAt === null && rating !== null) {
-      pendingResponses += 1;
-    }
-
-    const sourceKey = review.source || "unknown";
-    const sourceName = sourceNameByKey.get(sourceKey) ?? sourceKey;
-    const aggregate = bySource.get(sourceName) ?? { count: 0, ratingSum: 0, ratingCount: 0 };
-    aggregate.count += 1;
-    if (rating !== null) {
-      aggregate.ratingSum += rating;
-      aggregate.ratingCount += 1;
-    }
-    bySource.set(sourceName, aggregate);
-  }
-
-  const avgRating = ratings.length > 0
-    ? round1(ratings.reduce((total, value) => total + value, 0) / ratings.length)
-    : 0;
-
-  // Sentiment from average rating mapped to -1..+1.
-  const sentimentScore = ratings.length > 0 ? round2((avgRating - 3) / 2) : 0;
-
-  const reviewsBySource = Array.from(bySource.entries())
-    .map(([sourceName, aggregate]) => ({
-      sourceName,
-      count: aggregate.count,
-      avgRating: aggregate.ratingCount > 0 ? round1(aggregate.ratingSum / aggregate.ratingCount) : 0
-    }))
-    .sort((a, b) => b.count - a.count);
-
-  const recentReviews = reviews.slice(0, 10).map((review) => {
-    const rating = toNumber(review.rating);
-    const sourceKey = review.source || "unknown";
-    const sourceName = sourceNameByKey.get(sourceKey) ?? sourceKey;
-    return {
-      id: review.id,
-      sourceName,
-      ratingValue: rating ?? undefined,
-      title: review.title ?? undefined,
-      body: review.body ?? undefined,
-      createdAt: review.createdAt.toISOString(),
-      respondedAt: review.respondedAt ? review.respondedAt.toISOString() : undefined
-    };
-  });
-
-  return {
-    kpis: {
-      avgRating,
-      reviewsLast7d,
-      reviewsLast30d,
-      pendingResponses,
-      sentimentScore
-    },
-    ratingDistribution: distribution,
-    reviewsBySource,
-    recentReviews
-  };
+  // 0 reseñas ya no devuelve un panel vacío a ciegas: buildReputationSummary
+  // responde `no_sources` (sin fuentes activas) o `no_reviews` con las fuentes
+  // rellenas y su estado honesto.
+  const sources = sourceRows.map(toReviewSourceDto);
+  const summary = buildReputationSummary({ reviews, sources, now, days });
+  return { ...summary, recentReviews: summary.recentReviews.map((review) => ({ ...review, ...(review.body !== undefined ? { body: excerptOf(review.body) } : {}) })), degraded };
 }

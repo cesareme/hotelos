@@ -16,6 +16,15 @@
 
 import { prisma } from "@hotelos/database";
 import { createDegradedCollector } from "../../lib/degraded.js";
+// Tanda T8 (lote T8-E): índice de reputación ADITIVO junto al bloque
+// `reputation` (media simple, intacto). El módulo se comprueba en el espejo
+// síncrono antes de consultar el índice; el NPS reutiliza la regla del
+// dashboard de encuestas.
+import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
+import { REPUTATION_MODULE_CODE } from "../reputation/reputation-context.js";
+import { getReputationSnapshot, type ReputationSnapshot } from "../reputation/reputation-score.service.js";
+import type { GmReputationIndex } from "../reputation/reputation-types.js";
+import { npsFromSurveys } from "./surveys.service.js";
 
 // Explicit bounds of the reservation / snapshot reads (Tanda L2 · L2-05): the
 // windows are a month, 7-14 days ahead or ≤ 180 days of pace, so the caps
@@ -105,10 +114,55 @@ export type GmDashboard = {
     npsLast30?: number;
   };
 
+  // Tanda T8 (T8-E): índice de reputación a 30 días con estado honesto
+  // (ok · insufficient · no_reviews · no_sources · module_off); siempre presente.
+  reputationIndex?: GmReputationIndex;
+
   // QC-06: labels of the counters that fell back to 0/null/[] because their
   // query failed. Empty means every KPI above is real.
   degraded: string[];
 };
+
+/** Subconjunto del snapshot que necesita el director (tests con fixtures, sin Prisma). */
+export type GmReputationSnapshotLike = Pick<ReputationSnapshot, "status" | "index30" | "trendDelta" | "sourcesConnected" | "staleDays">;
+
+export type ComposeGmReputationIndexInput = {
+  /** null cuando el módulo está apagado o la lectura cayó al fallback. */
+  snapshot: GmReputationSnapshotLike | null;
+  /** Fuentes `connected` contadas aparte (null si esa lectura falló). */
+  sourcesConnected: number | null;
+  /** NPS de los últimos 30 días (null sin encuestas puntuadas o lectura fallida). */
+  nps30: number | null;
+  moduleEnabled: boolean;
+};
+
+/**
+ * Bloque `reputationIndex` del director (puro). Módulo apagado → `module_off`;
+ * sin snapshot con módulo activo → `no_sources`/`no_reviews` según haya fuentes
+ * conectadas (la etiqueta `reputation.index30` en `degraded[]` dice que fue un
+ * fallback); si no, el estado del índice a 30 días tal cual.
+ */
+export function composeGmReputationIndex(input: ComposeGmReputationIndexInput): GmReputationIndex {
+  const { snapshot, sourcesConnected, nps30, moduleEnabled } = input;
+  const connected = sourcesConnected ?? snapshot?.sourcesConnected ?? 0;
+  const npsBlock = nps30 !== null && Number.isFinite(nps30) ? { npsLast30: nps30 } : {};
+  if (!moduleEnabled) {
+    return { status: "module_off", reviewCount30: 0, ...npsBlock, sourcesConnected: connected, staleDays: 0 };
+  }
+  if (!snapshot) {
+    return { status: connected > 0 ? "no_reviews" : "no_sources", reviewCount30: 0, ...npsBlock, sourcesConnected: connected, staleDays: 0 };
+  }
+  return {
+    status: snapshot.status,
+    ...(typeof snapshot.index30.index === "number" ? { index30: snapshot.index30.index } : {}),
+    ...(snapshot.trendDelta !== null ? { trendDelta: snapshot.trendDelta } : {}),
+    reviewCount30: snapshot.index30.reviewCount,
+    ...(typeof snapshot.index30.responseRatePct === "number" ? { responseRatePct: snapshot.index30.responseRatePct } : {}),
+    ...npsBlock,
+    sourcesConnected: connected,
+    staleDays: snapshot.staleDays
+  };
+}
 
 // Pace endpoint: one row per stay date with on-the-books, expected
 // (forecast) and last-year comparison. Uses RevenueDailySnapshot for
@@ -405,6 +459,22 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
       reviewsLast30: reviews30._count._all
     };
   }
+
+  // Tanda T8 (T8-E): índice de reputación ADITIVO. El bloque `reputation` de
+  // arriba (media simple por createdAt, pinado por l2-paginacion.test.mts:653-666)
+  // no cambia; `reputationIndex` añade el IRE a 30 días con estado honesto.
+  // Con el módulo apagado no se consulta el índice (un tenant sin módulo no
+  // añade etiquetas a `degraded[]`: l2-robustez.test.mts:403-411); las fuentes
+  // conectadas y el NPS se leen siempre y resuelven sin error en un tenant vacío.
+  const moduleEnabled = (getEnabledModuleCodes(propertyId) as readonly string[]).includes(REPUTATION_MODULE_CODE);
+  const snapshot = moduleEnabled ? await safe("reputation.index30", getReputationSnapshot({ propertyId, now }), null) : null;
+  // El snapshot nunca lanza: si él mismo cayó al fallback (reputation.module /
+  // reputation.reviews) lo decimos con la misma etiqueta.
+  if (snapshot && snapshot.degraded.length > 0 && !degraded.includes("reputation.index30")) degraded.push("reputation.index30");
+  const sourcesConnected = await safe("reputation.sources", prisma.reviewSource.count({ where: { propertyId, status: "connected" } }), null);
+  const nps30 = await safe("reputation.nps30", npsFromSurveys(propertyId, 30), null);
+  const reputationIndex = composeGmReputationIndex({ snapshot, sourcesConnected, nps30, moduleEnabled });
+  if (reputation && nps30 !== null) reputation = { ...reputation, npsLast30: nps30 };
   void nightsYtd;
 
   const mtdByType = Array.from(revMtd.byType.entries())
@@ -778,6 +848,7 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
     },
 
     reputation,
+    reputationIndex,
     degraded
   };
 }

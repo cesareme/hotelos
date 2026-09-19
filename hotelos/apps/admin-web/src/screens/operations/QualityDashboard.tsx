@@ -5,16 +5,27 @@
 // «dashboard alojado»): CocoaPage → CocoaKpiStrip (open, critical, SLA,
 // resolution time, closed 30 d) → CocoaGrid 6/6 (cases by type · cases by
 // status as CocoaTables) → CocoaGrid 6/6 (most frequent causes as a
-// CocoaTable · recent cases as a section list). Read-only.
+// CocoaTable · recent cases as a section list).
+//
+// Tanda T8 · lote T8-G: acción de página «Nuevo caso» y transición de estado
+// desde la lista de casos recientes (quality_cases.manage) con
+// reputation/QualityCaseDrawer (POST /quality/properties/:id/cases · PATCH
+// /quality/cases/:id); el caption del KPI «SLA incumplido» usa el cálculo real
+// (kpis.slaBreachedPct sobre los casos con objetivo y kpis.fromReviews abiertos
+// por reseñas negativas) y un caso nacido de una reseña se marca como tal.
 //
 // Data: GET /dashboards/quality?propertyId=, polled every minute — only once
 // the reputation_quality module is known to be enabled (qa#14): while the
 // module list loads the page keeps its skeleton, and with the module off it
 // paints «Módulo no activado» (+ «Activar módulo» for users with modules.enable).
 
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { getUser } from "../../services/auth-storage";
+import { useNavGate } from "../../navigation/useEnabledModules";
+import { canManageQualityCases, qualityCaseTransitions, qualitySlaCaption } from "./reputation/reputation-helpers";
+import { QualityCaseDrawer, type QualityCaseDrawerMode } from "./reputation/QualityCaseDrawer";
 import { toArray } from "../../utils/toArray";
 import { ACTIONS, FIELD_LABELS, STATUS_LABELS } from "../../content/actions";
 import { treeHeaderFor } from "../tabs/tab-helpers";
@@ -48,6 +59,8 @@ type Kpis = {
   avgResolutionHours: number;
   closedLast30d: number;
   criticalOpen: number;
+  /** Tanda T8: casos abiertos por reseñas negativas (caseType review_negative). */
+  fromReviews?: number;
 };
 type CountRow = { key: string; label: string; count: number };
 type TypeRow = { caseType: string; count: number };
@@ -60,6 +73,8 @@ type QualityCase = {
   severity?: string;
   openedAt: string;
   closedAt?: string;
+  /** Tanda T8: reseña que abrió el caso (marcador «[reseña:<id>]»). */
+  reviewId?: string;
 };
 type QualityDashboardData = {
   kpis: Kpis;
@@ -69,7 +84,7 @@ type QualityDashboardData = {
   recentCases: QualityCase[];
 };
 
-const EMPTY_KPIS: Kpis = { openCases: 0, slaBreachedPct: 0, avgResolutionHours: 0, closedLast30d: 0, criticalOpen: 0 };
+const EMPTY_KPIS: Kpis = { openCases: 0, slaBreachedPct: 0, avgResolutionHours: 0, closedLast30d: 0, criticalOpen: 0, fromReviews: 0 };
 const MAX_ROWS = 12;
 
 const CRITICAL_PRIORITIES = new Set(["critical", "urgent", "high"]);
@@ -177,6 +192,11 @@ export function QualityDashboard() {
   const { data, loading, error, refresh } = useApiData<QualityDashboardData>(moduleGate.ready ? `/dashboards/quality?propertyId=${PROPERTY_ID}` : null, {
     pollIntervalMs: 60000
   });
+  // Tanda T8: «Nuevo caso» y las transiciones exigen quality_cases.manage.
+  const navGate = useNavGate(PROPERTY_ID);
+  const canManage = canManageQualityCases(navGate.grantedPermissions);
+  const currentUserId = getUser()?.userId ?? null;
+  const [caseMode, setCaseMode] = useState<QualityCaseDrawerMode | null>(null);
 
   const kpis = data?.kpis ?? EMPTY_KPIS;
   const casesByType: CountRow[] = toArray<TypeRow>(data?.casesByType).map((row) => ({ key: row.caseType, label: row.caseType, count: row.count }));
@@ -191,6 +211,7 @@ export function QualityDashboard() {
     moduleGate.status === "loading" ? "loading" : moduleDisabled ? "empty" : loading && !data ? "loading" : error && !data ? "error" : "ready";
 
   return (
+    <>
     <CocoaPage
       eyebrow={`${HEADER.eyebrow} · ${propertyName}`}
       title={HEADER.title}
@@ -203,6 +224,11 @@ export function QualityDashboard() {
               <CocoaBadge tone="danger" title={error}>
                 {STATUS_LABELS.loadError}
               </CocoaBadge>
+            ) : null}
+            {canManage ? (
+              <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => setCaseMode({ kind: "create" })}>
+                Nuevo caso
+              </CocoaButton>
             ) : null}
             <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={loading}>
               {ACTIONS.refresh}
@@ -220,7 +246,7 @@ export function QualityDashboard() {
       error={{ title: "No se pudo cargar la vista de calidad", message: error ?? undefined, onRetry: refresh }}
       commands={
         moduleGate.ready
-          ? [{ id: "quality-refresh", label: "Actualizar calidad", run: refresh }]
+          ? [{ id: "quality-refresh", label: "Actualizar calidad", run: refresh }, ...(canManage ? [{ id: "quality-new-case", label: "Nuevo caso de calidad", run: () => setCaseMode({ kind: "create" }) }] : [])]
           : moduleDisabled && disabledCopy.cta
             ? [{ id: "quality-enable-module", label: `${disabledCopy.cta} · ${HEADER.title}`, run: moduleGate.enable }]
             : []
@@ -238,7 +264,7 @@ export function QualityDashboard() {
         <CocoaKpi
           label="SLA incumplido"
           value={percent(kpis.slaBreachedPct, { maximumFractionDigits: 1 })}
-          caption="sin objetivo de SLA configurado"
+          caption={qualitySlaCaption(kpis)}
           polarity="negative-good"
           status={slaStatus(kpis.slaBreachedPct)}
         />
@@ -310,15 +336,27 @@ export function QualityDashboard() {
                 {recentCases.slice(0, MAX_ROWS).map((c) => (
                   <li key={c.id}>
                     <div className="cocoa-stack" data-gap="1" style={{ flex: "1 1 auto", minWidth: 0 }}>
-                      <div className="cocoa-row" data-gap="2">
+                      <div className="cocoa-row" data-gap="2" data-wrap="true">
                         <StatusBadge status={c.status} />
                         <SeverityBadge severity={c.severity} />
+                        {c.reviewId ? (
+                          <CocoaBadge tone="info" variant="outline" size="small" uppercase={false}>
+                            desde una reseña
+                          </CocoaBadge>
+                        ) : null}
                         <strong>{c.title}</strong>
                       </div>
-                      <span style={footnoteStyle}>
-                        Abierto el {dateTime(c.openedAt)}
-                        {c.closedAt ? ` · Cerrado el ${dateTime(c.closedAt)}` : ""}
-                      </span>
+                      <div className="cocoa-row" data-gap="2" data-justify="between" data-wrap="true">
+                        <span style={footnoteStyle}>
+                          Abierto el {dateTime(c.openedAt)}
+                          {c.closedAt ? ` · Cerrado el ${dateTime(c.closedAt)}` : ""}
+                        </span>
+                        {canManage && qualityCaseTransitions(c.status).length > 0 ? (
+                          <CocoaButton variant="plain" tone="accent" size="small" onClick={() => setCaseMode({ kind: "transition", caseId: c.id, status: c.status, title: c.title, priority: c.severity ?? null })}>
+                            Cambiar estado
+                          </CocoaButton>
+                        ) : null}
+                      </div>
                     </div>
                   </li>
                 ))}
@@ -328,5 +366,7 @@ export function QualityDashboard() {
         </CocoaSpan>
       </CocoaGrid>
     </CocoaPage>
+    <QualityCaseDrawer open={caseMode !== null} mode={caseMode} onClose={() => setCaseMode(null)} onSaved={refresh} currentUserId={currentUserId} />
+    </>
   );
 }

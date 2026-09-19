@@ -50,11 +50,15 @@ import {
  * activate it). Calls, hash handling and the scroll-into-view are untouched.
  */
 
-/** §6.2: modules whose data still lives in memory until L2 persists them. */
-export const IN_MEMORY_MODULE_CODES: readonly string[] = ["guest_data_crm_loyalty", "reputation_quality", "procurement_inventory"];
+/**
+ * §6.2: modules whose data still lives in memory until L2 persists them.
+ * Tanda T8 retiró `reputation_quality`: bandeja, fuentes, importación, casos y
+ * encuestas persisten en Prisma (motor genérico de L2 + modules/reputation).
+ */
+export const IN_MEMORY_MODULE_CODES: readonly string[] = ["guest_data_crm_loyalty", "procurement_inventory"];
 
 export const IN_MEMORY_WARNING =
-  "Los datos de Clientes y fidelización, Reputación y calidad y Compras e inventario se guardan por ahora en memoria: se pierden al reiniciar el servidor. Actívalos sabiendo que su persistencia llega en la siguiente entrega.";
+  "Los datos de Clientes y fidelización y Compras e inventario se guardan por ahora en memoria: se pierden al reiniciar el servidor. Actívalos sabiendo que su persistencia llega en la siguiente entrega.";
 
 /** Module code preselected through the URL hash (`#modulo=<code>`), or null. */
 export function moduleCodeFromHash(hash: string): string | null {

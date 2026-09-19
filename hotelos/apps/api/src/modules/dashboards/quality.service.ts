@@ -22,6 +22,10 @@ import { prisma } from "@hotelos/database";
  *    closedAt column).
  *  - All array fields default to [] and all numeric fields default to 0 when
  *    no rows are found.
+ *  - Tanda T8 (lote T8-E, aditivo): `kpis.fromReviews` cuenta los casos
+ *    abiertos de tipo `review_negative` (los abre review-alerts.service.ts) y
+ *    `recentCases[].reviewId` sale del marcador «[reseña:<id>]» que ese servicio
+ *    escribe al principio de `description`.
  */
 
 export type QualityDashboard = {
@@ -31,6 +35,8 @@ export type QualityDashboard = {
     avgResolutionHours: number;
     closedLast30d: number;
     criticalOpen: number;
+    /** Casos abiertos abiertos por reseñas negativas (caseType `review_negative`). */
+    fromReviews: number;
   };
   casesByType: Array<{ caseType: string; count: number }>;
   casesByStatus: Array<{ status: string; count: number }>;
@@ -42,8 +48,22 @@ export type QualityDashboard = {
     severity?: string;
     openedAt: string;
     closedAt?: string;
+    /** Reseña que abrió el caso (marcador «[reseña:<id>]» de la descripción); ausente en el resto. */
+    reviewId?: string;
   }>;
 };
+
+/** caseType de los casos que abre una reseña negativa (= REVIEW_ALERT_CASE_TYPE de reputation/review-alerts.service.ts:25). */
+export const QUALITY_REVIEW_CASE_TYPE = "review_negative";
+
+const REVIEW_MARKER = /^\s*\[reseña:([^\]\s]+)\]/u;
+
+/** Id de la reseña enlazada por el marcador «[reseña:<id>]» al inicio de la descripción; `null` si no lo hay. */
+export function reviewIdFromCaseDescription(description: string | null | undefined): string | null {
+  if (!description) return null;
+  const match = REVIEW_MARKER.exec(description);
+  return match?.[1] ?? null;
+}
 
 const CRITICAL_PRIORITIES = new Set(["critical", "urgent", "high"]);
 const CLOSED_STATUSES = new Set(["resolved", "closed"]);
@@ -57,7 +77,7 @@ export async function buildQualityDashboard(input: {
   days?: number;
 }): Promise<QualityDashboard> {
   const empty: QualityDashboard = {
-    kpis: { openCases: 0, slaBreachedPct: 0, avgResolutionHours: 0, closedLast30d: 0, criticalOpen: 0 },
+    kpis: { openCases: 0, slaBreachedPct: 0, avgResolutionHours: 0, closedLast30d: 0, criticalOpen: 0, fromReviews: 0 },
     casesByType: [],
     casesByStatus: [],
     topFailureModes: [],
@@ -84,6 +104,7 @@ export async function buildQualityDashboard(input: {
   // KPI accumulators.
   let openCases = 0;
   let criticalOpen = 0;
+  let fromReviews = 0;
   let closedLast30d = 0;
   let resolvedCount = 0;
   let resolutionHoursTotal = 0;
@@ -107,6 +128,7 @@ export async function buildQualityDashboard(input: {
     if (!isClosed) {
       openCases += 1;
       if (isCritical) criticalOpen += 1;
+      if (c.caseType === QUALITY_REVIEW_CASE_TYPE) fromReviews += 1;
     }
 
     if (c.slaTargetAt) {
@@ -148,17 +170,21 @@ export async function buildQualityDashboard(input: {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
 
-  const recentCases = cases.slice(0, 10).map((c) => ({
-    id: c.id,
-    title: c.title,
-    status: c.status as string,
-    severity: c.priority ?? "normal",
-    openedAt: c.createdAt.toISOString(),
-    closedAt: c.resolvedAt ? c.resolvedAt.toISOString() : undefined
-  }));
+  const recentCases = cases.slice(0, 10).map((c) => {
+    const reviewId = reviewIdFromCaseDescription(c.description);
+    return {
+      id: c.id,
+      title: c.title,
+      status: c.status as string,
+      severity: c.priority ?? "normal",
+      openedAt: c.createdAt.toISOString(),
+      closedAt: c.resolvedAt ? c.resolvedAt.toISOString() : undefined,
+      ...(reviewId ? { reviewId } : {})
+    };
+  });
 
   return {
-    kpis: { openCases, slaBreachedPct, avgResolutionHours, closedLast30d, criticalOpen },
+    kpis: { openCases, slaBreachedPct, avgResolutionHours, closedLast30d, criticalOpen, fromReviews },
     casesByType,
     casesByStatus,
     topFailureModes,

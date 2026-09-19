@@ -6,16 +6,25 @@
 // responses, detractors) → CocoaGrid 6/6 (promoters · passives · detractors
 // as CocoaChart.Progress rows · 0–10 score distribution as CocoaChart.Bars)
 // → CocoaGrid 6/6 (recent responses as a section list · top themes as a
-// CocoaTable). Read-only.
+// CocoaTable).
+//
+// Tanda T8 · lote T8-G: acciones de página «Nueva encuesta» (surveys.manage)
+// y «Registrar respuesta» (surveys.manage; la ruta del motor exige surveys.read hasta
+// la mergeLine §1.5 de T8-MERGE-LINES.md) que abren reputation/SurveyEditorDrawer
+// (POST /surveys/properties/:id · POST /surveys/:id/responses); al guardar se
+// refresca el panel. Los permisos salen de useNavGate().grantedPermissions.
 //
 // Data: GET /dashboards/surveys, polled every 5 minutes — only once the
 // reputation_quality module is known to be enabled (qa#14): while the module
 // list loads the page keeps its skeleton, and with the module off it paints
 // «Módulo no activado» (+ «Activar módulo» for users with modules.enable).
 
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { getActiveProperty } from "../../services/activeProperty";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { useNavGate } from "../../navigation/useEnabledModules";
+import { canManageSurveys } from "./reputation/reputation-helpers";
+import { SurveyEditorDrawer, type SurveyEditorMode } from "./reputation/SurveyEditorDrawer";
 import { toArray } from "../../utils/toArray";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { treeHeaderFor } from "../tabs/tab-helpers";
@@ -133,6 +142,11 @@ export function SurveysDashboard() {
   // Module gate (qa#14): no request (and no 5-minute poll) until reputation_quality is known to be enabled.
   const moduleGate = useScreenModuleGate("SurveysDashboard");
   const { data, loading, error, refresh } = useApiData<SurveysDashboardData>(moduleGate.ready ? "/dashboards/surveys" : null, { pollIntervalMs: 300000 });
+  // Tanda T8: «Nueva encuesta» y «Registrar respuesta» exigen surveys.manage en la UI (T8F-04: un lector no registra
+  // respuestas; la ruta POST /surveys/:id/responses pasa a surveys.manage con la mergeLine §1.5).
+  const navGate = useNavGate(getActivePropertyId());
+  const canManage = canManageSurveys(navGate.grantedPermissions);
+  const [editor, setEditor] = useState<SurveyEditorMode | null>(null);
 
   const kpis = data?.kpis ?? EMPTY_KPIS;
   const scoreDistribution = toArray<ScoreBucket>(data?.scoreDistribution);
@@ -165,6 +179,7 @@ export function SurveysDashboard() {
     moduleGate.status === "loading" ? "loading" : moduleDisabled ? "empty" : loading && !data ? "loading" : error && !data ? "error" : "ready";
 
   return (
+    <>
     <CocoaPage
       eyebrow={`${HEADER.eyebrow} · ${propertyName}`}
       title={HEADER.title}
@@ -177,6 +192,16 @@ export function SurveysDashboard() {
               <CocoaBadge tone="danger" title={error}>
                 {STATUS_LABELS.loadError}
               </CocoaBadge>
+            ) : null}
+            {canManage ? (
+              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setEditor("response")}>
+                Registrar respuesta
+              </CocoaButton>
+            ) : null}
+            {canManage ? (
+              <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => setEditor("create")}>
+                Nueva encuesta
+              </CocoaButton>
             ) : null}
             <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={loading}>
               {ACTIONS.refresh}
@@ -194,7 +219,15 @@ export function SurveysDashboard() {
       error={{ title: "No se pudieron cargar las encuestas", message: error ?? undefined, onRetry: refresh }}
       commands={
         moduleGate.ready
-          ? [{ id: "surveys-refresh", label: "Actualizar encuestas", run: refresh }]
+          ? [
+              { id: "surveys-refresh", label: "Actualizar encuestas", run: refresh },
+              ...(canManage
+                ? [
+                    { id: "surveys-response", label: "Registrar respuesta de encuesta", run: () => setEditor("response") },
+                    { id: "surveys-create", label: "Nueva encuesta", run: () => setEditor("create") }
+                  ]
+                : [])
+            ]
           : moduleDisabled && disabledCopy.cta
             ? [{ id: "surveys-enable-module", label: `${disabledCopy.cta} · ${HEADER.title}`, run: moduleGate.enable }]
             : []
@@ -318,5 +351,7 @@ export function SurveysDashboard() {
         </CocoaSpan>
       </CocoaGrid>
     </CocoaPage>
+    <SurveyEditorDrawer open={editor !== null} mode={editor ?? "response"} onClose={() => setEditor(null)} onSaved={refresh} />
+    </>
   );
 }

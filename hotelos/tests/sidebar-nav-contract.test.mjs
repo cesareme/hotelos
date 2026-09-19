@@ -296,7 +296,9 @@ describe("Services behind the gate", () => {
     assert.match(moduleManager, /module\.menuEntries/);
     assert.match(moduleManager, /setPropertyModuleState\(propertyId, module\.code, nextAction\)/);
     assert.match(moduleManager, /IN_MEMORY_MODULE_CODES/);
-    assert.match(moduleManager, /guest_data_crm_loyalty", "reputation_quality", "procurement_inventory"/);
+    // Tanda T8: reputation_quality ya persiste (bandeja, fuentes, importación, casos y encuestas en Prisma).
+    assert.match(moduleManager, /guest_data_crm_loyalty", "procurement_inventory"/);
+    assert.doesNotMatch(moduleManager, /"reputation_quality", "procurement_inventory"/, "reputation_quality ya no se guarda en memoria");
     assert.match(moduleManager, /export function moduleCodeFromHash\(/);
     assert.doesNotMatch(moduleManager, /apiRequest\(/, "writes go through services/modulesApi.ts");
   });

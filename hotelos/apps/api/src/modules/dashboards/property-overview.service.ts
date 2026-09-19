@@ -9,6 +9,11 @@ const OVERVIEW_MAX_MONTH_SNAPSHOTS = 62;
 // Tanda 6b (R2, fix t6b#12): the razón social shown for a centre is the sociedad's
 // (single reader); Property.legalName is the deprecated trade name.
 import { resolveLegalIdentity } from "../../lib/finance-scope.js";
+// Tanda T8 (lote T8-E, aditivo): índice de reputación a 30 días solo con el
+// módulo reputation_quality activo (espejo síncrono); cualquier fallo → null.
+import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
+import { REPUTATION_MODULE_CODE } from "../reputation/reputation-context.js";
+import { getReputationSnapshot } from "../reputation/reputation-score.service.js";
 
 /**
  * Property overview — single-property drill-down for the Portfolio dashboard.
@@ -37,6 +42,11 @@ import { resolveLegalIdentity } from "../../lib/finance-scope.js";
  *    assignedRoomId (NOT physical rooms inventory).
  *  - "pending reviews" = rated reviews still missing a respondedAt, matching
  *    reputation.service.ts. avgReviewRating averages all rated reviews.
+ *  - `guestExperience.reputationIndex30` (Tanda T8 · T8-E) is the 30-day
+ *    reputation index (0-100) when the reputation_quality module is enabled and
+ *    the index has status `ok`; otherwise null (module off, no sources, fewer
+ *    than 10 reviews, or a read failure). avgReviewRating/pendingReviews stay
+ *    untouched (pinned by tests/integration/l2-paginacion.test.mts:634-638).
  *  - Every count/sum defaults to 0 and recentReservations to [] when empty.
  *  - If the property id doesn't exist we still return the envelope with a
  *    synthetic empty `property` block so the UI can render a graceful empty
@@ -91,6 +101,8 @@ export type PropertyOverview = {
     openConversations: number;
     avgReviewRating: number;
     pendingReviews: number;
+    /** Índice de reputación a 30 días (0-100) con módulo activo y estado `ok`; si no, null. */
+    reputationIndex30: number | null;
   };
   recentReservations: Array<{
     id: string;
@@ -164,6 +176,17 @@ const FISCAL_PENDING_STATUSES = ["pending", "queued", "sent", "submitting", "ret
 // SES Hospedajes uses the SubmissionStatus enum (queued | sent | accepted |
 // rejected | failed | annulled). Count anything not yet accepted/annulled.
 const SES_PENDING_STATUSES = ["queued", "sent", "rejected", "failed"] as const;
+
+/** Índice 30 d de la propiedad; null con módulo apagado, sin índice `ok` o ante cualquier error. */
+async function loadReputationIndex30(propertyId: string): Promise<number | null> {
+  try {
+    if (!(getEnabledModuleCodes(propertyId) as readonly string[]).includes(REPUTATION_MODULE_CODE)) return null;
+    const snapshot = await getReputationSnapshot({ propertyId });
+    return snapshot.status === "ok" && typeof snapshot.index30.index === "number" ? snapshot.index30.index : null;
+  } catch {
+    return null;
+  }
+}
 
 // ---- public entrypoint ----------------------------------------------------
 
@@ -318,6 +341,7 @@ export async function buildPropertyOverview(
 
   // Guest reviews: avg rating (rated ones) + pending (rated, missing respondedAt).
   const avgReviewRating = ratedReviews._count._all > 0 ? round1(dec(ratedReviews._avg.rating)) : 0;
+  const reputationIndex30 = await loadReputationIndex30(propertyId);
 
   // --- Folio-derived figures (pending balance today + revenue MTD) ---------
   const todayReservationIds = todayReservations.map((r) => r.id);
@@ -429,7 +453,8 @@ export async function buildPropertyOverview(
     guestExperience: {
       openConversations,
       avgReviewRating,
-      pendingReviews
+      pendingReviews,
+      reputationIndex30
     },
     recentReservations
   };
