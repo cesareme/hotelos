@@ -1,0 +1,298 @@
+# Primeros pasos · ehotelOS
+
+Esta guía te enseña lo que necesitas el primer día con ehotelOS, sea cual sea tu puesto: cómo entrar, cómo está organizada la pantalla, cómo buscar cualquier cosa con ⌘K, qué es el Live Timeline, cómo cambiar de hotel, dónde está la ayuda, qué te avisa la campana y qué significan los estados de una reserva y de una habitación. Cuando termines, sigue con la guía de tu perfil (las tienes al final, en «Ver también»).
+
+## Para quién
+
+Para todo el personal del hotel, antes de abrir la guía de su perfil. Necesitas tres cosas: la dirección de tu ehotelOS (en la demostración es `http://localhost:5173`), un usuario con contraseña y un navegador actual (Chrome, Edge, Safari o Firefox). El usuario y la contraseña los crea la persona que administra ehotelOS en tu hotel o en el grupo (dirección o administración de sistema): pídeselos si no los tienes; cómo se dan de alta se explica en [60 · Sistemas](60-sistemas.md).
+
+## Cómo están hechas las capturas
+
+- Todas las capturas son del hotel de demostración «Hotel Demo Madrid Centro» (organización «Grupo Hotelero Demo»), con la cuenta de demostración `reception@example.com` / `hotelos-demo`. Los huéspedes, reservas, empresas y avisos que ves son ficticios.
+- Esa cuenta es administradora: su menú es «Mi menú (administrador)», con «9 categorías · 69 entradas · 1 por activar». Tu menú tendrá menos entradas: verás solo lo que corresponde a tu plantilla de usuario.
+- Dos capturas usan el selector «Ver como…» para enseñarte lo que ve otro perfil; lo reconoces por el aviso «Viendo como Pisos · solo menú» o «Viendo como RRHH y nóminas · solo menú». Ese selector solo cambia el menú, no los permisos (lo explica el apartado 3).
+- Tema claro, ventana de 1280 × 800 píxeles, español. En la captura de la pantalla completa se ha dejado a la vista el aviso «Faltan 1 comprobación para poner la propiedad en marcha.» porque en la demostración está siempre; en el resto está oculto con «Ahora no».
+- Las capturas son del 19 de septiembre de 2026. La demostración tiene la fecha de negocio en el 14 de septiembre (sin cierres del día desde entonces), por eso el Live Timeline muestra «Cierre nocturno pendiente · fecha de negocio 14 sept». Es un estado de la demo, no un error tuyo.
+
+## 1. Entrar en ehotelOS
+
+Ruta: pantalla pública «Inicia sesión» (`/acceso`). Si abres cualquier dirección de ehotelOS sin haber entrado, verás esta pantalla.
+
+![Pantalla «Inicia sesión» de ehotelOS con los campos «Correo electrónico» y «Contraseña», el interruptor «Recordarme», el botón «Iniciar sesión» y el enlace «¿Olvidaste tu contraseña?»](img/primeros-pasos/acceso.png)
+
+*Pantalla de acceso: no hay nada más que rellenar.*
+
+1. Abre la dirección de tu ehotelOS en el navegador. Aparece la tarjeta «Inicia sesión» con el texto «Introduce tu correo y tu contraseña para continuar.».
+2. Escribe tu «Correo electrónico» (el que te dieron al darte de alta) y tu «Contraseña». Los dos campos son obligatorios.
+3. Si trabajas siempre en el mismo ordenador, activa «Recordarme»: la próxima vez el correo vendrá ya escrito. La contraseña no se guarda nunca.
+4. Haz clic en «Iniciar sesión».
+
+**Resultado esperado.** Entras en tu página de inicio, que depende de tu perfil (recepción y dirección aterrizan en «Mi día»; otros perfiles, en su pantalla principal: lo detalla la guía de cada perfil). Arriba a la izquierda ves el nombre de tu hotel y arriba a la derecha tu nombre.
+
+**Si algo falla.**
+
+- «No se pudo iniciar sesión · Email o contraseña incorrectos.»: revisa mayúsculas y espacios. Si no recuerdas la contraseña, haz clic en «¿Olvidaste tu contraseña?»: pasas a la pantalla «Recuperar contraseña» (`/acceso/recuperar-contrasena`), que dice «Indica el email de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva.». Escribe tu correo y pulsa «Enviar enlace de recuperación»; con «Volver a iniciar sesión» regresas a la pantalla de acceso.
+- Si repites muchos intentos seguidos, ehotelOS te frena con «Demasiadas peticiones. Reintenta en unos segundos.»: espera un minuto y vuelve a probar.
+- Tu sesión caduca sola pasado un tiempo o si cierras el navegador sin «Recordarme». Cuando caduca, ehotelOS te vuelve a enseñar «Inicia sesión» en la misma dirección en la que estabas; entra de nuevo y sigues donde lo dejaste.
+- Cuando termines el turno en un ordenador compartido, cierra la sesión: haz clic en tu nombre (arriba a la derecha, botón «Menú de usuario») y después en «Cerrar sesión».
+
+> **En construcción:** en la demostración no hay correo saliente configurado, así que el enlace de «Recuperar contraseña» no llega. Si te pasa en tu hotel, pide a quien administra el sistema que te restablezca la contraseña ([60 · Sistemas](60-sistemas.md)).
+
+## 2. La pantalla
+
+Ruta de la captura: «Menú › Hoy › Live Timeline» (`/hoy/live-timeline`). Todas las pantallas de ehotelOS tienen la misma estructura: barra superior, menú lateral y área de contenido.
+
+![Pantalla completa de ehotelOS: barra superior con el selector de hotel, «Nueva reserva», el buscador, el tema «Claro», la campana con 2 avisos, el botón «?» y el usuario; aviso «Faltan 1 comprobación para poner la propiedad en marcha.»; menú lateral con «Ver como…», «Buscar en el menú» y las categorías; contenido con el Live Timeline](img/primeros-pasos/pantalla-completa.png)
+
+*La pantalla de ehotelOS con el Live Timeline abierto. El aviso amarillo de puesta en marcha es propio de la demostración.*
+
+### Barra superior (de izquierda a derecha)
+
+| Control | Qué es |
+|---|---|
+| **Nombre del hotel** («Hotel Demo Madrid Centro») | El hotel activo. Es un botón: abre la lista «Cambiar propiedad» para trabajar con otro hotel (apartado 6). Compruébalo siempre antes de un check-in o de una reserva. |
+| **«+ Nueva reserva»** (botón verde) | Abre «Recepción › Nueva reserva» desde cualquier pantalla. Solo lo ven los perfiles que pueden crear reservas (recepción, dirección, comercial); RRHH, pisos o mantenimiento no lo tienen. |
+| **Cuadro «Buscar reservas, huéspedes…»** y botón **«⌘K»** | La búsqueda global (apartado 4). Al escribir en el cuadro o pulsar el botón «⌘K» («Abrir la búsqueda (⌘K)») se abre la paleta de búsqueda. |
+| **Botón del tema** («Claro») | «Cambiar tema (claro/oscuro)». Cada clic pasa de «Claro» a «Oscuro», de «Oscuro» a «Auto» (sigue el ajuste de tu sistema) y de «Auto» a «Claro». Se recuerda en ese navegador. |
+| **Campana** («Avisos») | Los avisos que necesitan tu atención (apartado 8). El número rojo es la cantidad sin leer: en la demo, «Avisos (2 sin leer)». |
+| **«?»** («Centro de ayuda») | Recorridos guiados, guía de tu puesto y artículos de ayuda (apartado 7). |
+| **Tu nombre** («Menú de usuario») | Menú con «Mi PIN de supervisor» (un PIN de 4 a 8 dígitos con el que autorizas acciones de otros compañeros sin cederles tu sesión, si tu plantilla lo permite) y «Cerrar sesión». |
+
+### Menú lateral
+
+- Arriba, la marca «ehotelOS · Back Office». Es un botón («Ir a mi página de inicio»): te lleva a tu pantalla de inicio desde cualquier sitio.
+- «Ver como…»: solo aparece si tu cuenta puede gestionar otros perfiles (apartado 3).
+- «Buscar en el menú»: filtra las entradas del menú según escribes. Escribe «parrilla» y solo queda «Revenue › Parrilla de tarifas»; si nada coincide, el menú dice «Sin resultados · Ninguna entrada del menú coincide con «…».». Solo filtra el menú: para buscar reservas o huéspedes usa ⌘K.
+- Las **categorías**, cada una con el número de entradas y una flecha (▾). Haz clic en el nombre de la categoría para plegarla (▸) o desplegarla; así puedes dejar a la vista solo las que uses.
+- La entrada activa se marca en verde a la izquierda.
+- Una entrada atenuada con el botón «Activar módulo» (en la demo, «Operaciones › Punto de venta») pertenece a un módulo que la propiedad no ha activado: al pasar el ratón lees «Módulo no activado: Esta función pertenece a un módulo que no está activo en la propiedad.». Solo la ven quienes pueden activar módulos; para el resto, la entrada no existe.
+- Al pie, el recuento «N categorías · M entradas»: con la cuenta de demostración, «9 categorías · 69 entradas · 1 por activar». Es una forma rápida de saber qué menú tienes delante.
+
+![Menú lateral de ehotelOS con las nueve categorías plegadas: Hoy 8, Recepción 5, Operaciones 8, Comercial 5, Revenue 10, Finanzas 8, Cumplimiento 9, Informes 5, Configuración 11, y el pie «9 categorías · 69 entradas · 1 por activar»](img/primeros-pasos/menu-lateral.png)
+
+*Las nueve categorías plegadas, con el número de entradas de cada una para la cuenta de demostración.*
+
+| Categoría | Para qué sirve | Entradas (cuenta de demo) |
+|---|---|---|
+| **Hoy** | Lo que pasa hoy: Live Timeline, Mi día, Asistente ehotelOS, Turno, Cierre del día, Pendientes de aprobación, Informe IA del día, Pendientes de la IA | 8 |
+| **Recepción** | Reservas, Nueva reserva, Huéspedes, Mensajes de huéspedes, Grupos y eventos | 5 |
+| **Operaciones** | Pisos, Mantenimiento, Punto de venta (por activar), Personal y turnos, Seguridad e incidentes, Compras e inventario, Activos, Energía y agua | 8 |
+| **Comercial** | Clientes y fidelización, Reputación y calidad, Ventas adicionales, Ventas a empresas, Canales de venta | 5 |
+| **Revenue** | Panel de revenue, Parrilla de tarifas, Planes de tarifas, Reglas y recomendaciones, Histórico y previsión, Comparativa, Reunión de revenue, Competencia, Calendario de demanda, Políticas de cancelación | 10 |
+| **Finanzas** | Facturación y cobros, Tesorería, Conciliación bancaria, Contabilidad, Estados contables, Proveedores y gastos, Comisiones, Nóminas | 8 |
+| **Cumplimiento** | Bandeja de cumplimiento, Centro de cumplimiento, VeriFactu, Envíos a autoridades, Modelos AEAT, Impuestos, Registro de viajeros, Protección de datos, Sostenibilidad | 9 |
+| **Informes** | Centro de informes, Analítica, Rentabilidad por habitación, Cartera de propiedades, Rendimiento de canales | 5 |
+| **Configuración** | Puesta en marcha, Propiedad, Estructura societaria, Habitaciones y espacios, Usuarios y roles, Comunicaciones, Facturación y pagos, Contabilidad y fiscal, Módulos e integraciones, Inteligencia artificial, Sistema | 11 |
+
+### Área de contenido
+
+Cada pantalla empieza con la categoría en pequeño («HOY»), el título («Live Timeline») y una frase que explica para qué sirve. Muchas tienen un botón «Actualizar» arriba a la derecha para recargar los datos sin salir. Algunas se dividen en pestañas (por ejemplo, «Reservas» tiene «Lista · Tablero de habitaciones · Detalle · Recorrido · Importar»): están justo debajo del título.
+
+> **Nota:** el aviso «Faltan 1 comprobación para poner la propiedad en marcha.», con los botones «Ver qué falta» y «Ahora no», aparece mientras la propiedad tenga comprobaciones de puesta en marcha pendientes. En la demostración es permanente (el registro de viajeros está en modo de pruebas); «Ahora no» lo oculta hasta que vuelvas a entrar. Qué falta y cómo resolverlo se explica en [10 · Dirección](10-direccion.md) y [60 · Sistemas](60-sistemas.md).
+
+## 3. «Ver como…»: simular el menú de otro perfil
+
+Ruta: selector «Ver como…» del menú lateral, disponible en cualquier pantalla.
+
+Es un selector para quien administra ehotelOS o forma a otros: enseña el menú tal y como lo ve otra plantilla de usuario, sin cambiar de cuenta. Sirve para comprobar qué ve un compañero, para hacer capturas de formación o para seguir esta documentación desde la cuenta de demostración.
+
+1. En el menú lateral, abre el selector «Ver como…». La primera opción es tu propio menú («Mi menú (administrador)» para la cuenta de demostración; «Mi menú» para el resto). Debajo, en este orden, los 14 **perfiles de menú** (vistas): **Administración de sistema · Dirección · Propiedad · Auditoría interna · Finanzas · RRHH y nóminas · Gestión del activo · Revenue · Comercial · Administración de hotel · Recepción · Punto de venta y F&B · Mantenimiento · Pisos**. Un perfil de menú agrupa varias plantillas de usuario que ven las mismas pantallas: «Dirección» reúne las tres plantillas de dirección y «Finanzas» las de contabilidad, dirección financiera y cumplimiento. La tabla de las plantillas está en [60 · Sistemas](60-sistemas.md#12-las-plantillas-que-puedes-invitar).
+2. Elige una, por ejemplo «Pisos».
+
+**Resultado esperado.** El menú se reduce al de ese perfil y aparece el aviso verde «Viendo como Pisos · solo menú» con el botón «Salir». El pie cambia a «3 categorías · 7 entradas». También cambian la lista de pantallas que ofrece ⌘K y tu página de inicio. Para volver a tu menú, haz clic en «Salir» o vuelve a elegir «Mi menú».
+
+![Menú lateral con «Ver como…» en «Pisos»: aviso «Viendo como Pisos · solo menú» con «Salir», categorías Hoy (4), Recepción (1) y Operaciones (2) y el pie «3 categorías · 7 entradas»](img/primeros-pasos/ver-como.png)
+
+*El menú de Pisos simulado desde la cuenta de demostración.*
+
+Ten en cuenta tres cosas:
+
+- **No cambia tus permisos.** Ni te da ni te quita nada: solo cambia lo que se muestra. Por eso el aviso dice «solo menú».
+- **Se pierde al recargar.** Si pulsas F5, escribes una dirección en el navegador o vuelves a entrar, regresas a tu menú. Mientras simulas, muévete por el menú o con ⌘K, no escribiendo direcciones.
+- **Las pantallas fuera del menú simulado responden «Sin acceso».** Si mientras simulas «RRHH y nóminas» intentas abrir «Mi día» (`/hoy`), verás la pantalla «Sin acceso» con el texto «Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» y el botón «Ir a mi página de inicio». Es exactamente lo que ve un compañero con esa plantilla al abrir una dirección que no le corresponde.
+
+![Pantalla «Sin acceso» de ehotelOS simulando «RRHH y nóminas»: «Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» con el botón «Ir a mi página de inicio»; en el menú lateral, «Viendo como RRHH y nóminas · solo menú» y «3 categorías · 4 entradas»](img/primeros-pasos/sin-acceso.png)
+
+*«Sin acceso»: la pantalla existe, pero no está en el menú de ese perfil.*
+
+Hay una segunda pantalla parecida, «Módulo no activado», con el texto «Esta función pertenece a un módulo que no está activo en la propiedad.» y el botón «Activar módulo». La verás si abres una función de un módulo apagado, como «Operaciones › Punto de venta» (`/operaciones/tpv`) en la demostración. «Activar módulo» te lleva a «Menú › Configuración › Módulos e integraciones» con ese módulo preseleccionado; activar módulos es cosa de dirección o de administración de sistema ([60 · Sistemas](60-sistemas.md)).
+
+## 4. Buscar cualquier cosa con ⌘K
+
+Ruta: desde cualquier pantalla, pulsa **⌘K** (Ctrl+K en Windows y Linux), haz clic en el botón «⌘K» de la barra superior o empieza a escribir en el cuadro «Buscar reservas, huéspedes…».
+
+1. Pulsa ⌘K. Se abre la paleta con el cuadro «Buscar reserva, huésped, habitación, factura, pantalla…». Antes de escribir, la paleta lista las pantallas de tu menú agrupadas por categoría y, al final, las «Acciones»: «Abrir el centro de ayuda», «Ver avisos» y «Cambiar de propiedad».
+2. Escribe al menos dos letras. Prueba con el código de una reserva de la demo, `RES-18399`: aparece el grupo «Reservas» con «RES-18399 · Marc Vidal Puig · 2026-09-18 → 2026-09-20 · booking_com». Escribe ahora el nombre, `Marc Vidal`: encuentras la misma reserva. Escribe `Parrilla`: aparecen las pantallas «Revenue › Parrilla de tarifas» y «Parrilla de tarifas · Historial».
+3. Muévete con ↑ y ↓, abre el resultado con Intro (o haz clic) y cierra con Esc.
+
+![Paleta ⌘K de ehotelOS con «RES-18399» escrito y el resultado «RES-18399 · CHECKED_IN · Marc Vidal Puig · 2026-09-18 → 2026-09-20 · booking_com» en el grupo «Reservas»](img/primeros-pasos/busqueda-k.png)
+
+*La paleta ⌘K encuentra reservas por código o por nombre del huésped, y también pantallas por su nombre.*
+
+**Resultado esperado.** Con Intro sobre la reserva se abre su detalle («Recepción › Reservas › Detalle», con las pestañas «Resumen · Folio · Actividad · Huéspedes · Documentos»); con Intro sobre una pantalla, se abre esa pantalla.
+
+**Si algo falla.** Si no aparece nada, comprueba que has escrito dos letras o más y que el hotel activo es el correcto: ⌘K busca solo en el hotel que tienes seleccionado arriba a la izquierda. Con «Ver como…» activo, la paleta solo ofrece las pantallas del menú simulado.
+
+> **En construcción:** en los resultados de reserva, el estado y el canal salen todavía con su nombre técnico en inglés («CHECKED_IN», «booking_com») en vez de «En el hotel» y «Booking.com».
+
+## 5. Live Timeline: la primera entrada del menú
+
+Ruta: «Menú › Hoy › Live Timeline» (`/hoy/live-timeline`). Es la primera entrada de «Hoy» y la ven casi todos los perfiles (RRHH y administración de sistema, solo en lectura).
+
+El Live Timeline es el calendario de ocupación: cada fila es una habitación (agrupadas por tipo, por ejemplo «Double · 9 habitaciones»), cada barra una estancia, y la fila superior «Libres» dice cuántas habitaciones quedan libres cada día. Te mueves con «Anterior», «Hoy» y «Siguiente» o eligiendo una fecha en el selector; cambias la escala con «Día · 7», «Semana · 14» o «Mes · 30» (el número es la cantidad de días que se ven). El buscador «Código, huésped o habitación» y los filtros «Estado», «Canal» y «Tipo» reducen lo que ves. El color de cada barra indica su estado: llega hoy, en casa, sale hoy, confirmada, borrador, no-show o cancelada (las canceladas solo se ven si activas su filtro), y una habitación bloqueada por mantenimiento lleva la etiqueta «Bloqueada» (en la demo, la 108). Los contadores de encima del calendario resumen el día («19 habitaciones · 15 reservas visibles · En casa: 3 · Llegadas hoy: 4 · Salidas hoy: 4») y el amarillo «Cierre nocturno pendiente · fecha de negocio 14 sept» te recuerda que la demo lleva días sin ejecutar el cierre del día. Pasa el ratón por una barra para ver su ficha rápida y haz clic (o selecciónala y pulsa Intro) para abrir su detalle en un panel a la derecha, con «Huéspedes», «Estancia y folio» (entrada, salida, importe total, saldo pendiente y cobros), «Actividad reciente», los accesos «Ir a» (recorrido del huésped, folio y facturación, limpieza, mantenimiento, mensajes) y las «Acciones» («Check-in», «Check-out»…); se cierra con «Cerrar» o Esc. Arrastra una barra para mover la estancia o cambiar sus fechas: cada cambio pide confirmación antes de aplicarse. El grupo «Sin asignar · Reservas sin habitación» agrupa las reservas que todavía no tienen habitación.
+
+![Contenido de la pantalla «Live Timeline»: título, tarjeta de instrucciones con cinco pasos y el consejo sobre los colores, botones «Anterior · Hoy · Siguiente», selector de fecha, escala «Día · 7 / Semana · 14 / Mes · 30», buscador «Código, huésped o habitación», filtros de estado, canal y tipo, y los contadores del día](img/primeros-pasos/live-timeline.png)
+
+*Los controles del Live Timeline, con la tarjeta de instrucciones de la pantalla todavía abierta. El calendario completo se ve en la captura del apartado 2.*
+
+El capítulo completo (mover y redimensionar estancias, crear una reserva desde celdas vacías, sobreventa, teclado) está en [70 · Recepción](70-recepcion.md).
+
+## 6. Cambiar de hotel
+
+Ruta: botón con el nombre del hotel, arriba a la izquierda de la barra superior («Propiedad activa: … Cambiar propiedad»).
+
+Si tu cuenta trabaja en más de un hotel, haz clic en el nombre del hotel activo y elige otro en la lista «Cambiar propiedad» (la lista agrupa los hoteles por sociedad). ehotelOS recarga la pantalla con el nuevo hotel: todo lo que veas y hagas a partir de ahí (reservas, cobros, tareas) es de ese hotel, así que comprueba el nombre antes de cada check-in o reserva. También puedes cambiar desde ⌘K con la acción «Cambiar de propiedad». Si solo tienes un hotel, el botón te muestra ese único hotel.
+
+> **Nota:** la demostración tiene dos propiedades, «Hotel Demo Madrid Centro» (con la que están hechas todas las capturas) y «Hotel Demo Tenerife Sur», que está vacía: sin habitaciones ni reservas. Con la cuenta de demostración, que es administradora de la plataforma, la lista puede mostrar además hoteles de otras organizaciones: no los abras ni los captures.
+
+## 7. Ayuda dentro de la aplicación
+
+Tienes tres ayudas sin salir de ehotelOS: el Centro de ayuda («?»), el recorrido de bienvenida y las tarjetas de instrucciones de cada pantalla.
+
+### El Centro de ayuda («?»)
+
+1. Haz clic en «?» («Centro de ayuda») en la barra superior (o pulsa ⌘K y elige «Abrir el centro de ayuda»).
+2. Se abre el panel «Centro de ayuda» con un buscador («Buscar en la ayuda: check-in, factura, VeriFactu…») y estas secciones: **«Primeros pasos»** (el recorrido de bienvenida, «Un minuto para conocer lo esencial de la aplicación.»), **«Recorridos para <tu perfil>»** (un recorrido guiado por cada categoría de tu menú, con su número de pasos: por ejemplo «Hoy · 9 pasos», «Recepción · 6 pasos», «Finanzas · 9 pasos»), **«Cómo hacer cada tarea»** («Hacer un check-in», «Crear una reserva», «Asignar una habitación», «Cobrar y hacer el check-out», «Cerrar el día», «Buscar un huésped o una reserva»), **«Guía de tu puesto»** (una guía por perfil: dirección, propietario, cumplimiento, revenue, comercial, recepción, restauración, mantenimiento y pisos) y los **artículos** («Cómo hacer mi primer check-in», «Cómo crear una reserva nueva», «Cómo gestionar un grupo», «Cómo dividir un folio», «Cómo conectar un canal de venta (Booking.com, Expedia…)», «Cómo activar VeriFactu», el glosario hotelero y los atajos de teclado).
+3. Cierra con Esc o con el botón de cerrar del panel.
+
+### El recorrido de bienvenida
+
+La primera vez que entras, ehotelOS te propone un recorrido de un minuto: «Te damos la bienvenida a ehotelOS · ¿Hacemos un recorrido rápido de un minuto para empezar?», con «Ahora no» y «Empezar recorrido».
+
+![Aviso de bienvenida de ehotelOS sobre el Live Timeline: «Te damos la bienvenida a ehotelOS · ¿Hacemos un recorrido rápido de un minuto para empezar?», con los botones «Ahora no» y «Empezar recorrido»](img/primeros-pasos/bienvenida.png)
+
+*El aviso de bienvenida aparece abajo a la derecha la primera vez que entras.*
+
+1. Haz clic en «Empezar recorrido». Son seis pasos que van señalando la pantalla: «Te damos la bienvenida», «Tu hotel activo», «Encuentra cualquier cosa», «Tu menú, por áreas», «Avisos» y «Tu guía, siempre a mano».
+2. Avanza con «Siguiente» (o la tecla →), vuelve con «Atrás» (←) y sal cuando quieras con Esc. El último paso termina con «Entendido».
+
+**Resultado esperado.** Al terminar o al pulsar «Ahora no», el aviso no vuelve a aparecer en ese navegador. Puedes repetir el recorrido desde «?» › «Primeros pasos», y desde ahí abrir también el recorrido de tu área.
+
+### Las tarjetas de instrucciones
+
+Algunas pantallas abren con una tarjeta de instrucciones bajo el título: qué es la pantalla, cómo se usa en pasos numerados y un «Tip». Con la cuenta de demostración la tienen Live Timeline, Mi día («Mi día en recepción»), Reservas, Panel de revenue, Canales de venta, Facturación y cobros («Centro de facturación»), Centro de cumplimiento, la pestaña «Cupos» de Grupos y eventos («Cupos de tour operadores») e Impuestos («Impuestos de la propiedad»). La ves en la captura del apartado 5. Cuando ya no la necesites, ciérrala con el botón «×» («Cerrar instrucciones») de su esquina.
+
+> **Nota:** una tarjeta cerrada no vuelve a aparecer en ese navegador y hoy no hay botón para recuperarla. Si quieres releerla, la misma información está en «?» › «Guía de tu puesto» y en la guía de tu perfil de este manual.
+
+## 8. Notificaciones
+
+Ruta: campana «Avisos» de la barra superior (o ⌘K › «Ver avisos»).
+
+1. Haz clic en la campana. El número rojo sobre ella es la cantidad de avisos sin leer.
+2. Se despliega por la derecha el panel «Notificaciones», con el botón «Marcar todas como leídas» y una «✕» para cerrar («Cerrar notificaciones»). Los avisos van agrupados por fecha (por ejemplo, «Anteriores»); cada uno tiene título, fecha, una línea de explicación y su propio «Marcar como leída».
+3. Cierra con la «✕» o con Esc.
+
+**Resultado esperado.** En la demostración hay dos avisos, ambos con fecha del 14 de mayo de 2026: uno sobre un parte de viajeros al que le falta el teléfono del huésped (reserva RES-18392) y otro sobre la habitación 108, bloqueada por una avería abierta en el baño. Según el recorrido de bienvenida, la campana reúne «envíos rechazados, averías, mensajes de huéspedes y cobros».
+
+> **En construcción:** los dos avisos de la demostración están escritos en inglés («Missing guest phone», «Room 108 blocked») y no enlazan a la reserva ni a la avería. No hay más tipos de aviso que comprobar en la demo; lo que haga la campana con envíos rechazados o cobros hay que verlo en tu hotel.
+
+## 9. Vocabulario: estados de una reserva y de una habitación
+
+ehotelOS adopta un vocabulario único para los estados. Algunas pantallas todavía usan un nombre antiguo para el mismo estado; te los indicamos para que no te despisten.
+
+| Estado de la reserva | Qué significa | Cómo lo verás hoy en algunas pantallas |
+|---|---|---|
+| **Llega hoy** | Reserva confirmada cuya entrada es hoy y aún no ha hecho el check-in | «Llega hoy» en el Live Timeline |
+| **En el hotel** | El huésped ha hecho el check-in y está alojado | «En casa» en el Live Timeline y en la lista de reservas; «Alojada» / «Alojado» en Mi día; en ⌘K, «CHECKED_IN» |
+| **Sale hoy** | Alojado cuya salida es hoy y aún no ha hecho el check-out | «Sale hoy» en el Live Timeline |
+| **Salida hecha** | Ha hecho el check-out; la estancia está cerrada | «Salida» en el Live Timeline y en la lista |
+| **Confirmada** (futura) | Reserva confirmada con entrada en un día posterior a hoy | «Confirmada» en el Live Timeline y en la lista |
+| **No-show** | No se presentó y se marcó como tal | «No-show» |
+| **Cancelada** | Anulada; solo se ve con su filtro activo | «Cancelada» |
+
+| Estado de la habitación | Qué significa |
+|---|---|
+| **Limpia** | Limpiada por pisos, pendiente de inspección |
+| **Inspeccionada** | Revisada por la gobernanta; lista para vender (cuenta como vendible) |
+| **Sucia** | Pendiente de limpiar (tras una salida o una estancia) |
+| **Ocupada** | Con huésped alojado |
+| **Bloqueada** | Retirada de la venta temporalmente (por ejemplo, por una avería con parte abierto); en el Live Timeline lleva la etiqueta «Bloqueada» |
+| **Fuera de servicio** | Retirada del inventario durante más tiempo (reforma, daño); no vendible |
+
+Los detalles de cada estado y cómo se cambia (marcar limpia, inspeccionar, bloquear) están en [40 · Pisos y mantenimiento](40-pisos-mantenimiento.md) y [70 · Recepción](70-recepcion.md).
+
+### Glosario de indicadores y términos
+
+Las guías de [dirección](10-direccion.md) y [comercial y revenue](50-comercial-revenue.md) usan estos términos tal como aparecen en las pantallas. Dentro de la aplicación tienes además las entradas «Glosario» del Centro de ayuda («?»: ADR, RevPAR, GOPPAR, BAR, Allotment, Cut-off, Attrition, Rooming list, OOO, Folio, VeriFactu, SES Hospedajes…), que se abren desde su lista.
+
+| Término | Qué significa |
+|---|---|
+| **Ocupación** | Habitaciones vendidas entre habitaciones disponibles (las fuera de servicio no cuentan como disponibles), en porcentaje. |
+| **ADR** | Precio medio por habitación vendida (*average daily rate*): ingresos de alojamiento entre noches vendidas. |
+| **RevPAR** | Ingreso de alojamiento por habitación disponible: ADR × ocupación. Sirve para comparar hoteles de distinto tamaño. |
+| **TRevPAR** | Como el RevPAR, pero con todos los ingresos (alojamiento, restauración, servicios), no solo alojamiento. |
+| **GOP / GOPPAR** | Resultado operativo bruto (ingresos menos gastos de los departamentos y gastos no distribuidos, según USALI) y ese resultado por habitación disponible. Cuando la pantalla lo marca «proxy» es una estimación, no un dato contable. |
+| **USALI** | Sistema uniforme de cuentas para hoteles: la forma estándar de presentar ingresos y gastos por departamento (Habitaciones, Alimentos y bebidas…) que usa «Estados contables › USALI». |
+| **OTB** (*on the books*) | Reservas ya confirmadas para una fecha futura, contadas hoy. «Próximos 7 días (OTB)» es lo que ya tienes vendido para esa semana. |
+| **Pickup** | Reservas nuevas captadas en un periodo (por ejemplo, los últimos 7 días) para fechas futuras; puede ser neto de cancelaciones. |
+| **Pace** (ritmo) | Comparación de lo que llevas vendido para una fecha frente a lo que llevabas el año pasado a la misma distancia de esa fecha. |
+| **Forecast** (previsión) | Ocupación e ingresos que la aplicación espera para una fecha, calculados desde las reservas y el histórico. |
+| **MTD / STLY / vs LY** | Acumulado del mes hasta hoy (*month to date*); el mismo periodo del año anterior (*same time last year*); variación frente al año anterior. |
+| **BAR** | Tarifa base pública (*best available rate*) de cada tipo de habitación y día; los demás planes se derivan de ella. |
+| **Comp-set** (competencia) | Conjunto de hoteles con los que te comparas en «Revenue › Competencia». |
+| **CTA / CTD** | Restricciones de la parrilla: cerrado a la llegada (*closed to arrival*) y cerrado a la salida (*closed to departure*) en una fecha. |
+| **Cut-off** (fecha límite) | Día a partir del cual las habitaciones bloqueadas para un grupo que no se hayan confirmado vuelven a la venta libre. |
+| **Rooming list** | Lista de huéspedes que el organizador de un grupo entrega para repartir las habitaciones bloqueadas. |
+| **Attrition** | Penalización pactada con un grupo si consume menos habitaciones de las contratadas (umbral y porcentaje en la ficha del grupo). |
+| **Cupo** (*allotment*) | Habitaciones reservadas por contrato a un tour operador, con una fecha de liberación (*release*) antes de la cual debe confirmarlas. |
+| **Paridad** | Que un mismo producto se venda al mismo precio en todos los canales; las «alertas de paridad» avisan de diferencias. |
+| **NPS** | Índice de recomendación de los huéspedes (promotores menos detractores, de −100 a 100), calculado desde las encuestas. |
+| **SLA** | Plazo comprometido para atender algo (una avería, una reseña); «SLA vencido» es que ya ha pasado. |
+| **MTTR** | Tiempo medio de resolución de las órdenes de mantenimiento (*mean time to repair*), en horas. |
+| **OOO** | Fuera de servicio (*out of order*): habitación retirada del inventario vendible. |
+| **No-show** | Reserva cuyo huésped no se presentó; se marca como tal y puede aplicar penalización. |
+
+## 10. Atajos de teclado
+
+Pulsa **⌘/** en cualquier pantalla y se abre la hoja «Atajos de teclado», con las secciones «Global», «Paleta de comandos», «Pestañas de una pantalla» y «Recorrido guiado» (se cierra con Esc). La última fila de la tabla, la del Live Timeline, no está en esa hoja: la añade esta guía a partir de [70 · Recepción](70-recepcion.md#atajos-de-teclado). En Windows y Linux, sustituye ⌘ por Ctrl. Los atajos globales no actúan mientras escribes en un campo de texto.
+
+| Dónde | Atajo | Qué hace |
+|---|---|---|
+| En cualquier pantalla | **⌘K** | Buscar reservas, huéspedes, facturas y pantallas (paleta de comandos) |
+| En cualquier pantalla | **⌘/** | Ver la lista de atajos |
+| En cualquier pantalla | **⌘,** | Abrir las preferencias de apariencia (tema «Claro · Oscuro · Automático», «Reducir movimiento», «Alto contraste», notificaciones, privacidad) |
+| En cualquier pantalla | **Esc** | Cerrar el panel, diálogo o menú abierto |
+| Paleta ⌘K | **↑ ↓** · **Intro** · **Esc** | Moverse por los resultados · abrir el seleccionado · cerrar la paleta |
+| Pestañas de una pantalla | **← →** · **Inicio / Fin** · **Intro / Espacio** | Moverse entre pestañas · primera / última pestaña · abrir la pestaña seleccionada |
+| Recorrido guiado | **→** · **←** · **Esc** | Paso siguiente · paso anterior · salir del recorrido |
+| Live Timeline | **← → ↑ ↓** · **Intro** · **Esc** | Moverse entre reservas (con una barra seleccionada) · abrir el detalle · cerrar el detalle o cancelar el arrastre |
+
+## Errores frecuentes
+
+| Qué ves | Qué pasa | Qué hacer |
+|---|---|---|
+| «No se pudo iniciar sesión · Email o contraseña incorrectos.» | Correo o contraseña mal escritos | Revisa mayúsculas y espacios; si no la recuerdas, «¿Olvidaste tu contraseña?» o pide ayuda a administración de sistema |
+| «Demasiadas peticiones. Reintenta en unos segundos.» | Has repetido demasiadas veces una acción (por ejemplo, intentos de entrar) en poco tiempo | Espera un minuto y repite |
+| Vuelve a salir «Inicia sesión» mientras trabajabas | La sesión ha caducado | Entra de nuevo: sigues en la misma dirección |
+| «Sin acceso · Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» | La dirección que has abierto no está en tu menú | Pulsa «Ir a mi página de inicio». Si crees que deberías verla, pídelo a dirección ([60 · Sistemas](60-sistemas.md)) |
+| «Módulo no activado · Esta función pertenece a un módulo que no está activo en la propiedad.» | La función depende de un módulo apagado en ese hotel | Pídelo a dirección o administración de sistema; quien puede activarlo ve el botón «Activar módulo» |
+| «Sin resultados · Ninguna entrada del menú coincide con «…».» | «Buscar en el menú» no ha encontrado esa palabra | Prueba con otra palabra; para buscar reservas o huéspedes usa ⌘K |
+| ⌘K no muestra nada | Menos de dos letras escritas, o el dato es de otro hotel | Escribe dos letras o más y comprueba el hotel activo |
+| Tenías «Ver como…» activo y ha desaparecido | Has recargado la página o escrito una dirección | Vuelve a elegir el perfil en «Ver como…» y navega por el menú o con ⌘K |
+| «Faltan 1 comprobación para poner la propiedad en marcha.» vuelve a aparecer | «Ahora no» solo lo oculta durante la sesión | Es normal; desaparece cuando la propiedad complete la puesta en marcha |
+
+## Qué no hace todavía
+
+- **La IA responde por reglas.** No hay proveedor de modelo de lenguaje configurado: el «Asistente ehotelOS» (`/asistente`) lo indica con la etiqueta «Sin modelo de lenguaje» y contesta con reglas sobre tus datos; lo mismo pasa con «Dictar (IA)», los borradores de mensajes y «Pendientes de la IA».
+- **Los avisos de la demostración están en inglés** y no enlazan a la reserva o a la avería (apartado 8).
+- **Los resultados de reserva de ⌘K muestran el estado y el canal con su nombre técnico** («CHECKED_IN», «booking_com»).
+- **Una tarjeta de instrucciones cerrada no se puede volver a mostrar** desde la pantalla (apartado 7).
+- **El recorrido de bienvenida es el mismo para todos los perfiles**; los recorridos por área sí dependen de tu menú.
+- **El aviso de puesta en marcha es permanente en la demostración** porque VeriFactu y el registro de viajeros (SES.Hospedajes) están en modo de pruebas, y la fecha de negocio sigue en el 14 de septiembre de 2026 porque no se ha ejecutado «Cierre del día» desde entonces.
+- **Escribir directamente en el cuadro «Buscar reservas, huéspedes…»** abre la paleta, pero si tecleas muy rápido puede perderse la primera letra: es más seguro pulsar ⌘K o el botón «⌘K».
+
+## Ver también
+
+- [Índice del manual](README.md) · [Preguntas frecuentes](faq.md)
+- Guías por perfil: [10 · Dirección](10-direccion.md) · [20 · Administración y contabilidad](20-administracion.md) · [30 · RRHH y nóminas](30-rrhh.md) · [40 · Pisos y mantenimiento](40-pisos-mantenimiento.md) · [50 · Comercial y revenue](50-comercial-revenue.md) · [60 · Sistemas](60-sistemas.md) · [70 · Recepción](70-recepcion.md)
+- Formación: [Plan de formación](formacion/plan-de-formacion.md) · [Fichas rápidas](formacion/fichas/README.md)

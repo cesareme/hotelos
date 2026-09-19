@@ -1,0 +1,7 @@
+[
+  { "url": "/comercial/canales", "out": "docs/manual/img/comercial/canales.png", "viewAs": "comercial", "hideInstructions": true, "readyText": "Canales conectados al editor de tarifas", "wait": 1500 },
+  { "url": "/recepcion/grupos", "out": "docs/manual/img/comercial/grupos.png", "viewAs": "comercial", "hideInstructions": true, "readyText": "Próximos grupos", "wait": 1500 },
+  { "url": "/recepcion/grupos/cupos", "out": "docs/manual/img/comercial/cupos.png", "viewAs": "comercial", "hideInstructions": true, "readyText": "Habitaciones contratadas", "wait": 1800 },
+  { "url": "/comercial/reputacion", "out": "docs/manual/img/comercial/reputacion.png", "viewAs": "comercial", "hideInstructions": true, "readyText": "Fuentes de reseñas", "wait": 2000 },
+  { "url": "/comercial/clientes", "out": "docs/manual/img/comercial/clientes.png", "viewAs": "comercial", "hideInstructions": true, "readyText": "Huéspedes recientes", "wait": 1500 }
+]

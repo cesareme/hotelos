@@ -1,0 +1,99 @@
+[
+  {
+    "_nota": "Nóminas con la pestaña «Periodos» activa: el periodo 2026-09 de demo (exportado) y sus acciones «Recalcular · Exportar · Pagar · Recibos».",
+    "url": "/finanzas/nominas",
+    "out": "docs/manual/img/rrhh/nominas.png",
+    "viewAs": "rrhh",
+    "wait": 800,
+    "actions": [
+      {
+        "tab": "Periodos"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  },
+  {
+    "_nota": "Captura forzada (fixDrawer): cajón «Nuevo contrato» relleno con datos ficticios, antes de «Guardar contrato» (no se guarda nada). Quita fixDrawer cuando el defecto de los cajones esté corregido.",
+    "url": "/finanzas/nominas",
+    "out": "docs/manual/img/rrhh/nuevo-contrato.png",
+    "viewAs": "rrhh",
+    "fixDrawer": true,
+    "hideCaret": true,
+    "wait": 600,
+    "actions": [
+      {
+        "button": "Nuevo contrato"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "wait": 600
+      },
+      {
+        "fill": [
+          "[placeholder=\"Identificador de la ficha\"]",
+          "MANUAL-RRHH-ficha-01"
+        ]
+      },
+      {
+        "fill": [
+          "[placeholder=\"1800,00\"]",
+          "1650"
+        ]
+      },
+      {
+        "fill": [
+          "[placeholder=\"Grupo 5 · Oficiales administrativos\"]",
+          "Grupo 6 · Camarera de pisos"
+        ]
+      }
+    ]
+  },
+  {
+    "_nota": "Captura forzada (fixDrawer): cajón «Importar informe de coste de personal» con el CSV de ejemplo (embebido en file.content) y la vista previa (5 filas · 1 centro × mes · 26.910,00 €). «Previsualizar» no escribe nada; nunca se pulsa «Contabilizar».",
+    "url": "/finanzas/nominas",
+    "out": "docs/manual/img/rrhh/importar-coste.png",
+    "viewAs": "rrhh",
+    "fixDrawer": true,
+    "hideCaret": true,
+    "wait": 800,
+    "actions": [
+      {
+        "tab": "Coste de personal"
+      },
+      {
+        "button": "Importar informe"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "wait": 600
+      },
+      {
+        "file": {
+          "selector": ".c22-drawer input[type=file]",
+          "name": "MANUAL-RRHH-coste-personal-2026-08.csv",
+          "mimeType": "text/csv",
+          "content": "centro;mes;grupo;departamento;salario_bruto;coste_ss;coste_total;empleados\nHotel Demo Madrid Centro;2026-08;operaciones;Recepción;6.000,00;1.800,00;7.800,00;3\nHotel Demo Madrid Centro;2026-08;operaciones;Pisos;5.200,00;1.560,00;6.760,00;4\nHotel Demo Madrid Centro;2026-08;operaciones;Cocina;4.400,00;1.320,00;5.720,00;2\nHotel Demo Madrid Centro;2026-08;mantenimiento_obra;Mantenimiento;2.100,00;630,00;2.730,00;1\nHotel Demo Madrid Centro;2026-08;estructura;Administración;3.000,00;900,00;3.900,00;1\n"
+        }
+      },
+      {
+        "button": "Previsualizar"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  },
+  {
+    "_nota": "Personal y turnos con el turno y el fichaje ficticios MANUAL-RRHH creados durante el recorrido.",
+    "url": "/operaciones/personal",
+    "out": "docs/manual/img/rrhh/personal-turnos.png",
+    "viewAs": "rrhh",
+    "wait": 1500
+  }
+]

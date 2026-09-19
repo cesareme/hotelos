@@ -13,6 +13,7 @@ Monorepo pnpm de ehotelOS, PMS + ERP para grupos hoteleros españoles. `hotelos/
 | `packages/` | `ai-core` (cliente de IA, tool runner con confirmación humana, enmascarado de datos personales), `shared` (permisos RBAC), `database` (esquema Prisma, 14 migraciones en `99dc3c3`, 15 en `main` con la Tanda L3, seeds), `compliance` (VeriFactu, TicketBAI, SES, retención), `product` (33 módulos, navegación móvil), `revenue` (agregador del cuadro histórico y previsión), `ai-tools`, `integrations`, `ui`, `config`, `onboarding`. |
 | `deploy/` | Guía de instalación, scripts idempotentes, unidades systemd, Caddy y la vía Docker secundaria. |
 | `docs/` | `design/` (diseños y Cocoa 22), `runbooks/`, `audits/` (informes de cierre por tanda), `compliance/`, `api-contracts.md`. |
+| `docs/manual/` | Manual de uso por perfil, plan de formación, fichas y FAQ para el personal del hotel (índice en `docs/manual/README.md`; contrato `tests/manual-contract.test.mjs`). |
 | `scripts/` · `tests/` | Puertas de calidad (typecheck de todos los workspaces, discoverability, árbol de navegación, migraciones ↔ esquema, contrato de entorno) y contratos raíz (`node --test tests/*.test.mjs`); `tests/integration/` necesita PostgreSQL. |
 | `CLAUDE.md` | Guía de trabajo: comandos, seeds, convenciones, estado verificado por tanda y deuda técnica. |
 

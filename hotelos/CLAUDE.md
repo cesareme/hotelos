@@ -1156,6 +1156,7 @@ Antes de tomar decisiones de producto, lee:
 - `docs/audits/TANDA-8-REPUTACION-2026-09-19.md` — cierre de la Tanda T8 · Reputación y reseñas: bot diario honesto por fuente, índice 0-100, bandeja con borrador HITL, encuestas y casos, seed ficticio; mergeLines y decisiones del propietario
 - `docs/runbooks/reputacion-reviews.md` — operación del módulo de reputación: tick, estados de fuente, importación CSV, borrador y respuesta, seed/purga, puertas y degradaciones sin el parche T8-L0 (`docs/design/olas/T8-SCHEMA-PATCH.md`)
 - `docs/runbooks/auditoria-eventos.md` — ids de auditoría (16 hex desde la fusión T8), cadena hash, rotura del 2026-09-19 y vigilancia por /health checks.audit
+- `docs/manual/README.md` — manual de uso por perfil (dirección, administración, RRHH, pisos y mantenimiento, comercial y revenue, sistemas, recepción en esqueleto), plan de formación, fichas y FAQ; capturas regenerables con `docs/manual/tools/capturas.mjs`; contrato `tests/manual-contract.test.mjs`
 
 ## Primera tarea en cada sesión nueva
 

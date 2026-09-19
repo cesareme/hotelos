@@ -1,0 +1,89 @@
+[
+  {
+    "url": "/operaciones/pisos",
+    "out": "docs/manual/img/pisos/tablero.png",
+    "viewAs": "pisos",
+    "wait": 1500
+  },
+  {
+    "url": "/operaciones/pisos",
+    "out": "docs/manual/img/pisos/tarjeta-habitacion.png",
+    "viewAs": "pisos",
+    "wait": 1500,
+    "selector": "[role=\"group\"][aria-label=\"Habitación 108\"]"
+  },
+  {
+    "url": "/operaciones/pisos/mi-turno",
+    "out": "docs/manual/img/pisos/mi-turno.png",
+    "viewAs": "pisos",
+    "wait": 1500,
+    "hideInstructions": true
+  },
+  {
+    "url": "/recepcion/reservas/tablero",
+    "out": "docs/manual/img/pisos/tablero-habitaciones.png",
+    "viewAs": "pisos",
+    "wait": 1500
+  },
+  {
+    "_nota": "Captura forzada (fixDrawer): el cajón «Nueva tarea» no se muestra hoy en escritorio; se rellena y NO se pulsa «Crear tarea». Quita fixDrawer cuando el defecto de los cajones esté corregido.",
+    "url": "/operaciones/pisos",
+    "out": "docs/manual/img/pisos/nueva-tarea.png",
+    "viewAs": "pisos",
+    "fixDrawer": true,
+    "hideCaret": true,
+    "wait": 600,
+    "selector": ".c22-drawer[data-open=\"true\"]",
+    "actions": [
+      {
+        "click": "[role=\"group\"][aria-label=\"Habitación 304\"] >> text=Nueva tarea"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "wait": 600
+      },
+      {
+        "select": [
+          "#hk-task-type",
+          "deep_clean"
+        ]
+      },
+      {
+        "select": [
+          ".c22-drawer select >> nth=1",
+          "low"
+        ]
+      }
+    ]
+  },
+  {
+    "_nota": "Captura forzada (fixDrawer): el cajón «Reportar incidencia» no se muestra hoy en escritorio; se rellena y NO se pulsa «Enviar a mantenimiento». Se pulsa «Reportar» en la PRIMERA habitación del turno (la lista cambia cada día), por eso la guía no cita el número.",
+    "url": "/operaciones/pisos/mi-turno",
+    "out": "docs/manual/img/pisos/reportar-incidencia.png",
+    "viewAs": "pisos",
+    "hideInstructions": true,
+    "fixDrawer": true,
+    "hideCaret": true,
+    "wait": 600,
+    "selector": ".c22-drawer[data-open=\"true\"]",
+    "actions": [
+      {
+        "click": "[role=\"group\"][aria-label=\"Habitaciones del turno\"] [role=\"group\"][aria-label^=\"Habitación \"] >> nth=0 >> text=Reportar"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "wait": 600
+      },
+      {
+        "fill": [
+          "#housekeeping-report",
+          "MANUAL-PISOS- La lámpara de la mesilla derecha no enciende (bombilla o interruptor)."
+        ]
+      }
+    ]
+  }
+]

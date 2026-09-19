@@ -1,0 +1,58 @@
+[
+  {
+    "url": "/configuracion/usuarios",
+    "out": "docs/manual/img/sistemas/usuarios.png",
+    "viewAs": "sistemas",
+    "waitFor": "table"
+  },
+  {
+    "url": "/configuracion/comunicaciones",
+    "out": "docs/manual/img/sistemas/comunicaciones.png",
+    "viewAs": "sistemas",
+    "clip": "240,96,1040,704",
+    "waitFor": "table"
+  },
+  {
+    "url": "/configuracion/modulos",
+    "out": "docs/manual/img/sistemas/modulos.png",
+    "viewAs": "sistemas",
+    "clip": "240,96,1040,704",
+    "readyText": "Núcleo PMS"
+  },
+  {
+    "url": "/configuracion/sistema",
+    "out": "docs/manual/img/sistemas/auditoria.png",
+    "viewAs": "sistemas",
+    "clip": "240,96,1040,704",
+    "waitFor": "table"
+  },
+  {
+    "url": "/configuracion/sistema/webhooks",
+    "out": "docs/manual/img/sistemas/webhooks.png",
+    "viewAs": "sistemas",
+    "clip": "240,372,1040,428",
+    "readyText": "Nueva suscripción",
+    "_nota": "Recortada al formulario «Nueva suscripción» y a la tabla (sin el aviso «Cómo se entregan», que muestra la cabecera técnica de firma con la marca anterior); se escribe una URL de ejemplo en el campo para tapar el placeholder heredado y NO se pulsa «Crear suscripción».",
+    "hideCaret": true,
+    "actions": [
+      {
+        "waitFor": "main input[placeholder*='partner']"
+      },
+      {
+        "fill": [
+          "main input[placeholder*='partner']",
+          "https://partner.example.com/ehotelos/webhook"
+        ]
+      },
+      {
+        "wait": 400
+      }
+    ]
+  },
+  {
+    "url": "/configuracion/puesta-en-marcha",
+    "out": "docs/manual/img/sistemas/puesta-en-marcha.png",
+    "clip": "240,96,1040,704",
+    "readyText": "Preparación y salida en vivo"
+  }
+]

@@ -1,0 +1,11 @@
+[
+  { "url": "/finanzas/contabilidad/plan-de-cuentas", "out": "docs/manual/img/administracion/plan-de-cuentas.png", "viewAs": "finanzas", "waitFor": "table", "clip": "240,96,1040,704" },
+  { "url": "/finanzas/contabilidad", "out": "docs/manual/img/administracion/diario.png", "viewAs": "finanzas", "waitFor": "table", "clip": "240,96,1040,704" },
+  { "url": "/cumplimiento/modelos-aeat", "out": "docs/manual/img/administracion/modelo-303.png", "viewAs": "finanzas", "waitFor": "table", "clip": "240,96,1040,704" },
+  { "url": "/cumplimiento/modelos-aeat/libros-iva", "out": "docs/manual/img/administracion/libros-iva.png", "viewAs": "finanzas", "waitFor": "table", "clip": "240,96,1040,704" },
+  { "url": "/finanzas/facturacion/folios/cmu80mv9e0116fygb5s0xa5hu", "out": "docs/manual/img/administracion/folio.png", "viewAs": "administracion", "clip": "240,96,1040,704" },
+  { "url": "/cumplimiento/verifactu", "out": "docs/manual/img/administracion/verifactu.png", "viewAs": "finanzas", "clip": "240,96,1040,704" },
+  { "url": "/cumplimiento/registro-viajeros", "out": "docs/manual/img/administracion/registro-viajeros.png", "viewAs": "administracion", "waitFor": "table", "clip": "240,96,1040,704" },
+  { "url": "/finanzas/proveedores", "out": "docs/manual/img/administracion/proveedores.png", "viewAs": "administracion", "clip": "240,96,1040,704" },
+  { "url": "/finanzas/estados-contables", "out": "docs/manual/img/administracion/estados-contables.png", "viewAs": "finanzas", "waitFor": "table", "clip": "240,96,1040,704" }
+]

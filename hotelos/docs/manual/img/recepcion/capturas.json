@@ -1,0 +1,32 @@
+[
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/recepcion/live-timeline.png",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "wait": 1200
+  },
+  {
+    "_nota": "Detalle de la reserva ficticia RES-18399 (Marc Vidal Puig) abierto en el panel acoplado. La ficha rápida (hover) y la barra de filtros con «Cancelada» encendido se capturan a mano (ver README del manual).",
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/recepcion/live-timeline-detalle.png",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "clip": "240,96,1040,704",
+    "wait": 1200,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "click": "text=Marc Vidal Puig"
+      },
+      {
+        "waitFor": "text=Estancia y folio"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  }
+]

@@ -1,0 +1,65 @@
+[
+  {
+    "url": "/acceso",
+    "out": "docs/manual/img/primeros-pasos/acceso.png",
+    "noSession": true,
+    "waitFor": "#login-email",
+    "wait": 800
+  },
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/primeros-pasos/pantalla-completa.png",
+    "hideInstructions": true,
+    "showSetupBanner": true,
+    "waitFor": "#c22-view-as",
+    "wait": 1500
+  },
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/primeros-pasos/menu-lateral.png",
+    "hideInstructions": true,
+    "selector": "#c22-sidebar",
+    "collapse": "Hoy,Recepción,Operaciones,Comercial,Revenue,Finanzas,Cumplimiento,Informes,Configuración",
+    "waitFor": "#c22-view-as",
+    "wait": 1200
+  },
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/primeros-pasos/ver-como.png",
+    "hideInstructions": true,
+    "viewAs": "pisos",
+    "selector": "#c22-sidebar",
+    "wait": 1200
+  },
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/primeros-pasos/sin-acceso.png",
+    "hideInstructions": true,
+    "viewAs": "rrhh",
+    "pushState": "/hoy",
+    "wait": 1500
+  },
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/primeros-pasos/busqueda-k.png",
+    "hideInstructions": true,
+    "cmdk": "RES-18399",
+    "wait": 1500
+  },
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/primeros-pasos/live-timeline.png",
+    "clip": "240,49,1040,751",
+    "waitFor": "button[aria-label='Cerrar instrucciones']",
+    "wait": 1500
+  },
+  {
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/primeros-pasos/bienvenida.png",
+    "hideInstructions": true,
+    "showTour": true,
+    "clip": "640,400,640,400",
+    "waitFor": "text=Te damos la bienvenida",
+    "wait": 1200
+  }
+]

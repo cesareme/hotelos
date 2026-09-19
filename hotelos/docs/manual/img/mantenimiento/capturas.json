@@ -1,0 +1,69 @@
+[
+  {
+    "_nota": "Tablero con la ficha de la orden de demo «Aire acondicionado no enfría» abierta (clic en la tarjeta).",
+    "url": "/operaciones/mantenimiento",
+    "out": "docs/manual/img/mantenimiento/tablero-mantenimiento.png",
+    "viewAs": "mantenimiento",
+    "wait": 800,
+    "actions": [
+      {
+        "click": "text=Aire acondicionado no enfría"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  },
+  {
+    "url": "/operaciones/mantenimiento/mis-averias",
+    "out": "docs/manual/img/mantenimiento/mis-averias.png",
+    "viewAs": "mantenimiento",
+    "wait": 1500,
+    "hideInstructions": true
+  },
+  {
+    "url": "/operaciones/activos",
+    "out": "docs/manual/img/mantenimiento/activos.png",
+    "viewAs": "mantenimiento",
+    "wait": 1500
+  },
+  {
+    "_nota": "Captura forzada (fixDrawer): el cajón «Nueva orden de trabajo» no se muestra hoy en escritorio; se rellena y NO se pulsa «Crear orden». Quita fixDrawer cuando el defecto de los cajones esté corregido.",
+    "url": "/operaciones/mantenimiento",
+    "out": "docs/manual/img/mantenimiento/nueva-orden.png",
+    "viewAs": "mantenimiento",
+    "fixDrawer": true,
+    "hideCaret": true,
+    "wait": 600,
+    "selector": ".c22-drawer[data-open=\"true\"]",
+    "actions": [
+      {
+        "click": "text=Nueva orden"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "wait": 600
+      },
+      {
+        "fill": [
+          "#wo-title",
+          "Persiana del balcón atascada"
+        ]
+      },
+      {
+        "fill": [
+          "input[placeholder=\"Ej.: 108\"]",
+          "305"
+        ]
+      },
+      {
+        "fill": [
+          ".c22-drawer textarea",
+          "MANUAL-MANT- La persiana no sube; el huésped no puede abrir el balcón. Revisar el motor y la cinta."
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,4 @@
+[
+  { "url": "/revenue/historico-prevision", "out": "docs/manual/img/revenue/historico-prevision.png", "viewAs": "revenue", "hideInstructions": true, "waitFor": "main table", "wait": 1500 },
+  { "url": "/revenue/reglas", "out": "docs/manual/img/revenue/reglas.png", "viewAs": "revenue", "hideInstructions": true, "readyText": "Reglas de precio", "wait": 1200 }
+]
