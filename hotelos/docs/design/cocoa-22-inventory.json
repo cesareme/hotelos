@@ -11,15 +11,15 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 245,
-    "lines": 107434,
+    "files": 246,
+    "lines": 107741,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1241,
+    "cocoaButtons": 1243,
     "rawTables": 1,
-    "cocoaTables": 315,
+    "cocoaTables": 317,
     "rawInputs": 0,
     "cocoaInputs": 1255,
     "inlineStyles": 624,
@@ -29,17 +29,17 @@
     "rawH1": 0,
     "emoji": 0,
     "withPageHeader": 209,
-    "withTabHost": 94,
+    "withTabHost": 95,
     "debtPoints": 175
   },
   "bySize": {
-    "S": 98,
+    "S": 99,
     "M": 117,
     "L": 22,
     "XL": 8
   },
   "byArchetype": {
-    "dashboard": 95,
+    "dashboard": 96,
     "lista": 19,
     "detalle": 3,
     "formulario": 22,
@@ -71,11 +71,11 @@
     },
     "compartido": {
       "label": "Compartido / sin entrada de menú",
-      "files": 16,
-      "lines": 4603,
+      "files": 17,
+      "lines": 4788,
       "debtPoints": 0,
       "sizes": {
-        "S": 9,
+        "S": 10,
         "M": 6,
         "L": 1,
         "XL": 0
@@ -84,6 +84,7 @@
         "dialogo": 6,
         "formulario": 4,
         "otro": 2,
+        "dashboard": 1,
         "contenedor": 3,
         "lista": 1
       }
@@ -91,7 +92,7 @@
     "configuracion": {
       "label": "Configuración",
       "files": 45,
-      "lines": 17350,
+      "lines": 17464,
       "debtPoints": 22,
       "sizes": {
         "S": 18,
@@ -113,7 +114,7 @@
     "cumplimiento": {
       "label": "Cumplimiento",
       "files": 29,
-      "lines": 8804,
+      "lines": 8805,
       "debtPoints": 10,
       "sizes": {
         "S": 15,
@@ -148,7 +149,7 @@
     "finanzas": {
       "label": "Finanzas",
       "files": 36,
-      "lines": 20797,
+      "lines": 20804,
       "debtPoints": 35,
       "sizes": {
         "S": 9,
@@ -368,9 +369,9 @@
         "finanzas"
       ],
       "archetype": "lista",
-      "lines": 328,
+      "lines": 335,
       "metrics": {
-        "lines": 328,
+        "lines": 335,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2173,9 +2174,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 852,
+      "lines": 853,
       "metrics": {
-        "lines": 852,
+        "lines": 853,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3841,6 +3842,40 @@
       "size": "M"
     },
     {
+      "path": "apps/admin-web/src/screens/integrations/IntegrationsStatusPanel.tsx",
+      "name": "IntegrationsStatusPanel",
+      "screenKeys": [],
+      "category": "compartido",
+      "categories": [],
+      "archetype": "dashboard",
+      "lines": 185,
+      "metrics": {
+        "lines": 185,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 2,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
       "path": "apps/admin-web/src/screens/integrations/PmsShadowScreen.tsx",
       "name": "PmsShadowScreen",
       "screenKeys": [
@@ -4037,9 +4072,9 @@
         "configuracion"
       ],
       "archetype": "lista",
-      "lines": 330,
+      "lines": 345,
       "metrics": {
-        "lines": 330,
+        "lines": 345,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4185,9 +4220,9 @@
         "configuracion"
       ],
       "archetype": "dashboard",
-      "lines": 688,
+      "lines": 721,
       "metrics": {
-        "lines": 688,
+        "lines": 721,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6431,16 +6466,16 @@
         "configuracion"
       ],
       "archetype": "formulario",
-      "lines": 186,
+      "lines": 252,
       "metrics": {
-        "lines": 186,
+        "lines": 252,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
         "cocoaButtons": 4,
         "rawTables": 0,
-        "cocoaTables": 1,
+        "cocoaTables": 2,
         "rawInputs": 0,
         "cocoaInputs": 0,
         "inlineStyles": 1,

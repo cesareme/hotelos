@@ -1057,6 +1057,7 @@
         "apps/api/src/modules/checkin/checkin-session.service.ts",
         "apps/api/src/modules/checkin/otp.service.ts",
         "apps/api/src/modules/guest-portal/guest-portal-auth.service.ts",
+        "apps/api/src/modules/integrations/integrations-status.service.ts",
         "apps/api/src/modules/notifications/providers/email.provider.ts",
         "apps/api/src/modules/notifications/providers/sms.provider.ts",
         "apps/api/src/modules/notifications/providers/whatsapp.provider.ts",

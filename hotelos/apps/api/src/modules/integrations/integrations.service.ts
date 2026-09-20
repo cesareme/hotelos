@@ -10,16 +10,23 @@
 //  - Demo fixture connections/events are copied once per process into Prisma
 //    (createMany + skipDuplicates, same ids) before the first read so fixture
 //    connections stay updatable after a restart.
+//  - Tanda L8 (hub honesto): the catalog providers are `demo: true` /
+//    `mode: "sandbox"`; a "test connection" NEVER answers `ok` (there is no real
+//    adapter in this build → `buildConnectionTestResult` is always `simulated`
+//    and persists an `IntegrationTestSimulated` event); the status PATCH is
+//    persisted here (dual-write) instead of patched in memory by server.ts; the
+//    dashboard error counter excludes the demo providers.
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
-import { NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
 import {
   demoStore,
   type IntegrationConnectionRecord,
   type IntegrationEventRecord,
+  type IntegrationProviderRecord,
   type UserContext
 } from "../../lib/demo-store.js";
 
@@ -285,6 +292,97 @@ export async function disconnectIntegration(input: {
   return connection;
 }
 
+const CONNECTION_STATUSES: ReadonlyArray<IntegrationConnectionRecord["status"]> = ["connected", "disconnected", "error", "testing"];
+
+/**
+ * PATCH /properties/:propertyId/integrations/:connectionId (Tanda L8): the status
+ * change is persisted — Prisma first, then the demoStore mirror — and audited like
+ * connect/disconnect. Before L8 server.ts patched the in-memory mirror only, so
+ * the change vanished on restart and never reached readiness/dashboard readers.
+ */
+export async function updateIntegrationConnectionStatus(input: {
+  context: UserContext;
+  propertyId: string;
+  connectionId: string;
+  status?: string;
+  correlationId: string;
+}): Promise<IntegrationConnectionRecord> {
+  requirePermissions(input.context, ["integrations.connect"]);
+  const connection = await findConnection(input.propertyId, input.connectionId);
+  if (input.status === undefined) return connection;
+  const status = input.status as IntegrationConnectionRecord["status"];
+  if (!CONNECTION_STATUSES.includes(status)) {
+    throw new BadRequestError(`Estado de integración no válido: «${input.status}» (admitidos: ${CONNECTION_STATUSES.join(", ")}).`);
+  }
+
+  const before = { status: connection.status };
+  const row = await prisma.integrationConnection.update({ where: { id: connection.id }, data: { status } });
+  Object.assign(connection, toConnectionRecord(row));
+
+  recordAuditEvent({
+    organizationId: input.context.organizationId,
+    propertyId: input.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "user",
+    action: "IntegrationStatusUpdated",
+    entityType: "integration_connection",
+    entityId: connection.id,
+    beforeJson: before,
+    afterJson: { status: connection.status },
+    correlationId: input.correlationId
+  });
+
+  recordDomainEvent({
+    organizationId: input.context.organizationId,
+    propertyId: input.propertyId,
+    entityType: "integration_connection",
+    entityId: connection.id,
+    eventType: "IntegrationStatusUpdated",
+    payload: { status: connection.status },
+    actorType: "user",
+    actorUserId: input.context.userId,
+    correlationId: input.correlationId
+  });
+
+  return connection;
+}
+
+// ---------------------------------------------------------------------------
+// Test connection (Tanda L8 · honest: simulated, never `ok`)
+// ---------------------------------------------------------------------------
+
+export type ConnectionTestResult = {
+  /** Never `ok`: nothing in this build talks to a real provider of the legacy hub. */
+  status: "simulated";
+  simulated: true;
+  message: string;
+  /** Event persisted for the activity trail (`IntegrationTestSimulated`, status `simulated`, never `accepted`). */
+  event: Pick<IntegrationEventRecord, "eventType" | "status" | "payloadJson">;
+};
+
+/**
+ * Pure: what "test connection" answers for a provider of the legacy hub. The
+ * catalog is fixture data (`demo: true`) and no adapter is wired, so the result
+ * is ALWAYS `simulated` — a real adapter would have to be added here explicitly
+ * (and report its own ok/failed) before anything can claim success.
+ */
+export function buildConnectionTestResult(
+  provider: Pick<IntegrationProviderRecord, "code" | "name" | "demo" | "mode"> | undefined
+): ConnectionTestResult {
+  const label = provider?.name ?? "proveedor desconocido";
+  const reason = provider?.demo ? "proveedor de demostración" : "sin adaptador real en este build";
+  return {
+    status: "simulated",
+    simulated: true,
+    message: `Prueba simulada (${reason}): no se ha contactado con ningún servicio externo de «${label}».`,
+    event: {
+      eventType: "IntegrationTestSimulated",
+      status: "simulated",
+      payloadJson: { test: true, simulated: true, providerCode: provider?.code ?? null, mode: provider?.mode ?? "none" }
+    }
+  };
+}
+
 export async function testIntegrationConnection(input: {
   context: UserContext;
   propertyId: string;
@@ -293,30 +391,78 @@ export async function testIntegrationConnection(input: {
 }) {
   requirePermissions(input.context, ["integrations.test"]);
   const connection = await findConnection(input.propertyId, input.connectionId);
+  const provider = demoStore.integrationProviders.find((candidate) => candidate.id === connection.providerId);
+  const result = buildConnectionTestResult(provider);
 
   const event: IntegrationEventRecord = {
     id: createId("ievt"),
     connectionId: connection.id,
     direction: "outbound",
-    eventType: "IntegrationSyncStarted",
-    payloadJson: { test: true },
-    status: "accepted",
+    ...result.event,
     createdAt: nowIso()
   };
-  // Prisma first (event + lastSyncAt), then the demoStore mirror.
+  // Prisma first, then the demoStore mirror. `lastSyncAt` is left untouched: a
+  // simulated test synchronises nothing (the event is the activity trail).
   await prisma.integrationEvent.create({ data: eventToDbRow(event) });
-  const row = await prisma.integrationConnection.update({
-    where: { id: connection.id },
-    data: { lastSyncAt: new Date(event.createdAt) }
-  });
   demoStore.integrationEvents.push(event);
-  Object.assign(connection, toConnectionRecord(row));
 
   return {
-    status: "ok" as const,
+    status: result.status,
+    simulated: result.simulated,
+    message: result.message,
     connectionId: connection.id,
     event
   };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard counter (Tanda L8): errors of REAL connections only
+// ---------------------------------------------------------------------------
+
+/** Ids of the fixture providers (`demo: true`): never a real service behind them. */
+export function demoIntegrationProviderIds(): string[] {
+  return demoStore.integrationProviders.filter((provider) => provider.demo === true).map((provider) => provider.id);
+}
+
+/**
+ * Pure: connections in `error` plus `failed` events of the property's
+ * connections, EXCLUDING demo providers (fixture noise is never an incident).
+ * Events of connections outside `connections` are ignored (other properties).
+ */
+export function countIntegrationErrors(input: {
+  connections: Array<{ id: string; providerId: string; status: string }>;
+  events: Array<{ connectionId: string; status: string }>;
+  demoProviderIds: string[];
+}): number {
+  const demo = new Set(input.demoProviderIds);
+  const real = input.connections.filter((connection) => !demo.has(connection.providerId));
+  const realIds = new Set(real.map((connection) => connection.id));
+  const erroredConnections = real.filter((connection) => connection.status === "error").length;
+  const failedEvents = input.events.filter((event) => event.status === "failed" && realIds.has(event.connectionId)).length;
+  return erroredConnections + failedEvents;
+}
+
+/** Prisma-backed counter for the back-office dashboard (integration_connections + integration_events). */
+/**
+ * Pure (corrector L8 · seguridad REV-05): the legacy hub fixtures belong to the demo
+ * property only; a dashboard read of any other tenant must not seed the demo rows
+ * (integration_connections / integration_events carry no FK, so orphans would persist).
+ */
+export function legacyFixturesApplyTo(propertyId: string, connections: ReadonlyArray<{ propertyId: string }> = demoStore.integrationConnections): boolean {
+  return connections.some((connection) => connection.propertyId === propertyId);
+}
+
+export async function countPropertyIntegrationErrors(propertyId: string): Promise<number> {
+  if (legacyFixturesApplyTo(propertyId)) await ensureLegacyFixturesPersisted();
+  const connections = await prisma.integrationConnection.findMany({ where: { propertyId }, select: { id: true, providerId: true, status: true } });
+  const events =
+    connections.length === 0
+      ? []
+      : await prisma.integrationEvent.findMany({
+          where: { connectionId: { in: connections.map((connection) => connection.id) }, status: "failed" },
+          select: { connectionId: true, status: true }
+        });
+  return countIntegrationErrors({ connections, events, demoProviderIds: demoIntegrationProviderIds() });
 }
 
 export async function listIntegrationEvents(connectionId: string) {

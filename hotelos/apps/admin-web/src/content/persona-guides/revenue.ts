@@ -11,7 +11,7 @@ export const REVENUE_GUIDE: PersonaGuide = {
     "Ajusta las tarifas en Revenue › Parrilla de tarifas y publícalas; el historial guarda cada cambio.",
     "Compara con Revenue › Competencia antes de mover el precio público (BAR).",
     "Consulta Revenue › Histórico y previsión para ver la previsión frente al año anterior y exportar el informe.",
-    "Comprueba en Comercial › Canales de venta que las tarifas y la disponibilidad están sincronizadas con las agencias en línea.",
+    "Comprueba en Comercial › Canales de venta que las tarifas y la disponibilidad están sincronizadas con los canales dados de alta (en modo de pruebas van al simulador local hasta activar un canal real).",
     "Prepara los jueves Revenue › Reunión de revenue con pace, pickup y presupuesto."
   ],
   tips: [

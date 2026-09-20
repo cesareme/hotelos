@@ -22,7 +22,6 @@ const cocoaGlobal = [
   "CocoaAboutDialog",
   "CocoaKeyboardShortcutsHelp",
   "CocoaNotificationCenter",
-  "CocoaStatusBar",
   "CocoaThemeToggle",
   "CocoaQuickActionsBar"
 ].map((name) => [name, src(`components/cocoa-global/${name}.tsx`)] as const);

@@ -8,6 +8,10 @@
 // mutation refreshes only the table that changed. The template form opens in
 // a CocoaDrawer; the delivery filters live in a CocoaToolbar; every table is
 // a CocoaTable. Same endpoints, queries and bodies as before.
+//
+// Tanda L8 (lote L8-03): a `sent` row with errorMessage «SIMULADO…» never left
+// the box (no provider). Badge, filter and KPIs derive the real outcome from
+// ./delivery-outcome.ts; «Enviadas» counts real sends only.
 
 import { getActiveOrganizationId, getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
@@ -19,6 +23,16 @@ import { dateTime, number, percent, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
 import { useTabHost } from "../tabs/TabHost";
+import {
+  DELIVERY_OUTCOME_LABEL,
+  OUTCOME_FILTER_OPTIONS,
+  apiStatusForOutcomeFilter,
+  deliveryOutcome,
+  deliveryOutcomeTone,
+  matchesOutcomeFilter,
+  splitSentCounts,
+  type DeliveryStatus
+} from "./delivery-outcome";
 import {
   CocoaBadge,
   CocoaButton,
@@ -36,8 +50,7 @@ import {
   CocoaState,
   CocoaTable,
   CocoaToolbar,
-  type CocoaTableColumn,
-  type CocoaTone
+  type CocoaTableColumn
 } from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
@@ -70,7 +83,7 @@ type Delivery = {
   templateCode: string | null;
   channel: string;
   recipient: string;
-  status: "pending" | "queued" | "sent" | "failed" | "bounced";
+  status: DeliveryStatus;
   providerMessageId: string | null;
   subject: string | null;
   bodyRendered: string | null;
@@ -86,7 +99,10 @@ type Delivery = {
 type TemplateStat = {
   templateCode: string;
   channel: string;
+  /** Real sends only. */
   sent: number;
+  /** `sent` rows without a provider («SIMULADO»); optional while an older API still answers. */
+  simulated?: number;
   failed: number;
   queued: number;
   total: number;
@@ -98,46 +114,33 @@ type TabKey = "templates" | "deliveries" | "stats";
 
 // ---- helpers ----
 
-const DELIVERY_STATUS_LABEL: Record<Delivery["status"], string> = {
-  pending: "pendiente",
-  queued: "en cola",
-  sent: "enviado",
-  failed: "fallido",
-  bounced: "rebotado"
-};
-
 const CHANNEL_LABEL: Record<string, string> = { email: "correo", sms: "SMS", whatsapp: "WhatsApp" };
 
 function channelLabel(channel: string): string {
   return CHANNEL_LABEL[channel] ?? channel;
 }
 
-function deliveryTone(status: Delivery["status"]): CocoaTone {
-  if (status === "sent") return "success";
-  if (status === "failed" || status === "bounced") return "danger";
-  return "warning";
-}
-
-function statusBadge(status: Delivery["status"]) {
+// The wire status alone lies: a `sent` row whose errorMessage starts with
+// «SIMULADO» was never delivered. The badge paints the real outcome («simulado»,
+// warning) and the row keeps the API message underneath as the explanation.
+function statusBadge(d: Pick<Delivery, "status" | "errorMessage">) {
+  const outcome = deliveryOutcome(d);
   return (
-    <CocoaBadge tone={deliveryTone(status)} variant="tinted" size="small">
-      {DELIVERY_STATUS_LABEL[status] ?? status}
+    <CocoaBadge tone={deliveryOutcomeTone(outcome)} variant="tinted" size="small">
+      {DELIVERY_OUTCOME_LABEL[outcome]}
     </CocoaBadge>
   );
+}
+
+/** «3 simuladas (sin proveedor)» — caption of a sent counter when part of it never left the box. */
+function simulatedCaption(simulated: number): string {
+  return `${plural(simulated, "simulada", "simuladas")} (sin proveedor)`;
 }
 
 const VIEWS: Array<{ value: TabKey; label: string }> = [
   { value: "templates", label: "Plantillas" },
   { value: "deliveries", label: "Envíos" },
   { value: "stats", label: "Estadísticas" }
-];
-
-const STATUS_FILTER_OPTIONS = [
-  { value: "", label: "Todos los estados" },
-  { value: "sent", label: "enviado" },
-  { value: "failed", label: "fallido" },
-  { value: "queued", label: "en cola" },
-  { value: "bounced", label: "rebotado" }
 ];
 
 const CHANNEL_FILTER_OPTIONS = [
@@ -174,7 +177,7 @@ export function NotificationsScreen() {
     query: {
       organizationId: ORG_ID,
       propertyId: PROPERTY_ID,
-      status: statusFilter || undefined,
+      status: apiStatusForOutcomeFilter(statusFilter),
       channel: channelFilter || undefined,
       days: 30
     }
@@ -187,7 +190,9 @@ export function NotificationsScreen() {
   const templateList = useMemo(() => toArray<NotificationTemplate>(templates.data), [templates.data]);
   const deliveryList = useMemo(() => toArray<Delivery>(deliveries.data), [deliveries.data]);
   const statList = useMemo(() => toArray<TemplateStat>(stats.data), [stats.data]);
-  const sentCount = useMemo<number>(() => deliveryList.filter((d) => d.status === "sent").length, [deliveryList]);
+  // «enviado» / «simulado» both ask the API for `sent`; the table narrows to the real outcome while the KPIs read the whole window.
+  const visibleDeliveries = useMemo(() => deliveryList.filter((d) => matchesOutcomeFilter(d, statusFilter)), [deliveryList, statusFilter]);
+  const sentCounts = useMemo(() => splitSentCounts(deliveryList), [deliveryList]);
   const failedCount = useMemo<number>(() => deliveryList.filter((d) => d.status === "failed" || d.status === "bounced").length, [deliveryList]);
   const queuedCount = useMemo<number>(() => deliveryList.filter((d) => d.status === "queued" || d.status === "pending").length, [deliveryList]);
   const activeTemplates = templateList.filter((t) => t.active).length;
@@ -254,7 +259,13 @@ export function NotificationsScreen() {
       ]}
     >
       <CocoaKpiStrip stagger aria-label="Envíos de los últimos 30 días">
-        <CocoaKpi label="Enviadas (30 días)" value={number(sentCount)} caption="entregadas" polarity="neutral" status="ok" />
+        <CocoaKpi
+          label="Enviadas (30 días)"
+          value={number(sentCounts.real)}
+          caption={sentCounts.simulated > 0 ? simulatedCaption(sentCounts.simulated) : "entregadas"}
+          polarity="neutral"
+          status={sentCounts.simulated > 0 ? "warning" : "ok"}
+        />
         <CocoaKpi label="Fallidas" value={number(failedCount)} caption="reintenta desde la pestaña de envíos" polarity="negative-good" status={failedCount > 0 ? "warning" : "ok"} />
         <CocoaKpi label="En cola" value={number(queuedCount)} caption="pendientes de envío" polarity="neutral" status="ok" />
         <CocoaKpi label="Plantillas activas" value={number(activeTemplates)} caption={`${plural(templateList.length, "plantilla", "plantillas")} en total`} polarity="neutral" status="ok" />
@@ -294,7 +305,7 @@ export function NotificationsScreen() {
 
       {tab === "deliveries" ? (
         <DeliveriesTab
-          deliveries={deliveryList}
+          deliveries={visibleDeliveries}
           loading={deliveries.loading}
           fetchError={deliveries.error}
           onRetryLoad={deliveries.refresh}
@@ -544,7 +555,7 @@ const DELIVERY_COLUMNS: CocoaTableColumn<Delivery>[] = [
     fit: true,
     render: (d) => (
       <>
-        {statusBadge(d.status)}
+        {statusBadge(d)}
         {d.errorMessage ? <span className="cocoa-note">{d.errorMessage}</span> : null}
       </>
     )
@@ -575,7 +586,7 @@ function DeliveriesTab(props: {
         aria-label="Filtros del registro de envíos"
         leftSlot={
           <>
-            <CocoaSelect value={props.statusFilter} onChange={props.onStatusFilter} options={STATUS_FILTER_OPTIONS} inline aria-label="Filtrar por estado" />
+            <CocoaSelect value={props.statusFilter} onChange={props.onStatusFilter} options={OUTCOME_FILTER_OPTIONS} inline aria-label="Filtrar por estado" />
             <CocoaSelect value={props.channelFilter} onChange={props.onChannelFilter} options={CHANNEL_FILTER_OPTIONS} inline aria-label="Filtrar por canal" />
           </>
         }
@@ -632,6 +643,21 @@ const STAT_COLUMNS: CocoaTableColumn<TemplateStat>[] = [
   { key: "channel", label: "Canal", fit: true, render: (s) => channelLabel(s.channel) },
   { key: "sent", label: "Enviadas", align: "right", fit: true, render: (s) => number(s.sent) },
   {
+    key: "simulated",
+    label: "Simuladas",
+    align: "right",
+    fit: true,
+    hideOnNarrow: true,
+    render: (s) =>
+      (s.simulated ?? 0) > 0 ? (
+        <CocoaBadge tone="warning" variant="tinted" size="small">
+          {number(s.simulated ?? 0)}
+        </CocoaBadge>
+      ) : (
+        number(s.simulated ?? 0)
+      )
+  },
+  {
     key: "failed",
     label: "Fallidas",
     align: "right",
@@ -654,6 +680,7 @@ const STAT_COLUMNS: CocoaTableColumn<TemplateStat>[] = [
 function StatsTab(props: { stats: TemplateStat[]; loading: boolean; fetchError: string | null; onRetry: () => void; days: number; onChangeDays: (n: number) => void }) {
   const rows = props.stats;
   const totalSent = rows.reduce((sum, s) => sum + s.sent, 0);
+  const totalSimulated = rows.reduce((sum, s) => sum + (s.simulated ?? 0), 0);
   const totalFailed = rows.reduce((sum, s) => sum + s.failed, 0);
   const totalQueued = rows.reduce((sum, s) => sum + s.queued, 0);
   const failureRate = totalSent + totalFailed > 0 ? (totalFailed / (totalSent + totalFailed)) * 100 : 0;
@@ -669,7 +696,13 @@ function StatsTab(props: { stats: TemplateStat[]; loading: boolean; fetchError: 
     >
       <div className="cocoa-stack" data-gap="4" style={{ padding: ready && rows.length > 0 ? "var(--cocoa-space-4) var(--cocoa-space-4) 0" : 0 }}>
         <CocoaKpiStrip aria-label={`Envíos de los últimos ${plural(props.days, "día", "días")}`}>
-          <CocoaKpi label="Total enviadas" value={number(totalSent)} polarity="neutral" status="ok" />
+          <CocoaKpi
+            label="Total enviadas"
+            value={number(totalSent)}
+            caption={totalSimulated > 0 ? simulatedCaption(totalSimulated) : undefined}
+            polarity="neutral"
+            status={totalSimulated > 0 ? "warning" : "ok"}
+          />
           <CocoaKpi label="Total fallidas" value={number(totalFailed)} polarity="negative-good" status={totalFailed > 0 ? "warning" : "ok"} />
           <CocoaKpi label="Tasa de fallos" value={percent(failureRate, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} polarity="negative-good" status={failureRate > 5 ? "warning" : "ok"} />
           <CocoaKpi label="En cola / pendientes" value={number(totalQueued)} polarity="neutral" status="ok" />

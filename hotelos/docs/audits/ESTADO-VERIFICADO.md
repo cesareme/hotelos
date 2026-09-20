@@ -489,3 +489,117 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda L8 · Integraciones honestas, 2026-09-20, worktree
+`~/anfitorio-demo-wt-l8/hotelos`, rama `tanda-l8` sobre `a069906`, BD `hotelos_l8`, commit del integrador en
+`tanda-l8` (sin push, sin fusión en `main`); `:3000` sin reiniciar; informe `docs/audits/TANDA-L8-INTEGRACIONES-2026-09-20.md`; runbook
+`docs/runbooks/integraciones.md`):
+- qué se construyó por lote: L8-01 contrato compartido `packages/shared/src/integrations-status-types.ts`
+  (`INTEGRATION_KEYS` 18, `IntegrationStatusDto`, `IntegrationsHealthBlock`, etiquetas y pantallas en español) +
+  servicio `apps/api/src/modules/integrations/integrations-status.service.ts` (una función pura por integración,
+  `collectIntegrationsStatus` con `createDegradedCollector`, `describeIntegrationsHealth` sin BD; 44 casos) + hub
+  heredado honesto (readiness `payment_provider_connected` por `pspStatusFor`, `checks.redis` «configured (sin
+  consumidor en este build)», `dependencies.redis` `unconfigured`); L8-02 proveedores del hub «… (demostración)»
+  con `demo:true` / `mode sandbox`, prueba de conexión `{ status: "simulated" }` + evento `IntegrationTestSimulated`,
+  `PATCH` de estado persistido y auditado (9 casos); L8-03 `delivery-outcome.ts` (`simulated` = `sent` + «SIMULADO»),
+  KPI «Enviadas» solo reales + «N simuladas (sin proveedor)», `GET /notifications/template-stats` con `simulated`
+  (8 casos); L8-04 runbook v1 + auditoría de textos (`scratchpad/L8/audit-textos.md`: 9 éxitos falsos, 9 parciales,
+  0 descargas vacías); L8-05 `GET /integrations/status?propertyId=` (`integrations-status.routes.ts`,
+  `route-permissions.partial.ts`) + clave superior `integrations` de `/health` (14 claves `INTEGRATION_HEALTH_KEYS`)
+  en `server.ts` y `docs/api-contracts.md`; L8-06 `IntegrationsStatusPanel.tsx` + `integrations-status-helpers.ts` +
+  `services/integrationsApi.ts` encima de `MarketplaceCatalogScreen` (KPI por modo, tabla por área, «Configurar»,
+  aviso de consultas degradadas; 15 casos); L8-07 Pagos lee la fila `psp` del estado y muestra el hub como
+  «Conexiones de demostración (catálogo heredado)», Exportar a gestoría «compatible ContaPlus / Sage 50» y A3 «no
+  disponible», `GoLiveChecklist` «PSP configurado», guía de revenue y `api-reference` sin «sincronizadas con las
+  agencias» / «descargar reservas», manual §3.3 (8 casos); L8-08 contrato raíz `tests/integrations-honesty-contract.test.mjs`
+  (21 casos, fuente sin BD: una función por clave en el servicio, una fila por clave en el runbook §1 y una entrada
+  en `api-contracts.md`, 14 claves de `/health`, `none` / `sandbox` nunca simulan un éxito, Pagos sin `gatewayReady`
+  del hub), integración `tests/integration/integraciones-estado.test.mts` (10 casos: 401 / 403 recepción y owner /
+  200 dirección general y sistemas sobre organización aislada con `RBAC_STRICT`, `withEnv` con tope `stub` y sin
+  claves, `/health.integrations` público, hub `simulated`, invariantes de Faranda) y
+  `apps/admin-web/e2e/integrations-status.spec.ts` (entradas en el árbol a las 13:27); L8-09 runbook v2 (§0-§6: línea base real, códigos, `degraded`, panel, comandos exactos), CLAUDE.md (deuda 19
+  + «Docs prioritarios») y este bloque
+- rutas y permisos: 1 ruta nueva `GET /integrations/status` (`integrations.read`, riskLevel low; manifiesto vía
+  `INTEGRATIONS_STATUS_ROUTE_PERMISSIONS`; tenencia `grantPropertyAccess`: 404 opaco fuera de la organización o sin
+  asignación, 400 con `propertyId` vacío, 403 recepción) y la clave superior `integrations` de `/health` (pública:
+  solo modo + frase, ≤ 260 caracteres por contrato y 198 la más larga hoy, sin URLs ni variables secretas; nunca
+  degrada `status`); 0 claves RBAC nuevas (`rbac:sync --dry-run` limpio), 0 migraciones (`migrate status` 24/24,
+  drift «No difference detected.»; nombre reservado `20260920180000_integraciones_honestas` sin usar), 0 rutas de
+  front nuevas (panel en `/configuracion/modulos/integraciones`, fila 85 del CSV; `IntegrationsStatusPanel` en
+  `.discoverability-whitelist.json`), 0 dependencias nuevas
+- línea base real del carril (2026-09-20, `scratchpad/L8/health-base.json` + SQL solo lectura): `/health` healthy,
+  `checks.redis` «configured» sin consumidor, `checks.sentry` disabled, `checks.verifactu` `mode=sandbox` +
+  `software.ok:false` (3 errores: razón social y NIF del productor, número de instalación), `checks.sesHospedajes`
+  `mode=sandbox`, `checks.ai` `provider=none`, `objectStorage inline`; BD: 7 canales `sandbox` (6 activos, en dos
+  propiedades), 1 perfil OPERA `active` (9 runs), 50 lotes Sage 200 `posted`, 0 PSP, 0 buzones OAuth, 1 fuente de
+  reseñas `csv`, 222 entregas de correo «SIMULADO» + 1 real, 66 acuses VeriFactu y 9 SES del stub + 149 SES
+  fallidas, 1 conexión ficticia del hub
+- verificado en runtime (L8-09, 13:33, instancia propia `:3949` con el árbol final, PID matado al terminar; `:3935`
+  lo sirve una instancia hermana del worktree, PID 86954, no tocada): `/health.integrations` 14 claves → 1 real
+  (`gestoria_export`) · 7 sandbox · 6 none; `GET /integrations/status` `prop_123` (contexto demo) → 18 filas, 2 real
+  (`gestoria_export`, `gbp` por CSV con requisitos pendientes) · 7 sandbox (`channels` «3 de 3 canales activos, todos
+  en simulador local», `whatsapp`, `email_out`, `sms`, `ses` con `lastError`, `verifactu`, `storage`) · 9 none,
+  `degraded: []`; `prop_uxday` con `direccion@uxday.test` → 200 (1 · 6 · 11; 1 · 5 · 12 tras el corrector L8: `ses` `none` por el interruptor del establecimiento); `recepcion@` 403; `direccion@` sobre
+  `prop_123` 404 «Propiedad no encontrada.»; `propertyId=` vacío 400; sin `propertyId` 200 (contexto). Ningún nombre
+  de persona en ninguna salida; Faranda solo lectura
+- tests de la tanda (2026-09-20 13:35, ficheros de los lotes): api `integrations-status` + `legacy-hub` 53/53 ·
+  admin-web `integrations-status-helpers` + `integrations-copy` + `delivery-outcome` 31/31 ·
+  `node --test tests/brand-contract.test.mjs tests/integrations-honesty-contract.test.mjs` 31/31 (13:40, el
+  contrato de honestidad lee el runbook §1) · contratos que leen CLAUDE.md (`manual-contract`,
+  `rate-grid-docs-contract`, `migrations-squash-contract`) 35/35; `integraciones-estado` (integración) y la spec e2e
+  de L8-08 las ejecuta la puerta de la ola 3
+- puertas (`--quick`, `scratchpad/L8/gates-*.json`): base 11:56 12/12 (api unit 3.569 · admin-web 2.014 · contratos
+  raíz 765 · discoverability 197 · nav-tree 70/104/205 · route-access 15 × 197); ola 1 12:48 11/12 (api 3.622 ·
+  admin-web 2.022); ola 2 13:15 11/12 — typecheck:all 15 PASS · 0 FAIL · 1 SKIP (22,7 s) · api unit 3.622 (3.621
+  pass · 1 skip) · admin-web unit 2.045 (2.044 pass · 1 skip) · ai-core 119 · worker 34 · contratos raíz 765 (763
+  pass · 2 skip) · discoverability 197 URL · route-access 15 × 197 · cocoa waves §6 al día · rbac dry-run OK ·
+  migrate 24/24 + drift 0; el único rojo desde la ola 1 es `nav-tree --check` por el CSV compartido
+  `pilots/tanda5-nav-tree.csv` (filas de otro carril, 294 → 300): no es de L8. Puerta completa final del orquestador
+  (`scratchpad/L8/gates-full.json`): **13/14** — typecheck 15 PASS · 0 FAIL · 1 SKIP; api 3.622; admin-web 2.045; ai-core 119;
+  worker 34; contratos raíz 786 (784 pass · 0 fail · 2 skip) tras añadir `integrations-status.spec.ts` a
+  `seed-ux-day-contract` (l.164/188) y corregir el flaky de `payments-tenancy` #1 (`correlationId` fuera del cuerpo
+  comparado); discoverability 197; route-access 15 × 197; cocoa waves §6 al día; rbac OK; migrate 24/24 + drift 0; build
+  OK; integración 993 (985 pass · 0 fail · 8 skip); único rojo `nav-tree --check` (CSV compartido, externo).
+  **Puerta completa tras el corrector** (`scratchpad/L8/gates-final.json`, 15:09): **13/14** — typecheck 15 PASS · 0 FAIL ·
+  1 SKIP (34,3 s); api 3.636 (3.635 pass · 1 skip); admin-web 2.053 (2.052 · 1 skip); ai-core 119; worker 34; contratos
+  raíz 787 (785 · 0 fail · 2 skip); discoverability 197; route-access 15 × 197; cocoa waves §6 al día; rbac OK; migrate
+  24/24 + drift 0; build 3,24 s; integración 993 (985 · 0 fail · 8 skip); único rojo `nav-tree --check` (`stale`: el CSV
+  compartido tiene 304 filas —L6b / L7: `/hoy/costes-personal`, `/finanzas/nominas/*`, «RRHH y nóminas»; ACT:
+  `/finanzas/activo-inmobiliario/*`— frente a 294 del JSON del worktree, que se entrega sin diff)
+- corrector L8 (2026-09-20, tarde; revisión funcional + seguridad): (REV-01) `ses` / `verifactu` / `tbai` de
+  `GET /integrations/status` aplican el interruptor del establecimiento o el uso real (`complianceGates`,
+  `integrations-status.service.ts`): apagado y sin uso → `none` «Desactivado para este establecimiento…» + «Activar … para
+  el establecimiento» en `missingForReal`; activo solo por uso → nota en la frase; `/health` habla del proceso; (REV-03)
+  `/health.integrations` ya no consulta la BD: `describeComplianceEnvironment()` (solo entorno, `getTbaiHealth(null)`)
+  sustituye a `getComplianceHealth()` sin organización (leía las propiedades de todos los tenants por petición pública);
+  (REV-02) textos: KPI «Enviadas · registradas como enviadas (sin motor de envío)» en Campañas, SES «Aceptado (simulador)»
+  y «Simulador local» en vez de `stub://` (`simulatorAwareStatusLabel`, `fiscal-shared.ts`), manifiesto de
+  `packages/integrations` con `demo:true` / `mode:"sandbox"` / «(demostración)» y `apps/mobile` sin «connected», manuales
+  10/20 con la pestaña Pagos real; (low) «Actualizar todo» recarga también el panel (`refreshKey`), vacío honesto de
+  «Aplicaciones instaladas», badge de estado persistido en las conexiones de demostración de Pagos y fixture sin
+  `lastSyncAt` (fila `iconn_mock_payments` de `hotelos_l8` puesta a NULL), `sage200` «en la sociedad», `missingForReal`
+  sin punto final, `propertyId` sin `trim` (documentado: espacios ⇒ 404), `CocoaStatusBar` borrado,
+  `countPropertyIntegrationErrors` solo siembra las fixtures del hub para la propiedad demo (`legacyFixturesApplyTo`);
+  tests: `integrations-status.test.mts` 50 (+6), `integrations-status-routes.test.mts` 3 (nuevo), `legacy-hub` 11,
+  `compliance-health` 6, `fiscal-shared` +3, `integrations-copy` +7, contrato de honestidad 22
+- pendientes con dueño: (orquestador / fusión) la puerta completa tras el corrector ya incluye `integraciones-estado` (10/10);
+  la e2e de L8-08 queda fuera de `gates.sh` hasta alinear `@playwright/test` con el navegador instalado (lock de `main`:
+  fijar 1.61.x o instalar chromium 1243); regenerar
+  `nav-tree.generated.json` en el carril dueño de las filas nuevas del CSV; comprobar en la fusión
+  `node scripts/cocoa-22-inventory.mjs` y `node scripts/env-census.mjs --write` (ya regenerados en el carril por
+  otros lotes); `git checkout -- pnpm-lock.yaml`; reiniciar las instancias hermanas `:3935` / `:5205` para ver el
+  panel con datos; (producto) `gestoria_export` declarado `real` / `manual` aunque nada cruce por red (D-04), `disk`
+  como `sandbox` del almacén (D-13), «Formatos A3 y Sage 200 no implementados» solo en el API (unificar con la
+  pantalla de gestoría), `redis` (D-16), catálogo del hub (D-17); B2-B6 de la auditoría de textos y los comentarios
+  `QuickCheckInDrawer.tsx:45` / `e2e/quick-checkin.spec.ts:18` (el manifiesto de `apps/mobile`, los manuales 10/20,
+  A8, A9, B1 y los lectores solo-configuración de `/health` los cerró el corrector L8); (César)
+  D-01…D-18 del runbook §4 (hotel codes y muestras OPERA, decisiones Sage, cuenta Channex, PSP, WhatsApp Business,
+  correo transaccional, declaración responsable VeriFactu, alta SES y certificado, OAuth de buzones, Google Business,
+  almacén, clave de IA con DPA, Sentry, Redis, marketplace, EIPD)
+- integrador (cierre de la tanda, 2026-09-20 tarde): `git status` / `git diff --stat` del worktree confirmados —
+  40 ficheros modificados (sin `pnpm-lock.yaml`), 1 borrado (`CocoaStatusBar.tsx`) y 19 nuevos (informe §8); `pnpm-lock.yaml`
+  excluido del commit (`git reset -q hotelos/pnpm-lock.yaml`), `apps/admin-web/dist/` y `test-results/` ignorados; ninguna
+  instancia del carril viva; informe con §10 (por lote), §11 (hallazgos: 5 medium confirmados, 0 refutados, 4 + 7 low
+  corregidos, 4 sin corregir con dueño), §12 (14 decisiones para César con el defecto aplicado) y §13 (cierre); contratos que
+  leen `docs/audits` tras la edición: `node --test tests/brand-contract.test.mjs tests/manual-contract.test.mjs tests/integrations-honesty-contract.test.mjs` → 47/47 (brand 10 · manual 15 · honesty 22); puerta `--quick` del integrador (`scratchpad/L8-int/gates-quick.json`):
+  **11/12** — typecheck:all 15 PASS · 0 FAIL · 1 SKIP (23,6 s); api unit 3.636 (3.635 pass · 1 skip); admin-web unit 2.053 (2.052 · 1 skip); ai-core 119; worker 34; contratos raíz 787 (785 · 2 skip); discoverability 197 URLs; route-access 15 × 197; cocoa waves §6 al día; rbac:sync dry-run OK; migrate status + drift «No difference detected.»; único rojo `nav-tree --check` (externo, sin cambio en el árbol tras la puerta); commit en `tanda-l8` con el pre-commit del repo (`check-discoverability` + `typecheck-all`): un solo commit con `git add -A hotelos` + `git reset -q hotelos/pnpm-lock.yaml` + `git commit -F <mensaje>` (autor cesareme), 60 ficheros (40 modificados · 1 borrado · 19 nuevos), título «feat(integraciones): estado honesto none|sandbox|real, GET /integrations/status, bloque integrations en /health y panel de la pestaña Integraciones (Tanda L8)», cuerpo por lote, pre-commit (`check-discoverability` + `typecheck-all`) sin `--no-verify`; el sha va en el informe estructurado del integrador al orquestador

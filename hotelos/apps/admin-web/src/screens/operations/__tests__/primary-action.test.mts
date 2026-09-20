@@ -93,7 +93,7 @@ describe("plantillas de copy de recepción (content/actions.ts)", () => {
     assert.equal(FRONT_DESK_ACTIONS.keepReservation, "Mantener la reserva");
     assert.equal(FRONT_DESK_ACTIONS.createAndCheckIn, "Crear y hacer check-in");
     assert.equal(FRONT_DESK_TOASTS.invoiceIssued("F1-2026-000123"), "Factura F1-2026-000123 emitida");
-    assert.equal(FRONT_DESK_TOASTS.checkInDoneSes("204", 2), "Check-in de la 204 hecho · parte enviado a SES (2)");
+    assert.equal(FRONT_DESK_TOASTS.checkInDoneSes("204", 2), "Check-in de la 204 hecho · parte encolado para SES (2)");
     assert.equal(FRONT_DESK_TOASTS.batchCheckOutSummary(2, 0), "2 check-outs hechos");
     assert.equal(FRONT_DESK_TOASTS.batchCheckOutSummary(1, 1), "1 check-out hecho · 1 sin hacer");
     const all = JSON.stringify([FRONT_DESK_ACTIONS, FRONT_DESK_TOASTS]);

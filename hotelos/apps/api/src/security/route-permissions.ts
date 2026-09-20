@@ -36,6 +36,10 @@ import { reservationImportRoutePermissions } from "../modules/pms/route-permissi
 // Claves integrations.read / connect y accounting.read / journal.post ya
 // existentes (sin rbac:sync).
 import { pmsShadowRoutePermissions as pmsShadowRoutePermissionsAsWritten } from "../modules/pms-shadow/route-permissions.partial.js";
+// Estado honesto de las integraciones (Tanda L8 · L8-05): GET /integrations/status
+// (modules/integrations/integrations-status.routes.ts). Clave existente
+// integrations.read (low); sin rbac:sync.
+import { INTEGRATIONS_STATUS_ROUTE_PERMISSIONS } from "../modules/integrations/route-permissions.partial.js";
 // Importación contable desde Sage 200 (Tanda 7c · L3): /accounting/ledger-imports*
 // y /accounting/ledger-imports/reconciliation* (modules/accounting/
 // ledger-import.routes.ts; partial propio a profundidad 1 del módulo, como
@@ -192,6 +196,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...reservationImportRoutePermissions,
   // OPERA Cloud modo sombra (Tanda 7b): 15 entradas, ver modules/pms-shadow/route-permissions.partial.ts.
   ...pmsShadowRoutePermissions,
+  // Estado honesto de las integraciones (Tanda L8 · L8-05): 1 entrada, ver modules/integrations/route-permissions.partial.ts.
+  ...INTEGRATIONS_STATUS_ROUTE_PERMISSIONS,
   // Importación contable desde Sage 200 (Tanda 7c): 15 entradas, ver modules/accounting/ledger-import-route-permissions.partial.ts
   ...ledgerImportRoutePermissions,
   // RBAC por departamento (Tanda 8a · L1): 24 entradas, ver modules/rbac/route-permissions.partial.ts.

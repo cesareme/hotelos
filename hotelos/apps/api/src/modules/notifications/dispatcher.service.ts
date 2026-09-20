@@ -20,6 +20,18 @@ import { resolveProvider } from "./providers/index.js";
 
 export type DeliveryStatus = "pending" | "queued" | "sent" | "failed" | "bounced";
 
+/** `errorMessage` written on a `sent` row when no provider is configured: the send never left the box (Tanda L8). */
+export const SIMULATED_ERROR_MESSAGE = "SIMULADO: proveedor no configurado; no se envió de verdad.";
+
+/**
+ * true for a delivery recorded as `sent` without a real provider (errorMessage
+ * «SIMULADO…»). Such a row is never a delivery: stats count it apart and the
+ * admin screen mirrors this rule in screens/notifications/delivery-outcome.ts.
+ */
+export function isSimulatedDelivery(row: { status: string; errorMessage: string | null }): boolean {
+  return row.status === "sent" && /^SIMULADO/i.test(row.errorMessage ?? "");
+}
+
 export type NotificationDeliveryRecord = {
   id: string;
   organizationId: string;
@@ -267,7 +279,7 @@ async function attemptSend(
         sentAt: now,
         // Honesty: a simulated (no-provider) send is recorded as such so it is
         // never mistaken for a real delivery, even though status is "sent".
-        errorMessage: result.simulated ? "SIMULADO: proveedor no configurado; no se envió de verdad." : null,
+        errorMessage: result.simulated ? SIMULATED_ERROR_MESSAGE : null,
         attempts: { increment: 1 }
       }
     });
@@ -339,16 +351,21 @@ export async function listDeliveries(input: ListDeliveriesInput): Promise<Notifi
 export type TemplateStat = {
   templateCode: string;
   channel: string;
+  /** Real sends only (a provider accepted the message). */
   sent: number;
+  /** `sent` rows recorded without a provider (errorMessage «SIMULADO»): never counted as `sent` (Tanda L8). */
+  simulated: number;
   failed: number;
   queued: number;
   total: number;
+  /** Last REAL send; simulated rows do not move it. */
   lastSentAt: string | null;
   lastFailedAt: string | null;
 };
 
 /**
  * Per-template send/failure counts. Drives the Stats tab in the UI.
+ * `total` = sent + simulated + failed + queued.
  */
 export async function templateStats(input: {
   organizationId?: string;
@@ -365,7 +382,7 @@ export async function templateStats(input: {
 
   const rows = await prisma.notificationDelivery.findMany({
     where,
-    select: { templateCode: true, channel: true, status: true, sentAt: true, failedAt: true }
+    select: { templateCode: true, channel: true, status: true, errorMessage: true, sentAt: true, failedAt: true }
   });
 
   const map = new Map<string, TemplateStat>();
@@ -378,6 +395,7 @@ export async function templateStats(input: {
         templateCode: code,
         channel: row.channel,
         sent: 0,
+        simulated: 0,
         failed: 0,
         queued: 0,
         total: 0,
@@ -387,7 +405,9 @@ export async function templateStats(input: {
       map.set(key, stat);
     }
     stat.total += 1;
-    if (row.status === "sent") {
+    if (isSimulatedDelivery(row)) {
+      stat.simulated += 1;
+    } else if (row.status === "sent") {
       stat.sent += 1;
       if (row.sentAt && (!stat.lastSentAt || row.sentAt.toISOString() > stat.lastSentAt)) {
         stat.lastSentAt = row.sentAt.toISOString();

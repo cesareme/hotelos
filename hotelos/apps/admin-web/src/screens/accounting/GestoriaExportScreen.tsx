@@ -5,7 +5,10 @@
 // GET /accounting/gestoria-exports/formats lists the formats with their flags:
 // `implemented` (A3 is declared not implemented and answers 409) and
 // `validateWithAdvisor` («compatible ContaPlus / Sage 50»: validate the layout
-// with the gestoría before the first real import). The form (formato · desde ·
+// with the gestoría before the first real import). Tanda L8 · L8-07: the copy
+// names only what the file is («compatible ContaPlus / Sage 50»), never the
+// ledger-import product (that is another screen), and A3 reads «no
+// disponible» with the 409 the API answers. The form (formato · desde ·
 // hasta · propiedad · longitud de subcuenta for ContaPlus) creates the file
 // with POST /accounting/gestoria-exports (analytics.export) and offers it for
 // download; the history table (GET /accounting/gestoria-exports) downloads
@@ -131,7 +134,11 @@ export function GestoriaExportScreen() {
   const formatOptions = formats.map((candidate) => ({ value: candidate.format, label: candidate.implemented ? candidate.label : `${candidate.label} (no disponible)`, disabled: !candidate.implemented }));
   const subaccountValue = Number(subaccountLength);
   const errors = {
-    format: !selectedFormat ? "Elige un formato." : !selectedFormat.implemented ? "Ese formato aún no está disponible: usa el CSV universal de asientos." : undefined,
+    format: !selectedFormat
+      ? "Elige un formato."
+      : !selectedFormat.implemented
+        ? "Ese formato no está disponible: el servidor lo rechaza (409) y no genera ningún fichero; usa el CSV universal de asientos."
+        : undefined,
     range: !from || !to ? "Indica el periodo completo." : from > to ? "La fecha de inicio no puede ser posterior a la de fin." : undefined,
     subaccount: format === "contaplus_diario" && (!Number.isInteger(subaccountValue) || subaccountValue < 3 || subaccountValue > 12) ? "La longitud de subcuenta va de 3 a 12 dígitos (8 por defecto)." : undefined
   };
@@ -250,7 +257,7 @@ export function GestoriaExportScreen() {
       <FinanceEntityNote scope={finance} subject="La exportación a la gestoría" />
       <CocoaFormSection
         title="Nueva exportación"
-        description="El CSV universal de asientos lo importa cualquier programa contable; los formatos marcados «validar con la gestoría» siguen un diseño de registro que hay que comprobar antes de la primera importación real."
+        description="El CSV universal de asientos lo importa cualquier programa contable; el «Diario compatible ContaPlus / Sage 50» sigue un diseño de registro que hay que validar con la gestoría antes de la primera importación real; «A3 (enlace contable)» no está disponible (el servidor responde 409 y no genera fichero)."
         actions={
           canExport ? (
             <CocoaButton variant="filled" tone="accent" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={creating} disabled={creating || formatsLoading || (touched && !valid)} onClick={() => void createExport()}>

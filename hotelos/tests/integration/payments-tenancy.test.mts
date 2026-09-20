@@ -199,7 +199,10 @@ describe("finanzas · pagos: tenencia de PaymentIntent, página de retorno firma
     const foreignBody = opaque(foreign.body);
     assert.equal(foreignBody.message, PAYMENT_INTENT_NOT_FOUND);
     assert.deepEqual(foreignBody, opaque(unknown.body), "foreign and unknown ids must be indistinguishable (no existence oracle)");
-    assert.ok(!foreign.body.includes(B!.propId) && !foreign.body.includes("50"), `the foreign row must not leak: ${foreign.body}`);
+    // Leak check over the body WITHOUT the random correlationId (a hex id can
+    // contain "50" by chance) and against the amount as it would be serialised.
+    const foreignOpaque = JSON.stringify(foreignBody);
+    assert.ok(!foreignOpaque.includes(B!.propId) && !/\b50(\.0+)?\b/.test(foreignOpaque), `the foreign row must not leak: ${foreign.body}`);
 
     const own = await app.inject({ method: "GET", url: `/payment-intents/${intentA}`, headers });
     assert.equal(own.statusCode, 200, own.body);

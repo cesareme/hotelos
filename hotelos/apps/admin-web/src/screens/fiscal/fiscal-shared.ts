@@ -14,6 +14,27 @@ import { date, dateRange, dateTime, money, number, percent } from "../../lib/for
 import { financeErrorCode, financeErrorMessage, financeErrorStatus, isAnnualFiscalModel, monthPeriod, periodBounds, quarterPeriod, yearPeriod } from "../../services/finance-contracts";
 
 // ---------------------------------------------------------------------------
+// Simulated submissions (corrector L8 · REV-02 / B1)
+// ---------------------------------------------------------------------------
+
+/** A submission answered by the local simulator (`endpoint` `stub://…`): its acknowledgement never reached the authority. */
+export function isSimulatedSubmission(row: { endpoint?: string | null }): boolean {
+  return typeof row.endpoint === "string" && row.endpoint.startsWith("stub://");
+}
+
+/** Statuses that read as a success or a delivery; under the simulator they are labelled «(simulador)». */
+const SIMULATOR_QUALIFIED_STATUSES: ReadonlySet<string> = new Set(["sent", "accepted", "accepted_with_warnings"]);
+
+/** Status label of a submission (from the given dictionary), qualified with «(simulador)» when the acknowledgement came from the stub. */
+export function simulatorAwareStatusLabel(row: { status: string; endpoint?: string | null }, labels: Readonly<Record<string, string>>): string {
+  const base = labels[row.status] ?? row.status;
+  return isSimulatedSubmission(row) && SIMULATOR_QUALIFIED_STATUSES.has(row.status) ? `${base} (simulador)` : base;
+}
+
+/** Value of the «Punto de acceso» row: the simulator never has a real access point. */
+export const SIMULATED_ENDPOINT_LABEL = "Simulador local (sin envío a la autoridad)";
+
+// ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
 

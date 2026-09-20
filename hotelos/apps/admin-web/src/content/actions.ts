@@ -345,7 +345,8 @@ export const FRONT_DESK_ACTIONS = {
 /** Toasts de recepción: dicen qué pasó y con qué número (P7), nunca «solicitado» a secas. */
 export const FRONT_DESK_TOASTS = {
   checkInDone: (room: string | null) => (room ? `Check-in de la ${room} hecho` : "Check-in hecho"),
-  checkInDoneSes: (room: string | null, queued: number) => `${FRONT_DESK_TOASTS.checkInDone(room)} · parte enviado a SES (${queued})`,
+  /** Tanda L8 (auditoría B7): el parte queda encolado hacia SES (en modo de pruebas, hacia el simulador): nunca «enviado». */
+  checkInDoneSes: (room: string | null, queued: number) => `${FRONT_DESK_TOASTS.checkInDone(room)} · parte encolado para SES (${queued})`,
   checkOutDone: (room: string | null) => (room ? `Check-out de la ${room} hecho` : "Check-out hecho"),
   invoiceIssued: (invoiceNumber: string) => `Factura ${invoiceNumber} emitida`,
   /** POST /folios/:id/invoice crea un BORRADOR (sin número): lo emite Facturación, salvo «Emitir ahora». */

@@ -126,6 +126,10 @@ export type IntegrationProviderRecord = {
   authType: "api_key" | "oauth2" | "basic" | "certificate" | "webhook" | "manual";
   supportedRegions: string[];
   capabilitiesJson: Record<string, unknown>;
+  /** Tanda L8: fixture provider of the legacy hub — nothing real behind it (tests are simulated, readiness ignores it). */
+  demo?: boolean;
+  /** Declared mode (Tanda L8): `sandbox` for the fixtures; `real` would require a wired adapter with credentials. */
+  mode?: "none" | "sandbox" | "real";
   createdAt: string;
 };
 
@@ -146,7 +150,8 @@ export type IntegrationEventRecord = {
   direction: "inbound" | "outbound";
   eventType: string;
   payloadJson: Record<string, unknown>;
-  status: "queued" | "sent" | "accepted" | "failed";
+  /** `simulated` (Tanda L8): a test that contacted no external service — never reported as `accepted`. */
+  status: "queued" | "sent" | "accepted" | "failed" | "simulated";
   errorMessage?: string;
   createdAt: string;
 };
@@ -1850,7 +1855,9 @@ export const demoStore: DemoStore = {
       id: "ip_mock_ota",
       categoryId: "icat_otas",
       code: "mock_ota",
-      name: "Demo OTA Adapter",
+      name: "Demo OTA Adapter (demostración)",
+      demo: true,
+      mode: "sandbox",
       authType: "api_key",
       supportedRegions: ["EU"],
       capabilitiesJson: { capabilities: ["pull_reservations"] },
@@ -1860,7 +1867,9 @@ export const demoStore: DemoStore = {
       id: "ip_mock_payments",
       categoryId: "icat_payment_gateways",
       code: "mock_payments",
-      name: "Demo Payment Gateway",
+      name: "Demo Payment Gateway (demostración)",
+      demo: true,
+      mode: "sandbox",
       authType: "api_key",
       supportedRegions: ["EU"],
       capabilitiesJson: { capabilities: ["send_payment_link", "capture_payment"] },
@@ -1870,7 +1879,9 @@ export const demoStore: DemoStore = {
       id: "ip_mock_messaging",
       categoryId: "icat_guest_messaging",
       code: "mock_messaging",
-      name: "Demo Guest Messaging",
+      name: "Demo Guest Messaging (demostración)",
+      demo: true,
+      mode: "sandbox",
       authType: "webhook",
       supportedRegions: ["EU"],
       capabilitiesJson: { capabilities: ["send_message"] },
@@ -1885,7 +1896,7 @@ export const demoStore: DemoStore = {
       status: "connected",
       credentialsSecretRef: "secret://hotelos/prop_123/mock_payments",
       configJson: { settlementCurrency: "EUR" },
-      lastSyncAt: "2026-05-14T09:00:00.000Z",
+      // Sin lastSyncAt: un proveedor de demostración nunca sincronizó (corrector L8 · REV-04).
       createdAt: "2026-05-14T08:20:00.000Z"
     }
   ],
@@ -1894,9 +1905,9 @@ export const demoStore: DemoStore = {
       id: "ievt_mock_payment_test",
       connectionId: "iconn_mock_payments",
       direction: "outbound",
-      eventType: "ConnectionTested",
-      payloadJson: { providerCode: "mock_payments" },
-      status: "accepted",
+      eventType: "IntegrationTestSimulated",
+      payloadJson: { providerCode: "mock_payments", test: true, simulated: true },
+      status: "simulated",
       createdAt: "2026-05-14T09:00:00.000Z"
     }
   ],

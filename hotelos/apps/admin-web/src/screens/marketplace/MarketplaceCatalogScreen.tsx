@@ -1,5 +1,10 @@
-// Marketplace público de apps — catálogo + instalación.
-// Conecta con el backend P2-1 (Apaleo-style).
+// Integraciones — pestaña Configuración › Módulos e integraciones › Integraciones
+// (loader ModulosTabs.tsx:24; sin rutas nuevas). Tanda L8 · L8-06: ARRIBA, el
+// panel de estado honesto de cada integración (IntegrationsStatusPanel sobre
+// GET /integrations/status); DEBAJO, el catálogo de aplicaciones de terceros
+// (marketplace P2-1, Apaleo-style: catálogo + instalación; llamadas intactas),
+// hoy vacío y sin proceso de certificación: el badge «verificada» solo sale si
+// el listado lo declara.
 //
 // Cocoa 22 · ola 10 · lote 10-C (list archetype): CocoaPage → content toolbar
 // (category filter) → catalogue cards on the 12-column grid → installed apps in
@@ -21,6 +26,7 @@ import { useToast } from "../../components/Toast";
 import { date, plural } from "../../lib/format";
 import { ACTIONS } from "../../content/actions";
 import { treeHeaderFor } from "../tabs/tab-helpers";
+import { IntegrationsStatusPanel } from "../integrations/IntegrationsStatusPanel";
 import {
   CocoaBadge,
   CocoaButton,
@@ -56,7 +62,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   ai_assistant: "Asistentes IA"
 };
 
-const HEADER = treeHeaderFor("MarketplaceCatalog", { eyebrow: "Configuración · Módulos e integraciones", title: "Catálogo de apps" });
+const HEADER = treeHeaderFor("MarketplaceCatalog", { eyebrow: "Configuración · Módulos e integraciones", title: "Integraciones" });
 
 // Columns outside the component (§4.2 A5).
 const INSTALLED_COLUMNS: CocoaTableColumn<AppInstallation>[] = [
@@ -79,6 +85,8 @@ export function MarketplaceCatalogScreen() {
   const [chosenScopes, setChosenScopes] = useState<Set<string>>(new Set());
   const [pendingUninstallId, setPendingUninstallId] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState(false);
+  // Header «Actualizar» reloads the catalogue AND the status panel (corrector L8 · REV-03): the panel re-reads on every bump.
+  const [statusRefreshKey, setStatusRefreshKey] = useState(0);
 
   async function refresh() {
     setLoading(true);
@@ -102,6 +110,11 @@ export function MarketplaceCatalogScreen() {
   }
 
   useEffect(() => { void refresh(); }, [category]);
+
+  function refreshAll() {
+    setStatusRefreshKey((key) => key + 1);
+    void refresh();
+  }
 
   const installedAppIds = useMemo(() => new Set(installations.map((i) => i.appId)), [installations]);
 
@@ -158,10 +171,10 @@ export function MarketplaceCatalogScreen() {
     <CocoaPage
       eyebrow={HEADER.eyebrow}
       title={HEADER.title}
-      subtitle="Aplicaciones certificadas que extienden tu PMS: gestores de canales, herramientas de revenue, llaves digitales, asistentes IA… Cada aplicación pide los permisos (OAuth) que necesita y tú apruebas exactamente qué datos puede leer o escribir."
+      subtitle="Estado real de cada integración; debajo, el catálogo de aplicaciones de terceros, hoy vacío."
       actions={
-        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refresh()} disabled={loading} loading={loading}>
-          {ACTIONS.refresh}
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll} disabled={loading} loading={loading}>
+          {`${ACTIONS.refresh} todo`}
         </CocoaButton>
       }
       state={initialLoading ? "loading" : "ready"}
@@ -171,8 +184,10 @@ export function MarketplaceCatalogScreen() {
           <CocoaSkeleton.Grid rows={[[4, 4, 4]]} height={180} />
         </div>
       }
-      commands={[{ id: "marketplace-refresh", label: "Actualizar el catálogo de aplicaciones", run: () => { void refresh(); } }]}
+      commands={[{ id: "marketplace-refresh", label: "Actualizar el estado de las integraciones y el catálogo", run: refreshAll }]}
     >
+      <IntegrationsStatusPanel refreshKey={statusRefreshKey} />
+
       <CocoaToolbar
         variant="content"
         aria-label="Filtro por categoría"
@@ -186,15 +201,15 @@ export function MarketplaceCatalogScreen() {
         </CocoaCallout>
       ) : null}
 
-      <CocoaSection title="Catálogo" meta={category ? CATEGORY_LABELS[category] ?? category : "Todas las categorías"}>
+      <CocoaSection title="Catálogo de aplicaciones" meta={category ? CATEGORY_LABELS[category] ?? category : "Todas las categorías"}>
         {loading && listings.length === 0 ? (
           <CocoaState kind="loading" inline />
         ) : listings.length === 0 ? (
           <CocoaState
             kind="empty"
             illustration="box"
-            title="Sin aplicaciones publicadas en esta categoría"
-            message="Las aplicaciones verificadas aparecerán aquí en cuanto un socio publique. Mientras tanto, puedes crear tu propia aplicación en Configuración › Sistema › Aplicaciones."
+            title="Sin aplicaciones de terceros publicadas"
+            message="Hoy no hay ninguna aplicación de terceros en el catálogo. Puedes crear tu propia aplicación en Configuración › Sistema › Aplicaciones."
           />
         ) : (
           <CocoaGrid aria-label="Aplicaciones del catálogo">
@@ -243,7 +258,7 @@ export function MarketplaceCatalogScreen() {
       {/* padding="none" + overflow clip: the table clips to the radius without creating a scroll container (§4.2 D26). */}
       <CocoaSection title="Aplicaciones instaladas" meta={plural(installations.length, "aplicación", "aplicaciones")} padding={installations.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
         {installations.length === 0 ? (
-          <CocoaState kind="empty" inline title="Ninguna aplicación instalada. Instala una del catálogo para empezar." />
+          <CocoaState kind="empty" inline title={listings.length === 0 ? "Ninguna aplicación instalada; el catálogo de terceros está vacío." : "Ninguna aplicación instalada. Instala una del catálogo para empezar."} />
         ) : (
           <CocoaTable
             columns={INSTALLED_COLUMNS}
