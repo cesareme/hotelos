@@ -8,7 +8,10 @@
 // check-out con factura, el walk-in, el buscador, el inspector y el lote— con
 // sus atajos tomados del registro (content/shortcuts-registry.ts), nunca
 // escritos a mano. Sin promesas de tiempo («90 segundos») ni de flujos que no
-// están cableados.
+// están cableados. Tanda DOC-2: literales re-verificados en /hoy («Check-in en
+// 101», «⋯» = «Más acciones de …», «Cobrar 120,00 € y cerrar», «Check-out de 2
+// con saldo 0», «Imprimir 2 fichas»); el check-out deja la factura en borrador
+// por defecto («Borrador para Facturación») o la emite con número si se elige.
 import { shortcutKeys } from "../shortcuts-registry";
 
 export const FRONTDESK_COCKPIT_INSTRUCTIONS = {
@@ -16,7 +19,7 @@ export const FRONTDESK_COCKPIT_INSTRUCTIONS = {
   description: "Llegadas, salidas y huéspedes en el hotel, con una acción por fila y la cola de lo que toca ahora.",
   steps: [
     `1. Cada fila lleva su acción: «Hacer check-in» (o «Check-in en 118» si aún no tiene habitación), «Cobrar X € y cerrar» en las salidas con saldo o «Abrir ficha». Lo demás está en «⋯»: ver folio, asignar o cambiar habitación, marcar no-show.`,
-    `2. El check-in cobra el saldo o el depósito si lo eliges, asigna la habitación y encola el parte de viajeros; Intro confirma. El check-out cobra, cierra el folio y emite la factura (a huésped o empresa) con su número.`,
+    `2. El check-in cobra el saldo o el depósito si lo eliges, asigna la habitación y encola el parte de viajeros; Intro confirma. El check-out cobra, cierra el folio y deja la factura en borrador para Facturación o la emite ya con número (a huésped o a empresa).`,
     `3. ${shortcutKeys("nav.walk-in")} abre el walk-in (llegada sin reserva): fechas, tipo con precio, huésped y «Crear y hacer check-in». ${shortcutKeys("nav.focus-search")} va al buscador por nombre o habitación; ${shortcutKeys("global.palette")} busca cualquier cosa.`,
     `4. Pulsa una fila (o Intro) para ver su detalle al lado sin salir; ↑ y ↓ pasan a la siguiente. Marca varias para hacer «Check-out de N con saldo 0», imprimir fichas o asignar habitación en lote.`
   ],

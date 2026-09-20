@@ -26,11 +26,10 @@
     "wait": 1500
   },
   {
-    "_nota": "Captura forzada (fixDrawer): el cajón «Nueva tarea» no se muestra hoy en escritorio; se rellena y NO se pulsa «Crear tarea». Quita fixDrawer cuando el defecto de los cajones esté corregido.",
+    "_nota": "Cajón «Nueva tarea · Habitación 304» con «Limpieza a fondo» y prioridad «Baja» elegidas; NO se pulsa «Crear tarea».",
     "url": "/operaciones/pisos",
     "out": "docs/manual/img/pisos/nueva-tarea.png",
     "viewAs": "pisos",
-    "fixDrawer": true,
     "hideCaret": true,
     "wait": 600,
     "selector": ".c22-drawer[data-open=\"true\"]",
@@ -59,12 +58,11 @@
     ]
   },
   {
-    "_nota": "Captura forzada (fixDrawer): el cajón «Reportar incidencia» no se muestra hoy en escritorio; se rellena y NO se pulsa «Enviar a mantenimiento». Se pulsa «Reportar» en la PRIMERA habitación del turno (la lista cambia cada día), por eso la guía no cita el número.",
+    "_nota": "Cajón «Reportar incidencia» de la PRIMERA habitación del turno (la lista de Mi turno cambia cada día, por eso la guía no cita el número) con el texto de la incidencia escrito; NO se pulsa «Enviar a mantenimiento».",
     "url": "/operaciones/pisos/mi-turno",
     "out": "docs/manual/img/pisos/reportar-incidencia.png",
     "viewAs": "pisos",
     "hideInstructions": true,
-    "fixDrawer": true,
     "hideCaret": true,
     "wait": 600,
     "selector": ".c22-drawer[data-open=\"true\"]",

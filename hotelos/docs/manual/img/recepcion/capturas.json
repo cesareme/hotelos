@@ -1,5 +1,378 @@
 [
   {
+    "_nota": "Precondición de todos los trabajos con login «uxday»: plan del día de UXDAY armado ese mismo día (db:seed:ux-day -- --reset con el API parado). Las capturas del 19/09/2026 se tomaron SIN rearmar, sobre el tenant con residuos de las pruebas automáticas (17 salidas · 13 hechas · 45 alojados); con el hotel recién armado las cifras son 6 llegadas · 5 salidas · 41 alojados (ver 70-recepcion.md, «Cómo están hechas las capturas»). Mi día con el inspector «Detalle de …» abierto sobre la llegada UXDAY-A4 (clic en la celda «Tipo»); página completa 1280×800.",
+    "url": "/hoy",
+    "out": "docs/manual/img/recepcion/mi-dia.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "click": "role=row[name=/UXDAY-A4/] >> role=cell[name=\"Superior\"]"
+      },
+      {
+        "waitFor": "role=complementary[name=/Detalle de/]"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Cajón «Check-in» de UXDAY-A5 (saldo pendiente 128,00 €). No se pulsa el CTA.",
+    "url": "/hoy",
+    "out": "docs/manual/img/recepcion/check-in-cobro.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "selector": ".c22-drawer[data-open=\"true\"]",
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "click": "role=row[name=/UXDAY-A5/] >> role=button[name=\"Hacer check-in\"]"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "waitFor": "text=1 · Huésped"
+      },
+      {
+        "wait": 1500
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Cajón «Check-in» de UXDAY-A3 (habitación 110 sucia): sugerencia, «Cambiar a la 101» y el interruptor «Hacer check-in igualmente…» sin activar.",
+    "url": "/hoy",
+    "out": "docs/manual/img/recepcion/check-in-sucia.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "selector": ".c22-drawer[data-open=\"true\"]",
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "click": "role=row[name=/UXDAY-A3/] >> role=button[name=\"Hacer check-in\"]"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "waitFor": "text=1 · Huésped"
+      },
+      {
+        "wait": 1500
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Cajón «Check-out» de la 204 (Lucía Kappa, 120,00 € pendientes). No se pulsa el CTA.",
+    "url": "/hoy",
+    "out": "docs/manual/img/recepcion/check-out-cobro.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "selector": ".c22-drawer[data-open=\"true\"]",
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "tab": "Salen hoy"
+      },
+      {
+        "wait": 900
+      },
+      {
+        "click": "role=row[name=/Lucía Kappa/] >> role=button[name=/^Cobrar/]"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "waitFor": "text=1 · Folio"
+      },
+      {
+        "wait": 1500
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Diálogo «Check-out de 2 con saldo 0» tras marcar las salidas 206 y 207. No se confirma.",
+    "url": "/hoy",
+    "out": "docs/manual/img/recepcion/check-out-lote.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "selector": "role=dialog[name=\"Check-out de 2 con saldo 0\"]",
+    "wait": 800,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "tab": "Salen hoy"
+      },
+      {
+        "wait": 900
+      },
+      {
+        "click": "role=row[name=/Sara Eta/] >> role=checkbox"
+      },
+      {
+        "click": "role=row[name=/Iván Ípsilon/] >> role=checkbox"
+      },
+      {
+        "wait": 500
+      },
+      {
+        "button": "Check-out de 2 con saldo 0"
+      },
+      {
+        "waitFor": "role=dialog[name=\"Check-out de 2 con saldo 0\"]"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Cajón «Walk-in» abierto con ⌥W y nombre/apellido ficticios escritos; no se crea nada.",
+    "url": "/hoy",
+    "out": "docs/manual/img/recepcion/walk-in.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "hideCaret": true,
+    "selector": ".c22-drawer[data-open=\"true\"]",
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "key": "Alt+KeyW"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open=\"true\"]"
+      },
+      {
+        "waitFor": "text=Tipo y habitación"
+      },
+      {
+        "fill": [
+          ".c22-drawer[data-open=\"true\"] >> role=textbox[name=\"Nombre\"]",
+          "Sofía"
+        ]
+      },
+      {
+        "fill": [
+          ".c22-drawer[data-open=\"true\"] >> role=textbox[name=\"Apellido\"]",
+          "Ejemplo"
+        ]
+      },
+      {
+        "wait": 900
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Nueva reserva en vista «Rápida» con la tarjeta de instrucciones cerrada; formulario vacío, sin crear.",
+    "url": "/recepcion/reservas/nueva",
+    "out": "docs/manual/img/recepcion/nueva-reserva-rapida.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideCaret": true,
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "button": "Cerrar instrucciones"
+      },
+      {
+        "wait": 700
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Ficha de la reserva alojada UXDAY-T4 (habitación 310): «Acciones de la reserva» y «Resumen».",
+    "url": "/recepcion/reservas/res_uxday_t4",
+    "out": "docs/manual/img/recepcion/ficha-reserva.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "wait": 1800
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Panel «Cambiar habitación» (se abre bajo el botón) de UXDAY-T4 con «Mover a la 311»; no se pulsa. Recorte de la barra de acciones y del panel.",
+    "url": "/recepcion/reservas/res_uxday_t4",
+    "out": "docs/manual/img/recepcion/cambiar-habitacion.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "wait": 800,
+    "actions": [
+      {
+        "wait": 1500
+      },
+      {
+        "button": "Cambiar habitación"
+      },
+      {
+        "waitFor": "role=dialog[name=\"Cambiar habitación\"]"
+      },
+      {
+        "wait": 800
+      }
+    ],
+    "clip": "860,245,420,195"
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Diálogo «¿Cancelar la reserva UXDAY-T1?» con un motivo ficticio escrito; no se confirma.",
+    "url": "/recepcion/reservas/res_uxday_t1",
+    "out": "docs/manual/img/recepcion/cancelar-reserva.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideCaret": true,
+    "selector": "role=dialog[name=/Cancelar la reserva UXDAY-T1/]",
+    "wait": 800,
+    "actions": [
+      {
+        "wait": 1500
+      },
+      {
+        "button": "Más ▾"
+      },
+      {
+        "click": "role=menuitem[name=\"Cancelar reserva…\"]"
+      },
+      {
+        "waitFor": "role=dialog[name=/Cancelar la reserva UXDAY-T1/]"
+      },
+      {
+        "wait": 1200
+      },
+      {
+        "fill": [
+          "role=dialog[name=/Cancelar la reserva UXDAY-T1/] >> role=textbox[name=\"Motivo\"]",
+          "El huésped anula el viaje"
+        ]
+      },
+      {
+        "wait": 600
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Lista de reservas en la vista «En el hotel», búsqueda «310» y el inspector «Detalle de la reserva UXDAY-T4» abierto (clic en la celda «Tipo de habitación»).",
+    "url": "/recepcion/reservas/lista",
+    "out": "docs/manual/img/recepcion/lista-inspector.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "hideCaret": true,
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "tab": "En el hotel"
+      },
+      {
+        "wait": 900
+      },
+      {
+        "fill": [
+          "role=searchbox[name=\"Buscar reservas por nombre, código o habitación\"]",
+          "310"
+        ]
+      },
+      {
+        "wait": 1500
+      },
+      {
+        "click": "role=row[name=/UXDAY-T4/] >> role=cell[name=\"Superior\"]"
+      },
+      {
+        "waitFor": "role=complementary[name=/Detalle de la reserva/]"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Huéspedes con la búsqueda «Zeta» y el inspector «Detalle de Clara Zeta» (huésped ficticio) abierto.",
+    "url": "/recepcion/huespedes",
+    "out": "docs/manual/img/recepcion/huespedes.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideCaret": true,
+    "wait": 900,
+    "actions": [
+      {
+        "wait": 1200
+      },
+      {
+        "fill": [
+          "role=searchbox[name=\"Buscar huéspedes por nombre, empresa, email, documento o habitación\"]",
+          "Zeta"
+        ]
+      },
+      {
+        "wait": 1500
+      },
+      {
+        "click": "role=row[name=/Zeta/] >> role=cell >> nth=1"
+      },
+      {
+        "waitFor": "role=complementary[name=/Detalle de/]"
+      },
+      {
+        "wait": 800
+      }
+    ]
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Turno: productividad, caja del día, estado operativo y eventos.",
+    "url": "/hoy/turno",
+    "out": "docs/manual/img/recepcion/turno.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "wait": 2000
+  },
+  {
+    "_nota": "Plan del día de UXDAY armado. Paleta ⌘K abierta en Mi día sin texto: sección «Esta pantalla» con los comandos de la página.",
+    "url": "/hoy",
+    "out": "docs/manual/img/recepcion/cmdk-comandos.png",
+    "login": "uxday",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "hideCaret": true,
+    "wait": 700,
+    "actions": [
+      {
+        "wait": 1200
+      }
+    ],
+    "cmdk": "",
+    "clip": "300,80,680,490"
+  },
+  {
+    "_nota": "Hotel de demostración (prop_123). Live Timeline completo con el menú de recepción.",
     "url": "/hoy/live-timeline",
     "out": "docs/manual/img/recepcion/live-timeline.png",
     "viewAs": "recepcion",
@@ -7,7 +380,7 @@
     "wait": 1200
   },
   {
-    "_nota": "Detalle de la reserva ficticia RES-18399 (Marc Vidal Puig) abierto en el panel acoplado. La ficha rápida (hover) y la barra de filtros con «Cancelada» encendido se capturan a mano (ver README del manual).",
+    "_nota": "Hotel de demostración. Detalle de la reserva ficticia RES-18399 (Marc Vidal Puig) abierto en el panel acoplado; el ratón se aparta al botón «Cerrar» del panel para que la ficha rápida no tape la parrilla.",
     "url": "/hoy/live-timeline",
     "out": "docs/manual/img/recepcion/live-timeline-detalle.png",
     "viewAs": "recepcion",
@@ -25,8 +398,41 @@
         "waitFor": "text=Estancia y folio"
       },
       {
+        "hover": "role=complementary[name=\"RES-18399\"] >> role=button[name=\"Cerrar\"]"
+      },
+      {
         "wait": 800
       }
     ]
+  },
+  {
+    "_nota": "Hotel de demostración. Ficha rápida al pasar el ratón por la barra de RES-18399.",
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/recepcion/live-timeline-ficha-rapida.png",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "clip": "240,96,1040,704",
+    "wait": 1200,
+    "actions": [
+      {
+        "wait": 1200
+      }
+    ],
+    "hover": "text=Marc Vidal Puig"
+  },
+  {
+    "_nota": "Hotel de demostración. Barra de filtros del Live Timeline con el chip «Cancelada · 1» encendido y «Limpiar filtros».",
+    "url": "/hoy/live-timeline",
+    "out": "docs/manual/img/recepcion/live-timeline-filtros.png",
+    "viewAs": "recepcion",
+    "hideInstructions": true,
+    "selector": "[role=group][aria-label='Filtros del Live Timeline']",
+    "wait": 1200,
+    "actions": [
+      {
+        "wait": 1200
+      }
+    ],
+    "chip": "Cancelada"
   }
 ]

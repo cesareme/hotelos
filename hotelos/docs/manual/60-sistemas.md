@@ -18,7 +18,7 @@ Diferencia importante: la plantilla «Administración de sistema» **no tiene ni
 
 - Organización de demostración «Grupo Hotelero Demo», hotel «Hotel Demo Madrid Centro», usuario de demo con «Ver como…» = «Administración de sistema» (el badge «Viendo como Administración de sistema · solo menú» aparece en la barra lateral). Las pantallas del apartado 5 se capturan con «Mi menú (administrador)».
 - Todos los nombres, correos y datos son ficticios. Tema claro, 1280 × 800 píxeles; las capturas de contenido están recortadas sin la barra lateral ni la cabecera.
-- Las capturas se regeneran con la receta del manual (ver [README.md](README.md)) y el lote `img/sistemas/capturas.json`; la del cajón de invitación (`invitar.png`) se hace tras pulsar «Invitar con ámbito» y, mientras dure el defecto descrito en 1.1, forzando el panel visible solo para la captura (opción `fixDrawer` de la receta). La de Webhooks (`webhooks.png`) está recortada al formulario y a la tabla, con una dirección de ejemplo escrita en «URL de destino» y sin pulsar «Crear suscripción».
+- Las capturas se regeneran con la receta del manual (ver [README.md](README.md)) y el lote `img/sistemas/capturas.json`, incluida la del cajón de invitación (`invitar.png`: el trabajo pulsa «Invitar con ámbito» y captura el cajón vacío sin pulsar «Crear invitación»). La de Webhooks (`webhooks.png`) está recortada al formulario y a la tabla, con una dirección de ejemplo escrita en «URL de destino» y sin pulsar «Crear suscripción».
 
 ## Qué verás en tu menú
 
@@ -85,10 +85,8 @@ En la demo solo hay un usuario (el de demostración, con un rol «Local Super Ad
 5. Revisa los avisos. Si el cajón pinta «Nivel superior al tuyo» o «Separación de funciones» (con la lista de «Pares incompatibles»), **no deja enviar**: cambia el rol o consulta a dirección.
 6. El botón de envío es «Crear invitación» (a su lado, «Cancelar»). En esta guía no lo pulsamos.
 
-> **En construcción:** el 19/09/2026, en la aplicación tal como está, el cajón **no se muestra** al pulsar «Invitar con ámbito»: se abre por dentro (el botón responde y el formulario existe), pero una regla de estilo de la barra lateral lo deja oculto en cualquier tamaño de pantalla. Le pasa a todos los cajones laterales de la aplicación (también a «Añadir plantilla» de Comunicaciones y a la ficha de cada persona de esta pantalla), no a las ventanas de confirmación. Es un defecto conocido pendiente de corregir; hasta entonces, pide las altas a dirección o al proveedor técnico. La captura siguiente se ha hecho forzando el cajón visible para que conozcas el formulario tal como está diseñado.
-
 ![Cajón «Invitar con ámbito»](img/sistemas/invitar.png)
-*El cajón de invitación (captura con el panel forzado visible): sección «Persona», sección «Rol y ámbito» y botones «Cancelar» / «Crear invitación».*
+*El cajón de invitación: sección «Persona», sección «Rol y ámbito» y botones «Cancelar» / «Crear invitación».*
 
 **Resultado esperado** (al pulsar «Crear invitación» en tu hotel): la pantalla muestra el estado de la entrega, el enlace de invitación con el botón «Copiar enlace», la fecha de caducidad («Caduca el …») y el aviso «El enlace es de un solo uso.» La persona aparece en la tabla con estado de invitación pendiente y, al aceptar, con «Activo». Todo queda en Sistema › Auditoría (acciones «UserInvited» y «ROLE_ASSIGNED»).
 
@@ -286,7 +284,7 @@ Pasos para investigar quién cambió un rol:
 
 **Resultado esperado:** cada cambio de rol aparece como un evento con el actor, la hora y el detalle; «Limpiar filtros» devuelve la lista completa.
 
-> **En construcción:** el panel «Detalles del evento» del paso 3 es un cajón lateral y, a 19/09/2026, queda oculto por el mismo defecto de estilo descrito en 1.1 (se abre, pero no se ve; ciérralo con Esc). La lista, los filtros, la paginación y «Exportar CSV» funcionan; el detalle de cada evento también viaja en el CSV.
+> **Nota:** «Detalles del evento» es un cajón lateral con el subtítulo «<acción> · <fecha y hora>» (por ejemplo «AUTH_LOGIN · 19 sept 2026, 22:26»); se cierra con «Cerrar», la × o Esc. El detalle de cada evento viaja también en el CSV.
 
 ![Sistema · Auditoría](img/sistemas/auditoria.png)
 *Auditoría: filtros por fecha, acción, entidad y actor, y la tabla de eventos sellados.*
@@ -454,7 +452,6 @@ Si `status` no es `healthy`, o `checks.audit` acumula fallos, o `postgres` / `re
 | Aviso rojo «Separación de funciones» con «Pares incompatibles» | La persona ya tiene una asignación incompatible con la nueva | Cambia de rol o retira antes la asignación incompatible (con dirección) |
 | «No hay ninguno a tu alcance.» / «Sin opciones» en el campo del ámbito | Intentas asignar un ámbito fuera del tuyo | Elige «Hotel» y uno de tus hoteles, o pide a dirección |
 | La persona invitada no recibe el correo | Correo saliente no configurado | Copia el enlace («Copiar enlace») y entrégaselo; si caducó, «Reenviar invitación» |
-| Pulsas «Invitar con ámbito», «Añadir plantilla» o una fila de usuario y no aparece ningún panel | Defecto conocido (19/09/2026): los cajones laterales de la aplicación se abren pero quedan ocultos por una regla de estilo de la barra lateral | Pulsa Esc para cerrarlo; pide la operación a dirección o al proveedor técnico hasta que se corrija |
 | «Algo ha fallado en la interfaz … b is not iterable» al pulsar «Comparar plantillas» | Defecto conocido de la pantalla | «Reintentar»; usa la tabla de plantillas de esta guía |
 | «Gmail no está configurado en el servidor» (o Microsoft 365 / IMAP) | Proveedor de correo entrante sin credenciales | Usa «Manual (pegar un correo)» y pide la configuración al proveedor técnico |
 | «Suscripción de webhook no encontrada.» al pulsar «Pausar» o «Eliminar» | Defecto conocido de Webhooks | Anota el id y pídeselo al proveedor técnico; la suscripción sigue activa |
@@ -468,7 +465,6 @@ Si `status` no es `healthy`, o `checks.audit` acumula fallos, o `postgres` / `re
 - **Presentación telemática a la AEAT**: los modelos se calculan en Cumplimiento › Modelos AEAT con resumen para presentación manual; VeriFactu y SES.Hospedajes están en modo de pruebas hasta que el proveedor cargue certificado y declaración del software.
 - **Integración OPERA real**: solo por ficheros (correo, SFTP o manual) y sin cortes en la demo; nunca escribe en OPERA; no hay conexión por API (OHIP).
 - **Webhooks**: los eventos del PMS no se publican automáticamente (solo el evento de prueba) y «Pausar» / «Eliminar» fallan.
-- **Cajones laterales** («Invitar con ámbito», «Añadir plantilla», ficha de usuario y el resto de paneles que se abren desde el lado derecho): a 19/09/2026 se abren ocultos por una regla de estilo de la barra lateral; las ventanas de confirmación sí se ven.
 - **Comparar plantillas**: rompe la interfaz.
 - **Correo entrante**: Gmail, Microsoft 365 e IMAP sin configurar; solo el conector manual.
 - **Integraciones**: catálogo vacío; sin aplicaciones certificadas de terceros.

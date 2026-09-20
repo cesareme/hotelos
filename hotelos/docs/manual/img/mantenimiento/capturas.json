@@ -28,11 +28,10 @@
     "wait": 1500
   },
   {
-    "_nota": "Captura forzada (fixDrawer): el cajón «Nueva orden de trabajo» no se muestra hoy en escritorio; se rellena y NO se pulsa «Crear orden». Quita fixDrawer cuando el defecto de los cajones esté corregido.",
+    "_nota": "Cajón «Nueva orden de trabajo» relleno (título, habitación 305 y descripción); NO se pulsa «Crear orden».",
     "url": "/operaciones/mantenimiento",
     "out": "docs/manual/img/mantenimiento/nueva-orden.png",
     "viewAs": "mantenimiento",
-    "fixDrawer": true,
     "hideCaret": true,
     "wait": 600,
     "selector": ".c22-drawer[data-open=\"true\"]",

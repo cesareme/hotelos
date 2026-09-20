@@ -15,11 +15,10 @@
     ]
   },
   {
-    "_nota": "Captura forzada (fixDrawer): cajón «Nuevo contrato» relleno con datos ficticios, antes de «Guardar contrato» (no se guarda nada). Quita fixDrawer cuando el defecto de los cajones esté corregido.",
+    "_nota": "Cajón «Nuevo contrato» relleno con datos ficticios, justo antes de «Guardar contrato» (no se guarda nada).",
     "url": "/finanzas/nominas",
     "out": "docs/manual/img/rrhh/nuevo-contrato.png",
     "viewAs": "rrhh",
-    "fixDrawer": true,
     "hideCaret": true,
     "wait": 600,
     "actions": [
@@ -53,11 +52,10 @@
     ]
   },
   {
-    "_nota": "Captura forzada (fixDrawer): cajón «Importar informe de coste de personal» con el CSV de ejemplo (embebido en file.content) y la vista previa (5 filas · 1 centro × mes · 26.910,00 €). «Previsualizar» no escribe nada; nunca se pulsa «Contabilizar».",
+    "_nota": "Cajón «Importar informe de coste de personal» con el CSV de ejemplo (embebido en file.content) y la vista previa (5 filas · 1 centro × mes · 26.910,00 €). «Previsualizar» no escribe nada; nunca se pulsa «Contabilizar».",
     "url": "/finanzas/nominas",
     "out": "docs/manual/img/rrhh/importar-coste.png",
     "viewAs": "rrhh",
-    "fixDrawer": true,
     "hideCaret": true,
     "wait": 800,
     "actions": [

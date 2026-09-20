@@ -7,7 +7,10 @@
 // reserva (rápida en una pantalla con precio en vivo y «Crear y…», completa con
 // los seis pasos) y su conmutador— con los atajos tomados del registro
 // (content/shortcuts-registry.ts), nunca escritos a mano. Sin vistas de
-// calendario ni arrastres al rack que la lista no tiene.
+// calendario ni arrastres al rack que la lista no tiene. Tanda DOC-2: literales
+// re-verificados en /recepcion/reservas/lista (vistas, «Columnas», lote) y en
+// /recepcion/reservas/nueva (grupos Estancia · Huésped · Origen y tarifa · Empresa;
+// «Crear reserva» · «Crear y cobrar depósito» · «Crear y hacer check-in»).
 import { shortcutKeys } from "../shortcuts-registry";
 
 export const RESERVATIONS_INSTRUCTIONS = {
@@ -17,7 +20,7 @@ export const RESERVATIONS_INSTRUCTIONS = {
     "1. Elige la vista operativa en la barra: los contadores de arriba abren la suya. Las canceladas solo se ven en su vista.",
     `2. Busca por nombre, código de reserva o número de habitación (${shortcutKeys("nav.focus-search")} va al buscador): la tabla no se vacía mientras carga.`,
     "3. Pulsa una fila (o Intro) para ver su detalle al lado sin salir; ↑ y ↓ pasan a la siguiente reserva. «Abrir ficha completa» lleva a la ficha con folio, documentos y acciones.",
-    "4. Marca varias filas para imprimir fichas, asignar habitación o hacer «Check-out de N con saldo 0» en lote; «Columnas ▾» guarda las columnas que quieres ver.",
+    "4. Marca varias filas para imprimir fichas, asignar habitación o hacer «Check-out de N con saldo 0» en lote; «Columnas» guarda las columnas que quieres ver.",
     `5. «Nueva reserva» (${shortcutKeys("nav.reservation-create")}) abre el modo rápido: estancia, tipo con precio en vivo y huésped en una pantalla; «Completa» tiene los seis pasos para grupos, acompañantes, identidad, pagos y solicitudes.`
   ],
   tips: [
@@ -47,7 +50,7 @@ export const RESERVATION_CREATE_INSTRUCTIONS = {
     "1. Rápida: fechas (admiten «+7», «hoy», «mañana» y «+1 noche»), adultos y tipo; cada tipo muestra su precio por noche y las habitaciones libres según la tarifa publicada.",
     "2. Nombre y apellido son lo único obligatorio del huésped; si ya tiene ficha, la pantalla la sugiere y «Usar sus datos» rellena contacto y documento sin volver a teclearlos.",
     "3. Con razón social, la factura irá a la empresa y el NIF queda recordado para emitirla desde la ficha. El total sale de la tarifa; escribe un importe solo si es manual.",
-    `4. Intro (o ${shortcutKeys("global.enter")} en cualquier campo) crea la reserva y abre su ficha; «Crear y cobrar depósito» abre el cobro y «Crear y hacer check-in» aloja al huésped en la primera habitación limpia y libre del tipo (solo llegadas de hoy).`,
+    `4. ${shortcutKeys("global.enter")} en cualquier campo crea la reserva y abre su ficha; «Crear y cobrar depósito» abre el cobro y «Crear y hacer check-in» aloja al huésped en la primera habitación limpia y libre del tipo (solo llegadas de hoy).`,
     "5. «Completa» (conmutador de la cabecera) tiene los seis pasos de siempre con «Consultar disponibilidad» y «Confirmar y crear reserva» en el último; lo tecleado se conserva al cambiar de modo."
   ],
   tip: `${shortcutKeys("nav.reservation-create")} abre esta pantalla desde cualquier sitio; mantén ${shortcutKeys("access.reveal").replace(" (mantener)", "")} para ver la letra de cada botón (D depósito · I check-in · C crear).`

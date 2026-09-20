@@ -26,7 +26,7 @@
 - Mientras bloquea, la habitación está «Fuera de servicio» en el Tablero de habitaciones de recepción y en el tablero de pisos; al resolver, vuelve a «SUCIA» sin «NO VENDIBLE».
 - Dirección ve la orden en Mi día › «Operaciones» («Órdenes de trabajo (n)») y recepción como acción «INCIDENCIA» en Mi día.
 
-> **En construcción:** a 19/09/2026 los cajones «Nueva orden» (paso 2) y «Añadir nota» (paso 6) se abren pero **no se ven en pantalla** (defecto de estilo de los cajones laterales). Mientras tanto, los partes entran por «Reportar» de pisos (mismo defecto) o los crea dirección; cambiar el estado, bloquear y resolver desde la ficha sí funcionan (comprobados en la guía 40 con una orden ficticia de la 305). No hay asignación de técnico: «Tomar» y «En curso» no rellenan «Asignada a».
+> **En construcción:** no hay asignación de técnico: «Tomar» y «En curso» no rellenan «Asignada a» y no existe un selector de persona. Los cajones «Nueva orden» (paso 2) y «Añadir nota» (paso 6) se han abierto en la demo sin crear nada; cambiar el estado, bloquear y resolver desde la ficha están comprobados en la guía 40 con una orden ficticia de la 305.
 
 ## Si algo falla
 

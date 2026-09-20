@@ -52,7 +52,7 @@ Ruta de la captura: «Menú › Hoy › Live Timeline» (`/hoy/live-timeline`). 
 |---|---|
 | **Nombre del hotel** («Hotel Demo Madrid Centro») | El hotel activo. Es un botón: abre la lista «Cambiar propiedad» para trabajar con otro hotel (apartado 6). Compruébalo siempre antes de un check-in o de una reserva. |
 | **«+ Nueva reserva»** (botón verde) | Abre «Recepción › Nueva reserva» desde cualquier pantalla. Solo lo ven los perfiles que pueden crear reservas (recepción, dirección, comercial); RRHH, pisos o mantenimiento no lo tienen. |
-| **Cuadro «Buscar reservas, huéspedes…»** y botón **«⌘K»** | La búsqueda global (apartado 4). Al escribir en el cuadro o pulsar el botón «⌘K» («Abrir la búsqueda (⌘K)») se abre la paleta de búsqueda. |
+| **Cuadro «Buscar reservas, huéspedes…»** y botón **«⌘K»** | La búsqueda global y los comandos de la pantalla (apartado 4). Al escribir en el cuadro o pulsar el botón «⌘K» («Abrir la búsqueda (⌘K)») se abre la paleta «Buscar en la aplicación». |
 | **Botón del tema** («Claro») | «Cambiar tema (claro/oscuro)». Cada clic pasa de «Claro» a «Oscuro», de «Oscuro» a «Auto» (sigue el ajuste de tu sistema) y de «Auto» a «Claro». Se recuerda en ese navegador. |
 | **Campana** («Avisos») | Los avisos que necesitan tu atención (apartado 8). El número rojo es la cantidad sin leer: en la demo, «Avisos (2 sin leer)». |
 | **«?»** («Centro de ayuda») | Recorridos guiados, guía de tu puesto y artículos de ayuda (apartado 7). |
@@ -119,33 +119,31 @@ Hay una segunda pantalla parecida, «Módulo no activado», con el texto «Esta 
 
 ## 4. Buscar cualquier cosa con ⌘K
 
-Ruta: desde cualquier pantalla, pulsa **⌘K** (Ctrl+K en Windows y Linux), haz clic en el botón «⌘K» de la barra superior o empieza a escribir en el cuadro «Buscar reservas, huéspedes…».
+Ruta: desde cualquier pantalla, pulsa **⌘K** (Ctrl+K en Windows y Linux), haz clic en el botón «⌘K» de la barra superior («Abrir la búsqueda (⌘K)») o empieza a escribir en el cuadro «Buscar reservas, huéspedes…».
 
-1. Pulsa ⌘K. Se abre la paleta con el cuadro «Buscar reserva, huésped, habitación, factura, pantalla…». Antes de escribir, la paleta lista las pantallas de tu menú agrupadas por categoría y, al final, las «Acciones»: «Abrir el centro de ayuda», «Ver avisos» y «Cambiar de propiedad».
-2. Escribe al menos dos letras. Prueba con el código de una reserva de la demo, `RES-18399`: aparece el grupo «Reservas» con «RES-18399 · Marc Vidal Puig · 2026-09-18 → 2026-09-20 · booking_com». Escribe ahora el nombre, `Marc Vidal`: encuentras la misma reserva. Escribe `Parrilla`: aparecen las pantallas «Revenue › Parrilla de tarifas» y «Parrilla de tarifas · Historial».
-3. Muévete con ↑ y ↓, abre el resultado con Intro (o haz clic) y cierra con Esc.
+1. Pulsa ⌘K. Se abre el diálogo «Buscar en la aplicación» con el cuadro «Buscar reserva, huésped, habitación, factura, pantalla o comando…». Antes de escribir, la lista «Resultados de búsqueda» empieza por la sección **«Esta pantalla»**, con los comandos de la pantalla en la que estás (en Mi día: «Actualizar recepción», «Walk-in», «Crear reserva», «Buscar por nombre o habitación» y «Abrir Live Timeline»; en el Live Timeline: «Actualizar Live Timeline», «Live Timeline: ir a hoy», «Nueva reserva desde el timeline», «Mover un día la reserva seleccionada» y «Mover un día antes la reserva seleccionada»); siguen las pantallas de tu menú agrupadas por categoría («Hoy», «Recepción»…) y, al final, las «Acciones»: «Abrir el centro de ayuda», «Ver avisos» y «Cambiar de propiedad».
+2. Escribe al menos dos letras. Prueba con el código de una reserva de la demo, `RES-18399`: aparece el grupo «Reservas» con «RES-18399 · En el hotel · Marc Vidal Puig · 18 sept → 20 sept · Booking com» y, debajo, la acción «Cobrar RES-18399 · Acción». Escribe ahora el nombre, `Marc Vidal`: encuentras la misma reserva. Escribe `Parrilla`: aparecen las pantallas «Revenue › Parrilla de tarifas» y «Parrilla de tarifas · Historial».
+3. Muévete con ↑ y ↓, abre el resultado (o ejecuta el comando) con Intro o con un clic, y cierra con Esc.
 
-![Paleta ⌘K de ehotelOS con «RES-18399» escrito y el resultado «RES-18399 · CHECKED_IN · Marc Vidal Puig · 2026-09-18 → 2026-09-20 · booking_com» en el grupo «Reservas»](img/primeros-pasos/busqueda-k.png)
+![Paleta ⌘K de ehotelOS con «RES-18399» escrito: en el grupo «Reservas», el resultado «RES-18399 · En el hotel · Marc Vidal Puig · 18 sept → 20 sept · Booking com» y, debajo, la acción «Cobrar RES-18399 · Acción»](img/primeros-pasos/busqueda-k.png)
 
-*La paleta ⌘K encuentra reservas por código o por nombre del huésped, y también pantallas por su nombre.*
+*La paleta ⌘K encuentra reservas por código o por nombre del huésped, pantallas por su nombre y los comandos de la pantalla en la que estás; el estado sale con el vocabulario de ehotelOS («En el hotel»).*
 
-**Resultado esperado.** Con Intro sobre la reserva se abre su detalle («Recepción › Reservas › Detalle», con las pestañas «Resumen · Folio · Actividad · Huéspedes · Documentos»); con Intro sobre una pantalla, se abre esa pantalla.
+**Resultado esperado.** Con Intro sobre la reserva se abre su detalle («Recepción › Reservas › Detalle», con las pestañas «Resumen · Folio (2) · Actividad · Huéspedes (1) · Documentos»; los números son los folios y huéspedes de esa reserva); con Intro sobre una pantalla, se abre esa pantalla; con Intro sobre un comando de «Esta pantalla», se ejecuta (por ejemplo, «Walk-in» abre el cajón de walk-in de Mi día).
 
 **Si algo falla.** Si no aparece nada, comprueba que has escrito dos letras o más y que el hotel activo es el correcto: ⌘K busca solo en el hotel que tienes seleccionado arriba a la izquierda. Con «Ver como…» activo, la paleta solo ofrece las pantallas del menú simulado.
 
-> **En construcción:** en los resultados de reserva, el estado y el canal salen todavía con su nombre técnico en inglés («CHECKED_IN», «booking_com») en vez de «En el hotel» y «Booking.com».
-
 ## 5. Live Timeline: la primera entrada del menú
 
-Ruta: «Menú › Hoy › Live Timeline» (`/hoy/live-timeline`). Es la primera entrada de «Hoy» y la ven casi todos los perfiles (RRHH y administración de sistema, solo en lectura).
+Ruta: «Menú › Hoy › Live Timeline» (`/hoy/live-timeline`, atajo **⌥T**). Es la primera entrada de «Hoy» y la ven casi todos los perfiles (RRHH y administración de sistema, solo en lectura).
 
-El Live Timeline es el calendario de ocupación: cada fila es una habitación (agrupadas por tipo, por ejemplo «Double · 9 habitaciones»), cada barra una estancia, y la fila superior «Libres» dice cuántas habitaciones quedan libres cada día. Te mueves con «Anterior», «Hoy» y «Siguiente» o eligiendo una fecha en el selector; cambias la escala con «Día · 7», «Semana · 14» o «Mes · 30» (el número es la cantidad de días que se ven). El buscador «Código, huésped o habitación» y los filtros «Estado», «Canal» y «Tipo» reducen lo que ves. El color de cada barra indica su estado: llega hoy, en casa, sale hoy, confirmada, borrador, no-show o cancelada (las canceladas solo se ven si activas su filtro), y una habitación bloqueada por mantenimiento lleva la etiqueta «Bloqueada» (en la demo, la 108). Los contadores de encima del calendario resumen el día («19 habitaciones · 15 reservas visibles · En casa: 3 · Llegadas hoy: 4 · Salidas hoy: 4») y el amarillo «Cierre nocturno pendiente · fecha de negocio 14 sept» te recuerda que la demo lleva días sin ejecutar el cierre del día. Pasa el ratón por una barra para ver su ficha rápida y haz clic (o selecciónala y pulsa Intro) para abrir su detalle en un panel a la derecha, con «Huéspedes», «Estancia y folio» (entrada, salida, importe total, saldo pendiente y cobros), «Actividad reciente», los accesos «Ir a» (recorrido del huésped, folio y facturación, limpieza, mantenimiento, mensajes) y las «Acciones» («Check-in», «Check-out»…); se cierra con «Cerrar» o Esc. Arrastra una barra para mover la estancia o cambiar sus fechas: cada cambio pide confirmación antes de aplicarse. El grupo «Sin asignar · Reservas sin habitación» agrupa las reservas que todavía no tienen habitación.
+El Live Timeline es el calendario de ocupación: cada fila es una habitación (agrupadas por tipo, por ejemplo «Double · 9 habitaciones»), cada barra una estancia, y la fila superior «Libres» dice cuántas habitaciones quedan libres cada día. Su subtítulo resume lo que puedes hacer: «Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el detalle con folio y actividad, y arrastra (o usa ⌥ con las flechas) para mover o redimensionar la estancia: el cambio se aplica al momento y se puede deshacer durante 8 segundos. Solo el check-in, el check-out, cancelar y el no-show piden confirmación.». Te mueves con «Anterior», «Hoy» y «Siguiente» o eligiendo una fecha en el selector; cambias la escala con «Día · 7», «Semana · 14» o «Mes · 30» (el número es la cantidad de días que se ven). El buscador «Código, huésped o habitación» y los filtros «Estado», «Canal» y «Tipo» reducen lo que ves: cada filtro es un chip con su recuento (en la demo, «Confirmada · 9», «Cancelada · 1», «En el hotel · 3» y «Salida hecha · 3»; el de «Cancelada» está apagado al entrar). El color de cada barra es su estado, con la leyenda al pie de la parrilla: «Llega hoy · En el hotel · Sale hoy · Confirmada · Borrador · Salida hecha · No-show · Cancelada · Bloqueada · Mantenimiento» (las canceladas solo se ven si activas su chip; una habitación bloqueada por mantenimiento lleva la etiqueta «Bloqueada» y su carril va rayado: en la demo, la 108). Los contadores de encima del calendario resumen el día («19 habitaciones · 15 reservas visibles · En el hotel: 3 · Llegadas hoy: 4 · Salidas hoy: 4») y el amarillo «Cierre nocturno pendiente · fecha de negocio 14 sept» te recuerda que la demo lleva días sin ejecutar el cierre del día. Pasa el ratón por una barra para ver su ficha rápida («Ficha rápida de la reserva»: iniciales, nombre, código, estado, canal, habitación, entrada, salida, noches, ocupación, importe y segmento) y haz clic (o selecciónala y pulsa Intro) para abrir su detalle en un panel a la derecha: cabecera con el código y «<nombre> · Hab. 201», «Huéspedes», «Estancia y folio» (estado, entrada, salida, noches, tipo, habitación, canal, importe total, saldo pendiente, cobros y actividad abierta), «Actividad reciente», los accesos «Ir a» («Recorrido del huésped», «Folio y facturación», «Limpieza», «Mantenimiento», «Mensajes») y las «Acciones» («Check-in», «Check-out», «Cambiar habitación», «Cancelar reserva», «Marcar no-show» y «Abrir reserva»; las que no aplican al estado de esa reserva salen deshabilitadas: con el huésped en el hotel solo puedes «Check-out», «Cambiar habitación» y «Abrir reserva»). El panel se cierra con «Cerrar» o Esc. Arrastrar una barra (o mover la seleccionada con ⌥ y las flechas) cambia la habitación o las fechas sin diálogo y deja un aviso con «Deshacer» durante 8 segundos. El grupo «Sin asignar · Reservas sin habitación» agrupa las reservas que todavía no tienen habitación.
 
-![Contenido de la pantalla «Live Timeline»: título, tarjeta de instrucciones con cinco pasos y el consejo sobre los colores, botones «Anterior · Hoy · Siguiente», selector de fecha, escala «Día · 7 / Semana · 14 / Mes · 30», buscador «Código, huésped o habitación», filtros de estado, canal y tipo, y los contadores del día](img/primeros-pasos/live-timeline.png)
+![Contenido de la pantalla «Live Timeline»: título y subtítulo, tarjeta de instrucciones con cinco pasos y el consejo sobre los colores, botones «Anterior · Hoy · Siguiente», selector de fecha, escala «Día · 7 / Semana · 14 / Mes · 30», buscador «Código, huésped o habitación», chips de estado «Confirmada · 9 · Cancelada · 1 · En el hotel · 3 · Salida hecha · 3», de canal y de tipo, y los contadores del día](img/primeros-pasos/live-timeline.png)
 
 *Los controles del Live Timeline, con la tarjeta de instrucciones de la pantalla todavía abierta. El calendario completo se ve en la captura del apartado 2.*
 
-El capítulo completo (mover y redimensionar estancias, crear una reserva desde celdas vacías, sobreventa, teclado) está en [70 · Recepción](70-recepcion.md).
+El capítulo completo (la pantalla de arriba abajo, mover y redimensionar estancias, crear una reserva desde celdas vacías, sobreventa, teclado y errores) está en [70 · Recepción](70-recepcion.md#live-timeline).
 
 ## 6. Cambiar de hotel
 
@@ -157,13 +155,13 @@ Si tu cuenta trabaja en más de un hotel, haz clic en el nombre del hotel activo
 
 ## 7. Ayuda dentro de la aplicación
 
-Tienes tres ayudas sin salir de ehotelOS: el Centro de ayuda («?»), el recorrido de bienvenida y las tarjetas de instrucciones de cada pantalla.
+Tienes tres ayudas sin salir de ehotelOS: el Centro de ayuda («?», que incluye un resumen de este manual), el recorrido de bienvenida y las tarjetas de instrucciones de cada pantalla.
 
 ### El Centro de ayuda («?»)
 
 1. Haz clic en «?» («Centro de ayuda») en la barra superior (o pulsa ⌘K y elige «Abrir el centro de ayuda»).
-2. Se abre el panel «Centro de ayuda» con un buscador («Buscar en la ayuda: check-in, factura, VeriFactu…») y estas secciones: **«Primeros pasos»** (el recorrido de bienvenida, «Un minuto para conocer lo esencial de la aplicación.»), **«Recorridos para <tu perfil>»** (un recorrido guiado por cada categoría de tu menú, con su número de pasos: por ejemplo «Hoy · 9 pasos», «Recepción · 6 pasos», «Finanzas · 9 pasos»), **«Cómo hacer cada tarea»** («Hacer un check-in», «Crear una reserva», «Asignar una habitación», «Cobrar y hacer el check-out», «Cerrar el día», «Buscar un huésped o una reserva»), **«Guía de tu puesto»** (una guía por perfil: dirección, propietario, cumplimiento, revenue, comercial, recepción, restauración, mantenimiento y pisos) y los **artículos** («Cómo hacer mi primer check-in», «Cómo crear una reserva nueva», «Cómo gestionar un grupo», «Cómo dividir un folio», «Cómo conectar un canal de venta (Booking.com, Expedia…)», «Cómo activar VeriFactu», el glosario hotelero y los atajos de teclado).
-3. Cierra con Esc o con el botón de cerrar del panel.
+2. Se abre el panel «Centro de ayuda» con un buscador («Buscar en la ayuda»), la entrada suelta **«Primeros pasos»** (el recorrido de bienvenida, «Un minuto para conocer lo esencial de la aplicación.», sin rótulo de sección) y estas secciones, en este orden: **«Recorridos para <tu perfil>»** (un recorrido guiado por cada categoría de tu menú, con su número de pasos: con la cuenta de demostración dice «Recorridos para Administrador de plataforma» y ofrece «Configuración · Recomendado · 12 pasos», «Hoy · 9 pasos», «Recepción · 7 pasos», «Operaciones · 9 pasos», «Comercial · 6 pasos», «Revenue · 11 pasos», «Finanzas · 9 pasos», «Cumplimiento · 10 pasos» e «Informes · 6 pasos»); **«Cómo hacer cada tarea»** («Hacer un check-in», «Crear una reserva», «Asignar una habitación», «Cobrar y hacer el check-out», «Cerrar el día», «Buscar un huésped o una reserva»); **«Guía de tu puesto»** (una guía por perfil: dirección, propietario, cumplimiento y fiscal, revenue, comercial, recepción, restauración, mantenimiento y pisos); **«Primeros pasos»** (seis artículos: «Cómo hacer mi primer check-in», «Cómo crear una reserva nueva», «Cómo gestionar un grupo», «Cómo dividir un folio», «Cómo conectar un canal de venta (Booking.com, Expedia…)» y «Cómo activar VeriFactu»); **«Manual de uso»** (este manual, resumido dentro de la aplicación: una entrada por guía, «Manual de uso · 00 · Primeros pasos», «… 10 · Dirección», «… 20 · Administración y contabilidad», «… 30 · RRHH y nóminas», «… 40 · Pisos y mantenimiento», «… 50 · Comercial y revenue», «… 60 · Sistemas», «… 70 · Recepción», más «Preguntas frecuentes», «Plan de formación» y «Fichas rápidas»; cada guía se despliega con «Para quién», «Qué cubre» (los apartados de la guía), «Tareas clave», «Qué no hace todavía» y «Dónde está», con la guía y el fichero del manual que amplían el tema; las entradas «Preguntas frecuentes», «Plan de formación» y «Fichas rápidas» tienen sus propios apartados: «Qué cubre», «Cómo usarlas» / «Cómo se usa» / «Las dieciséis fichas» y «Cómo usar una ficha», «Qué no hace todavía» solo en el plan, y «Dónde está»); **«Qué hago si…»** (seis: «No puedo crear una reserva», «El folio no muestra un cargo o un cobro», «Un canal de venta aparece desconectado», «La AEAT ha rechazado una factura (VeriFactu)», «Una habitación está bloqueada por mantenimiento» y «Tengo una reserva duplicada»); **«Cumplimiento»** (seis: «Qué es VeriFactu y cómo funciona», «SES.Hospedajes: el parte de viajeros, explicado», «TicketBAI en los territorios forales», «IGIC e IVA en Canarias», «Protección de datos: qué datos personales se protegen» y «Registro Especial de Agencias de Viajes (REAV)»); **«Atajos de teclado»** (abre la misma hoja que ⌘/, apartado 10), **«Glosario»** (ADR, RevPAR…, apartado 9) y, al final, una segunda sección **«Atajos de teclado»** con el artículo del mismo nombre (es un duplicado de la pantalla, no un error tuyo).
+3. Cierra con Esc o con «Cerrar ayuda».
 
 ### El recorrido de bienvenida
 
@@ -182,7 +180,7 @@ La primera vez que entras, ehotelOS te propone un recorrido de un minuto: «Te d
 
 Algunas pantallas abren con una tarjeta de instrucciones bajo el título: qué es la pantalla, cómo se usa en pasos numerados y un «Tip». Con la cuenta de demostración la tienen Live Timeline, Mi día («Mi día en recepción»), Reservas, Panel de revenue, Canales de venta, Facturación y cobros («Centro de facturación»), Centro de cumplimiento, la pestaña «Cupos» de Grupos y eventos («Cupos de tour operadores») e Impuestos («Impuestos de la propiedad»). La ves en la captura del apartado 5. Cuando ya no la necesites, ciérrala con el botón «×» («Cerrar instrucciones») de su esquina.
 
-> **Nota:** una tarjeta cerrada no vuelve a aparecer en ese navegador y hoy no hay botón para recuperarla. Si quieres releerla, la misma información está en «?» › «Guía de tu puesto» y en la guía de tu perfil de este manual.
+> **Nota:** una tarjeta cerrada no vuelve a aparecer en ese navegador y hoy no hay botón para recuperarla. Si quieres releerla, la misma información está en «?» › «Guía de tu puesto», en «?» › «Manual de uso» y en la guía de tu perfil de este manual.
 
 ## 8. Notificaciones
 
@@ -198,24 +196,26 @@ Ruta: campana «Avisos» de la barra superior (o ⌘K › «Ver avisos»).
 
 ## 9. Vocabulario: estados de una reserva y de una habitación
 
-ehotelOS adopta un vocabulario único para los estados. Algunas pantallas todavía usan un nombre antiguo para el mismo estado; te los indicamos para que no te despisten.
+ehotelOS usa el mismo vocabulario de estados en todas las pantallas: Mi día, la lista de reservas, la ficha, el Live Timeline y ⌘K. La tabla te dice qué significa cada estado y en qué pantallas se lee tal cual; solo queda un resto del vocabulario antiguo, que te indicamos debajo.
 
-| Estado de la reserva | Qué significa | Cómo lo verás hoy en algunas pantallas |
+| Estado de la reserva | Qué significa | Dónde lo ves así |
 |---|---|---|
-| **Llega hoy** | Reserva confirmada cuya entrada es hoy y aún no ha hecho el check-in | «Llega hoy» en el Live Timeline |
-| **En el hotel** | El huésped ha hecho el check-in y está alojado | «En casa» en el Live Timeline y en la lista de reservas; «Alojada» / «Alojado» en Mi día; en ⌘K, «CHECKED_IN» |
-| **Sale hoy** | Alojado cuya salida es hoy y aún no ha hecho el check-out | «Sale hoy» en el Live Timeline |
-| **Salida hecha** | Ha hecho el check-out; la estancia está cerrada | «Salida» en el Live Timeline y en la lista |
-| **Confirmada** (futura) | Reserva confirmada con entrada en un día posterior a hoy | «Confirmada» en el Live Timeline y en la lista |
-| **No-show** | No se presentó y se marcó como tal | «No-show» |
-| **Cancelada** | Anulada; solo se ve con su filtro activo | «Cancelada» |
+| **Llega hoy** | Reserva confirmada cuya entrada es hoy y aún no ha hecho el check-in | En el Live Timeline: la barra («Llega hoy · 1 noche…»), la ficha rápida y el contador «Llegadas hoy». En Mi día y en la lista la reserva sigue marcada «Confirmada»; que llega hoy lo dice la tabla («Llegadas de hoy») o la vista («Llegan hoy») en la que está |
+| **En el hotel** | El huésped ha hecho el check-in y está en el hotel | Igual en todas partes: Mi día, lista, ficha, Live Timeline (chip «En el hotel · 3», contador «En el hotel: 3») y ⌘K («RES-18399 · En el hotel · …») |
+| **Sale hoy** | En el hotel, con salida hoy y sin check-out todavía | En el Live Timeline: la barra y el contador «Salidas hoy». En Mi día y en la lista sigue «En el hotel», dentro de «Salidas de hoy» / «Salen hoy» |
+| **Salida hecha** | Ha hecho el check-out; la estancia está cerrada | Igual en todas partes (en Mi día, la pestaña «Salen hoy» cuenta las hechas: «Salen hoy (1 · 3 hechas)») |
+| **Confirmada** | Reserva confirmada que todavía no ha hecho el check-in | Mi día y lista, sea cual sea el día de llegada; en el Live Timeline, solo las que llegan otro día (las de hoy van «Llega hoy») |
+| **No-show** | No se presentó y se marcó como tal | Igual en todas partes |
+| **Cancelada** | Anulada | Igual en todas partes; en el Live Timeline solo se ve con su chip «Cancelada» activo y en la lista tiene su vista «Canceladas» |
+
+> **Nota:** el único resto del vocabulario antiguo está en la ficha rápida del Live Timeline: al pasar el ratón por una reserva en el hotel, su última línea dice «UNA RESERVA EN CASA SOLO PUEDE CAMBIAR DE HABITACIÓN». Lee «En el hotel» donde pone «en casa».
 
 | Estado de la habitación | Qué significa |
 |---|---|
 | **Limpia** | Limpiada por pisos, pendiente de inspección |
 | **Inspeccionada** | Revisada por la gobernanta; lista para vender (cuenta como vendible) |
 | **Sucia** | Pendiente de limpiar (tras una salida o una estancia) |
-| **Ocupada** | Con huésped alojado |
+| **Ocupada** | Con un huésped en el hotel (tras su check-in) |
 | **Bloqueada** | Retirada de la venta temporalmente (por ejemplo, por una avería con parte abierto); en el Live Timeline lleva la etiqueta «Bloqueada» |
 | **Fuera de servicio** | Retirada del inventario durante más tiempo (reforma, daño); no vendible |
 
@@ -254,18 +254,27 @@ Las guías de [dirección](10-direccion.md) y [comercial y revenue](50-comercial
 
 ## 10. Atajos de teclado
 
-Pulsa **⌘/** en cualquier pantalla y se abre la hoja «Atajos de teclado», con las secciones «Global», «Paleta de comandos», «Pestañas de una pantalla» y «Recorrido guiado» (se cierra con Esc). La última fila de la tabla, la del Live Timeline, no está en esa hoja: la añade esta guía a partir de [70 · Recepción](70-recepcion.md#atajos-de-teclado). En Windows y Linux, sustituye ⌘ por Ctrl. Los atajos globales no actúan mientras escribes en un campo de texto.
+Pulsa **⌘/** en cualquier pantalla y se abre la hoja «Atajos de teclado», con un buscador («Buscar») y ocho secciones plegables: «Global», «Navegación con ⌥», «Teclas de acceso», «Cobro», «Paleta de comandos», «Pestañas de una pantalla», «Recorrido guiado» y «Modo prueba». Se cierra con Esc o con «Cerrar», y también se abre desde «?» › «Atajos de teclado». La tabla reproduce sus literales; la última fila, la del Live Timeline, no está en esa hoja ni en ninguna otra de la aplicación (el Live Timeline no tiene ayuda «?» propia: sus atajos solo figuran en el subtítulo de la pantalla y en el manual), y se explica en [70 · Recepción](70-recepcion.md#atajos-de-teclado-del-live-timeline). En Windows y Linux, ⌘ es **Ctrl** y ⌥ es **Alt**. Los atajos globales y ⌥ + letra no actúan mientras escribes en un campo de texto (sal de él con Tab o Esc); con una casilla de selección enfocada sí actúan.
 
-| Dónde | Atajo | Qué hace |
+| Sección de la hoja | Atajo | Qué hace |
 |---|---|---|
-| En cualquier pantalla | **⌘K** | Buscar reservas, huéspedes, facturas y pantallas (paleta de comandos) |
-| En cualquier pantalla | **⌘/** | Ver la lista de atajos |
-| En cualquier pantalla | **⌘,** | Abrir las preferencias de apariencia (tema «Claro · Oscuro · Automático», «Reducir movimiento», «Alto contraste», notificaciones, privacidad) |
-| En cualquier pantalla | **Esc** | Cerrar el panel, diálogo o menú abierto |
-| Paleta ⌘K | **↑ ↓** · **Intro** · **Esc** | Moverse por los resultados · abrir el seleccionado · cerrar la paleta |
-| Pestañas de una pantalla | **← →** · **Inicio / Fin** · **Intro / Espacio** | Moverse entre pestañas · primera / última pestaña · abrir la pestaña seleccionada |
-| Recorrido guiado | **→** · **←** · **Esc** | Paso siguiente · paso anterior · salir del recorrido |
-| Live Timeline | **← → ↑ ↓** · **Intro** · **Esc** | Moverse entre reservas (con una barra seleccionada) · abrir el detalle · cerrar el detalle o cancelar el arrastre |
+| Global | **⌘K** | «Buscar reservas, huéspedes, habitaciones, facturas y pantallas, y ejecutar los comandos de la pantalla (paleta de comandos)» (apartado 4) |
+| Global | **⌘/** | «Ver esta lista de atajos» |
+| Global | **⌘,** | «Abrir las preferencias de apariencia»: el diálogo «Preferencias» («General · Apariencia · Notificaciones · Privacidad · Avanzado»), con el tema «Claro · Oscuro · Automático» y la accesibilidad («Reducir movimiento», «Alto contraste») |
+| Global | **Intro** | «En un campo de una línea de un diálogo o panel, confirmar la acción principal» (check-in, check-out, walk-in, nueva reserva, cambiar habitación…) |
+| Global | **Esc** | «Cerrar el panel, diálogo o menú abierto» |
+| Navegación con ⌥ | **⌥H** · **⌥R** · **⌥N** · **⌥T** · **⌥B** | «Ir a Mi día» (`/hoy`) · «Ir a Reservas» (la lista, `/recepcion/reservas/lista`) · «Abrir Nueva reserva» (`/recepcion/reservas/nueva`) · «Abrir el Live Timeline» (`/hoy/live-timeline`) · «Abrir el tablero de habitaciones» (`/recepcion/reservas/tablero`) |
+| Navegación con ⌥ | **⌥F** | «Ir al buscador de la pantalla (si no tiene, abre la paleta)»: en Reservas o Huéspedes pone el cursor en su buscador; en Turno, que no tiene, abre ⌘K |
+| Navegación con ⌥ | **⌥W** | «Alta de walk-in (llegada sin reserva)»: en Mi día abre el cajón «Walk-in»; en cualquier otra pantalla abre Nueva reserva |
+| Teclas de acceso | **⌥ (mantener)** | «Mostrar la letra de cada acción visible; ⌥ + esa letra la ejecuta». Las letras aparecen junto a los botones que las tienen: por ejemplo, en el panel de detalle de Mi día, C = «Hacer check-in» y O = «Abrir ficha completa» |
+| Cobro | **⌥1** · **⌥2** · **⌥3** · **Intro** | «Método efectivo en el cobro» · «Método tarjeta (datáfono) en el cobro» · «Método transferencia en el cobro» · «Cobrar (con el foco en el importe o la referencia)» |
+| Paleta de comandos | **↑ ↓** · **Intro** · **Esc** | «Moverse por los resultados» · «Abrir el resultado o ejecutar el comando seleccionado» · «Cerrar la paleta» |
+| Pestañas de una pantalla | **← →** · **Inicio / Fin** · **Intro / Espacio** | «Moverse entre pestañas» · «Primera / última pestaña» · «Abrir la pestaña seleccionada» |
+| Recorrido guiado | **→** · **←** · **Esc** | «Paso siguiente» · «Paso anterior» · «Salir del recorrido» |
+| Modo prueba | **⌘⇧T** · **⌘⇧E** | «Pasar a la tarea siguiente de la sesión de prueba» · «Exportar la sesión de prueba» («solo con el modo prueba activo»: lo usan las sesiones de prueba con usuarios, no el trabajo diario) |
+| Live Timeline (con una barra seleccionada) | **← → ↑ ↓** · **Intro** · **Esc** · **⌥← ⌥→** · **⌥⇧← ⌥⇧→** · **⌥↑ ⌥↓** · **⌘Z** | Moverse entre reservas · abrir el detalle · cerrar el detalle o cancelar el arrastre · mover la estancia un día · acortarla o alargarla un día · cambiarla de habitación · deshacer el último cambio mientras dura el aviso «Deshacer» |
+
+**⌘Z** también deshace, en cualquier pantalla, la última acción cuyo aviso todavía muestre «Deshacer» (un cambio de habitación, un cargo añadido, una estancia movida en el Live Timeline): el aviso dura 8 segundos y no figura en la hoja ⌘/. Los atajos de recepción (⌘K con comandos, teclas de acceso de cada pantalla y cobro) se explican con ejemplos en [70 · Recepción](70-recepcion.md#atajos-de-teclado).
 
 ## Errores frecuentes
 
@@ -277,7 +286,7 @@ Pulsa **⌘/** en cualquier pantalla y se abre la hoja «Atajos de teclado», co
 | «Sin acceso · Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» | La dirección que has abierto no está en tu menú | Pulsa «Ir a mi página de inicio». Si crees que deberías verla, pídelo a dirección ([60 · Sistemas](60-sistemas.md)) |
 | «Módulo no activado · Esta función pertenece a un módulo que no está activo en la propiedad.» | La función depende de un módulo apagado en ese hotel | Pídelo a dirección o administración de sistema; quien puede activarlo ve el botón «Activar módulo» |
 | «Sin resultados · Ninguna entrada del menú coincide con «…».» | «Buscar en el menú» no ha encontrado esa palabra | Prueba con otra palabra; para buscar reservas o huéspedes usa ⌘K |
-| ⌘K no muestra nada | Menos de dos letras escritas, o el dato es de otro hotel | Escribe dos letras o más y comprueba el hotel activo |
+| ⌘K no encuentra lo que buscas | Menos de dos letras escritas (con menos, la paleta solo lista los comandos de la pantalla, tu menú y las «Acciones»), o el dato es de otro hotel | Escribe dos letras o más y comprueba el hotel activo |
 | Tenías «Ver como…» activo y ha desaparecido | Has recargado la página o escrito una dirección | Vuelve a elegir el perfil en «Ver como…» y navega por el menú o con ⌘K |
 | «Faltan 1 comprobación para poner la propiedad en marcha.» vuelve a aparecer | «Ahora no» solo lo oculta durante la sesión | Es normal; desaparece cuando la propiedad complete la puesta en marcha |
 
@@ -285,7 +294,8 @@ Pulsa **⌘/** en cualquier pantalla y se abre la hoja «Atajos de teclado», co
 
 - **La IA responde por reglas.** No hay proveedor de modelo de lenguaje configurado: el «Asistente ehotelOS» (`/asistente`) lo indica con la etiqueta «Sin modelo de lenguaje» y contesta con reglas sobre tus datos; lo mismo pasa con «Dictar (IA)», los borradores de mensajes y «Pendientes de la IA».
 - **Los avisos de la demostración están en inglés** y no enlazan a la reserva o a la avería (apartado 8).
-- **Los resultados de reserva de ⌘K muestran el estado y el canal con su nombre técnico** («CHECKED_IN», «booking_com»).
+- **Un resto del vocabulario antiguo en el Live Timeline.** La ficha rápida de una reserva en el hotel termina con la línea «UNA RESERVA EN CASA SOLO PUEDE CAMBIAR DE HABITACIÓN» (el mismo texto va en el nombre accesible de la barra). «En casa» es «En el hotel»; el resto de la aplicación ya usa el vocabulario del apartado 9.
+- **Booking.com sale como «Booking com»,** sin el punto, en los resultados de ⌘K y en la columna «Origen» de la lista de reservas (en los chips y el panel del Live Timeline sí se lee «Booking.com»).
 - **Una tarjeta de instrucciones cerrada no se puede volver a mostrar** desde la pantalla (apartado 7).
 - **El recorrido de bienvenida es el mismo para todos los perfiles**; los recorridos por área sí dependen de tu menú.
 - **El aviso de puesta en marcha es permanente en la demostración** porque VeriFactu y el registro de viajeros (SES.Hospedajes) están en modo de pruebas, y la fecha de negocio sigue en el 14 de septiembre de 2026 porque no se ha ejecutado «Cierre del día» desde entonces.

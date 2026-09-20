@@ -19,14 +19,16 @@
 7. Pulsa «Crear invitación» («Cancelar» cierra sin enviar).
 8. Entrega el enlace: la pantalla muestra el estado de la entrega, el enlace con «Copiar enlace», «Caduca el …» y el aviso «El enlace es de un solo uso.». Si el correo saliente no está configurado, cópialo y hazlo llegar a la persona por un canal seguro.
 
-![Cajón «Invitar con ámbito» (captura con el panel forzado visible): sección «Persona», sección «Rol y ámbito» y botones «Cancelar» / «Crear invitación»](../../img/sistemas/invitar.png)
+![Cajón «Invitar con ámbito»: sección «Persona», sección «Rol y ámbito» y botones «Cancelar» / «Crear invitación»](../../img/sistemas/invitar.png)
 
 ## Resultado esperado
 
 - La persona aparece en la tabla con la invitación pendiente y, cuando acepta el enlace, con estado «Activo» y su «PLANTILLA RBAC».
 - En **Menú › Configuración › Sistema › Auditoría** (`/configuracion/sistema`) quedan los eventos «UserInvited» y «ROLE_ASSIGNED» con tu usuario como actor.
 
-> **En construcción:** a 19/09/2026 el cajón «Invitar con ámbito» se abre pero **no se ve en pantalla** (defecto de estilo que afecta a todos los cajones laterales de la aplicación; ciérralo con Esc). Hasta que se corrija, pide las altas a dirección o al proveedor técnico. El paso 7 no se ha ejecutado en la demo: el resultado está descrito según la pantalla y la guía de sistemas. Además, «Exigir doble factor (2FA)» solo marca la ficha: la aplicación no pide todavía un segundo factor al iniciar sesión.
+> **Nota:** el paso 7 no se ha ejecutado en la demo (no se envía ninguna invitación): el resultado está descrito según la pantalla y la guía de sistemas.
+
+> **En construcción:** «Exigir doble factor (2FA)» solo deja la marca «2FA: Activo» en la ficha de la persona: la aplicación no pide todavía un segundo factor al iniciar sesión.
 
 ## Si algo falla
 

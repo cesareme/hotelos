@@ -54,5 +54,23 @@
     "out": "docs/manual/img/sistemas/puesta-en-marcha.png",
     "clip": "240,96,1040,704",
     "readyText": "Preparación y salida en vivo"
+  },
+  {
+    "_nota": "Cajón «Invitar con ámbito» abierto (vacío) sobre Usuarios y roles; no se pulsa «Crear invitación».",
+    "url": "/configuracion/usuarios",
+    "out": "docs/manual/img/sistemas/invitar.png",
+    "viewAs": "sistemas",
+    "waitFor": "table",
+    "actions": [
+      {
+        "button": "Invitar con ámbito"
+      },
+      {
+        "waitFor": ".c22-drawer[data-open='true']"
+      },
+      {
+        "wait": 800
+      }
+    ]
   }
 ]

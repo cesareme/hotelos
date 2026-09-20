@@ -11,7 +11,7 @@ Antes de seguir conviene haber leído [Primeros pasos](00-primeros-pasos.md): c�
 - Tema claro, ventana de 1280 × 800. Las tarjetas de instrucciones que algunas pantallas muestran arriba («Panel de revenue», «Gestor de canales OTA», «Gestión de grupos y eventos», «Cupos de tour operadores») se han cerrado con la «×» («Cerrar instrucciones») antes de capturar; tú las verás la primera vez que entres.
 - Los canales de venta de la demo están en **modo de pruebas**: nada sale a Internet. Las fechas y cifras son las del día de la captura (19 de septiembre de 2026).
 
-> **En construcción:** varios botones de esta guía («Nuevo grupo», «Nuevo TT.OO.», «Nuevo cupo», «Importar rooming list», «Nuevo plan», «Nueva política», «Nuevo segmento», «Importar CSV», «Nueva fuente», «Nueva regla» de Comisiones…) abren un formulario lateral (un «cajón»). Hoy, en la versión de la aplicación con la que se ha escrito esta guía, el cajón se crea pero **no se ve en pantalla** por un defecto de estilo (queda oculto tras pulsar el botón, sin mensaje). Los pasos de esta guía que pasan por un cajón se han recorrido forzando su visualización, para que sepas qué contiene y qué ocurre al guardar; te lo indicamos en cada caso. Mientras no se corrija, esas altas no se pueden hacer desde la pantalla.
+> **Nota:** varios botones de esta guía («Nuevo grupo», «Nuevo evento», «Importar rooming list», «Nuevo TT.OO.», «Nuevo cupo», «Nuevo plan», «Nueva política», «Nuevo segmento», «Importar CSV», «Nueva fuente», «Nueva regla» y «Devengar una reserva» de Comisiones…) abren un formulario lateral (un «cajón») que se cierra con «Cancelar», la × o Esc sin guardar nada. Todos se han abierto en la demo al escribir esta guía y se describen tal como son; su botón final solo se ha pulsado donde el texto lo dice (el grupo, el tour operador, el cupo y la importación de reseñas).
 
 ---
 
@@ -148,12 +148,12 @@ Guarda el borrador **y** encola su envío a los canales.
 - KPIs «Planes», «Activos» («a la venta»), «Tarifas base» y «Variantes derivadas». Tabla «Planes de tarifas» con «Código · Nombre · Tipo · Plan padre · Derivación · Régimen · Mín. noches · Máx. noches · Cierre a la llegada · Cierre a la salida · Estado». En la demo hay un único plan: «BAR · Best Available Rate · Base · room_only · ACTIVO».
 - «**Nuevo plan**» abre el cajón «Nuevo plan tarifario» («La variante hereda el precio de la BAR del día y aplica su derivación.»): «Código*» («BAR, NREF, FLEX, CORP…»), «Nombre*», «Tipo*» («BAR · Tarifa pública (base)», «No reembolsable», «Flexible», «Empresas», «Paquete (PKG)», «Promocional», «Fin de semana»), «Plan padre*» («BAR — Best Available Rate»), «Tipo de derivación» («Porcentaje sobre la BAR (ej. −10)», «Importe sobre la BAR (ej. +5)», «Sin derivación»), «Valor de derivación», «Régimen» («Solo alojamiento (RO)», «Alojamiento y desayuno (BB)», «Media pensión (HB)», «Pensión completa (FB)», «Todo incluido (AI)»), «Plan activo» y las «Restricciones por defecto» («Estancia mínima (noches)», «Estancia máxima (noches)», «Cierre a la llegada (CTA)», «Cierre a la salida (CTD)»); termina con «Crear plan».
 
-> **En construcción:** «Nuevo plan» es uno de los cajones que hoy no se ven (aviso al principio de la guía). En esta guía no se ha creado ningún plan derivado; la demo sigue con la BAR como único plan.
+> **Nota:** en esta guía no se ha creado ningún plan derivado; la demo sigue con la BAR como único plan.
 
 **Menú › Revenue › Políticas de cancelación** (`/revenue/politicas-cancelacion`). «Ventana de cancelación gratuita, penalización aplicable y, si quieres, penalizaciones progresivas (cuanto más cerca de la entrada, mayor el cargo). El cargo se aplica al folio al cancelar o en el cierre del día.»
 
 - En la demo la lista está vacía: «Sin políticas · Crea la primera política de cancelación para empezar a aplicarla en reservas.».
-- «**Nueva política**» abre el cajón con «Código*» («FLEX, SEMI, NREF…»; el código no se cambia una vez creada), «Nombre*», «Descripción», «Horas gratis antes de la llegada» (48 por defecto), «Penalización por cancelación (por defecto)» («Primera noche», «Porcentaje del total», «Importe fijo (€)», «Estancia completa», «Sin cargo») con su «Valor (si % o €)», «Penalización por no-show» (mismas opciones) y las «Penalizaciones progresivas» («Añadir ventana»: tramos «Horas antes de la llegada (T−)» y «Penalización (%)»; «Si no hay tramos, se usa la penalización por defecto»); termina con «Crear política». Es también un cajón que hoy no se ve.
+- «**Nueva política**» abre el cajón con «Código*» («FLEX, SEMI, NREF…»; el código no se cambia una vez creada), «Nombre*», «Descripción», «Horas gratis antes de la llegada» (48 por defecto), los interruptores «Política activa» y «Política por defecto», «Penalización por cancelación (por defecto)» («Primera noche», «Porcentaje del total», «Importe fijo (€)», «Estancia completa», «Sin cargo») con su «Valor (si % o €)», «Penalización por no-show» (mismas opciones) y las «Penalizaciones progresivas» («Añadir ventana»: tramos «Horas antes de la llegada (T−)» y «Penalización (%)»; «Si no hay tramos, se usa la penalización por defecto»); termina con «Crear política».
 
 ### 3. Reglas, previsión y análisis
 
@@ -295,7 +295,7 @@ Resolver una entrega rechazada:
 #### 5.2 Rendimiento de canales y comisiones
 
 - **Menú › Informes › Rendimiento de canales** (`/informes/canales`): «Reparto de ventas por canal, rentabilidad, alertas de paridad y estado de las sincronizaciones de los últimos 30 días. Solo lectura; se actualiza cada 2 minutos.» KPIs «Canales activos», «Alertas de paridad abiertas», «Comisión media», «Reservas · 30 días» («reservas externas importadas») e «Ingresos · 30 días»; bloques «Reparto por canal» («Canal · Reservas · Ingresos · Cuota»), «Cuota de ventas», «Canales más rentables» («La rentabilidad neta por canal aparecerá aquí cuando el pipeline registre el primer snapshot del periodo.»), «Estado de las sincronizaciones» (tareas «Success» / «Failed») y «Alertas de paridad recientes».
-- **Menú › Finanzas › Comisiones** (`/finanzas/comisiones`): «La comisión de cada canal de venta y su devengo: se contabiliza sola al emitir la factura o al hacer el check-out (cuenta 629.1 Comisiones de canales contra 410 Acreedores).» Selector de centro («Centro · Hotel Demo Madrid Centro (AMC)»), KPIs «Devengado este mes», «Base de ingresos del mes», «Comisión sobre ingresos», «Pendiente de liquidar» y «Canal con más comisión»; bloques «Desglose por canal», «Reglas de comisión» («Nueva regla») y «Devengos» («Devengar una reserva»). En la demo no hay reglas ni devengos («Añade una regla por canal para empezar a devengar comisiones al facturar.»). «Nueva regla» y «Devengar una reserva» abren cajones que hoy no se ven; en esta guía no se ha creado ninguna regla de comisión.
+- **Menú › Finanzas › Comisiones** (`/finanzas/comisiones`): «La comisión de cada canal de venta y su devengo: se contabiliza sola al emitir la factura o al hacer el check-out (cuenta 629.1 Comisiones de canales contra 410 Acreedores).» Selector de centro («Centro · Hotel Demo Madrid Centro (AMC)»), KPIs «Devengado este mes», «Base de ingresos del mes», «Comisión sobre ingresos», «Pendiente de liquidar» y «Canal con más comisión»; bloques «Desglose por canal», «Reglas de comisión» («Nueva regla») y «Devengos» («Devengar una reserva»). En la demo no hay reglas ni devengos («Añade una regla por canal para empezar a devengar comisiones al facturar.»). «Nueva regla» abre el cajón «Nueva regla» («La regla se aplica a las reservas del canal desde ahora; los devengos ya registrados no cambian.») con «Código del canal*» (ejemplo del campo: «booking»), «Comisión (%)*», «Se aplica sobre*» y «Cuenta de gasto» (629.1), y el botón «Guardar regla». «Devengar una reserva» abre el cajón «Devengar la comisión de una reserva» («Para reservas de canal que no devengaron solas…») con «Identificador de la reserva» (el identificador interno, no el código público), «Canal», «Base (€)» y «Fecha de devengo» (por defecto, la salida de la reserva), y el botón «Devengar y contabilizar», apagado hasta indicar la reserva. En esta guía no se ha creado ninguna regla ni devengado ninguna comisión.
 
 ### 6. Grupos, eventos y cupos
 
@@ -313,7 +313,7 @@ Qué hay en «Resumen»:
 
 #### 6.1 Crear un grupo
 
-> **En construcción:** «Nuevo grupo» abre un cajón que hoy no se ve (aviso al principio de la guía). Los pasos siguientes se han recorrido forzando su visualización; el alta se guardó correctamente.
+> **Nota:** los pasos siguientes se han ejecutado en la demo: el grupo «MANUAL-COM-G1» existe y su alta se guardó correctamente.
 
 1. Pulsa «**Nuevo grupo**». Se abre el cajón «Nuevo grupo» («Da de alta un bloque de grupo. Los valores por defecto se adaptan al tipo de grupo (boda, MICE, deportivo, corporativo, mayorista…).»).
 2. **Identificación**: «Código*» (ehotelOS propone uno, por ejemplo «2026-09-EZI»; puedes cambiarlo: «MANUAL-COM-G1»), «Nombre del grupo*», «Tipo de grupo*» («Corporativo (empresa, convención interna)», «MICE (reuniones, incentivos, congresos)», «SMERF (social, militar, religioso)», «Ocio (circuitos, asociaciones)», «Boda», «Deportivo (equipos)», «Mayorista (TT.OO., bloque puntual)»), «Estado inicial*» («Consulta inicial», «Provisional (pre-bloqueo)», «Confirmado»), «Código de mercado», «Código de origen» y «Asignado a (identificador de usuario)».
@@ -333,7 +333,7 @@ Qué hay en «Resumen»:
 1. Elige la ventana («30 días · 90 días · 180 días») y filtra por tipo («Todos los tipos», «Corporativo», «MICE», «SMERF», «Ocio», «Boda», «Deportivo», «Mayorista») y por estado («Todos los estados», «Consulta», «Provisional», «Confirmado»). Los KPIs cuentan «Grupos en el periodo», «Habitaciones bloqueadas», «Pickup global» y «Fechas límite en menos de 14 días».
 2. Pulsa la barra de un grupo («MANUAL-COM- Convención Consultora Norte · 0 hab. · 0 %»). Se abre la ficha del grupo con su código y nombre, «Corporativo · 9–11 nov 2026», el estado («Confirmado») y los botones «Cambiar estado», «Crear folio maestro», «Cerrar» y «Editar», con tres pestañas: «Resumen» (identificación, fechas e hitos, contacto, empresa, tarifa contratada, attrition con «Ejemplo», facturación y pago, F&B, específicos de España y notas), «Pickup y bloqueo» (contadores «Bloqueadas · Vendidas · Disponibles · Pickup» y el aviso de attrition) y «Eventos».
 
-> **En construcción:** la ficha del grupo es también un cajón que hoy no se ve. Además, en «Resumen» las fechas «Llegada», «Salida», «Fecha límite (cut-off)» y «Entrega de la rooming list» salen como «—» aunque la cabecera muestre «9–11 nov 2026». Pasada la fecha límite, los grupos provisionales o confirmados se liberan automáticamente cada día.
+> **Nota:** la ficha del grupo es un cajón lateral titulado con el código y el nombre («MANUAL-COM-G1 · MANUAL-COM- Convención Consultora Norte»), subtítulo «Corporativo · 9–11 nov 2026», estado «Confirmado» y las pestañas «Vistas del grupo» («Resumen», «Pickup y bloqueo», «Eventos»); en «Resumen», «Fechas e hitos» muestra «Llegada», «Salida», «Fecha límite (cut-off)» y «Entrega de la rooming list» con sus fechas. Pasada la fecha límite, los grupos provisionales o confirmados se liberan automáticamente cada día.
 
 #### 6.3 Bloquear habitaciones, eventos y rooming list
 
@@ -347,7 +347,7 @@ Qué hay en «Resumen»:
 
 ![Cupos › Pickup y liberación: el cupo «MANUAL-COM-CUPO1» (2 habitaciones al día, 1 oct – 20 dic, liberación 14 días antes) con su pickup y el aviso de liberación](img/comercial/cupos.png)
 
-> **En construcción:** «Nuevo TT.OO.» y «Nuevo cupo» abren cajones que hoy no se ven. Los pasos se han recorrido forzando su visualización; las altas se guardaron correctamente.
+> **Nota:** los pasos siguientes se han ejecutado en la demo: el tour operador «MANUAL-COM-TTOO» y el cupo «MANUAL-COM-CUPO1» existen y sus altas se guardaron correctamente.
 
 Dar de alta el tour operador (obligatorio antes del cupo: sin ningún tour operador, «Nuevo cupo» está apagado):
 
@@ -391,7 +391,7 @@ Qué hay en «Reseñas» («Índice de reputación a 30 días, fuentes conectada
 
 Es la forma de trabajar cuando el portal no ofrece conexión (hoy, todos salvo Google con autorización): exporta las reseñas desde la extranet del portal y súbelas aquí.
 
-> **En construcción:** «Importar CSV» abre un cajón que hoy no se ve. Los pasos se han recorrido forzando su visualización; la importación funcionó.
+> **Nota:** los pasos siguientes se han ejecutado en la demo con 8 reseñas ficticias (prefijo «MANUAL-COM-R»); la importación funcionó.
 
 1. Prepara un CSV con cabecera. Columnas admitidas: `external_id` (identificador de la reseña en el portal), `date` (obligatoria; `2026-08-14` o `14/08/2026`), `rating` (nota en la escala del portal), `scale_max` (5, 6 o 10), `title`, `body`, `language` (es, en…), `author` (se guarda minimizado, «Nombre A.»), `country` y `url`. Separador «,» o «;». Por ejemplo: `MANUAL-COM-R03,2026-09-06,4,10,"Ruido por la noche","La habitación daba a la calle y no pudimos descansar.",es,"Huésped C.",PT,https://example.com/r/MANUAL-COM-R03`.
 2. Pulsa «**Importar CSV**». Cajón «Importar reseñas (CSV)» («Exporta las reseñas desde el portal y súbelas aquí: la importación es idempotente por identificador externo.»).
@@ -404,10 +404,10 @@ Es la forma de trabajar cuando el portal no ofrece conexión (hoy, todos salvo G
 
 #### 7.2 Fuentes, borrador y respuesta
 
-- «**Nueva fuente**» / «**Configurar fuentes**»: cajón con «Portal*», «Modo*» («API oficial», «Correo de notificación», «Importación CSV», «Manual», «Demo»), «Nombre», «Peso en el índice*» (1), «Retención del texto (días)*» (730), «Ubicación en el portal» y «Cuenta en el portal»; botones «Fuente de demostración» y «Crear fuente». Es un cajón que hoy no se ve. En la lista de fuentes, la columna «Estado» te dice si la fuente puede trabajar («Conectada», como la de importación CSV) o por qué no: falta autorizar la cuenta de Google o vincular un buzón de correo, el portal no ofrece acceso oficial (Google sin credenciales; Booking.com y Expedia solo lo dan a sus connectivity partners), la última ejecución no trajo datos o dio error.
+- «**Nueva fuente**» / «**Configurar fuentes**»: cajón con «Portal*», «Modo*» («API oficial», «Correo de notificación», «Importación CSV», «Manual», «Demo»), «Nombre», «Peso en el índice*» (1), «Retención del texto (días)*» (730), «Ubicación en el portal» y «Cuenta en el portal»; el interruptor «Fuente de demostración» y los botones «Cerrar» y «Crear fuente». En la lista de fuentes, la columna «Estado» te dice si la fuente puede trabajar («Conectada», como la de importación CSV) o por qué no: falta autorizar la cuenta de Google o vincular un buzón de correo, el portal no ofrece acceso oficial (Google sin credenciales; Booking.com y Expedia solo lo dan a sus connectivity partners), la última ejecución no trajo datos o dio error.
 - Flujo previsto para responder desde la ficha de la reseña: «Asignar a mí», «Cambiar estado» y «Nuevo plazo» para gestionarla; «**Borrador**» abre «Borrador de respuesta» («Revisa el texto antes de usarlo: la respuesta no se publica hasta que la envíes tú.») con el tono «Cordial · Formal · Breve», «Generar borrador» (redactado por reglas mientras no haya un proveedor de IA configurado) y «Usar borrador»; «**Responder**» registra la respuesta y su fecha en ehotelOS; y, como ningún portal admite hoy publicar desde ehotelOS, «**Copiar y abrir portal**» y «**Ya la he publicado en el portal**» cierran el ciclo copiando y pegando la respuesta en la extranet del portal. Aprobar el borrador en «Pendientes de la IA» no publica nada: la publicación es siempre un acto de una persona.
 
-> **En construcción:** hoy la «Bandeja» muestra «0 con este filtro · Sin reseñas pendientes.» con cualquier filtro aunque el KPI cuente «8 pendientes de respuesta» (defecto de la pantalla al leer la lista), y la ficha de la reseña es un cajón que no se ve. Por eso el flujo de borrador y respuesta no se ha podido recorrer en esta guía y queda descrito según el diseño del módulo. Las reseñas importadas sí están guardadas y analizadas.
+> **En construcción:** hoy la «Bandeja» muestra «0 con este filtro · Sin reseñas pendientes.» con cualquier filtro aunque el KPI cuente «8 pendientes de respuesta» (defecto de la pantalla al leer la lista), así que no hay ninguna fila desde la que abrir la ficha de la reseña. Por eso el flujo de borrador y respuesta no se ha podido recorrer en esta guía y queda descrito según el diseño del módulo. Las reseñas importadas sí están guardadas y analizadas.
 
 #### 7.3 Encuestas y calidad
 
@@ -466,17 +466,16 @@ Es la forma de trabajar cuando el portal no ofrece conexión (hoy, todos salvo G
 
 ## Qué no hace todavía
 
-- **Cajones ocultos.** Todos los formularios laterales (grupos, eventos, rooming list, tour operadores, cupos, planes, políticas, segmentos, importación y fuentes de reseñas, ficha de reseña y de grupo, reglas de comisión) no se ven en pantalla en esta versión. Los recorridos de esta guía que pasan por ellos se hicieron forzando su visualización.
 - **Canales en modo de pruebas.** Booking.com, Expedia y Channex están conectados contra un simulador local que valida la estructura de cada envío; no hay credenciales reales y la instancia limita el modo a «pruebas». La vía realista a Booking y Expedia es Channex (cuenta de pruebas y clave API que solo puede aportar el hotel). En la demo solo «Double · BAR» tiene correspondencia, así que publicar otros tipos no encola nada.
-- **Un solo plan y sin restricciones.** La demo tiene únicamente la BAR, sin planes derivados, políticas de cancelación ni restricciones sembradas; los cajones para crearlos no se ven hoy.
+- **Un solo plan y sin restricciones.** La demo tiene únicamente la BAR, sin planes derivados, políticas de cancelación ni restricciones sembradas (los cajones «Nuevo plan» y «Nueva política» se abren y funcionan; no se ha creado nada).
 - **Recomendaciones y previsión por reglas.** No hay proveedor de IA configurado: recomendaciones, borradores de respuesta y análisis de reseñas se calculan por reglas y diccionario. Con los datos de la demo el motor no genera recomendaciones; la previsión es determinista (confianza 60 %) y no hay presupuesto cargado.
 - **Competencia y calendario de demanda** sin datos: no hay proveedor externo de sondeo; los competidores, los sondeos y los eventos se registran a mano.
-- **Reputación**: fuentes sin credenciales (Google «sin credenciales»; Booking y Expedia «no disponible» salvo como connectivity partner); solo importación CSV, correo de notificaciones o fuente de demostración. La bandeja no lista las reseñas (defecto) y la ficha de la reseña no se ve, así que el borrador y la respuesta no se pueden completar desde la pantalla; la publicación en el portal es siempre manual (copiar y pegar). Sin encuestas enviadas a huéspedes.
+- **Reputación**: fuentes sin credenciales (Google «sin credenciales»; Booking y Expedia «no disponible» salvo como connectivity partner); solo importación CSV, correo de notificaciones o fuente de demostración. La bandeja no lista las reseñas (defecto), así que el borrador y la respuesta no se pueden completar desde la pantalla; la publicación en el portal es siempre manual (copiar y pegar). Sin encuestas enviadas a huéspedes.
 - **Clientes y fidelización** (segmentos, programa, membresías, campañas) se guardan en memoria y se pierden al reiniciar el servidor; las métricas de envío de campañas no existen.
 - **Ventas a empresas** es solo lectura y **Ofertas** parte vacío; el «Portal del huésped» se configura pero su publicación real depende de la puesta en marcha del hotel.
 - **Grupos**: «Bloquear habitaciones» solo aparece en las filas de «Próximos grupos», que en la demo no lista un grupo recién creado sin bloqueo; el resumen de la ficha del grupo muestra las fechas como «—»; «Nuevo evento» del resumen asocia el evento a un grupo que no eliges.
 - **Centro de informes › «Generar exportación»** no descarga nada («Exportación lista: undefined»).
-- **Comisiones** sin reglas ni devengos en la demo; sus altas son cajones ocultos.
+- **Comisiones** sin reglas ni devengos en la demo (el cajón «Nueva regla» se abre y funciona; no se ha creado ninguna).
 
 ## Ver también
 

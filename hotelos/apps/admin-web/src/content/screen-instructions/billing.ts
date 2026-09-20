@@ -16,9 +16,13 @@
 // separation of duties asks for it) and rectification. Cancellation and
 // no-show penalties are previewed and posted from the reservation, not here.
 // Routing rules live in the «Enrutamiento de folios» tab. Visible text is
-// Spanish with full orthography (qa#8).
+// Spanish with full orthography (qa#8). Tanda DOC-2: literales verificados en la
+// pantalla (pestañas «Facturación y cobros · Rectificativas · Enrutamiento de
+// folios», botones «Registrar pago», «Devolver», «Añadir cargo», «Más resultados»,
+// «Rectificar») y atajos tomados del registro, nunca escritos a mano.
 
 import type { CocoaHelpContent } from "../../components/cocoa-guidance/CocoaHelpButton";
+import { shortcutKeys } from "../shortcuts-registry";
 
 export const BILLING_INSTRUCTIONS: CocoaHelpContent = {
   whatIsThis:
@@ -35,7 +39,10 @@ export const BILLING_INSTRUCTIONS: CocoaHelpContent = {
     "Antes de emitir, verifica que los datos fiscales del huésped o de la empresa pagadora están completos: NIF/CIF, razón social y dirección son obligatorios para VeriFactu.",
     "Una factura emitida es inmutable: si necesitas corregirla, usa «Rectificar» desde el detalle o la pestaña «Rectificativas»; nunca edites una factura ya emitida.",
   ],
-  shortcuts: [{ keys: "⌘K", action: "Buscar reservas, huéspedes y pantallas; «Registrar pago en el folio seleccionado»" }, { keys: "Esc", action: "Cerrar el panel o diálogo abierto" }],
+  shortcuts: [
+    { keys: shortcutKeys("global.palette"), action: "Buscar reservas, huéspedes y pantallas; «Registrar pago en el folio seleccionado»" },
+    { keys: shortcutKeys("global.escape"), action: "Cerrar el panel o diálogo abierto" },
+  ],
   relatedScreens: [
     {
       screenId: "FiscalDashboard",

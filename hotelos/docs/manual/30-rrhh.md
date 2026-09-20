@@ -17,9 +17,7 @@ Lo que **no** incluye la plantilla: aprobar el registro mensual de nómina (esa 
 
 - Entorno de demostración: hotel **Hotel Demo Madrid Centro**, sociedad **Grupo Hotelero Demo SL**, tema claro, ventana de 1280 × 800. Todos los nombres, importes y ficheros son ficticios (prefijo `MANUAL-RRHH`).
 - Sesión del usuario de demostración con «Ver como…» = **«RRHH y nóminas»** en la barra lateral. Verás el aviso «Viendo como RRHH y nóminas · solo menú»: cambia el menú, no los permisos, y se pierde al recargar la página (F5). Un usuario real con la plantilla ve el mismo menú sin ese aviso.
-- Las cuatro capturas de esta guía están en `img/rrhh/` y su lote en `img/rrhh/capturas.json`. Dos de ellas son estados tras un clic (cajón abierto y previsualización cargada): el lote los describe con las claves `actions` y `fixDrawer`, que la receta general `tools/capturas.mjs` ejecuta (ver el índice del manual).
-
-> **En construcción:** en la versión de hoy (19 de septiembre de 2026) los **cajones laterales no se abren en pantallas de ordenador**: al pulsar «Nuevo contrato», «Abrir periodo», «Importar informe» o «Nuevo turno» no aparece nada (el panel existe pero una regla de estilos lo deja oculto). Es un defecto ya comunicado al equipo; las capturas `nuevo-contrato.png` e `importar-coste.png` se hicieron corrigiendo ese estilo solo en la sesión de captura (opción `fixDrawer` de la receta, ver el índice del manual), y los pasos de esta guía describen el comportamiento comprobado con esa corrección. Hasta que llegue el arreglo, esos pasos no se pueden completar desde la pantalla.
+- Las cuatro capturas de esta guía están en `img/rrhh/` y su lote en `img/rrhh/capturas.json`. Dos de ellas son estados tras un clic (cajón abierto y previsualización cargada): el lote los describe con la clave `actions` (clics, campos rellenos y el fichero de ejemplo embebido), que la receta general `tools/capturas.mjs` ejecuta sin pulsar «Guardar contrato» ni «Contabilizar» (ver el índice del manual).
 
 ## Qué verás en tu menú
 
@@ -334,7 +332,6 @@ Para RRHH: puedes **pedir** aprobaciones de tipo «Nómina» (tu plantilla tiene
 | Mensaje | Qué significa | Qué hacer |
 |---|---|---|
 | «Sin acceso · Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» | Has abierto una URL fuera de tu menú (`/hoy`, Estados contables, Modelos AEAT…) | Vuelve a tu inicio (Nóminas); si necesitas esa pantalla, pídelo a dirección |
-| Pulsas «Nuevo contrato», «Abrir periodo», «Importar informe» o «Nuevo turno» y no pasa nada | Defecto de estilos de la versión actual: el cajón queda oculto en ordenador | Pendiente de arreglo por el equipo; no hay alternativa desde la pantalla |
 | «No se pudo guardar · Perfil de empleado no encontrado.» | El identificador no es una ficha de personal del hotel | Pide a sistemas el identificador correcto; hoy no hay pantalla de alta de fichas |
 | «El periodo debe tener el formato AAAA-MM.» | Mes mal escrito | Escribe, por ejemplo, `2026-10` |
 | «No se pudo abrir el periodo · El periodo 2026-09 ya existe.» | Ya estaba abierto | Búscalo en «Periodos» |
@@ -349,7 +346,6 @@ Para RRHH: puedes **pedir** aprobaciones de tipo «Nómina» (tu plantilla tiene
 ## Qué no hace todavía
 
 - **Fichas de personal:** no hay pantalla de alta, edición ni baja; sin ficha no hay contrato, y sin contratos el periodo se calcula vacío. Los indicadores de Personal y turnos (PLANTILLA, ACTIVOS HOY, HORAS) también dependen de ellas.
-- **Cajones laterales** ocultos en ordenador en la versión del 19 de septiembre de 2026 (Nuevo contrato, Abrir periodo, Importar informe, Nuevo turno): defecto comunicado.
 - **Aprobación del registro de nómina:** existe en el servidor, sin botón en Nóminas y sin solicitud automática en Pendientes de aprobación; el pago exige esa aprobación para tu plantilla.
 - **Cálculo simplificado:** porcentajes fijos de Seguridad Social (6,35 % / 30,5 %), IRPF orientativo por tramos, sin bases de cotización, convenio ni pagas extras prorrateadas. Los formatos A3 y Sage son «compatibles», no el diseño de registro oficial: valídalos con la gestoría.
 - **Sin integración con la gestoría laboral ni con la TGSS:** solo el fichero de «Exportar y descargar». El modelo 111 se calcula en Cumplimiento › Modelos AEAT (contabilidad), sin presentación telemática.

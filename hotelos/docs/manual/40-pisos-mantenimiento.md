@@ -9,7 +9,7 @@ Antes de seguir conviene haber leído [Primeros pasos](00-primeros-pasos.md): c�
 - Todas las capturas son de la propiedad de demostración «Hotel Demo Madrid Centro» (19 habitaciones, datos ficticios); los nombres de huéspedes que aparecen son inventados.
 - Se han tomado con el usuario administrador de la demo y el selector «Ver como…» de la barra lateral puesto en «Pisos» o en «Mantenimiento». Ese selector solo cambia el menú que se muestra (aparece el aviso «Viendo como Pisos · solo menú»): lo que puedas hacer dentro de cada pantalla depende de la plantilla real de tu usuario, no del selector.
 - Tema claro, ventana de 1280 × 800. Las tarjetas de instrucciones que algunas pantallas muestran arriba («Housekeeping», «Mis averías») se han cerrado con la «×» antes de capturar; tú las verás la primera vez que entres.
-- Tres capturas muestran un formulario lateral (un «cajón») que **hoy no se abre en la aplicación** por un defecto de estilo (ver «Qué no hace todavía»). Están tomadas forzando su visualización para que sepas qué contiene; su pie lo indica.
+- Tres capturas muestran un formulario lateral (un «cajón») abierto y relleno, sin pulsar su botón final («Crear tarea», «Enviar a mantenimiento», «Crear orden»): así ves qué contiene sin crear nada en la demo.
 
 ---
 
@@ -90,11 +90,9 @@ En el Tablero de habitaciones de recepción el mismo vocabulario se muestra con 
 
 **Menú › Operaciones › Pisos** · `/operaciones/pisos` › botón «Nueva tarea» de la tarjeta.
 
-> **En construcción:** el formulario «Nueva tarea» se abre en un cajón lateral que **hoy no se muestra en pantalla** (al pulsar el botón no pasa nada visible). Es un defecto de estilo conocido que afecta a todos los cajones de la aplicación, no a tus permisos. Los pasos siguientes describen el formulario tal como es, para cuando esté corregido.
-
 ![](img/pisos/nueva-tarea.png)
 
-*Cajón «Nueva tarea» de la habitación 304 (captura forzada: hoy el cajón no se abre en la aplicación).*
+*Cajón «Nueva tarea · Habitación 304» con «Limpieza a fondo» y prioridad «Baja» elegidas, antes de pulsar «Crear tarea».*
 
 1. Pulsa «Nueva tarea» en la tarjeta de la habitación.
 2. En el cajón «Nueva tarea · Habitación 304» elige el **«Tipo de tarea»** («Salida (limpieza)», «Cliente alojado», «Inspección», «Limpieza a fondo») y la **«Prioridad»** («Baja», «Normal», «Alta»). No hay campo de texto libre.
@@ -137,8 +135,8 @@ En el Tablero de habitaciones de recepción el mismo vocabulario se muestra con 
 Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 
 1. La camarera marca la habitación limpia («Limpia» en Mi turno o «Marcar limpia» en el tablero).
-2. La gobernanta la revisa y pulsa «Inspeccionada» (Mi turno) o «Inspeccionar» (tablero). A partir de ahí cuenta en «INSPECCIONADAS (vendibles)» y en el Tablero de habitaciones aparece como «Lista».
-3. Una habitación inspeccionada no vuelve a «limpia» aunque alguien pulse «Marcar limpia»; solo vuelve a «sucia» con la salida del huésped (o con «Marcar sucia» desde el Tablero de habitaciones, hoy inaccesible; ver «Qué no hace todavía»).
+2. La gobernanta la revisa y pulsa «Inspeccionada» (Mi turno) o «Inspeccionar» (tablero). A partir de ahí cuenta en «INSPECCIONADAS (vendibles)» y en el Tablero de habitaciones aparece como «Limpia» (y suma en «LISTAS»).
+3. Una habitación inspeccionada no vuelve a «limpia» aunque alguien pulse «Marcar limpia»; solo vuelve a «sucia» con la salida del huésped (o con «Marcar sucia» en el cajón de una casilla del Tablero de habitaciones, tarea 6).
 
 **Quién puede inspeccionar.** Las dos plantillas de pisos («Pisos» y «Gobernanta») tienen el permiso de inspección, así que en la aplicación la camarera también ve el botón. Que inspeccione solo la gobernanta es una norma de tu hotel, no una restricción del programa. Recepción no lo tiene: si alguien de recepción lo intenta, la aplicación responde «No tienes permiso para realizar esta acción (requiere: housekeeping.task.manage).».
 
@@ -148,11 +146,9 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 
 **Menú › Operaciones › Pisos › «Mi turno»** · `/operaciones/pisos/mi-turno` › botón «Reportar» de la tarjeta.
 
-> **En construcción:** el parte se rellena en un cajón lateral que **hoy no se muestra en pantalla** (mismo defecto que en la tarea 2). Los pasos describen el formulario para cuando esté corregido.
-
 ![](img/pisos/reportar-incidencia.png)
 
-*Cajón «Reportar incidencia» de la primera habitación del turno (captura forzada: hoy el cajón no se abre en la aplicación; la lista de Mi turno cambia cada día, así que el número de habitación de tu captura puede ser otro).*
+*Cajón «Reportar incidencia» de la primera habitación del turno, con la incidencia escrita y antes de pulsar «Enviar a mantenimiento» (la lista de Mi turno cambia cada día, así que el número de habitación de tu captura puede ser otro).*
 
 1. Pulsa «Reportar» en la tarjeta de la habitación.
 2. En «Reportar incidencia · Habitación <número>» escribe qué pasa en el campo **«Incidencia»** («Avería, falta de amenities, desperfectos… Se crea una orden de trabajo para mantenimiento.»). El botón «Enviar a mantenimiento» se activa cuando hay texto.
@@ -172,11 +168,11 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 
 1. Indicadores: **«OCUPADAS» · «LISTAS» · «SUCIAS» · «FUERA DE SERVICIO» · «LLEGADAS HOY» · «SALIDAS HOY»**.
 2. Busca por número o huésped en «Buscar por número o huésped…», filtra por planta con «Todas las plantas» y comprueba el contador «n HABITACIONES VISIBLES».
-3. La leyenda «ESTADO» es también un filtro: **«Lista» · «Sucia» · «Ocupada» · «Sale hoy» · «Salida hecha» · «Fuera de servicio» · «Bloqueada»**. Equivalencias con el vocabulario de pisos:
+3. La leyenda «ESTADO» es también un filtro: **«Limpia» · «Sucia» · «Ocupada» · «Sale hoy» · «Salida hecha» · «Fuera de servicio» · «Bloqueada»** (el indicador de arriba se llama «LISTAS»). Equivalencias con el vocabulario de pisos:
 
 | En el Tablero de habitaciones | En pisos |
 |---|---|
-| Lista | Libre y limpia o inspeccionada |
+| Limpia (indicador «LISTAS») | Libre y limpia o inspeccionada |
 | Sucia | Libre y sucia |
 | Ocupada / Sale hoy / Salida hecha | Ocupada (con o sin salida prevista hoy) / salida ya hecha |
 | Fuera de servicio | Fuera de servicio (bloqueo de mantenimiento o cierre manual) |
@@ -187,7 +183,7 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 
 > **Nota:** el indicador «FUERA DE SERVICIO» de este tablero suma las «Fuera de servicio» y las «Bloqueada», así que puede ser mayor que el «FUERA DE SERVICIO» del tablero de pisos (en la demo: 3 frente a 1, porque la 204 y la 301 tienen partes abiertos). Para saber si una habitación es vendible de verdad, fíate del tablero de pisos («NO VENDIBLE») o de la orden de trabajo.
 
-> **En construcción:** al pulsar una casilla debería abrirse un cajón con el detalle («Limpieza: limpia», «Incidencia abierta») y las «Acciones rápidas» «Marcar limpia», «Marcar sucia», «Inspeccionada» y «Bloquear habitación» / «Desbloquear habitación». Hoy el cajón no se muestra (mismo defecto que en la tarea 2); usa el tablero de pisos y Mi turno para cambiar estados.
+> **Nota:** al pulsar una casilla se abre el cajón de la habitación: título «Habitación 108», subtítulo con el tipo y la planta («Double · Planta 1»), su estado («Fuera de servicio», «Sucia», «Incidencia abierta»…) y las «Acciones rápidas»: «Marcar limpia», «Marcar sucia», «Inspeccionada» y «Bloquear habitación» o «Desbloquear habitación» (según esté). Se cierra con «Cerrar» o con Esc. En esta guía no se ha pulsado ninguna acción rápida desde aquí: para cambiar estados usa el tablero de pisos y Mi turno, que es lo que hace tu equipo cada día.
 
 ### Tarea 7 · La foto de operaciones de Mi día
 
@@ -204,7 +200,6 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 
 | Qué ves | Qué hacer |
 |---|---|
-| Pulsas «Nueva tarea», «Reportar» o una casilla del Tablero de habitaciones y no pasa nada | Es el defecto de los cajones (no se muestran). No es un problema de permisos; avisa a sistemas. Mientras tanto, crea el parte desde mantenimiento si alguien de ese equipo está cerca. |
 | «Sin acceso · Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» | Has entrado en una pantalla de dirección (por ejemplo «Ajustes» de Pisos). Vuelve con «Ir a mi página de inicio». |
 | La habitación sigue en Mi turno después de inspeccionarla, con «Tarea pendiente · departure_clean» | La tarea de limpieza sigue «en curso»: ciérrala con «Completar» en el tablero de pisos. |
 | No aparece «Inspeccionar» / «Inspeccionada» | La habitación está sucia: márcala limpia primero. |
@@ -215,14 +210,13 @@ Secuencia comprobada en la demo: **sucia → limpia → inspeccionada**.
 
 ### Qué no hace todavía (pisos)
 
-- **Cajones que no se abren.** Los formularios laterales de la aplicación («Nueva tarea», «Reportar incidencia», el detalle de una casilla del Tablero de habitaciones, entre otros) no se muestran hoy por un defecto de estilo (la regla del velo de la barra lateral móvil oculta también el velo de los cajones). Afecta a toda la aplicación, no solo a pisos. Las capturas de esta guía marcadas «forzada» muestran cómo son.
 - No hay asignación de tareas a una persona desde la pantalla: «Asignada a» sale «Sin asignar» y la tarjeta de ayuda que habla de asignar tareas a un miembro del equipo se refiere a algo que aún no existe.
 - No hay filtro por planta en Mi turno (la ayuda in-app lo menciona, pero solo existe el filtro por prioridad); sí lo hay en el Tablero de habitaciones.
 - «Limpia» / «Inspeccionada» no cierran la tarea de limpieza (defecto conocido); hay que pulsar «Completar» en el tablero.
-- Marcar una habitación como sucia a mano, bloquearla sin orden de trabajo y desbloquearla solo existen dentro del cajón del Tablero de habitaciones (inaccesible hoy).
+- Marcar una habitación como sucia a mano, bloquearla sin orden de trabajo y desbloquearla solo existen dentro del cajón de una casilla del Tablero de habitaciones (tarea 6), no en el tablero de pisos ni en Mi turno.
 - Objetos olvidados, fotos de la habitación y pedidos a economato no tienen pantalla en el menú de pisos.
 - «Personal y turnos» (`/operaciones/personal`) funciona («PLANTILLA», «Fichar entrada», «Fichar salida», «Nuevo turno»), pero en la demo la plantilla es 0; los fichajes y turnos que veas son ficticios (prefijo «MANUAL-RRHH», creados por la guía [30 · RRHH](30-rrhh.md)).
-- La tarjeta de ayuda de Mi turno mezcla español e inglés («Pizarra HK movil-first…», «Priority queue…»); ciérrala con la «×».
+- El título de la tarjeta de ayuda de Mi turno sigue diciendo «Housekeeping» (el texto ya está en español: «Mi turno: la lista de habitaciones que tocan hoy…»); ciérrala con «Cerrar instrucciones» (×).
 
 ---
 
@@ -272,7 +266,7 @@ Con la plantilla «Mantenimiento» el menú tiene **3 categorías · 10 entradas
 
 **Resultado esperado.** Al cambiar el estado ves «Estado actualizado.» y la fila cambia de etiqueta al instante.
 
-**Si algo falla.** En pantallas de menos de 900 px de ancho la ficha se abre en un cajón lateral, que hoy no se muestra (ver «Qué no hace todavía»): usa un ordenador o la pestaña «Mis averías».
+**Si algo falla.** En pantallas de menos de 900 px de ancho la ficha se abre en un cajón lateral con el mismo contenido (el título de la orden, «Hab. 204 · urgente», el desplegable «Estado» y los botones «Bloquear habitación» y «Resolver»); ciérralo con la × o con Esc para volver a la lista. En el móvil usa mejor la pestaña «Mis averías».
 
 ### Tarea 9 · Crear un parte, tomarlo, anotar, bloquear la habitación y resolverlo
 
@@ -280,11 +274,9 @@ Flujo completo comprobado en la demo con la orden «Persiana del balcón atascad
 
 **9a · Crear la orden.** **Menú › Operaciones › Mantenimiento** › botón «+ Nueva orden» (arriba a la derecha).
 
-> **En construcción:** «Nueva orden» abre un cajón lateral que **hoy no se muestra en pantalla**. Los pasos describen el formulario para cuando esté corregido. Mientras tanto, los partes entran por «Reportar» de pisos (que sufre el mismo defecto) o los crea dirección.
-
 ![](img/mantenimiento/nueva-orden.png)
 
-*Cajón «Nueva orden de trabajo» relleno (captura forzada: hoy el cajón no se abre en la aplicación).*
+*Cajón «Nueva orden de trabajo» relleno (título, habitación 305, prioridad y descripción), antes de pulsar «Crear orden».*
 
 1. Pulsa «+ Nueva orden». El cajón se titula «Nueva orden de trabajo · Se crea abierta; asígnala o bloquea la habitación desde su ficha.».
 2. Rellena **«Título»** (obligatorio; ejemplo del campo: «Fuga en el baño»), **«Habitación»** (opcional: el número tal como existe en el hotel, «Ej.: 108»), **«Prioridad»** («emergencia», «urgente», «normal», «preventivo»), **«Descripción»** y, si la habitación no se puede vender mientras la arreglas, el interruptor **«Bloquea la habitación (fuera de servicio)»**.
@@ -313,7 +305,7 @@ Flujo completo comprobado en la demo con la orden «Persiana del balcón atascad
 - «La orden ya está resuelta.»: alguien la resolvió antes; pulsa «Actualizar».
 - «La orden de trabajo no está vinculada a ninguna habitación.»: creaste la orden sin número de habitación; no se puede bloquear nada. Crea otra con habitación.
 - Escribiste un número de habitación que no existe en el hotel: la orden se crea igualmente, pero **sin habitación** («Habitación: —») y no se podrá bloquear nada. Resuélvela y crea otra con el número correcto.
-- Una habitación bloqueada por una orden **no** se puede desbloquear desde el Tablero de habitaciones (aunque el cajón funcione): solo la libera «Resolver».
+- Una habitación bloqueada por una orden **no** se puede desbloquear desde el Tablero de habitaciones: solo la libera «Resolver».
 
 ### Tarea 10 · Mis averías (móvil y tablet)
 
@@ -334,7 +326,7 @@ Flujo completo comprobado en la demo con la orden «Persiana del balcón atascad
 
 **Resultado esperado.** El parte que pisos reportó desde Mi turno («Hab. 203: …») aparece aquí como «NORMAL · En cola»; «Tomar» → «Nota» → «Resuelta» lo cierra y deja de contar en «Órdenes de trabajo (n)» de Mi día. Comprobado en la demo.
 
-> **En construcción:** el cajón «Añadir nota» no se muestra hoy (mismo defecto que los demás cajones). «Tomar» y «Resuelta» sí funcionan.
+> **Nota:** el cajón «Añadir nota» lleva como subtítulo el título de la avería, un solo campo («Nota», con la ayuda «Qué has visto o qué has hecho») y los botones «Cancelar» y «Guardar nota». En esta guía se ha abierto sin guardar nada.
 
 **Si algo falla.** «No se pudo actualizar la avería»: pulsa «Actualizar»; si la orden ya estaba resuelta por otra persona habrá desaparecido de la lista.
 
@@ -358,7 +350,7 @@ Cuatro pantallas de consulta que te ayudan a planificar; ninguna cambia el estad
 
 **Seguridad e incidentes** · **Menú › Operaciones › Seguridad e incidentes** · `/operaciones/seguridad`. «Registra incidentes en vivo, haz seguimiento y revisa las inspecciones de seguridad pendientes.» Indicadores **«INCIDENTES ABIERTOS» · «CRÍTICOS (30 D)» · «INCIDENTES (30 D)» · «CHECKS COMPLETADOS» · «INSPECCIONES PRÓXIMAS»**, bloques «Incidentes recientes» e «Inspecciones próximas» y el botón «Registrar incidente». Los incidentes de seguridad (no las averías) se registran aquí; en la demo no hay ninguno.
 
-> **Nota:** el formulario de «Registrar incidente» («Título», «Ubicación», «Gravedad») se abre en un cajón lateral; no se ha comprobado en esta guía y es previsible que le afecte el mismo defecto que a los demás cajones.
+> **Nota:** «Registrar incidente» abre el cajón «Nuevo incidente» («Describe qué ha pasado, dónde y con qué gravedad.») con «Título*» (ejemplo del campo: «Suelo mojado en recepción»), «Ubicación» (ejemplo: «Vestíbulo planta 0»), «Gravedad» y «Descripción», y los botones «Cancelar» y «Registrar incidente». En esta guía no se ha registrado ninguno.
 
 **Sostenibilidad** · **Menú › Cumplimiento › Sostenibilidad** · `/cumplimiento/sostenibilidad` (pestaña «Panel»). «Panel de sostenibilidad en solo lectura: emisiones de CO2, consumo de agua y residuos por habitación-noche, y acciones de sostenibilidad activas. Se actualiza cada 5 minutos.» Indicadores **«CO2 POR NOCHE OCUPADA» · «CO2 TOTAL (30 DÍAS)» · «AGUA POR NOCHE OCUPADA» · «RESIDUOS POR NOCHE OCUPADA» · «ACCIONES ACTIVAS»**; en la demo todo a 0. El «Informe ESRS» no está en tu menú.
 
@@ -366,7 +358,6 @@ Cuatro pantallas de consulta que te ayudan a planificar; ninguna cambia el estad
 
 | Qué ves | Qué hacer |
 |---|---|
-| Pulsas «+ Nueva orden» o «Nota» y no pasa nada | Defecto de los cajones (no se muestran). Avisa a sistemas; mientras tanto cambia estados y resuelve desde la ficha del tablero o desde «Tomar» / «Resuelta». |
 | No aparece «Bloquear habitación» en la ficha | La orden no tiene habitación, ya la bloquea, o está resuelta. |
 | Error de permiso al bloquear | Tu plantilla es «Mantenimiento» (técnico): bloquear es del encargado o de dirección. Pide que la bloqueen o que te cambien la plantilla. |
 | «La habitación ya está bloqueada por esta orden.» | Ya estaba bloqueada; pulsa «Actualizar». |
@@ -378,13 +369,11 @@ Cuatro pantallas de consulta que te ayudan a planificar; ninguna cambia el estad
 
 ### Qué no hace todavía (mantenimiento)
 
-- **Cajones que no se abren**: «Nueva orden», «Añadir nota», la ficha de la orden en pantallas estrechas y, previsiblemente, «Registrar incidente» (mismo defecto de estilo que en pisos).
 - No hay asignación de técnico: «Tomar» y «En curso» no rellenan «Asignada a» y no existe un selector de persona.
 - No hay fotos ni adjuntos desde la pantalla (la tarjeta muestra «n fotos» si existen, pero no se pueden añadir aquí), ni plazos (SLA) editables: «SLA vencido» solo aparece si la orden tiene fecha límite cargada por otra vía.
 - Sin cierre formal: el estado «Cerrada» existe, pero desde la pantalla solo llegas hasta «Resuelta».
 - Activos, Energía y agua y Sostenibilidad son de solo lectura desde tu menú; el inmovilizado se da de alta en Finanzas. Energía sin contadores en la demo (0 kWh).
 - «Ajustes» de Mantenimiento (dirección y administración) e «Informe ESRS» (dirección y finanzas) no están en tu menú.
-- La tarjeta de ayuda de Mis averías mezcla español e inglés («Gestion de work orders…», «Bloquear room»); ciérrala con la «×».
 
 ---
 

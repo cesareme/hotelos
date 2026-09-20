@@ -39,4 +39,4 @@
 ## Más detalle
 
 - [20 · Administración](../../20-administracion.md) — capítulo 7 «Partes de viajeros» (crear y encolar, conector SES.Hospedajes, bandeja de cumplimiento).
-- [70 · Recepción](../../70-recepcion.md) — «Huéspedes y partes de viajeros» (se completa en DOC-2).
+- [70 · Recepción](../../70-recepcion.md) — «Huéspedes y partes de viajeros» (el check-in crea y encola un parte por huésped; en «Registro de viajeros» completas los «Datos incompletos» y ves el estado del envío).

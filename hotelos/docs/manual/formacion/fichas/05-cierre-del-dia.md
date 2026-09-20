@@ -43,4 +43,4 @@
 
 - [10 · Dirección](../../10-direccion.md) — tarea 6 «Cierre del día y Turno» (quién cierra, quién revisa, reapertura).
 - [20 · Administración](../../20-administracion.md) — capítulo 6.2 «Cierre del día (describir, no ejecutar)».
-- [70 · Recepción](../../70-recepcion.md) — «Turno y cierre del día» (se completa en DOC-2).
+- [70 · Recepción](../../70-recepcion.md) — «Turno y cierre del día» (Turno: productividad, caja del día y estado operativo; Cierre del día: comprobaciones previas al cierre y «Cerrar día»).

@@ -7,12 +7,14 @@
 //   - spanish-compliance.ts «Cumplimiento»
 //   - keyboard-shortcuts.ts «Atajos de teclado» (the only shortcut catalog)
 //   - glossary.ts          «Glosario» (one article per term)
+//   - manual-guides.ts     «Manual de uso» (one article per guide of docs/manual)
 //   - ../persona-guides    «Guía por puesto» (one article per job)
 import type { CocoaHelpArticle } from "../../components/cocoa-guidance/CocoaSearchableHelpModal";
 import { PERSONA_GUIDES, personaGuideMarkdown } from "../persona-guides";
 import { GETTING_STARTED_ARTICLES } from "./getting-started";
 import { GLOSSARY, GLOSSARY_CATEGORY, glossaryArticles } from "./glossary";
 import { KEYBOARD_SHORTCUTS, KEYBOARD_SHORTCUTS_ARTICLE } from "./keyboard-shortcuts";
+import { MANUAL_GUIDES_CATEGORY, MANUAL_GUIDE_ARTICLES } from "./manual-guides";
 import { SPANISH_COMPLIANCE_ARTICLES } from "./spanish-compliance";
 import { TROUBLESHOOTING_ARTICLES } from "./troubleshooting";
 
@@ -38,6 +40,7 @@ function clone(article: CocoaHelpArticle): HelpArticle {
 export const HELP_ARTICLES: readonly HelpArticle[] = [
   ...GETTING_STARTED_ARTICLES.map(clone),
   ...personaGuideArticles(),
+  ...MANUAL_GUIDE_ARTICLES.map(clone),
   ...TROUBLESHOOTING_ARTICLES.map(clone),
   ...SPANISH_COMPLIANCE_ARTICLES.map(clone),
   clone(KEYBOARD_SHORTCUTS_ARTICLE),
@@ -88,4 +91,4 @@ export function searchHelpArticles(query: string, articles: readonly HelpArticle
   return matches.sort((a, b) => b.score - a.score || a.article.title.localeCompare(b.article.title, "es")).slice(0, limit);
 }
 
-export { GETTING_STARTED_ARTICLES, TROUBLESHOOTING_ARTICLES, SPANISH_COMPLIANCE_ARTICLES, KEYBOARD_SHORTCUTS, KEYBOARD_SHORTCUTS_ARTICLE, GLOSSARY, GLOSSARY_CATEGORY };
+export { GETTING_STARTED_ARTICLES, MANUAL_GUIDE_ARTICLES, MANUAL_GUIDES_CATEGORY, TROUBLESHOOTING_ARTICLES, SPANISH_COMPLIANCE_ARTICLES, KEYBOARD_SHORTCUTS, KEYBOARD_SHORTCUTS_ARTICLE, GLOSSARY, GLOSSARY_CATEGORY };

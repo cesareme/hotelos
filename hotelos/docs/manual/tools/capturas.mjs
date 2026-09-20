@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // docs/manual/tools/capturas.mjs — receta de captura para el manual de uso de ehotelOS.
 //
-// Login por POST /auth/login (token cacheado en <tmpdir>/ehotelos-manual-capturas-session.json, FUERA del
-// repo porque contiene un JWT, para no agotar el límite de 10 logins/min), sesión inyectada en localStorage (hotelos.auth.token / hotelos.auth.user /
+// Inicia sesión por POST /auth/login con la cuenta del `login` elegido (token cacheado en
+// <tmpdir>/ehotelos-manual-capturas-session-<login>.json, FUERA del repo porque contiene un JWT, para no agotar el
+// límite de 10 logins/min), inyecta la sesión en localStorage (hotelos.auth.token / hotelos.auth.user /
 // hotelos-active-property / hotelos-active-org / hotelos-active-property-name / hotelos.theme=light),
-// captura de una URL del front (http://localhost:5173) a 1280×800, DPR 1, tema claro, es-ES,
-// recorte opcional (--clip o --selector) y PNG optimizado (paleta ≤ 256 colores, ≤ 150 KB).
+// captura una URL del front (http://localhost:5173) a 1280×800, DPR 1, tema claro, es-ES (contexto y navegador
+// arrancado con --lang=es-ES, para que los campos de fecha nativos salgan como día/mes/año),
+// con recorte opcional (--clip o --selector) y PNG optimizado (paleta ≤ 256 colores, ≤ 150 KB).
 // Sin dependencias nuevas: usa el chromium de @playwright/test de apps/admin-web y zlib de Node.
 //
 // Uso (desde la raíz del monorepo; --out se resuelve desde el directorio actual):
@@ -13,40 +15,65 @@
 //   node docs/manual/tools/capturas.mjs --url /operaciones/pisos --out docs/manual/img/pisos/tablero.png --view-as pisos
 //   node docs/manual/tools/capturas.mjs --url /recepcion/reservas --out x.png --selector "main" --wait-for "table"
 //   node docs/manual/tools/capturas.mjs --url /revenue/parrilla --out x.png --clip 240,96,1040,704
+//   node docs/manual/tools/capturas.mjs --url /hoy --out x.png --login uxday
 //   node docs/manual/tools/capturas.mjs --batch docs/manual/img/<perfil>/capturas.json
-//       # [{ "url", "out", "viewAs", "clip", "selector", "waitFor", "readyText", "wait", "full", "property",
-//       #    "hideInstructions", "hideCaret", "showTour", "showSetupBanner", "maxKb", "colors", "keepRaw",
-//       #    "actions", "fixDrawer" }]  (las claves que empiezan por "_" son notas). Cualquier otra clave
-//       # (p. ej. noSession, collapse, pushState, cmdk de lotes hechos a mano) aborta el lote con error antes de
-//       # capturar nada, para que una captura no se regenere en silencio con otro resultado.
+//   node docs/manual/tools/capturas.mjs --batch docs/manual/img/<perfil>/capturas.json --out-dir /ruta/de/prueba
+//       # (--out-dir reescribe cada "out" bajo esa carpeta, conservando su ruta relativa al monorepo: prueba un lote
+//       #  sin sobrescribir las capturas del manual)
 //
-// Opciones: --base http://localhost:5173  --api http://localhost:3000  --property prop_123
+// Claves de un trabajo del lote (cualquier otra clave aborta el lote con error ANTES de capturar nada, para que una
+// captura no se regenere en silencio con otro resultado; las claves que empiezan por "_" son notas):
+//   url, out                      obligatorias ("out" relativo al directorio actual o absoluto)
+//   login                         cuenta con la que se captura: "demo" (por defecto) o "uxday" (ver Cuentas)
+//   property                      propiedad activa (por defecto la del login)
+//   viewAs                        selector «Ver como…» (solo cambia el menú)
+//   clip | selector | full        recorte "x,y,w,h" · elemento css · página completa
+//   waitFor | readyText | wait    esperas: selector css · texto visible · milisegundos (600 por defecto)
+//   hideInstructions · hideCaret · showTour · showSetupBanner   como las opciones homónimas
+//   maxKb · colors · keepRaw      optimización del PNG
+//   actions                       pasos previos (ver Acciones)
+//   noSession                     captura sin sesión (pantalla de acceso): no inyecta token, usuario ni propiedad
+//   pushState · collapse · chip · hover · cmdk   atajos de la acción homónima; se ejecutan DESPUÉS de "actions", en ese orden
+//
+// Acciones (--actions '<json>' o clave "actions" del trabajo): lista de pasos, cada uno un objeto con una sola clave,
+// ejecutados en orden ANTES de capturar:
+//   {"click":"<selector>"} · {"button":"<nombre>"} · {"tab":"<nombre>"} · {"fill":["<selector>","<texto>"]}
+//   · {"select":["<selector>","<valor>"]} · {"waitFor":"<selector>"} · {"wait":<ms>}
+//   · {"file":{"selector":"input[type=file]","name":"x.csv","mimeType":"text/csv","content":"…"}}
+//   · {"hover":"<selector>"}            pasa el ratón por el elemento y espera 400 ms (fichas rápidas)
+//   · {"chip":"<texto>"}                pulsa el botón de filtro cuyo nombre es ese texto o empieza por «<texto> ·» (p. ej. «Cancelada · 1»)
+//   · {"cmdk":"<texto>"}                abre ⌘K (botón «Abrir la búsqueda (⌘K)» o Meta+K), espera el diálogo «Buscar en la aplicación»
+//                                       y escribe el texto en el buscador ("" lo deja vacío)
+//   · {"pushState":"/ruta"}             navega dentro de la aplicación sin recargar (como al escribir una ruta sin permiso)
+//   · {"collapse":"Hoy,Recepción"}      pliega esas categorías del menú lateral si están desplegadas
+//   · {"key":"Alt+KeyW"}                pulsa una tecla o combinación ("Escape", "Enter", "Meta+KeyZ"…)
+//   · {"scroll":["<selector>", <top>]}  pone scrollTop = top en ese elemento y espera 400 ms (parrillas virtualizadas)
+//   (selectores de Playwright: css, text=, role=, >> …). Los pasos rellenan y navegan: nunca pulsan «Guardar», «Crear»,
+//   «Contabilizar» ni ningún botón que escriba; el fichero de ejemplo va embebido en el lote.
+//
+// Opciones: --base http://localhost:5173  --api http://localhost:3000  --login demo|uxday  --property <id>
 //           --view-as <token>   (direccion|recepcion|pisos|mantenimiento|revenue|finanzas|comercial|fnb|
 //                                administracion|rrhh|propiedad|activos|auditoria|sistemas; solo cambia el menú)
 //           --wait <ms> (600)   --wait-for <css>   --ready-text <texto>   --full (página completa)
 //           --clip x,y,w,h      --selector <css>   --max-kb 150   --colors 256   --keep-raw (guarda .raw.png)
-//           --repo <ruta del monorepo>  (por defecto la raíz del monorepo, resuelta desde este fichero)  --headed  --hide-caret
+//           --out-dir <dir>     (ver Uso)   --repo <ruta del monorepo>  (por defecto la raíz, resuelta desde este fichero)
+//           --headed  --hide-caret
 //           --show-tour (deja el popup de bienvenida/recorrido; por defecto se marca como visto)
 //           --show-setup-banner (deja el aviso «Faltan N comprobaciones…»; por defecto se oculta para la sesión)
 //           --hide-instructions (oculta las tarjetas de instrucciones in-app de las pantallas que las tienen)
-//           --actions '<json>'  (pasos que se ejecutan en orden ANTES de capturar; en el lote, la clave "actions" del trabajo):
-//                                {"click":"<selector>"} · {"button":"<nombre>"} · {"tab":"<nombre>"} · {"fill":["<selector>","<texto>"]}
-//                                · {"select":["<selector>","<valor>"]} · {"waitFor":"<selector>"} · {"wait":<ms>}
-//                                · {"file":{"selector":"input[type=file]","name":"x.csv","mimeType":"text/csv","content":"…"}}
-//                                (selectores de Playwright: css, text=, role=, >> …). Los pasos rellenan y navegan: nunca
-//                                pulsan «Guardar», «Crear» ni «Contabilizar»; el fichero de ejemplo va embebido en el lote.
-//           --fix-drawer        (SOLO mientras dure el defecto de los cajones laterales en escritorio: la regla
-//                                `.c22-scrim { display: none }` de apps/admin-web/src/styles/cocoa-22-shell.css, pensada
-//                                para el velo del menú compacto, oculta también el velo de CocoaDrawer y con él el cajón.
-//                                Esta opción inyecta `display: block` para el velo abierto en la sesión de captura y nada
-//                                más; las guías marcan esas capturas «forzada». Retírala de los lotes al corregir el defecto.)
+//           --actions '<json>'  (ver Acciones)
+// Cuentas (tabla LOGINS): "demo" = reception@example.com / hotelos-demo → «Hotel Demo Madrid Centro» (prop_123, org_123);
+//           las variables MANUAL_LOGIN_EMAIL y MANUAL_LOGIN_PASSWORD sustituyen sus credenciales.
+//           "uxday" = direccion@uxday.test / uxday-demo → «Hotel UXDAY (prueba)» (prop_uxday, org_uxday), el tenant de
+//           pruebas de recepción: su plan del día es relativo a HOY y se rearma con
+//           `corepack pnpm --filter @hotelos/database db:seed:ux-day -- --reset` con el API parado.
 // Notas: «Ver como» vive en memoria (no en localStorage): se aplica tras cargar la URL con el select #c22-view-as.
 //        No abras el selector de hotel (arriba a la izquierda) en una captura: el administrador de plataforma ve
 //        también las propiedades de otras organizaciones (cliente piloto) y no deben aparecer en el manual.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import zlib from "node:zlib";
@@ -55,15 +82,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 // ----------------------------------------------------------------------------- args
 function parseArgs(argv) {
-  const o = { base: "http://localhost:5173", api: "http://localhost:3000", property: "prop_123", wait: 600, maxKb: 150, colors: 256, repo: resolve(HERE, "../../..") };
+  const o = { base: "http://localhost:5173", api: "http://localhost:3000", login: "demo", wait: 600, maxKb: 150, colors: 256, repo: resolve(HERE, "../../..") };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
     switch (a) {
       case "--url": o.url = next(); break;
       case "--out": o.out = next(); break;
+      case "--out-dir": o.outDir = next(); break;
       case "--base": o.base = next(); break;
       case "--api": o.api = next(); break;
+      case "--login": o.login = next(); break;
       case "--property": o.property = next(); break;
       case "--view-as": o.viewAs = next(); break;
       case "--wait": o.wait = Number(next()); break;
@@ -83,7 +112,6 @@ function parseArgs(argv) {
       case "--show-setup-banner": o.showSetupBanner = true; break;
       case "--hide-instructions": o.hideInstructions = true; break;
       case "--actions": o.actions = JSON.parse(next()); break;
-      case "--fix-drawer": o.fixDrawer = true; break;
       case "--help": case "-h": o.help = true; break;
       default: throw new Error(`Opción desconocida: ${a}`);
     }
@@ -92,25 +120,40 @@ function parseArgs(argv) {
 }
 
 // ----------------------------------------------------------------------------- session (API)
-// El token de sesión (JWT) se cachea en el directorio temporal del sistema: NUNCA junto al script ni bajo docs/manual.
-const SESSION_FILE = join(tmpdir(), "ehotelos-manual-capturas-session.json");
-const PROPERTY_NAMES = { prop_123: "Hotel Demo Madrid Centro", prop_canary: "Hotel Demo Tenerife Sur" };
+/** Cuentas de captura. Solo tenants de demostración con nombres ficticios: nunca un cliente real. */
+const LOGINS = {
+  demo: { email: process.env.MANUAL_LOGIN_EMAIL ?? "reception@example.com", password: process.env.MANUAL_LOGIN_PASSWORD ?? "hotelos-demo", property: "prop_123", org: "org_123" },
+  uxday: { email: "direccion@uxday.test", password: "uxday-demo", property: "prop_uxday", org: "org_uxday" }
+};
+const PROPERTY_NAMES = { prop_123: "Hotel Demo Madrid Centro", prop_canary: "Hotel Demo Tenerife Sur", prop_uxday: "Hotel UXDAY (prueba)" };
 
-async function getSession(api) {
-  const cached = existsSync(SESSION_FILE) ? JSON.parse(readFileSync(SESSION_FILE, "utf8")) : null;
-  if (cached?.token) {
-    const me = await fetch(`${api}/users/me`, { headers: { authorization: `Bearer ${cached.token}`, "x-property-id": "prop_123" } }).catch(() => null);
+// El token de sesión (JWT) se cachea en el directorio temporal del sistema, un fichero por login: NUNCA junto al
+// script ni bajo docs/manual.
+const sessionFile = (login) => join(tmpdir(), `ehotelos-manual-capturas-session-${login}.json`);
+
+function accountFor(login) {
+  const account = LOGINS[login];
+  if (!account) throw new Error(`Login desconocido: ${login} (admitidos: ${Object.keys(LOGINS).join(", ")})`);
+  return account;
+}
+
+async function getSession(api, login) {
+  const account = accountFor(login);
+  const file = sessionFile(login);
+  const cached = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+  if (cached?.token && cached.email === account.email) {
+    const me = await fetch(`${api}/users/me`, { headers: { authorization: `Bearer ${cached.token}`, "x-property-id": account.property } }).catch(() => null);
     if (me && me.ok) return cached;
   }
   const res = await fetch(`${api}/auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: process.env.MANUAL_LOGIN_EMAIL ?? "reception@example.com", password: process.env.MANUAL_LOGIN_PASSWORD ?? "hotelos-demo" })
+    body: JSON.stringify({ email: account.email, password: account.password })
   });
-  if (!res.ok) throw new Error(`POST /auth/login → ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new Error(`POST /auth/login (${login}) → ${res.status}: ${await res.text()}`);
   const json = await res.json();
-  const session = { token: json.token, user: json.user, at: new Date().toISOString() };
-  writeFileSync(SESSION_FILE, JSON.stringify(session, null, 2));
+  const session = { login, email: account.email, token: json.token, user: json.user, property: account.property, org: json.user?.organizationId ?? account.org, at: new Date().toISOString() };
+  writeFileSync(file, JSON.stringify(session, null, 2));
   return session;
 }
 
@@ -262,13 +305,28 @@ export function optimisePng(rawPng, { maxKb = 150, colors = 256 } = {}) {
   return best;
 }
 
+// ----------------------------------------------------------------------------- jobs
 /** Claves admitidas en un trabajo del lote (todo lo demás aborta: ver cabecera). */
-const JOB_KEYS = new Set(["url", "out", "viewAs", "clip", "selector", "waitFor", "readyText", "wait", "full", "property", "hideInstructions", "hideCaret", "showTour", "showSetupBanner", "maxKb", "colors", "keepRaw", "actions", "fixDrawer"]);
+const JOB_KEYS = new Set(["url", "out", "login", "viewAs", "clip", "selector", "waitFor", "readyText", "wait", "full", "property", "hideInstructions", "hideCaret", "showTour", "showSetupBanner", "maxKb", "colors", "keepRaw", "actions", "noSession", "collapse", "pushState", "cmdk", "hover", "chip"]);
+
+/** Claves de trabajo que son atajos de una acción (se ejecutan en este orden, después de "actions"). */
+const SHORTCUT_KEYS = ["pushState", "collapse", "chip", "hover", "cmdk"];
+function jobActions(job, opts) {
+  const base = job.actions ?? opts.actions ?? [];
+  return [...base, ...SHORTCUT_KEYS.filter((k) => job[k] !== undefined).map((k) => ({ [k]: job[k] }))];
+}
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Ruta de salida: "out" tal cual o, con --out-dir, bajo esa carpeta conservando la ruta relativa al monorepo. */
+function outPath(job, opts) {
+  const out = resolve(job.out);
+  if (!opts.outDir) return out;
+  const relToRepo = relative(resolve(opts.repo), out);
+  const inside = relToRepo && !relToRepo.startsWith("..") && !isAbsolute(relToRepo);
+  return join(resolve(opts.outDir), inside ? relToRepo : basename(out));
+}
 
 // ----------------------------------------------------------------------------- actions
-/** Velo abierto de CocoaDrawer visible en escritorio (workaround del defecto de cocoa-22-shell.css; ver --fix-drawer). */
-const DRAWER_FIX_CSS = `.c22-scrim[data-cocoa="scrim"][data-open="true"] { display: block !important; }`;
-
 /** Ejecuta los pasos de "actions" en orden (ver cabecera). Cada paso es un objeto con una sola clave. */
 async function runActions(page, actions) {
   for (const step of actions) {
@@ -284,6 +342,26 @@ async function runActions(page, actions) {
     else if ("file" in step) {
       const { selector = "input[type=file]", name, mimeType = "text/csv", content } = step.file;
       await page.locator(selector).first().setInputFiles({ name, mimeType, buffer: Buffer.from(String(content), "utf8") });
+    } else if ("hover" in step) { await page.locator(step.hover).first().hover(); await page.waitForTimeout(400); }
+    else if ("chip" in step) await page.getByRole("button", { name: new RegExp(`^${escapeRe(step.chip)}( ·|$)`) }).first().click();
+    else if ("key" in step) await page.keyboard.press(step.key);
+    else if ("scroll" in step) {
+      const [selector, top] = step.scroll;
+      await page.locator(selector).first().evaluate((el, value) => { el.scrollTop = Number(value); }, top);
+      await page.waitForTimeout(400);
+    } else if ("pushState" in step) {
+      await page.evaluate((p) => { history.pushState({}, "", p); dispatchEvent(new PopStateEvent("popstate")); }, step.pushState);
+      await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => undefined);
+    } else if ("collapse" in step) {
+      for (const name of String(step.collapse).split(",").map((s) => s.trim()).filter(Boolean)) {
+        const head = page.getByRole("button", { name: new RegExp(`^${escapeRe(name)} \\d+ entradas`) }).first();
+        if ((await head.count()) && (await head.getAttribute("aria-expanded")) === "true") await head.click();
+      }
+    } else if ("cmdk" in step) {
+      await page.getByRole("button", { name: "Abrir la búsqueda (⌘K)" }).first().click().catch(async () => page.keyboard.press("Meta+KeyK"));
+      const palette = page.getByRole("dialog", { name: "Buscar en la aplicación" });
+      await palette.waitFor({ timeout: 10000 });
+      if (step.cmdk) { await palette.getByRole("searchbox").first().fill(String(step.cmdk)); await page.waitForTimeout(900); }
     } else if ("waitFor" in step) await page.waitForSelector(step.waitFor, { timeout: 20000 });
     else if ("wait" in step) await page.waitForTimeout(Number(step.wait));
     else throw new Error(`Acción desconocida: ${JSON.stringify(step)}`);
@@ -292,8 +370,13 @@ async function runActions(page, actions) {
 
 // ----------------------------------------------------------------------------- capture
 export async function capture(job, opts, shared) {
-  const { browser, session } = shared;
-  const property = job.property ?? opts.property;
+  const { browser, sessions } = shared;
+  const login = job.login ?? opts.login;
+  const account = accountFor(login);
+  const noSession = Boolean(job.noSession);
+  const session = noSession ? null : sessions.get(login);
+  if (!noSession && !session) throw new Error(`Sin sesión para el login «${login}»`);
+  const property = job.property ?? opts.property ?? account.property;
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: 1,
@@ -305,13 +388,15 @@ export async function capture(job, opts, shared) {
   const showTour = job.showTour ?? opts.showTour;
   const showSetupBanner = job.showSetupBanner ?? opts.showSetupBanner;
   const hideInstructions = job.hideInstructions ?? opts.hideInstructions;
-  await context.addInitScript(({ token, user, property, propertyName, showTour, showSetupBanner, hideInstructions, tokens, instructionKeys }) => {
+  await context.addInitScript(({ token, user, org, property, propertyName, showTour, showSetupBanner, hideInstructions, tokens, instructionKeys, noSession }) => {
     try {
-      localStorage.setItem("hotelos.auth.token", token);
-      localStorage.setItem("hotelos.auth.user", JSON.stringify(user));
-      localStorage.setItem("hotelos-active-property", property);
-      localStorage.setItem("hotelos-active-org", user.organizationId ?? "org_123");
-      localStorage.setItem("hotelos-active-property-name", propertyName);
+      if (!noSession) {
+        localStorage.setItem("hotelos.auth.token", token);
+        localStorage.setItem("hotelos.auth.user", JSON.stringify(user));
+        localStorage.setItem("hotelos-active-property", property);
+        localStorage.setItem("hotelos-active-org", org);
+        localStorage.setItem("hotelos-active-property-name", propertyName);
+      }
       localStorage.setItem("hotelos.theme", "light");
       // Welcome tour («Te damos la bienvenida…») and per-role tour offers: off unless --show-tour.
       if (!showTour) localStorage.setItem("hotelos.guide.v1", JSON.stringify({ tourCompleted: true, welcomeDismissed: true, seenRoles: tokens }));
@@ -321,8 +406,8 @@ export async function capture(job, opts, shared) {
       if (hideInstructions) for (const key of instructionKeys) localStorage.setItem(`cocoa-screen-instructions:${key}`, "1");
     } catch { /* storage unavailable */ }
   }, {
-    token: session.token, user: session.user, property, propertyName: PROPERTY_NAMES[property] ?? property,
-    showTour: Boolean(showTour), showSetupBanner: Boolean(showSetupBanner), hideInstructions: Boolean(hideInstructions),
+    token: session?.token ?? "", user: session?.user ?? {}, org: session?.org ?? account.org, property, propertyName: PROPERTY_NAMES[property] ?? property,
+    showTour: Boolean(showTour), showSetupBanner: Boolean(showSetupBanner), hideInstructions: Boolean(hideInstructions), noSession,
     tokens: ["direccion", "recepcion", "pisos", "mantenimiento", "revenue", "finanzas", "comercial", "fnb", "administracion", "rrhh", "propiedad", "activos", "auditoria", "sistemas", "admin"],
     instructionKeys: ["live-timeline", "frontdesk-cockpit", "reservations", "housekeeping", "maintenance", "revenue", "channels", "billing", "compliance", "groups", "property-taxes", "tax-compliance-settings"]
   });
@@ -338,8 +423,7 @@ export async function capture(job, opts, shared) {
     await page.waitForSelector(".c22-nav-viewas-badge", { timeout: 5000 }).catch(() => undefined);
     await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => undefined);
   }
-  if (job.fixDrawer ?? opts.fixDrawer) await page.addStyleTag({ content: DRAWER_FIX_CSS });
-  await runActions(page, job.actions ?? opts.actions ?? []);
+  await runActions(page, jobActions(job, opts));
   const waitFor = job.waitFor ?? opts.waitFor;
   if (waitFor) await page.waitForSelector(waitFor, { timeout: 20000 });
   const readyText = job.readyText ?? opts.readyText;
@@ -357,12 +441,12 @@ export async function capture(job, opts, shared) {
   const finalUrl = page.url();
   await context.close();
 
-  const out = resolve(job.out);
+  const out = outPath(job, opts);
   mkdirSync(dirname(out), { recursive: true });
   if (job.keepRaw ?? opts.keepRaw) writeFileSync(out.replace(/\.png$/i, ".raw.png"), raw);
   const best = optimisePng(raw, { maxKb: job.maxKb ?? opts.maxKb, colors: job.colors ?? opts.colors });
   writeFileSync(out, best.png);
-  const result = { out, url: finalUrl, title, bytes: best.png.length, rawBytes: raw.length, width: best.width, height: best.height, colors: best.colors, viewAs: viewAs ?? null, property, fixDrawer: Boolean(job.fixDrawer ?? opts.fixDrawer), ok: best.png.length <= (job.maxKb ?? opts.maxKb) * 1024 };
+  const result = { out, url: finalUrl, title, bytes: best.png.length, rawBytes: raw.length, width: best.width, height: best.height, colors: best.colors, login: noSession ? null : login, viewAs: viewAs ?? null, property, ok: best.png.length <= (job.maxKb ?? opts.maxKb) * 1024 };
   console.log(JSON.stringify(result));
   if (!result.ok) console.error(`AVISO: ${out} pesa ${(best.png.length / 1024).toFixed(1)} KB > ${job.maxKb ?? opts.maxKb} KB: recorta (--clip/--selector) o baja --colors.`);
   return result;
@@ -377,16 +461,22 @@ async function main() {
   const jobs = opts.batch ? JSON.parse(readFileSync(opts.batch, "utf8")) : [{ url: opts.url, out: opts.out ?? `capture-${Date.now()}.png` }];
   for (const [i, job] of jobs.entries()) {
     const unknown = Object.keys(job).filter((k) => !k.startsWith("_") && !JOB_KEYS.has(k));
-    if (unknown.length) throw new Error(`Trabajo ${i + 1} (${job.out ?? job.url ?? "?"}): claves no admitidas ${unknown.join(", ")}. La receta no reproduce ese estado: captúralo a mano (ver README «Qué lotes NO regenera el comando»).`);
+    if (unknown.length) throw new Error(`Trabajo ${i + 1} (${job.out ?? job.url ?? "?"}): claves no admitidas ${unknown.join(", ")}. Las claves admitidas están en la cabecera de la receta (--help); la receta no captura nada con un lote que no entiende.`);
     if (!job.url || !job.out) throw new Error(`Trabajo ${i + 1}: faltan "url" u "out"`);
+    accountFor(job.login ?? opts.login);
   }
   const require = createRequire(join(opts.repo, "apps/admin-web/package.json"));
   const { chromium } = require("@playwright/test");
-  const session = await getSession(opts.api);
-  const browser = await chromium.launch({ headless: !opts.headed });
+  const sessions = new Map();
+  for (const job of jobs) {
+    const login = job.login ?? opts.login;
+    if (!job.noSession && !sessions.has(login)) sessions.set(login, await getSession(opts.api, login));
+  }
+  // --lang=es-ES: los campos de fecha nativos (<input type=date>) se pintan como día/mes/año; el `locale` del contexto no basta.
+  const browser = await chromium.launch({ headless: !opts.headed, args: ["--lang=es-ES"] });
   const results = [];
   try {
-    for (const job of jobs) results.push(await capture(job, opts, { browser, session }));
+    for (const job of jobs) results.push(await capture(job, opts, { browser, sessions }));
   } finally {
     await browser.close();
   }

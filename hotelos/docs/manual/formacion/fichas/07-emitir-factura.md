@@ -28,7 +28,7 @@
 - En **Menú › Cumplimiento › Envíos a autoridades** (`/cumplimiento/envios`), pestaña «VeriFactu», la fila de la factura está «ACEPTADO» (en la demo, con la marca «SIMULADO · NO ENVIADO»).
 - En «Contabilidad › Diario» aparece el asiento «Factura emitida» (4300 contra 705.x y 477.x).
 
-> **En construcción:** a 19/09/2026 la ficha que abre «Ver detalle» en el paso 7 (la que tiene «Emitir factura») es un panel lateral que se abre pero **no se ve en pantalla** por el defecto de estilo de los cajones laterales; hasta que se corrija, la emisión no se puede completar desde la pantalla: pídela al proveedor técnico. La ventana «Cobrar» del paso 4 sí se ve y funciona (comprobado en la demo). Los pasos 8 y 9 no se han ejecutado en la demo: se describen según la pantalla y la guía de administración.
+> **Nota:** la ficha del paso 7 se ha abierto en la demo con un borrador («Simplificada (F2) · Huésped», dos líneas, «Total factura 24,50 €», botones «Cerrar» y «Emitir factura»); su título es «Factura» seguido del identificador interno del borrador, porque el número de serie solo existe al emitir. Los pasos 8 y 9 no se han ejecutado en la demo (emitir consume un número de serie): se describen según la pantalla y la guía de administración. La ventana «Cobrar» del paso 4 sí se ha usado.
 
 ## Si algo falla
 

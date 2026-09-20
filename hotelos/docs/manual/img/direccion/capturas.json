@@ -1,12 +1,12 @@
 [
-  { "url": "/hoy/direccion", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/mi-dia-direccion.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
-  { "url": "/hoy/operaciones", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/operaciones.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
-  { "url": "/hoy/propietario", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/propietario.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
-  { "url": "/hoy/pendientes", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/pendientes.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
-  { "url": "/hoy/pendientes-ia", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/pendientes-ia.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
-  { "url": "/hoy/cierre-del-dia", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/cierre-del-dia.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
-  { "url": "/informes", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/informes.png", "viewAs": "direccion", "clip": "240,96,1040,480" },
-  { "url": "/informes/rentabilidad-habitacion", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/rentabilidad-habitacion.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
-  { "url": "/revenue", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/panel-revenue.png", "viewAs": "direccion", "clip": "240,96,1040,704", "hideInstructions": true },
-  { "url": "/configuracion/puesta-en-marcha", "out": "/Users/cfernandez/anfitorio-demo/hotelos/docs/manual/img/direccion/puesta-en-marcha.png", "viewAs": "direccion", "clip": "240,96,1040,704" }
+  { "url": "/hoy/direccion", "out": "docs/manual/img/direccion/mi-dia-direccion.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
+  { "url": "/hoy/operaciones", "out": "docs/manual/img/direccion/operaciones.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
+  { "url": "/hoy/propietario", "out": "docs/manual/img/direccion/propietario.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
+  { "url": "/hoy/pendientes", "out": "docs/manual/img/direccion/pendientes.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
+  { "url": "/hoy/pendientes-ia", "out": "docs/manual/img/direccion/pendientes-ia.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
+  { "url": "/hoy/cierre-del-dia", "out": "docs/manual/img/direccion/cierre-del-dia.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
+  { "url": "/informes", "out": "docs/manual/img/direccion/informes.png", "viewAs": "direccion", "clip": "240,96,1040,480" },
+  { "url": "/informes/rentabilidad-habitacion", "out": "docs/manual/img/direccion/rentabilidad-habitacion.png", "viewAs": "direccion", "clip": "240,96,1040,704" },
+  { "url": "/revenue", "out": "docs/manual/img/direccion/panel-revenue.png", "viewAs": "direccion", "clip": "240,96,1040,704", "hideInstructions": true },
+  { "url": "/configuracion/puesta-en-marcha", "out": "docs/manual/img/direccion/puesta-en-marcha.png", "viewAs": "direccion", "clip": "240,96,1040,704" }
 ]
