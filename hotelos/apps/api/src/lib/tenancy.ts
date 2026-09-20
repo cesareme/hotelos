@@ -369,6 +369,27 @@ const RESOLVERS = {
   pmsShadowRevenueImport: byProperty("Importación de ingresos no encontrada.", (id) =>
     prisma.pmsShadowRevenueImport.findUnique({ where: { id }, select: selectProperty })
   ),
+  // Check-in automatizado (Tanda CHK · W2-A): las 6 filas nuevas con columna
+  // property_id cuelgan de UNA propiedad; `:id` de GET/POST sessions/:id y
+  // PATCH/POST kiosks/:id cruza además `:propertyId` (404 opaco).
+  checkInSession: byProperty("Sesión de check-in no encontrada.", (id) =>
+    prisma.checkInSession.findUnique({ where: { id }, select: selectProperty })
+  ),
+  checkInGuest: byProperty("Viajero no encontrado.", (id) =>
+    prisma.checkInGuest.findUnique({ where: { id }, select: selectProperty })
+  ),
+  assignmentSuggestion: byProperty("Sugerencia de habitación no encontrada.", (id) =>
+    prisma.assignmentSuggestion.findUnique({ where: { id }, select: selectProperty })
+  ),
+  kioskDevice: byProperty("Kiosco no encontrado.", (id) =>
+    prisma.kioskDevice.findUnique({ where: { id }, select: selectProperty })
+  ),
+  roomBlock: byProperty("Bloqueo de habitación no encontrado.", (id) =>
+    prisma.roomBlock.findUnique({ where: { id }, select: selectProperty })
+  ),
+  roomConnection: byProperty("Conexión de habitaciones no encontrada.", (id) =>
+    prisma.roomConnection.findUnique({ where: { id }, select: selectProperty })
+  ),
   invoice: byProperty("Factura no encontrada.", (id) =>
     prisma.invoice.findUnique({ where: { id }, select: selectProperty })
   ),

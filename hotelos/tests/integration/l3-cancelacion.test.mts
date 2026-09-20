@@ -119,6 +119,10 @@ async function newReservation(input: { arrivalDate: string; departureDate: strin
       ratePlanId: tenant.ratePlanA,
       totalAmount: input.totalAmount,
       bookerName: `L3-B ${input.label} ${RUN}`,
+      // UX-1 (corrector L-02): una llegada anterior a hoy es 400 PAST_ARRIVAL_DATE salvo confirmación
+      // explícita con pms.reservation.modify (la plantilla receptionist la tiene): las candidatas a
+      // no-show del cierre del día llegaron hace días y se registran confirmadas.
+      ...(input.arrivalDate < madridDay(0) ? { allowPastArrival: true } : {}),
       ...(input.cancellationPolicyCode ? { cancellationPolicyCode: input.cancellationPolicyCode } : {})
     }
   });

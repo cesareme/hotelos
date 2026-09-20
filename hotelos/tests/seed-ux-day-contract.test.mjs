@@ -115,8 +115,9 @@ describe("Seed «día de prueba» UXDAY (U1)", () => {
   });
 
   it("está en la allowlist demo y tiene script pnpm", () => {
-    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday"\]/);
-    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday"\]/);
+    // Tanda CHK (W1-D): la allowlist incorpora el tenant aislado org_chk / prop_chk (seed-checkin.ts).
+    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk"\]/);
+    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk"\]/);
     assert.equal(databasePackage.scripts["db:seed:ux-day"], "node --env-file=../../.env --import tsx prisma/seed-ux-day.ts");
   });
 });

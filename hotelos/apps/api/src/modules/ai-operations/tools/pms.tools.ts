@@ -1,11 +1,20 @@
 // Herramientas PMS (Tanda L6a, lote 3): cuatro lecturas sobre pms.service /
 // inventory.engine y una escritura (assignRoom) que el runner deja SIEMPRE en
 // awaiting_confirmation. Toda lectura se acota a la propiedad del contexto.
+//
+// Tanda CHK (W4-D): suggestRoomAssignment (lectura sobre room-assignment.service
+// W2-C: top-3 con motivo, persiste AssignmentSuggestion, nunca asigna) y
+// createServiceRequest (escritura del conserje: el bot del huésped la deja en
+// awaiting_confirmation y recepción la confirma en /ai/tool-calls/:id/confirm;
+// vive aquí porque messaging.tools.ts no pertenece al lote). Ninguna toca dinero.
 
 import { z } from "zod";
+import type { ServiceRequestRecord } from "../../../lib/demo-store.js";
 import { NotFoundError } from "../../../lib/http-error.js";
+import { createServiceRequest } from "../../messaging/messaging.service.js";
 import { canAssignRoom } from "../../pms/inventory.engine.js";
 import { assignRoom, getReservation, listReservations, matchGuestToReservation, quoteAvailability } from "../../pms/pms.service.js";
+import { suggestForReservation, type AssignmentSuggestionDetailDto } from "../../pms/room-assignment.service.js";
 import { defineAiTool } from "./context.js";
 import { GuestIdentityFieldsSchema } from "./guest-register.tools.js";
 
@@ -108,5 +117,93 @@ export const assignRoomTool = defineAiTool({
   async execute(input, ctx) {
     const reservation = await assignRoom({ context: ctx.user, reservationId: input.reservationId, roomId: input.roomId, correlationId: ctx.correlationId });
     return { output: reservation, record: { reservation: reservationSummary(reservation), assignedRoomId: reservation.assignedRoomId ?? null } };
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tanda CHK · W4-D
+// ---------------------------------------------------------------------------
+
+/** Resumen sin datos personales de una sugerencia (los `detail` de los motivos pueden citar specialRequests: fuera del record). */
+function suggestionSummary(suggestion: AssignmentSuggestionDetailDto): { suggestionId: string | null; reservationId: string; sessionId: string | null; candidates: number; rejected: number; top: Array<{ roomId: string; number: string; score: number; reasons: number; warnings: number }>; confidence: number; automationLevel: string; status: string; persisted: boolean; housekeepingAlerts: number } {
+  return {
+    suggestionId: suggestion.persisted ? suggestion.id : null,
+    reservationId: suggestion.reservationId,
+    sessionId: suggestion.sessionId,
+    candidates: suggestion.candidates.length,
+    rejected: suggestion.rejectedCount,
+    top: suggestion.candidates.slice(0, 3).map((candidate) => ({ roomId: candidate.roomId, number: candidate.number, score: candidate.score, reasons: candidate.reasons.length, warnings: candidate.warnings.length })),
+    confidence: suggestion.confidence,
+    automationLevel: suggestion.automationLevel,
+    status: suggestion.status,
+    persisted: suggestion.persisted,
+    housekeepingAlerts: suggestion.housekeepingAlerts.length
+  };
+}
+
+export const suggestRoomAssignmentTool = defineAiTool({
+  name: "suggestRoomAssignment",
+  effect: "read",
+  description: "Propone las tres mejores habitaciones para una reserva con el motivo de cada una (motor de asignación explicable); nunca asigna: assignRoom sigue exigiendo confirmación.",
+  inputSchema: z.object({ reservationId: z.string().trim().min(1), sessionId: z.string().trim().min(1).optional(), persist: z.boolean().optional() }).strict(),
+  outputSchema: z.custom<AssignmentSuggestionDetailDto>(),
+  modelInputSchema: { type: "object", additionalProperties: false, required: ["reservationId"], properties: { reservationId: { type: "string" }, sessionId: { type: "string", description: "Sesión de check-in en línea (preferencias y ETA declaradas)." }, persist: { type: "boolean", description: "false = solo en memoria (sin fila assignment_suggestions)." } } },
+  async execute(input, ctx) {
+    // Tenencia y permiso (pms.reservation.read) los aplica el propio servicio con ctx.user; la reserva de otra organización es un 404 opaco.
+    const suggestion = await suggestForReservation({ context: ctx.user, reservationId: input.reservationId, ...(input.sessionId ? { sessionId: input.sessionId } : {}), persist: input.persist ?? true });
+    return { output: suggestion, record: suggestionSummary(suggestion) };
+  }
+});
+
+/** Tipos de petición del ServiceRequestRecord (lib/demo-store.ts) y departamento por defecto de cada uno. */
+export const SERVICE_REQUEST_TYPES = ["towels", "cleaning", "maintenance", "parking", "breakfast", "late_checkout"] as const satisfies readonly ServiceRequestRecord["requestType"][];
+export const SERVICE_REQUEST_DEPARTMENTS = ["housekeeping", "maintenance", "reception", "concierge"] as const satisfies readonly NonNullable<ServiceRequestRecord["assignedDepartment"]>[];
+const DEFAULT_DEPARTMENT: Record<(typeof SERVICE_REQUEST_TYPES)[number], (typeof SERVICE_REQUEST_DEPARTMENTS)[number]> = {
+  towels: "housekeeping",
+  cleaning: "housekeeping",
+  maintenance: "maintenance",
+  parking: "reception",
+  breakfast: "concierge",
+  late_checkout: "reception"
+};
+
+export const createServiceRequestTool = defineAiTool({
+  name: "createServiceRequest",
+  effect: "write",
+  description: "Crea una petición de servicio del huésped (toallas, limpieza, mantenimiento, parking, desayuno o late check-out) para su reserva (escritura: siempre con confirmación de una persona; el cargo, si lo hay, lo aplica recepción).",
+  inputSchema: z
+    .object({
+      reservationId: z.string().trim().min(1),
+      guestId: z.string().trim().min(1).optional(),
+      requestType: z.enum(SERVICE_REQUEST_TYPES),
+      assignedDepartment: z.enum(SERVICE_REQUEST_DEPARTMENTS).optional(),
+      /** Texto breve para la persona que confirma (p. ej. «hasta las 14:00»); nunca datos personales. */
+      note: z.string().trim().min(1).max(500).optional()
+    })
+    .strict(),
+  outputSchema: z.custom<ServiceRequestRecord>(),
+  modelInputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["reservationId", "requestType"],
+    properties: { reservationId: { type: "string" }, guestId: { type: "string" }, requestType: { type: "string", enum: [...SERVICE_REQUEST_TYPES] }, assignedDepartment: { type: "string", enum: [...SERVICE_REQUEST_DEPARTMENTS] }, note: { type: "string" } }
+  },
+  preview(input) {
+    return { action: "createServiceRequest", reservationId: input.reservationId, requestType: input.requestType, assignedDepartment: input.assignedDepartment ?? DEFAULT_DEPARTMENT[input.requestType], note: input.note ?? null };
+  },
+  async execute(input, ctx) {
+    const reservation = await getReservation(input.reservationId);
+    // Tenencia: una reserva de otra propiedad es un 404 opaco (nunca se filtra su existencia).
+    if (reservation.propertyId !== ctx.propertyId) throw new NotFoundError("Reserva no encontrada.");
+    const request = await createServiceRequest({
+      context: ctx.user,
+      propertyId: ctx.propertyId,
+      reservationId: reservation.id,
+      ...(input.guestId ? { guestId: input.guestId } : reservation.primaryGuestId ? { guestId: reservation.primaryGuestId } : {}),
+      requestType: input.requestType,
+      assignedDepartment: input.assignedDepartment ?? DEFAULT_DEPARTMENT[input.requestType],
+      correlationId: ctx.correlationId
+    });
+    return { output: request, record: { serviceRequestId: request.id, reservationId: request.reservationId ?? null, requestType: request.requestType, assignedDepartment: request.assignedDepartment ?? null, status: request.status } };
   }
 });

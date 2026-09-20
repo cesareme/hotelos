@@ -279,13 +279,13 @@ export async function executeConfirmation(input: {
   });
 
   // Tanda 3: the SES row is created synchronously in Prisma; its id is the one
-  // /ses/submissions/:id serves. A 409 SES_ESTABLISHMENT_INCOMPLETE propagates.
-  // The check-in itself is done and the guest register is signed: an
-  // incomplete SES establishment profile (409 SES_ESTABLISHMENT_INCOMPLETE)
-  // must not undo that nor silence the welcome message. The failed row exists
-  // in Prisma and is re-queued by the scheduler once the profile is fixed.
+  // /ses/submissions/:id serves. The check-in itself is done and the guest
+  // register is signed: a 409 of the SES chain that L5 declares tolerable
+  // (SES_ESTABLISHMENT_INCOMPLETE, SES_DISABLED, GUEST_REGISTER_INVALID,
+  // SES_SUBMISSION_IN_FLIGHT — Tanda CHK · W4-D) must not undo that nor
+  // silence the welcome message: it becomes a warning. Any other error propagates.
   let submission: Awaited<ReturnType<typeof queueSesHospedajesSubmission>> | null = null;
-  let sesWarning: string | null = null;
+  const warnings: string[] = [];
   try {
     submission = await queueSesHospedajesSubmission({
       context: input.context,
@@ -295,22 +295,28 @@ export async function executeConfirmation(input: {
     });
   } catch (error) {
     const details = (error as { details?: { code?: string; missing?: string[]; submissionId?: string } }).details;
-    if (details?.code !== "SES_ESTABLISHMENT_INCOMPLETE") throw error;
-    sesWarning = `Parte SES no enviado: faltan datos del establecimiento (${(details.missing ?? []).join(", ")}).`;
-    console.warn("[ai.check-in] SES submission blocked by incomplete establishment profile", {
+    const code = details?.code ?? "";
+    if (!(TOLERATED_SES_CODES as readonly string[]).includes(code)) throw error;
+    warnings.push(sesWarningFor(code, details?.missing ?? [], (error as Error).message));
+    console.warn("[ai.check-in] SES submission not queued (tolerated)", {
       reservationId: reservation.id,
       correlationId: input.correlationId,
-      missing: details.missing ?? []
+      code,
+      missing: details?.missing ?? []
     });
-    if (details.submissionId) submission = { id: details.submissionId } as Awaited<ReturnType<typeof queueSesHospedajesSubmission>>;
+    if (details?.submissionId) submission = { id: details.submissionId } as Awaited<ReturnType<typeof queueSesHospedajesSubmission>>;
   }
 
-  sendWelcomeMessage({
+  // Bienvenida real (Tanda CHK · W2-D): se espera su resultado y lo que no sea un envío de verdad queda en warnings.
+  const welcome = await sendWelcomeMessage({
     context: input.context,
     reservationId: reservation.id,
     guestId: confirmation.guestId,
     correlationId: input.correlationId
   });
+  const welcomeWarning = welcomeWarningFor(welcome);
+  if (welcomeWarning) warnings.push(welcomeWarning);
+  const sesWarning = warnings.length > 0 ? warnings : null;
 
   const executedAt = new Date();
   await prisma.aiPendingConfirmation.update({
@@ -340,7 +346,8 @@ export async function executeConfirmation(input: {
             roomId,
             queuedSubmissionId: submission?.id ?? null,
             executedAt: executedAt.toISOString(),
-            ...(sesWarning ? { warnings: [sesWarning] } : {})
+            welcome: { status: welcome.status, channel: welcome.channel, ...(welcome.deliveryId ? { deliveryId: welcome.deliveryId } : {}) },
+            ...(sesWarning ? { warnings: sesWarning } : {})
           }
         })
       }
@@ -375,6 +382,32 @@ export async function executeConfirmation(input: {
     reservationId: reservation.id,
     roomId,
     queuedSubmissionId: submission?.id ?? null,
-    ...(sesWarning ? { warnings: [sesWarning] } : {})
+    ...(sesWarning ? { warnings: sesWarning } : {})
   };
+}
+
+/** Códigos 409 de la cadena SES que no deshacen un check-in ya hecho (L5; W4-D añade los tres últimos). */
+export const TOLERATED_SES_CODES = ["SES_ESTABLISHMENT_INCOMPLETE", "SES_DISABLED", "GUEST_REGISTER_INVALID", "SES_SUBMISSION_IN_FLIGHT"] as const;
+
+export function sesWarningFor(code: string, missing: string[], message: string): string {
+  switch (code) {
+    case "SES_ESTABLISHMENT_INCOMPLETE":
+      return `Parte SES no enviado: faltan datos del establecimiento (${missing.join(", ")}).`;
+    case "SES_DISABLED":
+      return "Parte SES no enviado: SES.Hospedajes está desactivado en esta propiedad.";
+    case "GUEST_REGISTER_INVALID":
+      return `Parte SES no enviado: el parte de viajeros no es válido${missing.length > 0 ? ` (${missing.join(", ")})` : ""}.`;
+    case "SES_SUBMISSION_IN_FLIGHT":
+      return "Parte SES ya en curso: hay un envío pendiente para este parte.";
+    default:
+      return `Parte SES no enviado: ${message}`;
+  }
+}
+
+/** Aviso honesto cuando la bienvenida no ha salido de verdad (simulada, fallida u omitida). */
+export function welcomeWarningFor(welcome: { status: string; channel: string; error?: string }): string | null {
+  if (welcome.status === "sent") return null;
+  if (welcome.status === "simulated") return `Bienvenida simulada por ${welcome.channel} (sin proveedor configurado): no se ha enviado de verdad.`;
+  if (welcome.status === "skipped") return `Bienvenida no enviada${welcome.error ? `: ${welcome.error}` : "."}`;
+  return `Bienvenida fallida por ${welcome.channel}${welcome.error ? `: ${welcome.error}` : "."}`;
 }

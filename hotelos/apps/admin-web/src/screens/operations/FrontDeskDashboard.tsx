@@ -30,6 +30,18 @@
 //     `mutate` y los dashboards se invalidan en segundo plano (sin `refresh()`);
 //   · recorrido guiado de 3 pasos la primera vez, por persona (localStorage).
 // Sin `style={` nuevos (contrato Cocoa 22); los CTA salen de content/actions.ts.
+//
+// Tanda CHK · W4-B (docs/design/CHECKIN-AUTOMATIZADO-IA.md §8, fila «Recepción ·
+// /hoy»): la tabla «Llegan hoy» gana las columnas «Pre-check-in» (estado de la
+// CheckInSession, `CocoaStatusBadge` con el vocabulario de frontdesk-labels.ts),
+// «Habitación» con el chip «Sugerida 312 · 3 motivos» (`CocoaPopover` con los
+// motivos del motor y «Confirmar» / «Otra…») y «Llave» (emitida · pendiente ·
+// recepción); el filtro por estado de pre-check-in en la barra, la tile
+// «Pre-check-in hecho», las acciones «Invitar al pre-check-in» y «Ver
+// pre-check-in» (ArrivalPreCheckInDrawer, solo lectura) en el menú «⋯».
+// `suggestedRoomFor` usa primero la candidata del motor (`row.suggestedRoom`,
+// W3-D) y si no la primera limpia y libre del tipo (R14). Los campos son
+// aditivos y opcionales: sin la capa de check-in la tabla queda como antes.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
@@ -44,9 +56,9 @@ import { exportToCsv, type CsvColumn } from "../../lib/csv";
 import { useToast } from "../../components/Toast";
 import { navigateTo } from "../../lib/navigate";
 import { urlForScreen } from "../../navigation/nav-tree";
-import { date, money, number, plural } from "../../lib/format";
+import { date, money, number, percent, plural } from "../../lib/format";
 import { ACTIONS, FRONT_DESK_ACTIONS, FRONT_DESK_TOASTS, STATUS_LABELS } from "../../content/actions";
-import { reservationStatus, roomStatus } from "../../content/status-dictionary";
+import { reservationStatus, roomStatus, type StatusEntry } from "../../content/status-dictionary";
 import { FOCUS_SEARCH_EVENT, OPEN_WALK_IN_EVENT, shortcutKeys } from "../../content/shortcuts-registry";
 import { OPEN_CHECKIN_EVENT, type HitActionDetail } from "../../components/CommandPalette";
 import { CheckIcon } from "../../components/cocoa-icons/ActionIcons";
@@ -61,6 +73,9 @@ import { QuickCheckInDrawer, type QuickCheckInCompleted } from "./QuickCheckInDr
 import { QuickCheckOutDrawer, type QuickCheckOutCompleted } from "./QuickCheckOutDrawer";
 import { WalkInDrawer } from "./WalkInDrawer";
 import { departsToday, primaryActionFor, secondaryActionsFor, type PrimaryAction, type SecondaryActionKind } from "./primaryAction";
+import { ArrivalPreCheckInDrawer } from "./ArrivalPreCheckInDrawer";
+import { confirmSuggestion as confirmSuggestionApi, inviteSession as inviteSessionApi } from "../../services/checkinApi";
+import { keyStatus, preCheckInStatus, PRECHECKIN_COMPLETED_KEYS, PRECHECKIN_STATUS, PRECHECKIN_STATUS_KEYS, type PreCheckInStatusKey } from "./frontdesk-labels";
 import {
   CocoaBadge,
   CocoaButton,
@@ -76,6 +91,7 @@ import {
   CocoaSearchInput,
   CocoaSection,
   CocoaSegmentedControl,
+  CocoaSelect,
   CocoaSkeleton,
   CocoaState,
   CocoaStatusBadge,
@@ -99,7 +115,18 @@ type Kpis = {
   unassignedRooms: number;
   overdueDepartures: number;
   pendingBalanceEur: number;
+  /** Tanda CHK · W3-D: llegadas de hoy con el pre-check-in completado; ausente si el API no expone la capa. */
+  preCheckInCompleted?: number;
 };
+
+// Tanda CHK · W3-D: capa de check-in automatizado por llegada (GET /dashboards/front-desk).
+// Presente solo cuando el API expone los modelos; la UI la trata como opcional.
+/** Estado de la CheckInSession de la llegada (`not_invited` sin sesión) y viajeros completos/total. */
+export type PreCheckInInfo = { status: string; completedGuests: number; totalGuests: number; channel?: string };
+/** Primera candidata de la AssignmentSuggestion pendiente (solo llegadas sin habitación). */
+export type SuggestedRoomInfo = { suggestionId: string; roomId: string; number: string; reasons: string[]; confidence: number };
+/** Llave móvil emitida · pendiente del auto-check-in · tarjeta en recepción. */
+export type KeyInfo = { status: string; serialNumber?: string };
 
 /** Campos aditivos por fila (U3 → U6): ids para `mutate` / prefetch y VIP visible. */
 type RowIds = {
@@ -119,6 +146,9 @@ type ArrivalRow = RowIds & {
   status: string;
   balanceEur: number;
   specialRequests?: string;
+  preCheckIn?: PreCheckInInfo;
+  suggestedRoom?: SuggestedRoomInfo;
+  key?: KeyInfo;
 };
 
 type DepartureRow = RowIds & {
@@ -177,6 +207,10 @@ export type FrontDeskRow = {
   balanceEur: number;
   vip: boolean;
   specialRequests?: string;
+  /** Tanda CHK (solo llegadas): pre-check-in, sugerencia del motor y llave. */
+  preCheckIn?: PreCheckInInfo;
+  suggestedRoom?: SuggestedRoomInfo;
+  key?: KeyInfo;
 };
 
 type FolioLite = {
@@ -269,9 +303,20 @@ export function candidateRoomsFor(rooms: readonly RoomLite[], roomTypeId: string
   return rooms.filter((room) => room.roomTypeId === roomTypeId && !exclude.has(room.id) && isRoomFree(room) && isRoomClean(room)).sort((a, b) => a.number.localeCompare(b.number, "es", { numeric: true }));
 }
 
-/** La habitación que el motor propone (R14): la primera limpia y libre del tipo; null si no hay. */
-export function suggestedRoomFor(row: Pick<FrontDeskRow, "roomTypeId" | "roomNumber">, rooms: readonly RoomLite[]): RoomLite | null {
+/**
+ * La habitación que se propone (R14). Tanda CHK: primero la candidata del motor
+ * de asignación (`row.suggestedRoom`, AssignmentSuggestion pendiente) si el
+ * catálogo no la muestra ocupada o bloqueada; si no, la primera limpia y libre
+ * del tipo. null si no hay ninguna.
+ */
+export function suggestedRoomFor(row: Pick<FrontDeskRow, "roomTypeId" | "roomNumber" | "suggestedRoom">, rooms: readonly RoomLite[]): RoomLite | null {
   if (row.roomNumber) return null;
+  const engine = row.suggestedRoom;
+  if (engine) {
+    const known = rooms.find((room) => room.id === engine.roomId);
+    if (!known) return { id: engine.roomId, number: engine.number, roomTypeId: row.roomTypeId ?? "", status: "available" };
+    if (isRoomFree(known)) return known;
+  }
   return candidateRoomsFor(rooms, row.roomTypeId)[0] ?? null;
 }
 
@@ -288,7 +333,7 @@ export function toFrontDeskRows(data: FrontDeskDashboardData | null | undefined,
   });
   switch (tab) {
     case "arrivals":
-      return data.arrivals.map((row) => ({ ...base(row), tab, status: row.status, roomTypeName: row.roomTypeName, arrivalDate: row.arrivalDate, nights: row.nights, balanceEur: row.balanceEur, specialRequests: row.specialRequests }));
+      return data.arrivals.map((row) => ({ ...base(row), tab, status: row.status, roomTypeName: row.roomTypeName, arrivalDate: row.arrivalDate, nights: row.nights, balanceEur: row.balanceEur, specialRequests: row.specialRequests, preCheckIn: row.preCheckIn, suggestedRoom: row.suggestedRoom, key: row.key }));
     case "departures":
       return data.departures.map((row) => ({ ...base(row), tab, status: row.status, departureDate: row.departureDate, balanceEur: row.balanceEur }));
     case "inhouse":
@@ -314,6 +359,77 @@ export function filterFrontDeskRows(rows: readonly FrontDeskRow[], query: string
     if (!q) return true;
     return [row.guestName, row.roomNumber, row.reservationId, row.specialRequests, row.roomTypeName].some((field) => normalizeText(field).includes(q));
   });
+}
+
+// ---------------------------------------------------------------- Tanda CHK · W4-B · columnas de check-in (puras, testables sin DOM)
+
+/** Filtro de la barra por estado de pre-check-in (diseño §8 «filtros por estado»); «completed» = la tile «Pre-check-in hecho». */
+export type PreCheckInFilter = "all" | "completed" | PreCheckInStatusKey;
+
+export const PRECHECKIN_FILTER_OPTIONS: ReadonlyArray<{ value: PreCheckInFilter; label: string }> = [
+  { value: "all", label: "Pre-check-in: todos" },
+  { value: "completed", label: "Pre-check-in hecho" },
+  ...PRECHECKIN_STATUS_KEYS.map((key) => ({ value: key, label: PRECHECKIN_STATUS[key].label }))
+];
+
+/** Filas cuyo pre-check-in está en el estado del filtro; sin capa de check-in una fila cuenta como «sin invitar». */
+export function filterByPreCheckIn(rows: readonly FrontDeskRow[], filter: PreCheckInFilter): FrontDeskRow[] {
+  if (filter === "all") return [...rows];
+  return rows.filter((row) => {
+    const status = row.preCheckIn?.status ?? "not_invited";
+    return filter === "completed" ? (PRECHECKIN_COMPLETED_KEYS as readonly string[]).includes(status) : status === filter;
+  });
+}
+
+/** Modelo puro de la columna «Pre-check-in»: entrada del badge y «1/2 viajeros»; null si el API no expone la capa (la celda pinta «—»). */
+export type PreCheckInBadgeModel = { entry: StatusEntry; caption: string | null };
+
+export function preCheckInBadge(preCheckIn: PreCheckInInfo | null | undefined): PreCheckInBadgeModel | null {
+  if (!preCheckIn) return null;
+  const entry = preCheckInStatus(preCheckIn.status);
+  const total = Number.isFinite(preCheckIn.totalGuests) ? preCheckIn.totalGuests : 0;
+  const completed = Number.isFinite(preCheckIn.completedGuests) ? Math.max(0, Math.min(preCheckIn.completedGuests, total)) : 0;
+  const caption = total > 0 && preCheckIn.status !== "not_invited" ? `${completed}/${total} ${total === 1 ? "viajero" : "viajeros"}` : null;
+  return { entry, caption };
+}
+
+/**
+ * Modelo puro de la columna «Habitación»: asignada; chip «Sugerida 312 · 3
+ * motivos» con la candidata del motor (motivos y confianza del API) o, sin
+ * sugerencia persistida, la primera limpia y libre del tipo (R14, «limpia y
+ * libre»); o nada que proponer.
+ */
+export type SuggestedRoomChipModel =
+  | { kind: "assigned"; number: string }
+  | { kind: "suggested"; roomId: string; number: string; suggestionId: string | null; reasons: string[]; confidence: number | null; label: string; source: "engine" | "clean" }
+  | { kind: "none" };
+
+export function suggestedRoomChip(row: Pick<FrontDeskRow, "roomNumber" | "roomTypeId" | "suggestedRoom">, rooms: readonly RoomLite[]): SuggestedRoomChipModel {
+  if (row.roomNumber) return { kind: "assigned", number: row.roomNumber };
+  const engine = row.suggestedRoom;
+  if (engine && engine.number) {
+    const reasons = (engine.reasons ?? []).map((reason) => reason.trim()).filter(Boolean);
+    const confidence = Number.isFinite(engine.confidence) ? Math.max(0, Math.min(1, engine.confidence)) : null;
+    return {
+      kind: "suggested",
+      roomId: engine.roomId,
+      number: engine.number,
+      suggestionId: engine.suggestionId,
+      reasons,
+      confidence,
+      label: reasons.length > 0 ? `Sugerida ${engine.number} · ${plural(reasons.length, "motivo", "motivos")}` : `Sugerida ${engine.number}`,
+      source: "engine"
+    };
+  }
+  const fallback = candidateRoomsFor(rooms, row.roomTypeId)[0];
+  if (!fallback) return { kind: "none" };
+  return { kind: "suggested", roomId: fallback.id, number: fallback.number, suggestionId: null, reasons: ["Limpia y libre del tipo reservado"], confidence: null, label: `Sugerida ${fallback.number} · limpia y libre`, source: "clean" };
+}
+
+/** Actualización optimista tras invitar (o reenviar) el pre-check-in: la fila pasa al estado dado sin tocar los viajeros. */
+export function applyPreCheckInToDashboard(data: FrontDeskDashboardData, reservationId: string, status: PreCheckInStatusKey): FrontDeskDashboardData {
+  const arrivals = data.arrivals.map((row) => (row.reservationId === reservationId ? { ...row, preCheckIn: { completedGuests: 0, totalGuests: 0, ...(row.preCheckIn ?? {}), status } } : row));
+  return { ...data, arrivals };
 }
 
 /** Actualización optimista tras un check-in (la reserva devuelta por el API manda). */
@@ -346,7 +462,13 @@ export function applyNoShowToDashboard(data: FrontDeskDashboardData, reservation
 
 /** Actualización optimista tras asignar o cambiar la habitación. */
 export function applyRoomToDashboard(data: FrontDeskDashboardData, reservationId: string, room: { id: string; number: string }): FrontDeskDashboardData {
-  const patch = <T extends RowIds & { reservationId: string; roomNumber?: string }>(row: T): T => (row.reservationId === reservationId ? ({ ...row, roomId: room.id, assignedRoomId: room.id, roomNumber: room.number } as T) : row);
+  const patch = <T extends RowIds & { reservationId: string; roomNumber?: string }>(row: T): T => {
+    if (row.reservationId !== reservationId) return row;
+    // Tanda CHK: con la habitación asignada, la sugerencia pendiente de la fila deja de tener sentido.
+    const next = { ...row, roomId: room.id, assignedRoomId: room.id, roomNumber: room.number } as T & { suggestedRoom?: unknown };
+    delete next.suggestedRoom;
+    return next as T;
+  };
   const wasUnassigned = data.unassigned.some((row) => row.reservationId === reservationId);
   return {
     ...data,
@@ -565,8 +687,11 @@ const SECONDARY_LABEL: Record<SecondaryActionKind, string> = {
   open_full: FRONT_DESK_ACTIONS.openFullReservation
 };
 
+/** Entrada extra del menú «⋯» (Tanda CHK: «Invitar al pre-check-in», «Ver pre-check-in»). */
+export type RowMenuExtraItem = { key: string; label: string; onClick: () => void };
+
 /** Menú «⋯» de una fila (P1: una sola acción `filled`; el resto aquí, siempre con el id de la reserva). */
-function RowMenu({ row, rooms, onSecondary, onOpen, size = "small" }: { row: FrontDeskRow; rooms: readonly RoomLite[]; onSecondary: RowActionHandlers["onSecondary"]; onOpen?: () => void; size?: "small" | "regular" }) {
+function RowMenu({ row, rooms, onSecondary, onOpen, size = "small", extra = [] }: { row: FrontDeskRow; rooms: readonly RoomLite[]; onSecondary: RowActionHandlers["onSecondary"]; onOpen?: () => void; size?: "small" | "regular"; extra?: readonly RowMenuExtraItem[] }) {
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [picking, setPicking] = useState(false);
@@ -622,28 +747,104 @@ function RowMenu({ row, rooms, onSecondary, onOpen, size = "small" }: { row: Fro
               </CocoaButton>
             </>
           ) : (
-            kinds.map((kind) => (
-              <CocoaButton
-                key={kind}
-                role="menuitem"
-                variant="plain"
-                tone={kind === "mark_no_show" ? "destructive" : "neutral"}
-                size="small"
-                fullWidth
-                align="start"
-                onClick={() => {
-                  if (kind === "change_room") {
-                    setPicking(true);
-                    return;
-                  }
-                  close();
-                  onSecondary(row, kind);
-                }}
-              >
-                {SECONDARY_LABEL[kind]}
-              </CocoaButton>
-            ))
+            <>
+              {kinds.map((kind) => (
+                <CocoaButton
+                  key={kind}
+                  role="menuitem"
+                  variant="plain"
+                  tone={kind === "mark_no_show" ? "destructive" : "neutral"}
+                  size="small"
+                  fullWidth
+                  align="start"
+                  onClick={() => {
+                    if (kind === "change_room") {
+                      setPicking(true);
+                      return;
+                    }
+                    close();
+                    onSecondary(row, kind);
+                  }}
+                >
+                  {SECONDARY_LABEL[kind]}
+                </CocoaButton>
+              ))}
+              {extra.map((item) => (
+                <CocoaButton
+                  key={item.key}
+                  role="menuitem"
+                  variant="plain"
+                  tone="neutral"
+                  size="small"
+                  fullWidth
+                  align="start"
+                  onClick={() => {
+                    close();
+                    item.onClick();
+                  }}
+                >
+                  {item.label}
+                </CocoaButton>
+              ))}
+            </>
           )}
+        </div>
+      </CocoaPopover>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- Tanda CHK · chip «Sugerida 312 · 3 motivos» (diseño §8)
+
+type SuggestedChip = Extract<SuggestedRoomChipModel, { kind: "suggested" }>;
+
+/** Chip de la columna «Habitación» con `CocoaPopover`: motivos del motor, confianza y «Confirmar» / «Otra…». */
+function SuggestedRoomChip({ model, guestName, busy, onConfirm, onOther }: { model: SuggestedChip; guestName: string; busy: boolean; onConfirm: () => void; onOther: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const close = useCallback(() => setOpen(false), []);
+  return (
+    <>
+      <CocoaButton ref={setAnchor} variant="tinted" tone={model.source === "engine" ? "accent" : "neutral"} size="small" aria-haspopup="dialog" aria-expanded={open} title={`Sugerencia para ${guestName}: habitación ${model.number}`} onClick={() => setOpen((value) => !value)}>
+        {model.label}
+      </CocoaButton>
+      <CocoaPopover open={open} anchorEl={anchor} placement="bottom" onClose={close} role="dialog" aria-label={`Sugerencia para ${guestName}: habitación ${model.number}`}>
+        <div className="cocoa-stack" data-gap="2">
+          <strong>Habitación {model.number}</strong>
+          <ul className="c22-section__list" aria-label="Motivos de la sugerencia">
+            {model.reasons.map((reason, index) => (
+              <li key={`${index}-${reason}`}>
+                <span>{reason}</span>
+              </li>
+            ))}
+          </ul>
+          <span className="cocoa-note">{model.confidence === null ? "Sin sugerencia del motor: la primera limpia y libre del tipo." : `Confianza del motor: ${percent(model.confidence * 100, { maximumFractionDigits: 0 })}`}</span>
+          <div className="cocoa-row" data-gap="1">
+            <CocoaButton
+              variant="filled"
+              tone="accent"
+              size="small"
+              disabled={busy}
+              loading={busy}
+              onClick={() => {
+                close();
+                onConfirm();
+              }}
+            >
+              Confirmar
+            </CocoaButton>
+            <CocoaButton
+              variant="bordered"
+              tone="neutral"
+              size="small"
+              onClick={() => {
+                close();
+                onOther();
+              }}
+            >
+              Otra…
+            </CocoaButton>
+          </div>
         </div>
       </CocoaPopover>
     </>
@@ -652,7 +853,7 @@ function RowMenu({ row, rooms, onSecondary, onOpen, size = "small" }: { row: Fro
 
 // ---------------------------------------------------------------- inspector lateral (§5.1 (4), F26)
 
-function RowInspector({ row, rooms, primary, today, onClose, onPrimary, onSecondary, returnFocusTo }: { row: FrontDeskRow; rooms: readonly RoomLite[]; primary: PrimaryAction; today: string; onClose: () => void; onPrimary: RowActionHandlers["onPrimary"]; onSecondary: RowActionHandlers["onSecondary"]; returnFocusTo: () => HTMLElement | null }) {
+function RowInspector({ row, rooms, primary, today, onClose, onPrimary, onSecondary, returnFocusTo, menuExtra }: { row: FrontDeskRow; rooms: readonly RoomLite[]; primary: PrimaryAction; today: string; onClose: () => void; onPrimary: RowActionHandlers["onPrimary"]; onSecondary: RowActionHandlers["onSecondary"]; returnFocusTo: () => HTMLElement | null; menuExtra?: readonly RowMenuExtraItem[] }) {
   const reservationState = useApiData<ReservationLite>(`/reservations/${row.reservationId}`, { staleTime: DASHBOARD_STALE_MS });
   const folioState = useApiData<FolioLite>(`/reservations/${row.reservationId}/folio`, { staleTime: DASHBOARD_STALE_MS });
   const reservation = reservationState.data;
@@ -672,7 +873,7 @@ function RowInspector({ row, rooms, primary, today, onClose, onPrimary, onSecond
             {FRONT_DESK_ACTIONS.collect(fmtEur(balance))}
           </CocoaButton>
         ) : null}
-        <RowMenu row={row} rooms={rooms} onSecondary={onSecondary} size="small" />
+        <RowMenu row={row} rooms={rooms} onSecondary={onSecondary} size="small" extra={menuExtra} />
       </>
     }>
       <div className="cocoa-stack" data-gap="3">
@@ -760,6 +961,10 @@ export function FrontDeskDashboard() {
   const [onlyBalance, setOnlyBalance] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [inspectorId, setInspectorId] = useState<string | null>(null);
+  // Tanda CHK · W4-B: filtro por estado de pre-check-in, cajón de solo lectura y confirmación en curso.
+  const [preCheckInFilter, setPreCheckInFilter] = useState<PreCheckInFilter>("all");
+  const [preCheckInTarget, setPreCheckInTarget] = useState<{ reservationId: string; hasSession: boolean } | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [batch, setBatch] = useState<BatchState>(null);
   const batchCancel = useRef(false);
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
@@ -784,7 +989,7 @@ export function FrontDeskDashboard() {
 
   // Filas normalizadas de la pestaña activa, filtradas por el buscador y la tile «Saldo pendiente».
   const tabRows = useMemo(() => toFrontDeskRows(data, activeTab), [data, activeTab]);
-  const visibleRows = useMemo(() => filterFrontDeskRows(tabRows, search, onlyBalance), [tabRows, search, onlyBalance]);
+  const visibleRows = useMemo(() => filterByPreCheckIn(filterFrontDeskRows(tabRows, search, onlyBalance), activeTab === "arrivals" ? preCheckInFilter : "all"), [tabRows, search, onlyBalance, activeTab, preCheckInFilter]);
   const rowById = useMemo(() => new Map(visibleRows.map((row) => [row.reservationId, row])), [visibleRows]);
   const inspectorRow = inspectorId ? rowById.get(inspectorId) ?? null : null;
 
@@ -941,6 +1146,77 @@ export function FrontDeskDashboard() {
     // notify es estable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [rooms, assignRoom]
+  );
+
+  // ---------------------------------------------------------------- Tanda CHK · sugerencia, invitación y cajón de pre-check-in
+  // «Confirmar» del chip: optimista como assign_room (la fila ve la habitación al instante; si el API rechaza,
+  // `mutate` la devuelve y el mensaje del API se muestra). Una primera asignación no tiene reversa (sin «Deshacer»).
+  const confirmSuggestion = useCallback(
+    async (row: FrontDeskRow, chip: SuggestedChip) => {
+      if (!chip.suggestionId) {
+        // Sin sugerencia persistida (candidata limpia y libre, R14): asignación directa de siempre.
+        handleSecondary(row, "assign_room");
+        return;
+      }
+      const suggestionId = chip.suggestionId;
+      const room = { id: chip.roomId, number: chip.number };
+      const message = FRONT_DESK_TOASTS.roomAssigned(room.number);
+      setConfirmingId(row.reservationId);
+      try {
+        await mutate(
+          (prev) => applyRoomToDashboard(prev, row.reservationId, room),
+          () => confirmSuggestionApi(suggestionId, room.id).then(() => undefined),
+          { announce: message }
+        );
+        notify("ok", message);
+        invalidateApi("/dashboards/front-desk-queue");
+        invalidateApi(`/properties/${PROPERTY_ID}/rooms`);
+        invalidateApi(`/reservations/${row.reservationId}`);
+      } catch (err) {
+        notify("error", err instanceof Error ? err.message : "No se pudo confirmar la habitación sugerida.");
+      } finally {
+        setConfirmingId(null);
+      }
+    },
+    // notify es estable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mutate, handleSecondary]
+  );
+
+  // «Invitar al pre-check-in» (checkinApi.inviteSession → POST /properties/:id/check-in/sessions, canal correo): la fila pasa a «Invitado» al instante.
+  const inviteSession = useCallback(
+    async (row: FrontDeskRow) => {
+      const message = `Invitación al pre-check-in enviada por correo a ${row.guestName}`;
+      try {
+        await mutate(
+          (prev) => applyPreCheckInToDashboard(prev, row.reservationId, "invited"),
+          () => inviteSessionApi(PROPERTY_ID, row.reservationId, "email").then(() => undefined),
+          { announce: message }
+        );
+        notify("ok", message);
+        invalidateApi("/dashboards/front-desk-queue");
+      } catch (err) {
+        notify("error", err instanceof Error ? err.message : "No se pudo enviar la invitación.");
+      }
+    },
+    // notify es estable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mutate]
+  );
+
+  /** Entradas del menú «⋯» de una llegada con capa de check-in: invitar (sin sesión) o ver el pre-check-in (con sesión). */
+  const checkInMenuItems = useCallback(
+    (row: FrontDeskRow): RowMenuExtraItem[] => {
+      if (row.tab !== "arrivals" || !row.preCheckIn) return [];
+      const items: RowMenuExtraItem[] = [];
+      if (row.preCheckIn.status === "not_invited") {
+        if (row.status === "confirmed") items.push({ key: "invite", label: "Invitar al pre-check-in", onClick: () => void inviteSession(row) });
+      } else {
+        items.push({ key: "precheckin", label: "Ver pre-check-in", onClick: () => setPreCheckInTarget({ reservationId: row.reservationId, hasSession: true }) });
+      }
+      return items;
+    },
+    [inviteSession]
   );
 
   // ---------------------------------------------------------------- lote (§5.1 (3), §6.1)
@@ -1136,7 +1412,9 @@ export function FrontDeskDashboard() {
     { key: "roomTypeName", label: "Tipo habitación" },
     { key: "status", label: "Estado", format: (v) => reservationStatus(String(v ?? "")).label },
     { key: "balanceEur", label: "Saldo (EUR)" },
-    { key: "specialRequests", label: "Peticiones" }
+    { key: "specialRequests", label: "Peticiones" },
+    { key: "preCheckIn", label: "Pre-check-in", format: (v) => (v ? preCheckInStatus((v as PreCheckInInfo).status).label : "") },
+    { key: "key", label: "Llave", format: (v) => (v ? keyStatus((v as KeyInfo).status).label : "") }
   ];
   const departuresColumns: CsvColumn<DepartureRow>[] = [
     { key: "reservationId", label: "Reserva" },
@@ -1206,13 +1484,12 @@ export function FrontDeskDashboard() {
   );
   const roomCell = (row: FrontDeskRow) => {
     if (!row.roomNumber) {
-      const suggested = suggestedRoomFor(row, rooms);
-      return suggested ? (
+      // Tanda CHK: chip «Sugerida 312 · 3 motivos» (motor) o «Sugerida 118 · limpia y libre» (R14) con Confirmar / Otra….
+      const chip = suggestedRoomChip(row, rooms);
+      return chip.kind === "suggested" ? (
         <span className="cocoa-row" data-gap="1">
           <span style={mutedCellStyle}>sin asignar</span>
-          <CocoaBadge tone="info" variant="tinted" size="small" uppercase={false} title={`Sugerida: ${suggested.number}`}>
-            → {suggested.number}
-          </CocoaBadge>
+          <SuggestedRoomChip model={chip} guestName={row.guestName} busy={confirmingId === row.reservationId} onConfirm={() => void confirmSuggestion(row, chip)} onOther={() => setCheckInTarget({ reservationId: row.reservationId, roomId: null })} />
         </span>
       ) : (
         <span style={mutedCellStyle}>sin asignar</span>
@@ -1232,6 +1509,19 @@ export function FrontDeskDashboard() {
       <span>{balanceBadge(row.balanceEur)}</span>
     </div>
   );
+  // Tanda CHK: «Pre-check-in» (estado de la sesión + «1/2 viajeros») y «Llave»; «—» cuando el API no expone la capa.
+  const preCheckInCell = (row: FrontDeskRow) => {
+    const model = preCheckInBadge(row.preCheckIn);
+    if (!model) return <span className="cocoa-note">—</span>;
+    return (
+      <div className="cocoa-stack" data-gap="1">
+        <CocoaStatusBadge entry={model.entry} dense />
+        {model.caption ? <span className="cocoa-note">{model.caption}</span> : null}
+      </div>
+    );
+  };
+  const keyCell = (row: FrontDeskRow) => (row.key ? <CocoaStatusBadge entry={keyStatus(row.key.status)} dense title={row.key.serialNumber ? `Llave ${row.key.serialNumber}` : undefined} /> : <span className="cocoa-note">—</span>);
+  const hasCheckInLayer = arrivals.some((row) => row.preCheckIn !== undefined);
 
   const columnsByTab: Record<FrontDeskTab, CocoaTableColumn<FrontDeskRow>[]> = {
     arrivals: [
@@ -1239,6 +1529,12 @@ export function FrontDeskDashboard() {
       { key: "roomNumber", label: "Habitación", render: roomCell },
       { key: "roomTypeName", label: "Tipo", render: (row) => row.roomTypeName ?? <span style={mutedCellStyle}>—</span>, hideOnNarrow: true },
       { key: "nights", label: "Noches", align: "right", render: (row) => fmtNumber(row.nights), hideOnNarrow: true },
+      ...(hasCheckInLayer
+        ? ([
+            { key: "preCheckIn", label: "Pre-check-in", render: preCheckInCell },
+            { key: "key", label: "Llave", render: keyCell, hideOnNarrow: true }
+          ] as CocoaTableColumn<FrontDeskRow>[])
+        : []),
       { key: "status", label: "Estado", render: (row) => statusBadge(row.status) },
       { key: "balance", label: "Saldo", align: "right", render: balanceCell }
     ],
@@ -1270,7 +1566,7 @@ export function FrontDeskDashboard() {
         <CocoaButton variant="filled" tone="accent" size="small" onClick={() => handlePrimary(row, action)} title={action.kind === "checkin" ? checkInTooltipFor(row) : action.label} data-tour="frontdesk-primary">
           {action.label}
         </CocoaButton>
-        <RowMenu row={row} rooms={rooms} onSecondary={handleSecondary} onOpen={() => setRoomsWanted(true)} />
+        <RowMenu row={row} rooms={rooms} onSecondary={handleSecondary} onOpen={() => setRoomsWanted(true)} extra={checkInMenuItems(row)} />
       </>
     );
   };
@@ -1341,6 +1637,7 @@ export function FrontDeskDashboard() {
   const selectTab = (tab: FrontDeskTab) => {
     setActiveTab(tab);
     setOnlyBalance(false);
+    setPreCheckInFilter("all");
   };
 
   return (
@@ -1369,6 +1666,20 @@ export function FrontDeskDashboard() {
         <CocoaKpi label="Llegan hoy" value={fmtNumber(kpis.arrivalsToday)} deltaLabel="hoy" polarity="neutral" status="ok" onClick={() => selectTab("arrivals")} />
         <CocoaKpi label="Salen hoy" value={fmtNumber(departuresPending)} deltaLabel={departuresDone > 0 ? `${fmtNumber(departuresDone)} hechas` : "pendientes"} polarity="neutral" status="ok" onClick={() => selectTab("departures")} />
         <CocoaKpi label="En el hotel" value={fmtNumber(kpis.inHouseNow)} deltaLabel="ocupadas" polarity="neutral" status="ok" onClick={() => selectTab("inhouse")} />
+        {/* Tanda CHK · W3-D: llegadas de hoy con el pre-check-in completado (solo cuando el API expone la capa); filtra «Llegan hoy». */}
+        {kpis.preCheckInCompleted !== undefined ? (
+          <CocoaKpi
+            label="Pre-check-in hecho"
+            value={fmtNumber(kpis.preCheckInCompleted)}
+            deltaLabel={`de ${plural(kpis.arrivalsToday, "llegada", "llegadas")}`}
+            polarity="neutral"
+            status="ok"
+            onClick={() => {
+              selectTab("arrivals");
+              setPreCheckInFilter("completed");
+            }}
+          />
+        ) : null}
       </CocoaKpiStrip>
 
       {/* DEV #5 — bloque "Riesgos" colapsable: los 3 KPIs operativos
@@ -1412,6 +1723,9 @@ export function FrontDeskDashboard() {
             rightSlot={
               <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
                 <CocoaSearchInput id={SEARCH_INPUT_ID} value={search} onChange={setSearch} placeholder={FRONT_DESK_ACTIONS.searchPlaceholder} debounceMs={120} aria-label={`Buscar por nombre o habitación (${shortcutKeys("nav.focus-search")})`} />
+                {activeTab === "arrivals" && hasCheckInLayer ? (
+                  <CocoaSelect size="small" aria-label="Filtrar por estado de pre-check-in" value={preCheckInFilter} onChange={(value) => setPreCheckInFilter(value as PreCheckInFilter)} options={PRECHECKIN_FILTER_OPTIONS.map((option) => ({ value: option.value, label: option.label }))} />
+                ) : null}
                 {onlyBalance ? (
                   <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => setOnlyBalance(false)} aria-pressed title="Quitar el filtro «con saldo»">
                     Con saldo ×
@@ -1475,6 +1789,7 @@ export function FrontDeskDashboard() {
                   onPrimary={handlePrimary}
                   onSecondary={handleSecondary}
                   returnFocusTo={() => rowElementFor(inspectorRow.reservationId)}
+                  menuExtra={checkInMenuItems(inspectorRow)}
                 />
               ) : null}
             </CocoaInspectorLayout>
@@ -1506,6 +1821,23 @@ export function FrontDeskDashboard() {
           onCompleted={() => {
             invalidateApi("/dashboards/front-desk");
             invalidateApi(`/properties/${PROPERTY_ID}/rooms`);
+          }}
+        />
+      ) : null}
+      {/* Tanda CHK: cajón de solo lectura del pre-check-in (viajeros, documento, firma, consentimientos, pagos, sugerencia). */}
+      {preCheckInTarget ? (
+        <ArrivalPreCheckInDrawer
+          reservationId={preCheckInTarget.reservationId}
+          propertyId={PROPERTY_ID}
+          hasSession={preCheckInTarget.hasSession}
+          onClose={() => setPreCheckInTarget(null)}
+          onOpenCheckIn={(reservationId) => {
+            setPreCheckInTarget(null);
+            setCheckInTarget({ reservationId, roomId: null });
+          }}
+          onChanged={() => {
+            invalidateApi("/dashboards/front-desk");
+            invalidateApi("/dashboards/front-desk-queue");
           }}
         />
       ) : null}

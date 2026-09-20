@@ -252,7 +252,9 @@ export async function dispatchGuestMagicLink(
       magicLinkUrl,
       reservationCode,
       expiryHours: MAGIC_LINK_EXPIRY_HOURS
-    }
+    },
+    // Corrector Tanda CHK (SEC-1): el token del enlace mágico solo viaja al proveedor; la fila queda redactada.
+    redact: { variables: ["magicLinkUrl"], values: [token] }
   });
 }
 

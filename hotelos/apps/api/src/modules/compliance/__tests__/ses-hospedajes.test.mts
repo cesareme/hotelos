@@ -88,6 +88,19 @@ describe("sesGuestFromSource", () => {
     assert.deepEqual(mapped.missing, ["documentNumber", "dateOfBirth", "nationality"]);
   });
 
+  it("corrector CHK (REV3-06): a minor under 14 without own document maps without the document block; an adult still fails", () => {
+    const minor = sesGuestFromSource({ ...complete, documentType: null, documentNumber: null, isMinor: true, kinshipRelationIfMinor: "hijo", parentName: "Ana García", parentDocumentNumber: "XDA123456" });
+    assert.equal(minor.ok, true, JSON.stringify(minor));
+    if (!minor.ok) return;
+    assert.equal(minor.guest.documentType, undefined);
+    assert.equal(minor.guest.documentNumber, undefined);
+    assert.equal(minor.guest.isMinor, true);
+    const adult = sesGuestFromSource({ ...complete, documentType: null, documentNumber: null, isMinor: false });
+    assert.equal(adult.ok, false);
+    if (adult.ok) return;
+    assert.deepEqual(adult.missing, ["documentType", "documentNumber"]);
+  });
+
   it("an empty surname or first name is missing too (the old code sent \"\")", () => {
     const mapped = sesGuestFromSource({ ...complete, surname1: "", firstName: null });
     assert.equal(mapped.ok, false);
@@ -234,6 +247,22 @@ describe("sandbox stub establishment validation", () => {
   it("accepts a well-formed Establecimiento block", () => {
     const xml = buildSesHospedajesXml(record({ ...COMPLETE, registryType: "establecimiento_turistico" }));
     assert.deepEqual(validateSandboxEstablishment(xml), { ok: true });
+  });
+
+  it("corrector CHK (REV3-06): a minor without own document travels without TipoDocumento/NumeroDocumento but with the parentesco block", () => {
+    const base = record({ ...COMPLETE, registryType: "establecimiento_turistico" });
+    const xml = buildSesHospedajesXml({
+      ...base,
+      guests: [
+        ...base.guests,
+        { firstName: "Lucía", surname1: "García", dateOfBirth: "2017-06-01", nationality: "ESP", isMinor: true, relationshipToMinor: "hija", parentName: "Ana García", parentDocumentNumber: "12345678Z" }
+      ]
+    });
+    const personas = xml.split("<Persona>").slice(1);
+    assert.equal(personas.length, 2);
+    assert.match(personas[0]!, /<TipoDocumento>1<\/TipoDocumento>\s*<NumeroDocumento>12345678Z<\/NumeroDocumento>/);
+    assert.doesNotMatch(personas[1]!, /<TipoDocumento>|<NumeroDocumento>/);
+    assert.match(personas[1]!, /<Menor>S<\/Menor>\s*<ParentescoMenor>hija<\/ParentescoMenor>\s*<NombreParentesco>Ana García<\/NombreParentesco>\s*<DocumentoParentesco>12345678Z<\/DocumentoParentesco>/);
   });
 
   it("rejects a CodigoMunicipio that is not 5 digits", () => {

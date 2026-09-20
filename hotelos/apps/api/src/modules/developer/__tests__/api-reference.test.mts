@@ -127,6 +127,48 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.deepEqual(echo.map((r) => `${r.method} ${r.path}`), []);
   });
 
+  it("Tanda CHK: el check-in automatizado y los kioscos leen en español", () => {
+    assert.equal(describeEndpoint("GET", "/guest-portal/check-in"), "Obtener la sesión de check-in en línea del huésped.");
+    assert.match(describeEndpoint("PATCH", "/guest-portal/check-in"), /^Actualizar la sesión de check-in en línea del huésped/);
+    assert.equal(describeEndpoint("POST", "/guest-portal/check-in/guests/:id/mrz"), "Leer la zona MRZ del documento de identidad del huésped.");
+    assert.equal(describeEndpoint("POST", "/guest-portal/check-in/complete"), "Completar el check-in en línea del huésped.");
+    assert.match(describeEndpoint("POST", "/guest-portal/check-in/kiosk/claim"), /^Emparejar el kiosco/);
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/check-in/arrivals"), "Listar llegadas.");
+    assert.match(describeEndpoint("POST", "/properties/:propertyId/check-in/sessions"), /^Invitar a la reserva al check-in en línea/);
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/check-in/sessions/:id"), "Obtener el detalle de la sesión.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/check-in/sessions/:id/resend"), "Reenviar la invitación de la sesión.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/check-in/policy"), "Obtener la política de check-in en línea.");
+    assert.equal(describeEndpoint("PUT", "/properties/:propertyId/check-in/policy"), "Sustituir la política de check-in en línea.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/kiosks"), "Listar kioscos.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/kiosks"), "Crear o registrar un kiosco.");
+    assert.equal(describeEndpoint("PATCH", "/properties/:propertyId/kiosks/:id"), "Actualizar el kiosco.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/kiosks/:id/pair"), "Generar el código de emparejamiento del kiosco.");
+    // W3-A: pasos del huésped (captura, firma, pago, OTP, llegada) y de recepción («/reservations/:id/check-in/…»).
+    assert.equal(describeEndpoint("POST", "/guest-portal/check-in/guests/:id/document"), "Capturar el documento de identidad del huésped.");
+    assert.equal(describeEndpoint("POST", "/guest-portal/check-in/guests/:id/signature"), "Registrar la firma del huésped.");
+    assert.match(describeEndpoint("POST", "/guest-portal/check-in/payment-link"), /^Generar el enlace de pago/);
+    assert.equal(describeEndpoint("POST", "/guest-portal/check-in/otp/request"), "Solicitar el código de un solo uso (OTP).");
+    assert.equal(describeEndpoint("POST", "/guest-portal/check-in/otp/verify"), "Verificar el código de un solo uso (OTP).");
+    assert.match(describeEndpoint("POST", "/guest-portal/check-in/arrive"), /^Registrar la llegada del huésped/);
+    assert.match(describeEndpoint("GET", "/reservations/:id/check-in"), /^Obtener el estado del check-in de la reserva/);
+    assert.match(describeEndpoint("POST", "/reservations/:id/check-in/scan"), /^Escanear el documento de identidad/);
+    assert.equal(describeEndpoint("POST", "/reservations/:id/check-in/signature"), "Registrar la firma del viajero en recepción.");
+    assert.equal(describeEndpoint("POST", "/reservations/:id/check-in/verify-identity"), "Marcar la identidad del viajero como verificada en recepción.");
+    assert.match(describeEndpoint("POST", "/reservations/:id/check-in/complete"), /^Completar el check-in de la reserva desde recepción/);
+    // W3-B: asignación explicable y habitaciones comunicadas (pms/room-assignment.routes.ts).
+    assert.match(describeEndpoint("POST", "/reservations/:id/assignment-suggestions"), /^Generar la sugerencia de asignación de habitación de la reserva/);
+    assert.equal(describeEndpoint("GET", "/reservations/:id/assignment-suggestions"), "Listar sugerencias de asignación de la reserva.");
+    assert.equal(describeEndpoint("POST", "/assignment-suggestions/:id/confirm"), "Confirmar la sugerencia de asignación.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/room-connections"), "Listar conexiones de habitaciones (comunicadas o contiguas).");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/room-connections"), "Crear o registrar una conexión de habitaciones (comunicadas o contiguas).");
+    assert.equal(describeEndpoint("DELETE", "/room-connections/:id"), "Eliminar la conexión de habitaciones (comunicadas o contiguas).");
+    // W4-D: webhook público de WhatsApp (routes/webhooks-whatsapp.routes.ts).
+    assert.match(describeEndpoint("GET", "/webhooks/whatsapp"), /^Verificar la suscripción del webhook de WhatsApp/);
+    assert.match(describeEndpoint("POST", "/webhooks/whatsapp"), /^Recibir los mensajes entrantes de WhatsApp/);
+    // El check-in de la reserva desde recepción no cambia.
+    assert.equal(describeEndpoint("POST", "/reservations/:id/check-in"), "Hacer check-in de la reserva.");
+  });
+
   it("the -settings suffix reads «los ajustes de …» even for an unlisted owner", () => {
     assert.equal(resourceLabel("housekeeping-settings").singular, "los ajustes de limpieza");
     const derived = resourceLabel("reservations-settings");

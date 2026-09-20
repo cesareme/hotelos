@@ -370,6 +370,91 @@
         "apps/api/src/modules/channel-manager/env.partial.ts"
       ]
     },
+    "CHECKIN_ASSIGNMENT_RUN_AT": {
+      "section": "Schedulers",
+      "format": "string",
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+      "default": "18:00",
+      "doc": "Hora local (Europe/Madrid, HH:MM) del lote diario de sugerencias de habitación para las llegadas del día siguiente.",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
+    "CHECKIN_CAPTURE_PURGE_DAYS": {
+      "section": "Seguridad",
+      "format": "int",
+      "min": 1,
+      "max": 365,
+      "default": "30",
+      "doc": "Días tras los que se vacían los campos extraídos (fieldsJson/confidenceJson) de document_captures; queda solo la métrica. La imagen del documento nunca se guarda.",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
+    "CHECKIN_DOCUMENT_MAX_BYTES": {
+      "section": "Rate limit/CORS",
+      "format": "int",
+      "min": 65536,
+      "max": 16777216,
+      "default": "6291456",
+      "doc": "Bytes máximos (decodificados) de la imagen de un documento de identidad enviada al portal o al kiosco; por defecto 6 MiB.",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
+    "CHECKIN_INVITATION_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el job de invitaciones al check-in en línea (invitación J-3 y recordatorio J-1). Solo actúa en el líder (RUN_SCHEDULERS).",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
+    "CHECKIN_INVITATION_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 60000,
+      "max": 86400000,
+      "default": "3600000",
+      "doc": "Periodo del job de invitaciones al check-in (ms); por defecto 1 hora (mínimo 1 minuto, máximo 24 horas).",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
+    "CHECKIN_OTP_MAX_ATTEMPTS": {
+      "section": "Seguridad",
+      "format": "int",
+      "min": 1,
+      "max": 20,
+      "default": "5",
+      "doc": "Intentos de OTP admitidos por sesión de check-in antes de responder 429.",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
+    "CHECKIN_OTP_TTL_MS": {
+      "section": "Seguridad",
+      "format": "int",
+      "min": 60000,
+      "max": 3600000,
+      "default": "600000",
+      "doc": "Vida del código OTP de verificación de identidad del huésped (ms); por defecto 10 minutos.",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
+    "CHECKIN_SIGNATURE_MAX_BYTES": {
+      "section": "Rate limit/CORS",
+      "format": "int",
+      "min": 16384,
+      "max": 4194304,
+      "default": "524288",
+      "doc": "Bytes máximos (decodificados) del PNG/SVG de la firma del parte de viajeros; por defecto 512 KiB.",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
     "CORS_ALLOWED_ORIGINS": {
       "section": "Rate limit/CORS",
       "format": "origin-list",
@@ -620,6 +705,7 @@
       ],
       "doc": "Devuelve el token del portal de huéspedes por HTTP aunque el magic link se haya entregado por email. NUNCA en producción.",
       "readBy": [
+        "apps/api/src/modules/checkin/checkin-session.service.ts",
         "apps/api/src/modules/guest-portal/guest-portal-auth.service.ts"
       ]
     },
@@ -631,6 +717,8 @@
       "default": "http://localhost:5174",
       "doc": "Origen público del portal de huéspedes (magic links). Sin barra final.",
       "readBy": [
+        "apps/api/src/modules/checkin/checkin-session.service.ts",
+        "apps/api/src/modules/messaging/messaging.service.ts",
         "apps/api/src/modules/notifications/event-hooks.service.ts"
       ]
     },
@@ -651,7 +739,8 @@
       "productionForbidden": "true",
       "doc": "true SOLO en dev/demo: toda petición sin token recibe el super-usuario demo. Con NODE_ENV=production el API se niega a arrancar (AUTH-04) salvo HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true. El demo local lo pone a true en su .env.",
       "readBy": [
-        "apps/api/src/lib/auth-context.ts"
+        "apps/api/src/lib/auth-context.ts",
+        "apps/api/src/modules/checkin/otp.service.ts"
       ]
     },
     "HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE": {
@@ -763,6 +852,17 @@
         "packages/database/src/jwt.ts"
       ]
     },
+    "KIOSK_PAIRING_TTL_MS": {
+      "section": "Seguridad",
+      "format": "int",
+      "min": 60000,
+      "max": 3600000,
+      "default": "600000",
+      "doc": "Vida del código de 8 dígitos de emparejamiento de un kiosco (ms); por defecto 10 minutos. Solo se guarda su hash.",
+      "readBy": [
+        "apps/api/src/modules/checkin/checkin-config.ts"
+      ]
+    },
     "MAILBOX_POLL_DISABLED": {
       "section": "Schedulers",
       "format": "bool",
@@ -839,12 +939,17 @@
         "apps/api/src/lib/auth-context.ts",
         "apps/api/src/lib/env.ts",
         "apps/api/src/modules/auth/auth.service.ts",
+        "apps/api/src/modules/checkin/adapters/index.ts",
+        "apps/api/src/modules/checkin/checkin-session.service.ts",
+        "apps/api/src/modules/checkin/otp.service.ts",
         "apps/api/src/modules/guest-portal/guest-portal-auth.service.ts",
         "apps/api/src/modules/notifications/providers/email.provider.ts",
         "apps/api/src/modules/notifications/providers/sms.provider.ts",
         "apps/api/src/modules/notifications/providers/whatsapp.provider.ts",
+        "apps/api/src/routes/webhooks-whatsapp.routes.ts",
         "apps/api/src/security/route-permissions.ts",
         "apps/api/src/server.ts",
+        "packages/database/prisma/seed-checkin.ts",
         "packages/database/prisma/seed-ux-day.ts",
         "packages/database/src/client.ts",
         "packages/database/src/crypto-fields.ts"
@@ -1106,6 +1211,32 @@
       "doc": "Precios BAR por categoría para el seed comercial (formato del seed).",
       "readBy": [
         "packages/database/prisma/seed-commercial-demo.ts"
+      ]
+    },
+    "SEED_CHK_ALLOW_PRODUCTION": {
+      "section": "Seeds",
+      "format": "enum",
+      "values": [
+        "1"
+      ],
+      "tags": [
+        "dev-only",
+        "dangerous"
+      ],
+      "doc": "seed-checkin (Tanda CHK, lote W1-D): con NODE_ENV=production el seed aborta (crea usuarios con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente.",
+      "readBy": [
+        "packages/database/prisma/seed-checkin.ts"
+      ]
+    },
+    "SEED_CHK_PASSWORD": {
+      "section": "Seeds",
+      "format": "string",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "seed-checkin (Tanda CHK, lote W1-D): contraseña de los tres usuarios *@chk.test del tenant aislado org_chk / prop_chk; sin ella, «chk-demo». Nunca en producción.",
+      "readBy": [
+        "packages/database/prisma/seed-checkin.ts"
       ]
     },
     "SEED_CONFIRM": {
@@ -1805,6 +1936,17 @@
         "apps/admin-web/src/providers/UxTraceProvider.tsx"
       ]
     },
+    "WHATSAPP_APP_SECRET": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "App Secret de la app de Meta que firma el webhook de entrada de WhatsApp (X-Hub-Signature-256 sobre el cuerpo crudo de POST /webhooks/whatsapp). Sin él el webhook responde 503 en cualquier entorno salvo que WHATSAPP_WEBHOOK_ALLOW_UNSIGNED=1 fuera de producción (corrector CHK SEC-5).",
+      "readBy": [
+        "apps/api/src/routes/webhooks-whatsapp.routes.ts"
+      ]
+    },
     "WHATSAPP_PHONE_ID": {
       "section": "Email y mensajería",
       "format": "string",
@@ -1837,6 +1979,29 @@
       "doc": "OBSOLETA: alias de WHATSAPP_PROVIDER_TOKEN.",
       "readBy": [
         "apps/api/src/modules/notifications/providers/whatsapp.provider.ts"
+      ]
+    },
+    "WHATSAPP_VERIFY_TOKEN": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Verify token que se declara en Meta al suscribir el webhook: GET /webhooks/whatsapp devuelve hub.challenge solo si hub.verify_token coincide. Sin él la verificación responde 503.",
+      "readBy": [
+        "apps/api/src/routes/webhooks-whatsapp.routes.ts"
+      ]
+    },
+    "WHATSAPP_WEBHOOK_ALLOW_UNSIGNED": {
+      "section": "Email y mensajería",
+      "format": "bool",
+      "tags": [
+        "dangerous"
+      ],
+      "default": "false",
+      "doc": "Solo demo/staging y NUNCA en producción: con 1/true y sin WHATSAPP_APP_SECRET, POST /webhooks/whatsapp procesa cuerpos SIN firma como SIMULADO (escriben ETA y peticiones de servicio del bot). Sin la variable el webhook sin secreto responde 503, como el de pagos.",
+      "readBy": [
+        "apps/api/src/routes/webhooks-whatsapp.routes.ts"
       ]
     },
     "WORKER_AUTOSTART": {

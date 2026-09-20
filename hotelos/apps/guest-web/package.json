@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts,.tsx"
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "node --import ../api/node_modules/tsx/dist/loader.mjs --test \"src/**/__tests__/*.test.mts\""
   },
   "dependencies": {
     "@hotelos/shared": "workspace:*",

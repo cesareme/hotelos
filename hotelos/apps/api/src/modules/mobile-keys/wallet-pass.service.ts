@@ -235,7 +235,10 @@ export async function issueWalletPass(input: { context: UserContext; reservation
         secretHash: createHash("sha256").update(secret).digest("hex"),
         validFrom,
         validUntil,
-        issuedAt: new Date().toISOString()
+        issuedAt: new Date().toISOString(),
+        // Corrector Tanda CHK (REV3-13): honesty flag for the §1.8 «keys without reception» metric —
+        // an unsigned pass (no Apple certificate) is a demo QR, not a key that opens a door.
+        signedByApple: SIGNED_BY_APPLE
       }
     },
     select: { id: true }

@@ -501,7 +501,10 @@ describe("notification templates — system fallback", () => {
 
   it("ships user_invitation and password_reset (email/es) as plain-text system templates", () => {
     const codes = SYSTEM_TEMPLATES.map((tpl) => `${tpl.code}:${tpl.channel}:${tpl.language}`);
-    assert.deepEqual(codes, ["user_invitation:email:es", "password_reset:email:es"]);
+    // Las plantillas del check-in automatizado (Tanda CHK, `checkin_*`) se fijan una a una en
+    // notifications/__tests__/checkin-templates.test.mts; fuera de ellas solo existen estas dos.
+    assert.deepEqual(codes.filter((key) => !key.startsWith("checkin_")), ["user_invitation:email:es", "password_reset:email:es"]);
+    assert.ok(codes.some((key) => key.startsWith("checkin_")), "las plantillas checkin_* del check-in automatizado siguen presentes");
     const invite = resolveSystemTemplate({ code: "user_invitation", channel: "email" });
     assert.ok(invite);
     assert.match(invite.body, /\{\{inviteUrl\}\}/);

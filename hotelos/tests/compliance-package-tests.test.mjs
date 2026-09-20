@@ -14,10 +14,11 @@ import { describe, it } from "node:test";
 
 const packageDir = fileURLToPath(new URL("../packages/compliance/", import.meta.url));
 const loader = "./src/spain/verifactu/__tests__/register-ts-loader.mjs";
-const suites = ["src/spain/__tests__/guest-register-validator.test.mjs", "src/spain/__tests__/indirect-tax.test.mjs", "src/spain/__tests__/invoice-totals.test.mjs"];
+// Tanda CHK · CHK-W1-B: el parser MRZ (ICAO 9303 TD1/TD2/TD3, dígitos de control 7-3-1) entra en la misma puerta.
+const suites = ["src/spain/__tests__/guest-register-validator.test.mjs", "src/spain/__tests__/indirect-tax.test.mjs", "src/spain/__tests__/invoice-totals.test.mjs", "src/spain/__tests__/mrz.test.mjs"];
 
 describe("@hotelos/compliance · tests unitarios del paquete dentro de la puerta raíz (corrector L5 · CS-08)", () => {
-  it("los ficheros existen (validador del parte de viajeros incluido)", () => {
+  it("los ficheros existen (validador del parte de viajeros y parser MRZ incluidos)", () => {
     for (const suite of suites) assert.ok(existsSync(new URL(suite, `file://${packageDir}`)), `${suite} debe existir`);
   });
 
@@ -29,5 +30,7 @@ describe("@hotelos/compliance · tests unitarios del paquete dentro de la puerta
     // Reporter `spec` («ℹ pass N») o `tap` («# pass N»), según el runner de Node.
     assert.match(output, /^(?:# |ℹ )pass [1-9]\d*$/m, output.slice(-800));
     assert.match(output, /^(?:# |ℹ )fail 0$/m, output.slice(-800));
+    // La suite MRZ se ejecutó de verdad (oráculo del Apéndice A de ICAO 9303 P3), no solo existe en disco.
+    assert.match(output, /mrzCheckDigit — ICAO 9303 P3 Appendix A/, output.slice(-800));
   });
 });

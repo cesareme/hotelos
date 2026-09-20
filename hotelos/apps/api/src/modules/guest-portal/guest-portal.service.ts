@@ -27,18 +27,55 @@ export class GuestPortalAuthError extends Error {
   }
 }
 
+// Tanda CHK (L0 · CHECKIN-AUTOMATIZADO-IA.md §3 «Portal del huésped»): la
+// proyección lleva `propertyId` (el portal lo necesita para el sign-in y para
+// el asistente), el titular reducido a nombre + inicial del primer apellido
+// (nunca datos de acompañantes), el número de la habitación asignada y la ETA.
+export type GuestReservationPrimaryGuest = {
+  firstName: string;
+  /** Inicial del primer apellido («G.»); null si el titular no tiene apellido registrado. */
+  surname1Initial: string | null;
+};
+
 export type GuestReservationView = {
   reservationId: string;
   reservationCode: string;
+  propertyId: string;
   propertyName: string;
+  /** Zona horaria IANA de la propiedad (corrector CHK REV3-14: validez de la llave en hora del hotel). */
+  propertyTimezone: string | null;
   status: string;
   arrivalDate: string;
   departureDate: string;
   roomType: string | null;
+  /** Número de la habitación asignada (`Room.number`); null si aún no hay asignación. */
+  assignedRoomNumber: string | null;
+  /** Hora estimada de llegada «HH:MM» (`Reservation.eta`); null si el huésped no la ha indicado. */
+  eta: string | null;
+  /** Titular (ReservationGuest.isPrimary); null si la reserva no tiene titular enlazado. */
+  primaryGuest: GuestReservationPrimaryGuest | null;
   guestCount: number;
   balanceDue: number;
   currency: string;
 };
+
+/**
+ * Normaliza la ETA del pre-check-in a «HH:MM» (formato de `Reservation.eta`).
+ * Acepta «H:MM» / «HH:MM[:SS]» y el valor de un `<input type="datetime-local">`
+ * («YYYY-MM-DDTHH:MM»), del que toma solo la hora. Devuelve null si no valida:
+ * en ese caso el texto se conserva en `notes` como antes (nunca se descarta).
+ */
+export function normalizeArrivalEta(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  if (text === "") return null;
+  const match = /^(?:\d{4}-\d{2}-\d{2}[T ])?(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/.exec(text);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours > 23 || minutes > 59) return null;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
 
 export type PreCheckInInput = {
   token: string;
@@ -74,13 +111,27 @@ export async function getGuestReservationView(token: string): Promise<GuestReser
   });
   if (!reservation) throw new GuestPortalAuthError("Reservation no longer available.");
 
-  const [property, roomType, guestLinks] = await Promise.all([
-    prisma.property.findUnique({ where: { id: reservation.propertyId }, select: { name: true } }),
+  const [property, roomType, guestLinks, assignedRoom, primaryLink] = await Promise.all([
+    prisma.property.findUnique({ where: { id: reservation.propertyId }, select: { name: true, timezone: true } }),
     reservation.roomTypeId
       ? prisma.roomType.findUnique({ where: { id: reservation.roomTypeId }, select: { name: true } })
       : Promise.resolve(null),
-    prisma.reservationGuest.count({ where: { reservationId: reservation.id } })
+    prisma.reservationGuest.count({ where: { reservationId: reservation.id } }),
+    reservation.assignedRoomId
+      ? prisma.room.findUnique({ where: { id: reservation.assignedRoomId }, select: { number: true } })
+      : Promise.resolve(null),
+    // Solo el titular: los acompañantes no se exponen al portal (PII de terceros).
+    prisma.reservationGuest.findFirst({
+      where: { reservationId: reservation.id, isPrimary: true },
+      select: { guest: { select: { firstName: true, surname1: true } } }
+    })
   ]);
+  const primaryGuest: GuestReservationPrimaryGuest | null = primaryLink
+    ? {
+        firstName: primaryLink.guest.firstName,
+        surname1Initial: primaryLink.guest.surname1?.trim() ? `${primaryLink.guest.surname1.trim().charAt(0).toUpperCase()}.` : null
+      }
+    : null;
 
   // Balance due: the Folio model carries no balance column in this schema —
   // outstanding amounts are derived from charges/captured payments/refunds by
@@ -95,11 +146,17 @@ export async function getGuestReservationView(token: string): Promise<GuestReser
   return {
     reservationId: reservation.id,
     reservationCode: reservation.code,
+    propertyId: reservation.propertyId,
     propertyName: property?.name ?? "Your hotel",
+    // Corrector CHK (REV3-14): la validez de la llave móvil se muestra en la hora del hotel, no del navegador.
+    propertyTimezone: property?.timezone ?? null,
     status: reservation.status,
     arrivalDate: reservation.arrivalDate.toISOString().slice(0, 10),
     departureDate: reservation.departureDate.toISOString().slice(0, 10),
     roomType: roomType?.name ?? null,
+    assignedRoomNumber: assignedRoom?.number ?? null,
+    eta: reservation.eta ?? null,
+    primaryGuest,
     guestCount,
     balanceDue,
     currency: reservation.currency
@@ -173,9 +230,17 @@ export async function submitPreCheckIn(
     recordId = created.id;
   }
 
-  // Append the arrival ETA to the reservation notes so front desk sees it.
-  if (input.arrivalEta) {
-    const etaNote = `[Pre-check-in] Estimated arrival: ${input.arrivalEta}`;
+  // Tanda CHK (L0): la ETA va a `Reservation.eta` («HH:MM»), que es lo que leen
+  // /hoy y el motor de asignación. Solo si el texto no valida se conserva en
+  // `notes` (como hasta ahora) para que recepción no lo pierda.
+  const eta = normalizeArrivalEta(input.arrivalEta);
+  if (eta) {
+    await prisma.reservation.update({
+      where: { id: reservation.id },
+      data: { eta }
+    });
+  } else if (input.arrivalEta && input.arrivalEta.trim() !== "") {
+    const etaNote = `[Pre-check-in] Estimated arrival: ${input.arrivalEta.trim()}`;
     const newNotes = reservation.notes ? `${reservation.notes}\n${etaNote}` : etaNote;
     await prisma.reservation.update({
       where: { id: reservation.id },
@@ -196,7 +261,7 @@ export async function submitPreCheckIn(
       reservationId: reservation.id,
       reservationCode: reservation.code,
       confirmationNumber,
-      arrivalEta: input.arrivalEta ?? null
+      arrivalEta: eta ?? input.arrivalEta ?? null
     },
     actorType: "system",
     correlationId: createId("corr")

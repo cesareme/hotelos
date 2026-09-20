@@ -158,13 +158,16 @@ export function sesGuestFromSource(source: SesGuestSource): { ok: true; guest: S
     dateOfBirth,
     nationality: source.nationality?.trim() || undefined
   };
-  const missing = SES_GUEST_REQUIRED_FIELDS.filter((field) => values[field] === undefined);
+  // Corrector CHK (REV3-06): un menor de 14 sin documento propio viaja sin el bloque de documento
+  // (RD 933/2021: lo aporta el adulto en DocumentoParentesco); el resto de campos sigue siendo obligatorio.
+  const minorWithoutDocument = source.isMinor === true && values.documentNumber === undefined;
+  const missing = SES_GUEST_REQUIRED_FIELDS.filter((field) => values[field] === undefined && !(minorWithoutDocument && (field === "documentType" || field === "documentNumber")));
   if (missing.length > 0) return { ok: false, missing: [...missing] };
   return {
     ok: true,
     guest: toSesGuest({
-      documentType: values.documentType!,
-      documentNumber: values.documentNumber!,
+      documentType: values.documentType,
+      documentNumber: values.documentNumber,
       documentSupportNumber: source.documentSupportNumber?.trim() || undefined,
       firstName: values.firstName!,
       surname1: values.surname1!,
@@ -1318,8 +1321,8 @@ async function processSubmission(input: { submissionId: string; context: UserCon
 }
 
 function toSesGuest(input: {
-  documentType: string;
-  documentNumber: string;
+  documentType?: string;
+  documentNumber?: string;
   documentSupportNumber?: string;
   firstName: string;
   surname1: string;
@@ -1340,8 +1343,9 @@ function toSesGuest(input: {
   parentDocumentNumber?: string;
 }): SesGuest {
   const docType = input.documentType?.toUpperCase();
-  const mapped: SesGuest["documentType"] =
-    docType === "NIE" ? "NIE" : docType === "PASSPORT" || docType === "PASAPORTE" ? "PASSPORT" : docType === "TIE" ? "TIE" : "DNI";
+  const mapped: SesGuest["documentType"] = !input.documentNumber
+    ? undefined
+    : docType === "NIE" ? "NIE" : docType === "PASSPORT" || docType === "PASAPORTE" ? "PASSPORT" : docType === "TIE" ? "TIE" : "DNI";
   return {
     documentType: mapped,
     documentNumber: input.documentNumber,

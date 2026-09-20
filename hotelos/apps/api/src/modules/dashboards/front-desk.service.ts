@@ -1,4 +1,6 @@
 import { prisma } from "@hotelos/database";
+import { CHECKIN_SESSION_STATUSES, type CheckInSessionStatus } from "@hotelos/shared";
+import { createDegradedCollector } from "../../lib/degraded.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
 
 export type FrontDeskDashboardInput = {
@@ -6,13 +8,22 @@ export type FrontDeskDashboardInput = {
   date?: string;
 };
 
+/** Modelos del check-in automatizado (Tanda CHK · W3-D) que alimentan la capa `preCheckIn` / `suggestedRoom` / `key`. */
+export type FrontDeskCheckInDb = Pick<typeof prisma, "checkInSession" | "assignmentSuggestion" | "guestPortalAction">;
+
 /**
  * Colaboradores inyectables (Tanda UX-1 · lote U3): el test unitario
  * (`__tests__/front-desk.service.test.mts`) pasa un Prisma falso y un cálculo
  * de saldos falso; en producción se usan `prisma` y `computeBalancesForReservations`.
+ *
+ * Tanda CHK · W3-D: los tres modelos de check-in son opcionales en el
+ * colaborador. Cuando faltan (dobles anteriores a la tanda) la capa de
+ * check-in no se consulta y el resultado no lleva `preCheckIn`, `suggestedRoom`,
+ * `key`, `kpis.preCheckInCompleted` ni `degraded` (contrato aditivo intacto);
+ * con `prisma` real siempre se consulta.
  */
 export type FrontDeskDashboardDeps = {
-  db?: Pick<typeof prisma, "reservation" | "reservationGuest" | "guest" | "room" | "roomType">;
+  db?: Pick<typeof prisma, "reservation" | "reservationGuest" | "guest" | "room" | "roomType"> & Partial<FrontDeskCheckInDb>;
   computeBalances?: (reservationIds: string[]) => Promise<Map<string, number>>;
   now?: () => Date;
 };
@@ -38,6 +49,47 @@ export type FrontDeskDashboardKpis = {
   unassignedRooms: number;
   overdueDepartures: number;
   pendingBalanceEur: number;
+  /**
+   * Tanda CHK · W3-D: llegadas de hoy con el pre-check-in completado
+   * (`CheckInSession.status` ∈ ready_for_arrival · arrived · checked_in ·
+   * handed_off, mismo criterio que `listArrivals`). Ausente cuando el
+   * colaborador no expone los modelos de check-in.
+   */
+  preCheckInCompleted?: number;
+};
+
+/** Estado del pre-check-in de una llegada (diseño §8, columna «Pre-check-in»). */
+export type FrontDeskPreCheckIn = {
+  /** Estado de la `CheckInSession`, o `not_invited` si la reserva no tiene sesión. */
+  status: CheckInSessionStatus | "not_invited";
+  /** Viajeros con datos completos, firmados o verificados (`CheckInGuest.status` ∈ data_complete · signed · verified). */
+  completedGuests: number;
+  /** Viajeros de la sesión (huecos `pending` incluidos); 0 sin sesión. */
+  totalGuests: number;
+  /** `CheckInSession.channel` (email · whatsapp · sms · kiosk · reception · manual). */
+  channel?: string;
+};
+
+/** Primera candidata de la `AssignmentSuggestion` pendiente (`suggested`) de una llegada sin habitación (diseño §4b consumidores). */
+export type FrontDeskSuggestedRoom = {
+  suggestionId: string;
+  roomId: string;
+  number: string;
+  /** `AssignmentReason.detail` de la candidata, en el orden del motor. */
+  reasons: string[];
+  /** 0..1 (`AssignmentSuggestion.confidence`). */
+  confidence: number;
+};
+
+/**
+ * Llave de la llegada (diseño §8, columna «Llave»): `issued` si hay una llave
+ * móvil activa (`GuestPortalAction` mobile_key); `pending` si la sesión de
+ * check-in sigue abierta por un canal del huésped (la llave saldrá del
+ * auto-check-in); `reception` en los demás casos (tarjeta en el mostrador).
+ */
+export type FrontDeskKeyStatus = {
+  status: "issued" | "pending" | "reception";
+  serialNumber?: string;
 };
 
 export type FrontDeskArrivalRow = FrontDeskRowIds & {
@@ -50,6 +102,10 @@ export type FrontDeskArrivalRow = FrontDeskRowIds & {
   status: string;
   balanceEur: number;
   specialRequests?: string;
+  /** Tanda CHK · W3-D (presentes cuando el colaborador expone los modelos de check-in). */
+  preCheckIn?: FrontDeskPreCheckIn;
+  suggestedRoom?: FrontDeskSuggestedRoom;
+  key?: FrontDeskKeyStatus;
 };
 
 export type FrontDeskDepartureRow = FrontDeskRowIds & {
@@ -85,7 +141,164 @@ export type FrontDeskDashboardResult = {
   departures: FrontDeskDepartureRow[];
   inHouse: FrontDeskInHouseRow[];
   unassigned: FrontDeskUnassignedRow[];
+  /**
+   * Tanda CHK · W3-D (convención QC-06, lib/degraded.ts): consultas de la capa
+   * de check-in que cayeron a su valor por defecto en esta respuesta
+   * (`checkin_sessions` · `assignment_suggestions` · `mobile_keys`). Presente
+   * siempre que se consultó la capa (array vacío si todo fue bien).
+   */
+  degraded?: string[];
 };
+
+// ---------------------------------------------------------------------------
+// Tanda CHK · W3-D: capa de check-in de las llegadas (diseño §8 «Recepción · /hoy»).
+// ---------------------------------------------------------------------------
+
+/**
+ * Estados de sesión que cuentan como pre-check-in completado. Corrector CHK
+ * (REV3-09): `handed_off` (derivada a recepción: identidad por cotejar, datos
+ * sin vincular, pago fallido) NO es un pre-check-in hecho y no infla el % de §1.8.
+ */
+export const PRECHECKIN_COMPLETED_STATUSES: ReadonlySet<string> = new Set(["ready_for_arrival", "arrived", "checked_in"]);
+/** Estados de sesión abiertos: la llave saldrá del auto-check-in si el canal es del huésped. */
+const PRECHECKIN_OPEN_STATUSES: ReadonlySet<string> = new Set(["invited", "in_progress", "ready_for_arrival", "arrived"]);
+/** `CheckInGuest.status` que cuentan como viajero completado. */
+const GUEST_COMPLETED_STATUSES: ReadonlySet<string> = new Set(["data_complete", "signed", "verified"]);
+
+type CheckInOverlaySession = { status: CheckInSessionStatus; channel: string; completedGuests: number; totalGuests: number };
+
+type CheckInOverlay = {
+  sessionByReservation: Map<string, CheckInOverlaySession>;
+  suggestionByReservation: Map<string, FrontDeskSuggestedRoom>;
+  /** reservationId → serialNumber de la llave móvil activa (undefined si el payload no lo trae). */
+  keyByReservation: Map<string, string | undefined>;
+  degraded: string[];
+};
+
+function hasCheckInModels<T extends Partial<FrontDeskCheckInDb>>(db: T): db is T & FrontDeskCheckInDb {
+  return Boolean(db.checkInSession && db.assignmentSuggestion && db.guestPortalAction);
+}
+
+function toSessionStatus(value: string): CheckInSessionStatus {
+  return (CHECKIN_SESSION_STATUSES as readonly string[]).includes(value) ? (value as CheckInSessionStatus) : "invited";
+}
+
+/** Primera candidata de `candidatesJson` (AssignmentCandidate[]; misma tolerancia que `parseCandidates` de room-assignment.service). */
+function firstCandidate(json: unknown): { roomId: string; number: string; reasons: string[] } | null {
+  if (!Array.isArray(json)) return null;
+  const first = json.find((item) => Boolean(item) && typeof item === "object" && typeof (item as { roomId?: unknown }).roomId === "string") as
+    | { roomId: string; number?: unknown; reasons?: unknown }
+    | undefined;
+  if (!first) return null;
+  const reasons = Array.isArray(first.reasons)
+    ? first.reasons
+        .map((reason) => (reason && typeof reason === "object" ? (reason as { detail?: unknown }).detail : undefined))
+        .filter((detail): detail is string => typeof detail === "string" && detail.trim().length > 0)
+    : [];
+  return { roomId: first.roomId, number: typeof first.number === "string" ? first.number : first.roomId.slice(-4), reasons };
+}
+
+/**
+ * Tres consultas agregadas por ids de reserva (sin N+1), cada una dentro de
+ * `safe()` para que una tabla rota no vacíe la columna en silencio. Se lanzan
+ * a la vez y se esperan después (misma idea que las dos rondas de Promise.all
+ * del tablero; esta ronda corre en paralelo con la segunda).
+ */
+async function loadCheckInOverlay(
+  db: FrontDeskCheckInDb,
+  propertyId: string,
+  arrivals: Array<{ id: string; assignedRoomId: string | null }>
+): Promise<CheckInOverlay> {
+  const { safe, degraded } = createDegradedCollector("dashboards.front-desk", { propertyId });
+  const overlay: CheckInOverlay = { sessionByReservation: new Map(), suggestionByReservation: new Map(), keyByReservation: new Map(), degraded };
+  const reservationIds = arrivals.map((r) => r.id);
+  const unassignedIds = arrivals.filter((r) => !r.assignedRoomId).map((r) => r.id);
+  if (reservationIds.length === 0) return overlay;
+
+  const sessionsPromise = safe(
+    "checkin_sessions",
+    db.checkInSession.findMany({
+      where: { propertyId, reservationId: { in: reservationIds } },
+      select: { reservationId: true, status: true, channel: true, guests: { select: { status: true } } }
+    }),
+    []
+  );
+  const suggestionsPromise =
+    unassignedIds.length === 0
+      ? Promise.resolve([] as Array<{ id: string; reservationId: string; candidatesJson: unknown; confidence: unknown }>)
+      : safe(
+          "assignment_suggestions",
+          db.assignmentSuggestion.findMany({
+            where: { propertyId, reservationId: { in: unassignedIds }, status: "suggested" },
+            orderBy: { createdAt: "desc" },
+            select: { id: true, reservationId: true, candidatesJson: true, confidence: true }
+          }),
+          []
+        );
+  const keysPromise = safe(
+    "mobile_keys",
+    db.guestPortalAction.findMany({
+      where: { propertyId, reservationId: { in: reservationIds }, actionType: "mobile_key", status: "active" },
+      orderBy: { createdAt: "desc" },
+      select: { reservationId: true, payloadJson: true }
+    }),
+    []
+  );
+  const sessions = await sessionsPromise;
+  const suggestions = await suggestionsPromise;
+  const keys = await keysPromise;
+
+  for (const session of sessions) {
+    overlay.sessionByReservation.set(session.reservationId, {
+      status: toSessionStatus(session.status),
+      channel: session.channel,
+      completedGuests: session.guests.filter((guest) => GUEST_COMPLETED_STATUSES.has(guest.status)).length,
+      totalGuests: session.guests.length
+    });
+  }
+  // Más reciente por reserva (orderBy createdAt desc → la primera gana).
+  for (const suggestion of suggestions) {
+    if (overlay.suggestionByReservation.has(suggestion.reservationId)) continue;
+    const candidate = firstCandidate(suggestion.candidatesJson);
+    if (!candidate) continue;
+    const confidence = Number(suggestion.confidence);
+    overlay.suggestionByReservation.set(suggestion.reservationId, {
+      suggestionId: suggestion.id,
+      roomId: candidate.roomId,
+      number: candidate.number,
+      reasons: candidate.reasons,
+      confidence: Number.isFinite(confidence) ? confidence : 0
+    });
+  }
+  for (const key of keys) {
+    if (!key.reservationId || overlay.keyByReservation.has(key.reservationId)) continue;
+    const payload = key.payloadJson && typeof key.payloadJson === "object" ? (key.payloadJson as Record<string, unknown>) : {};
+    overlay.keyByReservation.set(key.reservationId, typeof payload.serialNumber === "string" ? payload.serialNumber : undefined);
+  }
+  return overlay;
+}
+
+function keyStatusFor(overlay: CheckInOverlay, reservationId: string): FrontDeskKeyStatus {
+  if (overlay.keyByReservation.has(reservationId)) {
+    const serialNumber = overlay.keyByReservation.get(reservationId);
+    return serialNumber ? { status: "issued", serialNumber } : { status: "issued" };
+  }
+  const session = overlay.sessionByReservation.get(reservationId);
+  if (session && PRECHECKIN_OPEN_STATUSES.has(session.status) && session.channel !== "reception") return { status: "pending" };
+  return { status: "reception" };
+}
+
+function checkInFieldsFor(overlay: CheckInOverlay, reservationId: string): Pick<FrontDeskArrivalRow, "preCheckIn" | "suggestedRoom" | "key"> {
+  const session = overlay.sessionByReservation.get(reservationId);
+  const suggestedRoom = overlay.suggestionByReservation.get(reservationId);
+  return {
+    preCheckIn: session
+      ? { status: session.status, completedGuests: session.completedGuests, totalGuests: session.totalGuests, channel: session.channel }
+      : { status: "not_invited", completedGuests: 0, totalGuests: 0 },
+    ...(suggestedRoom ? { suggestedRoom } : {}),
+    key: keyStatusFor(overlay, reservationId)
+  };
+}
 
 function startOfDayUtc(input?: string): Date {
   if (input) {
@@ -188,6 +401,12 @@ export async function buildFrontDeskDashboard(
 
   const unassignedRaw = arrivalsRaw.filter((r) => !r.assignedRoomId);
 
+  // Tanda CHK · W3-D: capa de check-in de las llegadas (sesión, sugerencia,
+  // llave). Solo depende de la primera ronda: arranca ya y corre en paralelo
+  // con la segunda; se espera después. Sin modelos de check-in en el
+  // colaborador → null y el resultado no cambia (contrato aditivo).
+  const checkInOverlayPromise = hasCheckInModels(db) ? loadCheckInOverlay(db, propertyId, arrivalsRaw) : null;
+
   // Collect IDs needed for joins.
   const reservationIds = Array.from(
     new Set([
@@ -277,6 +496,7 @@ export async function buildFrontDeskDashboard(
         }),
     computeBalances(reservationIds)
   ]);
+  const checkInOverlay = checkInOverlayPromise ? await checkInOverlayPromise : null;
 
   // Rooms (for roomNumber).
   const roomNumberById = new Map<string, string>();
@@ -318,7 +538,9 @@ export async function buildFrontDeskDashboard(
       status: String(r.status),
       balanceEur: balanceForReservation(r.id),
       // The column is specialRequests; notes is the legacy fallback.
-      specialRequests: r.specialRequests ?? r.notes ?? undefined
+      specialRequests: r.specialRequests ?? r.notes ?? undefined,
+      // Tanda CHK · W3-D: preCheckIn / suggestedRoom / key solo con la capa consultada.
+      ...(checkInOverlay ? checkInFieldsFor(checkInOverlay, r.id) : {})
     };
   });
 
@@ -377,6 +599,15 @@ export async function buildFrontDeskDashboard(
   }
   pendingBalanceEur = Math.round(pendingBalanceEur * 100) / 100;
 
+  // KPI (Tanda CHK · W3-D): llegadas de hoy con el pre-check-in completado.
+  let preCheckInCompleted = 0;
+  if (checkInOverlay) {
+    for (const r of arrivalsRaw) {
+      const session = checkInOverlay.sessionByReservation.get(r.id);
+      if (session && PRECHECKIN_COMPLETED_STATUSES.has(session.status)) preCheckInCompleted += 1;
+    }
+  }
+
   return {
     kpis: {
       arrivalsToday: safeNumber(arrivalsRaw.length),
@@ -385,11 +616,13 @@ export async function buildFrontDeskDashboard(
       inHouseNow: safeNumber(inHouseRaw.length),
       unassignedRooms: safeNumber(unassignedRaw.length),
       overdueDepartures: safeNumber(overdueDeparturesCount),
-      pendingBalanceEur: safeNumber(pendingBalanceEur)
+      pendingBalanceEur: safeNumber(pendingBalanceEur),
+      ...(checkInOverlay ? { preCheckInCompleted: safeNumber(preCheckInCompleted) } : {})
     },
     arrivals,
     departures,
     inHouse,
-    unassigned
+    unassigned,
+    ...(checkInOverlay ? { degraded: checkInOverlay.degraded } : {})
   };
 }

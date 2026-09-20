@@ -90,6 +90,16 @@ const PUBLIC_PREFIXES = [
   "/guest-portal/reservation",
   "/guest-portal/pre-check-in",
   "/guest-portal/service-request",
+  // Check-in automatizado (Tanda CHK · W2-A, diseño §7.1 y R18): el huésped no
+  // tiene JWT; el token opaco de GuestPortalSession (x-guest-token o ?token=) es
+  // la credencial y cada handler de modules/checkin/checkin.routes.ts llama a
+  // verifyGuestToken. Sin este prefijo el hook respondería 401 antes del handler.
+  "/guest-portal/check-in",
+  // Bot del huésped (Tanda CHK · W4-D): POST /guest-portal/chat con el token
+  // opaco del portal; GET/POST /webhooks/whatsapp con verify token y firma
+  // X-Hub-Signature-256 de Meta (routes/webhooks-whatsapp.routes.ts), sin JWT.
+  "/guest-portal/chat",
+  "/webhooks/whatsapp",
   "/integrations/email/oauth/callback",
   // Finanzas (2026-09-16): PSP notifications (Stripe / Redsys → API, signed
   // over the raw body) and the customer's landing after the hosted payment

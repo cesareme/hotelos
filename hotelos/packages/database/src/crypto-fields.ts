@@ -153,6 +153,23 @@ export const PII_FIELDS: Record<string, readonly string[]> = {
     "phoneMobile",
     "phoneLandline"
   ],
+  // Check-in automatizado (Tanda CHK · W1-A): viajero de una sesión de
+  // pre-check-in. Mismo envelope AES-GCM que GuestRegisterRecord; el resto de
+  // columnas (nombre, apellidos, sexo, nacionalidad, fechas, tipo de documento,
+  // localidad y país de residencia) queda en claro para listados y asignación.
+  CheckInGuest: [
+    "documentNumber",
+    "documentSupportNumber",
+    "email",
+    "phoneMobile",
+    "residenceFullAddress"
+  ],
+  // Corrector Tanda CHK (SEC-2): the provisional signature store keeps the PNG
+  // of the stroke and the entry-form PDF (name, document number, address,
+  // phone, email of the traveller) as data: URIs INSIDE the row, so both keys
+  // carry PII and are encrypted at rest with the same envelope (strings of
+  // ~10 KB). A real object store (T9) will replace them with opaque keys.
+  Signature: ["objectKey", "pdfObjectKey"],
   // OAuth refresh token + IMAP password for email connectors, encrypted at rest.
   EmailConnection: ["oauthRefreshToken", "imapPassword"],
   // Payment Service Provider references — opaque tokens that can be replayed
@@ -216,6 +233,13 @@ export const LOOKUP_HASH_FIELDS = {
     email: "emailLookupHash",
     phoneMobile: "phoneMobileLookupHash",
     documentNumber: "documentNumberLookupHash"
+  },
+  // Tanda CHK · W1-A: matchGuestToReservation busca por documento, correo o
+  // móvil ya cifrados; sin estos siblings el where nunca coincidiría.
+  CheckInGuest: {
+    documentNumber: "documentNumberLookupHash",
+    email: "emailLookupHash",
+    phoneMobile: "phoneMobileLookupHash"
   },
   // Payment.pspReference is encrypted (PII_FIELDS) and markInvoicePaid relies
   // on `findFirst({ where: { invoiceId, pspReference } })` for idempotency:

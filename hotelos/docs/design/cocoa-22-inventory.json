@@ -11,43 +11,43 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 234,
-    "lines": 101019,
+    "files": 236,
+    "lines": 103205,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1165,
+    "cocoaButtons": 1186,
     "rawTables": 1,
-    "cocoaTables": 306,
+    "cocoaTables": 309,
     "rawInputs": 0,
-    "cocoaInputs": 1169,
+    "cocoaInputs": 1188,
     "inlineStyles": 625,
     "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 201,
-    "withTabHost": 90,
+    "withPageHeader": 202,
+    "withTabHost": 91,
     "debtPoints": 176
   },
   "bySize": {
     "S": 97,
-    "M": 107,
-    "L": 23,
-    "XL": 7
+    "M": 109,
+    "L": 22,
+    "XL": 8
   },
   "byArchetype": {
     "dashboard": 94,
     "lista": 18,
     "detalle": 3,
     "formulario": 19,
-    "asistente": 12,
+    "asistente": 13,
     "workspace": 5,
     "calendario": 6,
     "chat": 1,
-    "dialogo": 21,
+    "dialogo": 22,
     "contenedor": 41,
     "otro": 14
   },
@@ -168,12 +168,12 @@
     },
     "hoy": {
       "label": "Hoy",
-      "files": 12,
-      "lines": 7475,
+      "files": 13,
+      "lines": 8338,
       "debtPoints": 17,
       "sizes": {
         "S": 3,
-        "M": 5,
+        "M": 6,
         "L": 3,
         "XL": 1
       },
@@ -181,6 +181,7 @@
         "dashboard": 7,
         "lista": 1,
         "chat": 1,
+        "asistente": 1,
         "calendario": 2,
         "contenedor": 1
       }
@@ -203,19 +204,19 @@
     },
     "operaciones": {
       "label": "Operaciones",
-      "files": 34,
-      "lines": 13616,
+      "files": 35,
+      "lines": 14939,
       "debtPoints": 34,
       "sizes": {
         "S": 13,
-        "M": 18,
-        "L": 3,
-        "XL": 0
+        "M": 19,
+        "L": 2,
+        "XL": 1
       },
       "archetypes": {
         "dashboard": 12,
+        "dialogo": 15,
         "lista": 1,
-        "dialogo": 14,
         "otro": 1,
         "asistente": 2,
         "contenedor": 4
@@ -4037,6 +4038,40 @@
       "size": "S"
     },
     {
+      "path": "apps/admin-web/src/screens/operations/ArrivalPreCheckInDrawer.tsx",
+      "name": "ArrivalPreCheckInDrawer",
+      "screenKeys": [],
+      "category": "operaciones",
+      "categories": [],
+      "archetype": "dialogo",
+      "lines": 414,
+      "metrics": {
+        "lines": 414,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 2,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
       "path": "apps/admin-web/src/screens/operations/AssetsDashboard.tsx",
       "name": "AssetsDashboard",
       "screenKeys": [
@@ -4111,6 +4146,44 @@
       "headerExempt": false,
       "debtPoints": 1,
       "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/operations/CheckInAutomationSettingsScreen.tsx",
+      "name": "CheckInAutomationSettingsScreen",
+      "screenKeys": [
+        "CheckInAutomationSettingsScreen"
+      ],
+      "category": "hoy",
+      "categories": [
+        "hoy"
+      ],
+      "archetype": "asistente",
+      "lines": 528,
+      "metrics": {
+        "lines": 528,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 6,
+        "rawTables": 0,
+        "cocoaTables": 2,
+        "rawInputs": 0,
+        "cocoaInputs": 16,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": true,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "M"
     },
     {
       "path": "apps/admin-web/src/screens/operations/ConciergeInboxDashboard.tsx",
@@ -4271,9 +4344,9 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "lista",
-      "lines": 510,
+      "lines": 612,
       "metrics": {
-        "lines": 510,
+        "lines": 612,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4309,18 +4382,18 @@
         "hoy"
       ],
       "archetype": "dashboard",
-      "lines": 1557,
+      "lines": 1889,
       "metrics": {
-        "lines": 1557,
+        "lines": 1889,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 21,
+        "cocoaButtons": 25,
         "rawTables": 0,
         "cocoaTables": 1,
         "rawInputs": 0,
-        "cocoaInputs": 2,
+        "cocoaInputs": 3,
         "inlineStyles": 7,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -5087,18 +5160,18 @@
       "category": "operaciones",
       "categories": [],
       "archetype": "dialogo",
-      "lines": 1013,
+      "lines": 1820,
       "metrics": {
-        "lines": 1013,
+        "lines": 1820,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 9,
+        "cocoaButtons": 18,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
-        "cocoaInputs": 6,
+        "cocoaInputs": 8,
         "inlineStyles": 4,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -5112,7 +5185,7 @@
       },
       "headerExempt": true,
       "debtPoints": 1,
-      "size": "L"
+      "size": "XL"
     },
     {
       "path": "apps/admin-web/src/screens/operations/QuickCheckOutDrawer.tsx",
@@ -8093,9 +8166,9 @@
       "category": "hoy",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 95,
+      "lines": 98,
       "metrics": {
-        "lines": 95,
+        "lines": 98,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

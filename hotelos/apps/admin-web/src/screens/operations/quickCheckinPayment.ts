@@ -243,6 +243,56 @@ export function resolveQuickCheckinAttempt(
 }
 
 // ---------------------------------------------------------------------------
+// Memoria del intento entre aperturas del cajón (corrector CHK · REV3-03)
+// ---------------------------------------------------------------------------
+
+/**
+ * El intento de cobro vivía solo en un `useRef` del cajón abierto: si el cobro
+ * se registró y el check-in completo falló (409 firmas), cerrar y reabrir el
+ * cajón olvidaba la clave de idempotencia y un nuevo «Cobrar y hacer check-in»
+ * cobraba OTRA vez. El intento se guarda por reserva en sessionStorage (misma
+ * pestaña; nunca el importe ni datos de tarjeta: solo huella + clave).
+ */
+export const QUICK_CHECKIN_ATTEMPT_STORAGE_PREFIX = "hotelos-checkin-payment-attempt:";
+
+type AttemptStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function attemptStore(store?: AttemptStore | null): AttemptStore | null {
+  if (store !== undefined) return store;
+  try {
+    return typeof window !== "undefined" && window.sessionStorage ? window.sessionStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readStoredCheckinAttempt(reservationId: string, store?: AttemptStore | null): QuickCheckinPaymentAttempt | null {
+  const target = attemptStore(store);
+  if (!target) return null;
+  try {
+    const raw = target.getItem(`${QUICK_CHECKIN_ATTEMPT_STORAGE_PREFIX}${reservationId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<QuickCheckinPaymentAttempt>;
+    return typeof parsed.fingerprint === "string" && typeof parsed.clientRequestId === "string" && parsed.clientRequestId ? { fingerprint: parsed.fingerprint, clientRequestId: parsed.clientRequestId } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Guarda el intento (o lo borra con null, tras un check-in hecho). Nunca lanza. */
+export function storeCheckinAttempt(reservationId: string, attempt: QuickCheckinPaymentAttempt | null, store?: AttemptStore | null): void {
+  const target = attemptStore(store);
+  if (!target) return;
+  try {
+    const key = `${QUICK_CHECKIN_ATTEMPT_STORAGE_PREFIX}${reservationId}`;
+    if (attempt) target.setItem(key, JSON.stringify({ fingerprint: attempt.fingerprint, clientRequestId: attempt.clientRequestId }));
+    else target.removeItem(key);
+  } catch {
+    // Almacenamiento no disponible (modo privado, cuota): el useRef del cajón sigue valiendo.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Resultado: solo un cobro registrado permite seguir con el check-in
 // ---------------------------------------------------------------------------
 

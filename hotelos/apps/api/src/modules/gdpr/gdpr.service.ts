@@ -381,6 +381,69 @@ export async function fulfillDsar(requestId: string, userId: string) {
   return { request: updated, dossier };
 }
 
+export type CheckInErasureSummary = { guests: number; captures: number; signatures: number; sessions: number };
+
+/**
+ * Supresión de la capa de check-in automatizado (corrector SEC-3). Alcance:
+ * viajeros de las reservas del interesado o vinculados a su Guest. Exportada
+ * para la prueba de integración; la usa executeErasure.
+ */
+export async function eraseCheckInData(input: { guestIds: readonly string[]; reservationIds: readonly string[] }): Promise<CheckInErasureSummary> {
+  const summary: CheckInErasureSummary = { guests: 0, captures: 0, signatures: 0, sessions: 0 };
+  if (input.guestIds.length === 0 && input.reservationIds.length === 0) return summary;
+  const sessions = input.reservationIds.length ? await prisma.checkInSession.findMany({ where: { reservationId: { in: [...input.reservationIds] } }, select: { id: true, status: true } }) : [];
+  const sessionIds = sessions.map((session) => session.id);
+  const guests = await prisma.checkInGuest.findMany({
+    where: {
+      OR: [
+        sessionIds.length ? { sessionId: { in: sessionIds } } : undefined,
+        input.guestIds.length ? { guestId: { in: [...input.guestIds] } } : undefined
+      ].filter(Boolean) as never
+    },
+    select: { id: true, guestRegisterRecordId: true }
+  });
+  const guestIds = guests.map((guest) => guest.id);
+  if (guestIds.length) {
+    summary.captures = (await prisma.documentCapture.deleteMany({ where: { checkInGuestId: { in: guestIds } } })).count;
+    for (const id of guestIds) {
+      // update (no updateMany): la extensión de cifrado cifra los campos PII y recalcula los hashes de búsqueda.
+      await prisma.checkInGuest.update({
+        where: { id },
+        data: {
+          firstName: "Erased",
+          surname1: "Erased",
+          surname2: null,
+          dateOfBirth: null,
+          documentNumber: null,
+          documentSupportNumber: null,
+          documentExpiryDate: null,
+          email: null,
+          phoneMobile: null,
+          residenceFullAddress: null,
+          residenceLocality: null,
+          documentNumberLookupHash: null,
+          emailLookupHash: null,
+          phoneMobileLookupHash: null
+        }
+      });
+      summary.guests += 1;
+    }
+  }
+  const recordIds = guests.map((guest) => guest.guestRegisterRecordId).filter((id): id is string => Boolean(id));
+  const signatures = await prisma.signature.findMany({
+    where: { OR: [guestIds.length ? { checkInGuestId: { in: guestIds } } : undefined, recordIds.length ? { guestRegisterRecordId: { in: recordIds } } : undefined].filter(Boolean) as never },
+    select: { id: true, sha256: true }
+  });
+  for (const signature of signatures) {
+    await prisma.signature.update({ where: { id: signature.id }, data: { objectKey: `erased:${signature.sha256}`, pdfObjectKey: null, ip: null, userAgent: null, strokeMetaJson: { erased: true } as never } });
+    summary.signatures += 1;
+  }
+  if (sessionIds.length) {
+    summary.sessions = (await prisma.checkInSession.updateMany({ where: { id: { in: sessionIds }, status: { not: "cancelled" } }, data: { status: "cancelled", handoffKind: null, handoffReason: null, etaDeclared: null, preferencesJson: [] as never, consentJson: { erasedAt: new Date().toISOString() } as never } })).count;
+  }
+  return summary;
+}
+
 export async function executeErasure(
   requestId: string,
   userId: string,
@@ -569,6 +632,17 @@ export async function executeErasure(
       note: "PII fields nulled or replaced. Row retained because it is referenced by reservations/folios."
     });
   }
+
+  // --- Check-in automatizado (Tanda CHK · corrector SEC-3): las tablas nuevas con PII no cuelgan
+  // de Guest/Reservation por FK, así que sobrevivían al anonimizado. Por reserva del interesado:
+  // viajeros anonimizados (nombre, fecha de nacimiento, campos cifrados y hashes de búsqueda),
+  // capturas borradas, firmas sin trazo ni PDF (se conservan sha256 y retention_until como evidencia)
+  // y sesión cancelada (solo estados y métricas, diseño §7.3).
+  const checkin = await eraseCheckInData({ guestIds, reservationIds });
+  if (checkin.guests) tables.push({ name: "CheckInGuest", rowsAffected: checkin.guests, action: "pseudonymized", note: "Nombre, fecha de nacimiento, documento, contacto y dirección anonimizados; hashes de búsqueda vaciados." });
+  if (checkin.captures) tables.push({ name: "DocumentCapture", rowsAffected: checkin.captures, action: "deleted" });
+  if (checkin.signatures) tables.push({ name: "Signature", rowsAffected: checkin.signatures, action: "pseudonymized", note: "Trazo y PDF del parte retirados; sha256 y retention_until conservados como evidencia (RD 933/2021 art. 5.3)." });
+  if (checkin.sessions) tables.push({ name: "CheckInSession", rowsAffected: checkin.sessions, action: "pseudonymized", note: "Sesión cancelada; solo estados y métricas." });
 
   // --- GuestProfile: pseudonymize PII ---
   let profilesPseudonymized = 0;

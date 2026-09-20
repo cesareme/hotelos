@@ -14,8 +14,10 @@ import {
   defaultQuickCheckinPaymentMode,
   normalizeQuickCheckinMethod,
   quickCheckinAttemptFingerprint,
+  readStoredCheckinAttempt,
   resolveQuickCheckinAmount,
   resolveQuickCheckinAttempt,
+  storeCheckinAttempt,
   type QuickCheckinPaymentMode
 } from "../quickCheckinPayment.ts";
 
@@ -184,5 +186,32 @@ describe("Quick check-in · cuerpo del cobro", () => {
     assert.doesNotThrow(() => assertCheckinPaymentCaptured({ kind: "payment", status: "captured", idempotent: false }));
     assert.doesNotThrow(() => assertCheckinPaymentCaptured({ kind: "payment", status: "captured", idempotent: true }));
     assert.doesNotThrow(() => assertCheckinPaymentCaptured({ kind: "payment" }));
+  });
+});
+
+// Corrector Tanda CHK (REV3-03): el intento de cobro sobrevive al cierre del cajón.
+describe("Quick check-in · memoria del intento entre aperturas del cajón", () => {
+  function fakeStore() {
+    const map = new Map<string, string>();
+    return { getItem: (key: string) => map.get(key) ?? null, setItem: (key: string, value: string) => void map.set(key, value), removeItem: (key: string) => void map.delete(key), map };
+  }
+  it("guarda solo huella y clave por reserva, se relee al reabrir y se borra tras el check-in; sin almacén no rompe", () => {
+    const store = fakeStore();
+    const attempt = { fingerprint: quickCheckinAttemptFingerprint({ folioId: "folio_1", amount: 190, currency: "EUR", method: "card" }), clientRequestId: "req-9" };
+    storeCheckinAttempt("res_1", attempt, store);
+    assert.deepEqual(readStoredCheckinAttempt("res_1", store), attempt);
+    assert.equal(readStoredCheckinAttempt("res_2", store), null);
+    assert.equal(store.map.get("hotelos-checkin-payment-attempt:res_1")?.includes("190"), true);
+    assert.equal(store.map.get("hotelos-checkin-payment-attempt:res_1")?.includes("card_number"), false);
+    // El reintento del mismo cobro reutiliza la clave guardada (misma huella).
+    const retry = resolveQuickCheckinAttempt(readStoredCheckinAttempt("res_1", store), { folioId: "folio_1", amount: 190, currency: "EUR", method: "card" }, () => "req-NEW");
+    assert.equal(retry.clientRequestId, "req-9");
+    storeCheckinAttempt("res_1", null, store);
+    assert.equal(readStoredCheckinAttempt("res_1", store), null);
+    // Basura en el almacén → null; sin almacén → no lanza.
+    store.setItem("hotelos-checkin-payment-attempt:res_3", "{no json");
+    assert.equal(readStoredCheckinAttempt("res_3", store), null);
+    assert.doesNotThrow(() => storeCheckinAttempt("res_1", attempt, null));
+    assert.equal(readStoredCheckinAttempt("res_1", null), null);
   });
 });

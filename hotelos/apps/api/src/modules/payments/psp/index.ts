@@ -11,8 +11,8 @@
 import { prisma } from "@hotelos/database";
 import type { PspProviderCode, PspStatusWire } from "../../../../../../packages/shared/src/payments-types.js";
 import type { PspAdapter } from "./psp.types.js";
-import { RedsysAdapter, redsysConfigFromEnv } from "./redsys.adapter.js";
-import { StripeAdapter, stripeConfigFromEnv } from "./stripe.adapter.js";
+import { createRedsysSandbox, RedsysAdapter, redsysConfigFromEnv } from "./redsys.adapter.js";
+import { createStripeSandbox, StripeAdapter, stripeConfigFromEnv } from "./stripe.adapter.js";
 
 export type PspRegistry = { stripe: () => PspAdapter; redsys: () => PspAdapter };
 
@@ -20,6 +20,19 @@ const defaultRegistry: PspRegistry = {
   stripe: () => new StripeAdapter(stripeConfigFromEnv()),
   redsys: () => new RedsysAdapter(redsysConfigFromEnv())
 };
+
+/**
+ * Registro SANDBOX (Tanda CHK · W5-A): los dos adaptadores con transporte en
+ * memoria y respuestas deterministas, una instancia por proveedor para que
+ * la máquina de estados (autorizar → capturar | anular) sobreviva entre
+ * llamadas. Solo lo activa quien llama a setPspRegistry (tests, demo);
+ * nunca se selecciona por variable de entorno.
+ */
+export function sandboxPspRegistry(options: { now?: () => Date } = {}): PspRegistry & { stripeState: ReturnType<typeof createStripeSandbox>["state"]; redsysState: ReturnType<typeof createRedsysSandbox>["state"] } {
+  const stripe = createStripeSandbox(options);
+  const redsys = createRedsysSandbox(options);
+  return { stripe: () => stripe.adapter, redsys: () => redsys.adapter, stripeState: stripe.state, redsysState: redsys.state };
+}
 
 let registry: PspRegistry = defaultRegistry;
 

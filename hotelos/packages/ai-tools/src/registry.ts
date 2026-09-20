@@ -204,6 +204,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   advancedTool("createReservation", "pms_core", "pms.reservation.create", "medium", true, "write"),
   advancedTool("quoteAvailability", "pms_core", "pms.reservation.read", "medium", false, "read"),
   advancedTool("parseReservationRequest", "pms_core", "pms.reservation.read", "low", false, "read"),
+  // Tanda CHK (W4-D): top-3 de habitaciones con motivo (lectura: el motor nunca asigna; assignRoom sigue con confirmación).
+  advancedTool("suggestRoomAssignment", "pms_core", "pms.reservation.read", "medium", false, "read"),
   // Parte de viajeros (spain_guest_register_compliance / compliance_hub)
   advancedTool("extractGuestIdentityFields", "spain_guest_register_compliance", "guest_register.create", "medium", true, "read"),
   advancedTool("requestGuestSignature", "spain_guest_register_compliance", "guest_register.sign", "high", true, "write"),
