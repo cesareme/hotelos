@@ -11,15 +11,32 @@
 // page keeps its skeleton, and with the module not active it paints «Módulo
 // no activado» (+ «Activar módulo» for users with modules.enable) instead of
 // KPIs at 0 and a 403 on every poll.
+//
+// Tanda RRHH · RRHH-10 (recon §3.10 «Personal»; RRHH-4 resolveStaff): the time
+// clock and the new-shift drawer identify the person by her ficha de personal
+// (StaffProfile) chosen in a CocoaSelect fed by GET /payroll/staff-profiles of
+// the centre — the same list PayrollScreen uses — and send `{ staffProfileId }`
+// through services/workforceApi.ts; no free-text name reaches the API any more
+// (it would answer 400 HR_EMPLOYEE_REQUIRED). Without fichas the pickers stay
+// disabled and the help points to Finanzas › Nóminas («Nueva ficha»). A created
+// shift may come back with rule `warnings` (rest, daily cap, weekly rest,
+// overtime; never a block): they are announced in a warning toast. Errors are
+// mapped by workforceErrorMessage (APPROVAL_SELF_DECISION when the approver of
+// an absence is its requester, HR_INVALID_TRANSITION, HR_EMPLOYEE_REQUIRED…).
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
-import { approveAbsence, clockIn, clockOut, createShift } from "../../services/workforceApi";
+import { absenceTypeLabel, approveAbsence, clockIn, clockOut, createShift, recordWarnings, workforceErrorMessage, workforceStaffProfilesPath, type WorkforceStaffProfile } from "../../services/workforceApi";
+import { getUser } from "../../services/auth-storage";
+import { useNavGate } from "../../navigation/useEnabledModules";
+import { canDo } from "../accounting/accounting-ui";
 import { useToast } from "../../components/Toast";
 import { ACTIONS, FIELD_LABELS, STATUS_LABELS, newLabel } from "../../content/actions";
 import { treeHeaderFor } from "../tabs/tab-helpers";
 import { date, dateRange, number, plural, time } from "../../lib/format";
+import { toArray } from "../../utils/toArray";
+import { employeeLabel, staffProfileLabelMap, staffProfileOptions } from "../payroll/staff-profile-form";
 import { moduleDisabledCopy } from "./module-gate";
 import { useScreenModuleGate } from "./useScreenModuleGate";
 import {
@@ -35,6 +52,7 @@ import {
   CocoaKpiStrip,
   CocoaPage,
   CocoaSection,
+  CocoaSelect,
   CocoaSkeleton,
   CocoaSpan,
   CocoaState,
@@ -56,7 +74,7 @@ type Kpis = {
   nextShiftsToday: number;
 };
 type Shift = { id: string; staffName: string; startAt: string; endAt: string; role?: string };
-type Absence = { id: string; staffName: string; type: string; startDate: string; endDate: string; status: string };
+type Absence = { id: string; staffName: string; type: string | null; restricted?: boolean; startDate: string; endDate: string; status: string };
 type ClockEntry = { id: string; createdAt?: string; payload?: Record<string, unknown> };
 type WorkforceDashboardData = {
   kpis: Kpis;
@@ -66,10 +84,12 @@ type WorkforceDashboardData = {
 };
 
 const EMPTY_KPIS: Kpis = { headcount: 0, activeStaff: 0, hoursWorkedMtd: 0, absencesPending: 0, absencesApproved: 0, nextShiftsToday: 0 };
-const ABSENCE_TYPE_LABELS: Record<string, string> = { vacation: "vacaciones", sick: "baja médica", personal: "personal", unpaid: "sin sueldo", other: "otro" };
 const MAX_SHIFTS = 12;
 const MAX_CLOCK_ENTRIES = 8;
 const NEW_SHIFT = newLabel("m", "turno");
+const NO_PROFILES_HELP = "No hay fichas de personal en este centro: créalas en Finanzas › Nóminas («Nueva ficha») antes de fichar o crear turnos.";
+const NO_OWN_PROFILE_HELP = "No tienes ficha de personal en este centro: pide a RRHH que la cree para poder fichar (con workforce.timeclock.manage se ficha por otras personas).";
+const PROFILE_PLACEHOLDER = "Elige una ficha de personal";
 
 function fmtNum(v: number | undefined): string {
   return number(v, { maximumFractionDigits: 1 });
@@ -80,8 +100,8 @@ function fmtDate(v: string): string {
 function fmtTime(v: string): string {
   return time(v);
 }
-function absenceTypeLabel(type: string): string {
-  return ABSENCE_TYPE_LABELS[type] ?? type;
+function absenceLabel(a: Pick<Absence, "type" | "restricted">): string {
+  return absenceTypeLabel(a.type, a.restricted === true);
 }
 
 /** Calendar days covered by an absence, both ends included. */
@@ -132,7 +152,7 @@ const ABSENCE_COLUMNS: CocoaTableColumn<Absence>[] = [
     label: FIELD_LABELS.type,
     render: (a) => (
       <CocoaBadge tone="warning" variant="tinted" size="small">
-        {absenceTypeLabel(a.type)}
+        {absenceLabel(a)}
       </CocoaBadge>
     )
   },
@@ -164,6 +184,19 @@ export function WorkforceDashboard() {
     moduleGate.ready ? `/workforce/properties/${PROPERTY_ID}/time-clock` : null,
     { pollIntervalMs: 30000 }
   );
+  // Fichas de personal of the centre (workforce.read: every template that opens this screen holds it): the only way to name a person.
+  const profilesState = useApiData<WorkforceStaffProfile[]>(moduleGate.ready ? workforceStaffProfilesPath(PROPERTY_ID) : null);
+  const profiles = useMemo(() => toArray<WorkforceStaffProfile>(profilesState.data).filter((profile) => profile.active), [profilesState.data]);
+  const profileOptions = useMemo(() => staffProfileOptions(profiles), [profiles]);
+  const profileLabels = useMemo(() => staffProfileLabelMap(profiles), [profiles]);
+  const profilesHelp = profilesState.error && !profilesState.data ? `No se pudieron cargar las fichas de personal: ${profilesState.error}` : profilesState.loading && !profilesState.data ? STATUS_LABELS.loading : profiles.length === 0 ? NO_PROFILES_HELP : undefined;
+  // Time clock (RF-01): without workforce.timeclock.manage the API only accepts the actor's own ficha, so the picker offers just hers.
+  const gate = useNavGate();
+  const clocksForOthers = canDo(gate, "workforce.timeclock.manage");
+  const ownUserId = getUser()?.userId ?? null;
+  const clockProfiles = useMemo(() => (clocksForOthers ? profiles : profiles.filter((profile) => profile.userId === ownUserId)), [clocksForOthers, profiles, ownUserId]);
+  const clockOptions = useMemo(() => staffProfileOptions(clockProfiles), [clockProfiles]);
+  const clockHelp = profilesHelp ?? (clockProfiles.length === 0 ? NO_OWN_PROFILE_HELP : undefined);
   const clockEntries = timeClock.data?.items ?? [];
   const kpis = data?.kpis ?? EMPTY_KPIS;
   const departments = data?.staffByDepartment ?? [];
@@ -175,9 +208,9 @@ export function WorkforceDashboard() {
   const selectedShift = shifts.find((s) => s.id === selectedShiftId) ?? null;
   const [selectedAbsenceId, setSelectedAbsenceId] = useState<string | null>(null);
   const selectedAbsence = absences.find((a) => a.id === selectedAbsenceId) ?? null;
-  const [clockName, setClockName] = useState("");
+  const [clockProfileId, setClockProfileId] = useState("");
   const [showShift, setShowShift] = useState(false);
-  const [sStaff, setSStaff] = useState("");
+  const [sStaffProfileId, setSStaffProfileId] = useState("");
   const [sRole, setSRole] = useState("");
   const [sStart, setSStart] = useState("");
   const [sEnd, setSEnd] = useState("");
@@ -185,6 +218,7 @@ export function WorkforceDashboard() {
   function refreshAll() {
     refresh();
     timeClock.refresh();
+    profilesState.refresh();
   }
 
   async function run(fn: () => Promise<unknown>, ok: string) {
@@ -194,15 +228,17 @@ export function WorkforceDashboard() {
       showToast(ok, { variant: "success" });
       refreshAll();
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "No se pudo completar la acción.", { variant: "error" });
+      showToast(workforceErrorMessage(e, "No se pudo completar la acción."), { variant: "error" });
     } finally {
       setBusy(false);
     }
   }
 
-  const employee = clockName.trim();
-  const canClock = !busy && employee !== "";
-  const canCreateShift = !busy && sStaff.trim() !== "" && sStart !== "" && sEnd !== "";
+  // The ficha chosen for the time clock must still be in the list (a refresh may retire it); a single own ficha is preselected.
+  const clockProfile = clockProfiles.some((profile) => profile.id === clockProfileId) ? clockProfileId : clockProfiles.length === 1 ? clockProfiles[0]!.id : "";
+  const clockLabel = clockProfile ? employeeLabel(profileLabels, clockProfile) : "";
+  const canClock = !busy && clockProfile !== "";
+  const canCreateShift = !busy && sStaffProfileId !== "" && sStart !== "" && sEnd !== "";
 
   function openShiftForm() {
     setShowShift(true);
@@ -213,12 +249,15 @@ export function WorkforceDashboard() {
 
   function submitShift() {
     void run(async () => {
-      await createShift({ staffName: sStaff.trim(), role: sRole || undefined, startAt: new Date(sStart).toISOString(), endAt: new Date(sEnd).toISOString() });
-      setSStaff("");
+      const created = await createShift({ staffProfileId: sStaffProfileId, role: sRole || undefined, startAt: new Date(sStart).toISOString(), endAt: new Date(sEnd).toISOString() });
+      setSStaffProfileId("");
       setSRole("");
       setSStart("");
       setSEnd("");
       setShowShift(false);
+      // Rule warnings never block the shift: announce them after the success toast so the planner can fix the roster.
+      const warnings = recordWarnings(created);
+      if (warnings.length > 0) showToast(`Turno con ${plural(warnings.length, "aviso", "avisos")}: ${warnings.map((warning) => warning.message).join(" · ")}`, { variant: "warning" });
     }, "Turno creado.");
   }
 
@@ -302,14 +341,14 @@ export function WorkforceDashboard() {
       <CocoaGrid align="start">
         <CocoaSpan cols={4} min={320}>
           <CocoaSection title="Fichaje" meta="entrada / salida">
-            <CocoaField label="Nombre del empleado">
-              <CocoaInput value={clockName} onChange={setClockName} placeholder="Nombre del empleado" disabled={busy} autoComplete="off" />
+            <CocoaField label="Ficha de personal" help={clockHelp}>
+              <CocoaSelect value={clockProfile} onChange={setClockProfileId} options={clockOptions} placeholder={PROFILE_PLACEHOLDER} disabled={busy || clockProfiles.length === 0} aria-label="Ficha de personal para fichar" />
             </CocoaField>
             <div className="cocoa-row" data-gap="2">
-              <CocoaButton variant="filled" tone="accent" size="small" disabled={!canClock} onClick={() => run(() => clockIn(employee), `Entrada registrada para ${employee}.`)}>
+              <CocoaButton variant="filled" tone="accent" size="small" disabled={!canClock} onClick={() => run(() => clockIn(clockProfile), `Entrada registrada para ${clockLabel}.`)}>
                 Fichar entrada
               </CocoaButton>
-              <CocoaButton variant="bordered" tone="neutral" size="small" disabled={!canClock} onClick={() => run(() => clockOut(employee), `Salida registrada para ${employee}.`)}>
+              <CocoaButton variant="bordered" tone="neutral" size="small" disabled={!canClock} onClick={() => run(() => clockOut(clockProfile), `Salida registrada para ${clockLabel}.`)}>
                 Fichar salida
               </CocoaButton>
             </div>
@@ -419,7 +458,7 @@ export function WorkforceDashboard() {
         open={selectedAbsence !== null}
         onClose={() => setSelectedAbsenceId(null)}
         title={selectedAbsence ? `Ausencia · ${selectedAbsence.staffName}` : "Ausencia"}
-        subtitle={selectedAbsence ? absenceTypeLabel(selectedAbsence.type) : undefined}
+        subtitle={selectedAbsence ? absenceLabel(selectedAbsence) : undefined}
         side="right"
         size="sm"
         footer={
@@ -438,7 +477,7 @@ export function WorkforceDashboard() {
         {selectedAbsence ? (
           <ul className="c22-section__list" aria-label="Ficha de la ausencia">
             <DetailRow label="Empleado">{selectedAbsence.staffName}</DetailRow>
-            <DetailRow label={FIELD_LABELS.type}>{absenceTypeLabel(selectedAbsence.type)}</DetailRow>
+            <DetailRow label={FIELD_LABELS.type}>{absenceLabel(selectedAbsence)}</DetailRow>
             <DetailRow label={FIELD_LABELS.status}>
               {selectedAbsence.status === "pending" ? (
                 <CocoaBadge tone="warning">pendiente</CocoaBadge>
@@ -482,7 +521,7 @@ export function WorkforceDashboard() {
         open={showShift}
         onClose={closeShiftForm}
         title={NEW_SHIFT}
-        subtitle="Asigna empleado, puesto y horario."
+        subtitle="Elige la ficha de personal, el puesto y el horario. El turno se crea aunque incumpla una regla del convenio: la pantalla avisa."
         side="right"
         size="md"
         footer={
@@ -497,8 +536,8 @@ export function WorkforceDashboard() {
         }
       >
         <div className="cocoa-stack" data-gap="3">
-          <CocoaField label="Empleado" required>
-            <CocoaInput value={sStaff} onChange={setSStaff} placeholder="Empleado" disabled={busy} autoComplete="off" />
+          <CocoaField label="Ficha de personal" required help={profilesHelp}>
+            <CocoaSelect value={sStaffProfileId} onChange={setSStaffProfileId} options={profileOptions} placeholder={PROFILE_PLACEHOLDER} disabled={busy || profiles.length === 0} />
           </CocoaField>
           <CocoaField label="Puesto" hint={STATUS_LABELS.optional}>
             <CocoaInput value={sRole} onChange={setSRole} placeholder="Puesto (ej.: recepción)" disabled={busy} />

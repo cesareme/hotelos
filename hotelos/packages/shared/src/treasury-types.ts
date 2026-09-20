@@ -233,7 +233,8 @@ export type AccrueCommissionResult = {
 
 // ---- Nóminas ----
 
-export type PayrollPeriodStatus = "open" | "calculated" | "exported" | "closed";
+/** Tanda 8a: `approved` (dirección aprueba el registro mensual antes de exportar y pagar). */
+export type PayrollPeriodStatus = "open" | "calculated" | "approved" | "exported" | "closed";
 
 export type PayrollPeriodRecord = {
   id: string;
@@ -255,6 +256,13 @@ export type PayrollPeriodRecord = {
   reversedAt: string | null;
   paymentJournalEntryId: string | null;
   paidAt: string | null;
+  // Tanda 8a (SoD): quién calculó y quién aprobó.
+  calculatedByUserId: string | null;
+  approvedByUserId: string | null;
+  approvedAt: string | null;
+  /** Tanda RRHH (corrector SEC-12): `external` (la gestoría calcula) o `calculated` (preparación del ERP); y el sello de cierre. */
+  mode: "external" | "calculated";
+  closedAt: string | null;
 };
 
 export type PayrollExportFormat = "a3" | "sage" | "csv";

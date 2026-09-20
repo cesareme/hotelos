@@ -25,7 +25,9 @@
 //      lote `posted`; 9. auditoría fuera de la transacción.
 // Un periodo cerrado (409 FISCAL_PERIOD_CLOSED del motor) deshace TODO: nada queda a medias.
 // Nómina real ya contabilizada en alguna celda (contable-6C-08): aviso en la preview Y en el resultado de create / post
-// (`warnings`, lo que ven el cajón y el CLI con --apply); no bloquea porque el lote importado puede ser la única nómina del centro.
+// (`warnings`, lo que ven el cajón y el CLI con --apply); un periodo `calculated` sin aprobar no bloquea porque el lote
+// importado puede ser la única nómina del centro; uno APROBADO (o exportado) sí: 409 PAYROLL_MODE_CONFLICT al contabilizar
+// (diseño §7.1 (3), corrector RRHH · RF-10; el espejo en calculatePeriod bloquea el cálculo sobre una celda con lote posted).
 // Topes por lote (SEC-6C-03): ≤ PAYROLL_COST_IMPORT_MAX_MONTHS meses, ≤ _MAX_CELLS celdas, ≤ _MAX_ROWS filas
 // (400 PAYROLL_IMPORT_INVALID): la transacción retiene el lock de numeración del ejercicio hasta el commit.
 // Reverso (contable-6C-02): el periodo del asiento ORIGINAL debe estar abierto aunque `entryDate` sea otra fecha
@@ -372,12 +374,12 @@ async function findPayrollPeriodsPosted(db: Db, organizationId: string, cells: r
   const months = Array.from(new Set(cells.map((cell) => cell.periodCode)));
   const periods = await db.payrollPeriod.findMany({
     where: { organizationId, periodCode: { in: months }, journalEntryIds: { isEmpty: false } },
-    select: { id: true, propertyId: true, periodCode: true }
+    select: { id: true, propertyId: true, periodCode: true, status: true, approvedByUserId: true }
   });
   const cellSet = new Set(cells.map((cell) => `${cell.propertyId}|${cell.periodCode}`));
   return periods
     .filter((period) => period.propertyId === null || cellSet.has(`${period.propertyId}|${period.periodCode}`))
-    .map((period) => ({ periodId: period.id, propertyId: period.propertyId ?? null, periodCode: period.periodCode }))
+    .map((period) => ({ periodId: period.id, propertyId: period.propertyId ?? null, periodCode: period.periodCode, approved: period.status === "approved" || period.status === "exported" || period.status === "closed" || Boolean(period.approvedByUserId) }))
     .sort((a, b) => a.periodCode.localeCompare(b.periodCode) || (a.propertyId ?? "").localeCompare(b.propertyId ?? ""));
 }
 
@@ -391,6 +393,19 @@ function payrollPeriodsWarning(periods: readonly PayrollCostPayrollPeriodRef[], 
   if (periods.length === 0) return null;
   const cells = periods.map((period) => `${period.propertyId ? (properties.get(period.propertyId)?.code ?? period.propertyId) : "sociedad"} · ${period.periodCode}`);
   return `${periods.length} periodo(s) de nómina real ya contabilizado(s) en el mismo centro y mes (${cells.join(", ")}): revisa que el coste no se devengue dos veces; si la nómina real es la buena, revierte este lote`;
+}
+
+/**
+ * Bloqueo de modo (diseño §7.1 (3); corrector RRHH · RF-10): contabilizar un lote sobre una celda cuya
+ * nómina calculada ya está APROBADA (o exportada) devengaría el 640/642 dos veces contra un registro
+ * que dirección dio por bueno → 409 PAYROLL_MODE_CONFLICT. Un periodo `calculated` sin aprobar sigue
+ * siendo solo aviso (payrollPeriodsWarning): el lote puede ser la nómina buena y el cálculo, un borrador.
+ */
+function assertNoApprovedPayrollInCells(periods: readonly PayrollCostPayrollPeriodRef[], properties: Map<string, PropertyLite>): void {
+  const approved = periods.filter((period) => period.approved);
+  if (approved.length === 0) return;
+  const cells = approved.map((period) => `${period.propertyId ? (properties.get(period.propertyId)?.code ?? period.propertyId) : "sociedad"} · ${period.periodCode}`);
+  throw ledgerConflict("PAYROLL_MODE_CONFLICT", `${approved.length} periodo(s) de nómina calculada ya aprobado(s) por dirección en el mismo centro y mes (${cells.join(", ")}): la celda está en modo calculado y el lote importado no se contabiliza.`, { mode: "calculated", periods: approved });
 }
 
 function replacedIdsOf(duplicate: ImportRow | null, overlaps: readonly PayrollCostOverlapRef[]): string[] {
@@ -1003,6 +1018,7 @@ export async function createPayrollCostImport(input: { context: UserContext; bod
         }))
       });
     }
+    if (post) assertNoApprovedPayrollInCells(payrollPeriodsPosted, propertyMap);
     const replacedImportIds = replace ? await replaceImportsInTx(tx, organizationId, replacedIdsOf(duplicate, overlaps), { newImportId: created.id, reversedBy: createdBy, properties: propertyMap, scopeContext }) : [];
     let row = created;
     let entries: PayrollCostImportEntryDto[] = [];
@@ -1061,6 +1077,7 @@ export async function postPayrollCostImport(input: { context: UserContext; impor
       if (duplicate) throw ledgerConflict("PAYROLL_IMPORT_DUPLICATE", `Este contenido ya está importado en el lote ${duplicate.id}. Usa replace para sustituirlo.`, maskDuplicateRef(duplicateRef(duplicate), hidden) as unknown as Record<string, unknown>);
       if (overlaps.length > 0) throw ledgerConflict("PAYROLL_IMPORT_OVERLAP", `${overlaps.length} celda(s) centro × mes ya están contabilizadas por otro lote. Usa replace para sustituir los lotes afectados enteros.`, { overlaps: maskOverlapRefs(overlaps, hidden) });
     }
+    assertNoApprovedPayrollInCells(payrollPeriodsPosted, properties);
     const replacedImportIds = replace ? await replaceImportsInTx(tx, organizationId, replacedIdsOf(duplicate, overlaps), { newImportId: row.id, reversedBy: input.context.userId, properties, scopeContext: input.context }) : [];
     const posted = await postImportInTx(tx, row, { createdBy: input.context.userId, properties });
     const periodsWarning = payrollPeriodsWarning(payrollPeriodsPosted, properties);

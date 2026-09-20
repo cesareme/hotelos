@@ -3,7 +3,7 @@
 // __tests__/users-rbac.test.mts.
 //
 //   - MODULE_OF_PREFIX / moduleOfPermission: the §4.3 dictionary «prefijo →
-//     módulo» as a static table (the 81 prefixes of the catalogue plus the
+//     módulo» as a static table (the 82 prefixes of the catalogue plus the
 //     handful of keys that live in another module than their prefix:
 //     billing.configure / payments.configure / accounting.entity.read → M20,
 //     compliance.configure … → M15b), for the template comparator;
@@ -119,7 +119,7 @@ export const MODULE_ORDER: readonly ModuleCode[] = [
   "M15", "M15b", "M16", "M17", "M18", "M18b", "M19", "M20", "M21", "M22", "M22b", "M23", "M24", "PLAT"
 ];
 
-/** The 81 prefixes of the catalogue (design §4.3): first segment of the key → module. */
+/** The 82 prefixes of the catalogue (design §4.3): first segment of the key → module. */
 export const MODULE_OF_PREFIX: Readonly<Record<string, ModuleCode>> = {
   pms: "M1", guests: "M1", guest_experience: "M1",
   folio: "M2", payment: "M2", payments: "M2",
@@ -135,6 +135,8 @@ export const MODULE_OF_PREFIX: Readonly<Record<string, ModuleCode>> = {
   accounting: "M10",
   banking: "M11",
   payroll: "M12", workforce: "M12",
+  // Tanda RRHH · plantilla y nómina: expediente, convenio, estándares y plantilla máxima (M12).
+  hr: "M12",
   assets: "M13", capex: "M13", asset: "M13",
   real_estate: "M14", property_tax: "M14",
   compliance: "M15", guest_register: "M15", tourist_tax: "M15",

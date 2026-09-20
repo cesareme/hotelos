@@ -197,9 +197,9 @@ const TEMPLATES_24 = [
 // Catálogo y plantillas
 // ---------------------------------------------------------------------------
 
-describe("RBAC · SoD · catálogo de 254 claves (223 + 27 de §4.6 + 4 documents.* de la Tanda T9)", () => {
-  it("PERMISSIONS tiene 254 claves, las mismas que el tipo PermissionKey, y admin.tenants.manage sigue siendo la única de plataforma", () => {
-    assert.equal(catalog.length, 254);
+describe("RBAC · SoD · catálogo de 259 claves (223 + 27 de §4.6 + 4 documents.* de la Tanda T9 + 5 hr.* de la Tanda RRHH)", () => {
+  it("PERMISSIONS tiene 259 claves, las mismas que el tipo PermissionKey, y admin.tenants.manage sigue siendo la única de plataforma", () => {
+    assert.equal(catalog.length, 259);
     assert.deepEqual([...catalog].sort(), [...permissionKeyUnion].sort());
     assert.deepEqual(catalog.filter((key) => key.startsWith("admin.") || key.startsWith("platform.")), ["admin.tenants.manage"]);
     assert.match(permissionsSource, /export const PLATFORM_PERMISSION_KEYS: readonly PermissionKey\[\] = \["admin\.tenants\.manage"\];/);
@@ -310,8 +310,8 @@ describe("RBAC · SoD · 24 plantillas (§4.2)", () => {
     assert.ok(templates.general_manager.has("security.break_glass") && templates.general_manager.has("payments.refund_approve"));
   });
 
-  it("revocaciones v2 (v3 y v4 son aditivas): ROLE_TEMPLATE_REVOCATIONS[k] ∩ ROLE_PERMISSION_MAP[k] = ∅ y ⊆ PERMISSIONS; cifras de §6.5", () => {
-    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 4;/);
+  it("revocaciones v2 (v3, v4 y v5 son aditivas): ROLE_TEMPLATE_REVOCATIONS[k] ∩ ROLE_PERMISSION_MAP[k] = ∅ y ⊆ PERMISSIONS; cifras de §6.5", () => {
+    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 5;/);
     for (const key of TEMPLATES_24) {
       const revoked = revocations[key];
       assert.ok(revoked instanceof Set, `${key} missing from ROLE_TEMPLATE_REVOCATIONS`);
@@ -356,6 +356,8 @@ describe("RBAC · SoD · pares estáticos (§4.7)", () => {
       ["accounting.journal.post", "payables.pay"],
       ["banking.reconcile", "payables.pay"],
       ["payroll.manage", "payroll.approve"],
+      // Tanda RRHH (corrector SEC-06): quien gestiona la nómina no aprueba la plantilla máxima.
+      ["payroll.manage", "hr.staffing.approve"],
       ["purchase_orders.create", "purchase_orders.approve"],
       ["purchase_orders.receive", "purchase_orders.approve"],
       ["night_audit.run", "night_audit.review"]
@@ -429,9 +431,15 @@ describe("RBAC · SoD · pares estáticos (§4.7)", () => {
     must("controller", ["payables.approve", "payables.pay", "accounting.period.close", "night_audit.reopen", "invoice.cancel_approve", "payments.refund_approve"]);
     not("controller", ["payables.create", "accounting.journal.post", "banking.reconcile"]);
     must("payroll_hr", ["payroll.manage", "workforce.payroll_export", "pms.reservation.read", "guests.read"]); // v3: lectura del Live Timeline
-    not("payroll_hr", ["payroll.approve", "pms.reservation.create", "guests.manage"]);
-    must("operations_director", ["payables.approve", "purchase_orders.approve", "revenue.rates.approve", "payroll.approve", "users.assign", "compliance.read", "housekeeping.read", "maintenance.read"]);
-    must("general_manager", ["security.break_glass", "payables.approve", "payroll.approve", "asset.capex.approve", "users.assign"]);
+    // v5 (Tanda RRHH): expediente, convenio y estándares; la plantilla máxima la aprueba dirección general (SoD con payroll.manage) y users.read sigue fuera (T8a).
+    must("payroll_hr", ["hr.employee.read", "hr.employee.manage", "hr.config.manage", "hr.standards.manage", "compliance.read"]);
+    not("payroll_hr", ["payroll.approve", "pms.reservation.create", "guests.manage", "hr.staffing.approve", "users.read"]);
+    must("operations_director", ["payables.approve", "purchase_orders.approve", "revenue.rates.approve", "payroll.approve", "users.assign", "compliance.read", "housekeeping.read", "maintenance.read", "hr.employee.read"]);
+    must("general_manager", ["security.break_glass", "payables.approve", "payroll.approve", "asset.capex.approve", "users.assign", "hr.employee.read", "hr.staffing.approve"]);
+    must("manager", ["hr.employee.read"]);
+    must("owner", ["hr.employee.read"]);
+    not("manager", ["hr.staffing.approve", "hr.employee.manage"]);
+    not("owner", ["hr.staffing.approve", "hr.employee.manage"]);
     must("asset_manager", ["real_estate.read", "real_estate.manage", "real_estate.documents.manage", "property_tax.manage", "capex.create", "pms.reservation.read", "guests.read"]); // v3: lectura del Live Timeline
     must("auditor", ["audit.read", "compliance.read", "maintenance.read", "accounting.reports.read", "real_estate.read"]);
     for (const key of ["auditor"]) {
@@ -680,5 +688,29 @@ describe("RBAC · SoD · schema.prisma y migración 20260918100000_rbac_departam
     assert.match(migrationSource, /^-- 20260918100000_rbac_departamentos · RBAC por departamento, nivel y ámbito \(Tanda 8a · L0\)$/m);
     assert.match(migrationSource, /prisma migrate diff/);
     assert.match(migrationSource, /ADITIVA/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tanda RRHH (RRHH-1 · 2026-09-20): plantilla máxima y nómina no se aprueban desde la misma plantilla
+// ---------------------------------------------------------------------------
+
+describe("RBAC · SoD · Tanda RRHH: {payroll.manage, hr.staffing.approve} nunca en la misma plantilla", () => {
+  it("ninguna plantilla (salvo break_glass, ámbito completo por construcción) reúne payroll.manage y hr.staffing.approve; solo payroll_hr gestiona la nómina y solo general_manager aprueba la plantilla", () => {
+    // La pareja estática {payroll.manage, hr.staffing.approve} está en SOD_STATIC_PAIRS (rbac-types.ts; corrector SEC-06):
+    // la aplica el motor SoD a cualquier rol a medida, y aquí se comprueba además sobre ROLE_PERMISSION_MAP.
+    assert.ok(sodPairs.some((pair) => pair.a === "payroll.manage" && pair.b === "hr.staffing.approve" && pair.except.length === 0), "pair {payroll.manage, hr.staffing.approve} in SOD_STATIC_PAIRS without exceptions");
+    const holders = (key) => TEMPLATES_24.filter((template) => template !== "break_glass" && templates[template].has(key));
+    assert.deepEqual(holders("payroll.manage"), ["payroll_hr"]);
+    assert.deepEqual(holders("hr.staffing.approve"), ["general_manager"]);
+    for (const template of TEMPLATES_24) {
+      if (template === "break_glass") continue;
+      assert.equal(templates[template].has("payroll.manage") && templates[template].has("hr.staffing.approve"), false, `${template} holds both sides of {payroll.manage, hr.staffing.approve}`);
+    }
+    for (const key of ["hr.employee.read", "hr.employee.manage", "hr.config.manage", "hr.standards.manage", "hr.staffing.approve"]) {
+      assert.ok(catalogSet.has(key), `${key} not in PERMISSIONS`);
+      assert.ok(permissionKeyUnion.includes(key), `${key} not in PermissionKey`);
+      for (const template of TEMPLATES_24) assert.equal(revocations[template].has(key), false, `${template}: ${key} revoked`);
+    }
   });
 });

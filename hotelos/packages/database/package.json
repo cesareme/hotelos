@@ -23,6 +23,7 @@
     "db:seed:rbac-demo": "node --env-file=../../.env --import tsx prisma/seed-rbac-demo.ts",
     "db:seed:ux-day": "node --env-file=../../.env --import tsx prisma/seed-ux-day.ts",
     "db:seed:checkin": "node --env-file=../../.env --import tsx prisma/seed-checkin.ts",
+    "db:seed:hr": "node --env-file=../../.env --import tsx prisma/seed-hr.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

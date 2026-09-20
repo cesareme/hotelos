@@ -15,6 +15,8 @@ import {
   declaranteNeedsAttention,
   entityOptionLabel,
   financeEyebrow,
+  canReadFinanceStructure,
+  FINANCE_STRUCTURE_READ_KEYS,
   financeScopeOptions,
   financeScopePolicy,
   financeScopeQuery,
@@ -98,6 +100,19 @@ describe("financeScope · estructura", () => {
     assert.deepEqual(structure.centres.map((c) => c.id), [LT, RA]);
     assert.equal(structure.entityReadable, true, "grants unknown → the API decides");
     assert.equal(structureFromProperties(rows.slice(0, 1), ORG).mode, "single_hotel");
+  });
+});
+
+describe("financeScope · quién pide GET /organizations/me/structure (corrector RRHH · RF-17)", () => {
+  it("con los permisos del centro conocidos y sin accounting.read / accounting.reports.read no se pide la ruta (payroll_hr sin 403 en consola); desconocidos o plataforma → se pide", () => {
+    assert.deepEqual([...FINANCE_STRUCTURE_READ_KEYS], ["accounting.read", "accounting.reports.read"]);
+    assert.equal(canReadFinanceStructure(["hr.employee.read", "payroll.read", "workforce.read"]), false);
+    assert.equal(canReadFinanceStructure([]), false);
+    assert.equal(canReadFinanceStructure(["accounting.read"]), true);
+    assert.equal(canReadFinanceStructure(["accounting.reports.read"]), true);
+    assert.equal(canReadFinanceStructure(null), true, "sin lista de permisos se intenta (el 403 se degrada a las filas del selector)");
+    assert.equal(canReadFinanceStructure(undefined), true);
+    assert.equal(canReadFinanceStructure([], true), true, "plataforma");
   });
 });
 

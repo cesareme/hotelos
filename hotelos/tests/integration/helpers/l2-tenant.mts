@@ -459,7 +459,10 @@ const PARENT_ALIASES: Readonly<Record<string, Readonly<Record<string, string>>>>
   MarketplaceListing: { appId: "DeveloperApp" },
   DepreciationLine: { runId: "DepreciationRun" },
   RateChangeJournalItem: { journalId: "RateChangeJournal" },
-  FolioRoutingRule: { targetFolioId: "Folio" }
+  FolioRoutingRule: { targetFolioId: "Folio" },
+  // Tanda RRHH (RRHH-1): reglas de convenio y líneas de plantilla máxima cuelgan de padres con otro nombre.
+  AgreementRule: { agreementId: "CollectiveAgreement" },
+  StaffingPlanLine: { planId: "StaffingPlan" }
 };
 
 /** Tablas globales (catálogos, plataforma) que nunca pertenecen a un tenant: fuera del barrido. */

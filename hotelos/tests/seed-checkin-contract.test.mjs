@@ -185,8 +185,8 @@ describe("Seed «tenant de prueba CHK» (W1-D)", () => {
   });
 
   it("está en la allowlist demo y tiene script pnpm", () => {
-    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk"\]/);
-    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk"\]/);
+    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk", "org_hr"\]/);
+    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr"\]/);
     assert.equal(databasePackage.scripts["db:seed:checkin"], "node --env-file=../../.env --import tsx prisma/seed-checkin.ts");
   });
 });

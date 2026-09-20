@@ -20,8 +20,10 @@
 // (prisma/seed-ux-day.ts) también es demo: org_uxday / prop_uxday.
 // Tanda CHK (lote W1-D): el tenant aislado del check-in automatizado
 // (prisma/seed-checkin.ts) también es demo: org_chk / prop_chk.
-export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday", "org_chk"];
-export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday", "prop_chk"];
+// Tanda RRHH (lote RRHH-7): el tenant aislado de plantilla y nómina
+// (prisma/seed-hr.ts) también es demo: org_hr / prop_hr.
+export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday", "org_chk", "org_hr"];
+export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr"];
 
 /** One write the seed intends to perform (printed before the decision). */
 export type PlannedWrite = {

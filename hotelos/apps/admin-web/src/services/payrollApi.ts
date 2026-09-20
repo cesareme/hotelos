@@ -31,6 +31,15 @@
 //                                                                                400 STAFF_PROFILE_DEPARTMENT_MISMATCH, 404 «Usuario no encontrado.»)   payroll.manage
 //   GET  /backoffice/properties/:id/departments                                  listPropertyDepartments   property.configure
 // The «Persona» picker of the drawer reads GET /rbac/users through services/rbacApi (listUsersInScope).
+//
+// Tanda RRHH · RRHH-10 (design docs/design/RRHH-PLANTILLA-NOMINA.md §10 «Nómina»; recon §3.10):
+//   POST /payroll/periods/:id/approve { note? }       approvePayrollPeriod (payroll.approve; approver ≠ calculator →
+//                                                     409 RBAC_SOD_CONFLICT calculator_ne_approver; 409 PAYROLL_PERIOD_ALREADY_APPROVED)
+//   GET  /payroll/incidences?period&propertyId&format=csv   downloadPayrollIncidences (workforce.payroll_export; CSV without NIF,
+//                                                     `filename` · `contentType` · `text` like the export → downloadText)
+// The wire record of a period carries `status: "approved"`, `approvedAt`, `approvedByUserId`, `calculatedByUserId`
+// (Tanda 8a) and `mode` · `closedAt` (Tanda RRHH; since the corrector SEC-12 mapPeriod of periods.service.ts emits them on every route) before the shared
+// PayrollPeriodRecord of treasury-types.ts does: `PayrollPeriodRecord` below widens the shared type additively.
 
 import type {
   PayrollCostImportCreateBody,
@@ -46,11 +55,14 @@ import type {
   PayrollCostReportQuery,
   PayrollExportFormat,
   PayrollExportResult,
-  PayrollPeriodRecord
+  PayrollIncidenceRow,
+  PayrollIncidencesDto,
+  PayrollPeriodMode,
+  PayrollPeriodRecord as SharedPayrollPeriodRecord
 } from "@hotelos/shared";
 import { apiRequest } from "./api-client";
 import { getActiveOrganizationId, getActivePropertyId } from "./activeProperty";
-import { compactQuery, financeErrorMessage, payrollCostImportListQuery, payrollCostReportQuery } from "./finance-contracts";
+import { compactQuery, financeErrorCode, financeErrorDetails, financeErrorMessage, payrollCostImportListQuery, payrollCostReportQuery } from "./finance-contracts";
 
 export type {
   PayrollCostImportCreateBody,
@@ -66,10 +78,54 @@ export type {
   PayrollCostReportQuery,
   PayrollExportFormat,
   PayrollExportResult,
-  PayrollPeriodRecord
+  PayrollIncidenceRow,
+  PayrollIncidencesDto,
+  PayrollPeriodMode
 } from "@hotelos/shared";
 
 const enc = encodeURIComponent;
+
+// ---- Periodos: contrato ampliado (Tanda 8a + Tanda RRHH) ----------------------------------
+
+/** Wire status of a period: the shared four plus `approved` (Tanda 8a: dirección approves before the payment). */
+export type PayrollPeriodStatus = SharedPayrollPeriodRecord["status"] | "approved";
+
+/**
+ * Period as the API answers it today: the shared record plus the approval trail (Tanda 8a) and the
+ * mode / closing of the Tanda RRHH. Every extra field is optional so an older API keeps compiling.
+ */
+export type PayrollPeriodRecord = Omit<SharedPayrollPeriodRecord, "status"> & {
+  status: PayrollPeriodStatus;
+  calculatedByUserId?: string | null;
+  approvedByUserId?: string | null;
+  approvedAt?: string | null;
+  /** `external` (the gestoría calculates; the ERP imports the aggregate) or `calculated` (internal preparation). */
+  mode?: PayrollPeriodMode;
+  closedAt?: string | null;
+};
+
+/** Copy of PAYROLL_PERIOD_MODE_LABELS_ES (hr-types.ts): admin-web imports @hotelos/shared as types only. */
+export const PAYROLL_PERIOD_MODE_LABELS_ES: Readonly<Record<PayrollPeriodMode, string>> = Object.freeze({
+  external: "Modo externo: la gestoría calcula; el ERP importa el agregado",
+  calculated: "Modo calculado: preparación interna, validar con la gestoría"
+});
+
+export const PAYROLL_PERIOD_MODE_SHORT_ES: Readonly<Record<PayrollPeriodMode, string>> = Object.freeze({ external: "Externo", calculated: "Calculado" });
+
+/** Mode of a period as the wire carries it; a record without the field (older API) is treated as external. */
+export function payrollPeriodMode(period: Pick<PayrollPeriodRecord, "mode"> | null | undefined): PayrollPeriodMode {
+  return period?.mode === "calculated" ? "calculated" : "external";
+}
+
+/** True once dirección approved the register (status `approved`, or the trail when a later export kept the status). */
+export function isPayrollPeriodApproved(period: Pick<PayrollPeriodRecord, "status" | "approvedAt" | "approvedByUserId">): boolean {
+  return period.status === "approved" || Boolean(period.approvedAt) || Boolean(period.approvedByUserId);
+}
+
+/** «Aprobar» applies to a calculated / exported period that nobody approved nor paid yet (mirror of approvePeriod). */
+export function canApprovePayrollPeriod(period: Pick<PayrollPeriodRecord, "status" | "approvedAt" | "approvedByUserId" | "paidAt">): boolean {
+  return period.status !== "open" && period.status !== "closed" && !period.paidAt && !isPayrollPeriodApproved(period);
+}
 
 export const PAYROLL_CONTRACT_TYPES = ["indefinido", "temporal", "fijo_discontinuo", "practicas", "formacion", "sustitucion"] as const;
 export type PayrollContractType = (typeof PAYROLL_CONTRACT_TYPES)[number];
@@ -102,6 +158,8 @@ export type PayrollContractRecord = {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Avisos del alta (nunca bloquean; RF-05 / RF-07): HR_STAFFING_EXCEEDED del position control, segundo contrato activo. */
+  warnings?: string[];
 };
 
 export type CreatePayrollContractRequest = {
@@ -145,6 +203,8 @@ export type StaffProfileRecord = {
   id: string;
   propertyId: string;
   userId: string;
+  /** Expediente (Employee) enlazado, o null (corrector RRHH · SEC-01). */
+  employeeId: string | null;
   employeeCode: string | null;
   departmentId: string | null;
   departmentName: string | null;
@@ -160,6 +220,8 @@ export type StaffProfileRecord = {
 export type CreateStaffProfileRequest = {
   propertyId: string;
   userId: string;
+  /** Expediente de la misma sociedad que el centro (SEC-01): enlaza la ficha al expediente. */
+  employeeId?: string;
   employeeCode?: string;
   departmentId?: string;
   employmentType?: StaffEmploymentType;
@@ -246,11 +308,38 @@ export function exportPayrollPeriod(periodId: string, format: PayrollExportForma
   return apiRequest<PayrollExportResult>(`/payroll/periods/${enc(periodId)}/export`, { method: "POST", body: { format } });
 }
 
+export type ApprovePayrollPeriodRequest = { note?: string };
+
+/** Dirección approves the calculated register (payroll.approve; high). 409 RBAC_SOD_CONFLICT (calculator ≠ approver) · PAYROLL_PERIOD_ALREADY_APPROVED · PAYROLL_PERIOD_NOT_CALCULATED · PAYROLL_PERIOD_PAID. */
+export function approvePayrollPeriod(periodId: string, body: ApprovePayrollPeriodRequest = {}): Promise<PayrollPeriodRecord> {
+  return apiRequest<PayrollPeriodRecord>(`/payroll/periods/${enc(periodId)}/approve`, { method: "POST", body: body.note?.trim() ? { note: body.note.trim() } : {} });
+}
+
 export type PayPayrollPeriodRequest = { paidAt?: string; bankLedgerCode?: string; reference?: string };
 
 /** Payment entry D 465 / H 572 (or `bankLedgerCode`). Critical; PAYROLL_PERIOD_NOT_CALCULATED · PAYROLL_PERIOD_PAID · PAYROLL_NOTHING_TO_PAY. */
 export function payPayrollPeriod(periodId: string, body: PayPayrollPeriodRequest = {}): Promise<PayrollPeriodRecord> {
   return apiRequest<PayrollPeriodRecord>(`/payroll/periods/${enc(periodId)}/pay`, { method: "POST", body });
+}
+
+// ---- Incidencias del mes para la gestoría (Tanda RRHH · RRHH-6 / RRHH-10) ----------------------
+
+export type PayrollIncidencesQuery = { period: string; propertyId?: string | null };
+
+/** JSON answer of GET /payroll/incidences (rows without NIF) plus the centre code and the warnings of the builder. */
+export type PayrollIncidencesResult = PayrollIncidencesDto & { propertyCode: string | null; warnings: string[] };
+
+/** `format=csv`: the same answer with the file to download (`;` separated, BOM) like the payroll export. */
+export type PayrollIncidencesExport = PayrollIncidencesResult & { filename: string; contentType: string; text: string };
+
+/** Altas · bajas · cambios de contrato · ausencias aprobadas del mes (workforce.payroll_export). No centre = the whole sociedad within scope. */
+export function listPayrollIncidences(query: PayrollIncidencesQuery): Promise<PayrollIncidencesResult> {
+  return apiRequest<PayrollIncidencesResult>("/payroll/incidences", { query: compactQuery({ period: query.period, propertyId: query.propertyId ?? undefined }) });
+}
+
+/** CSV of the incidences of the month; the caller downloads `text` client-side (downloadText) so apiRequest stays the only transport. */
+export function downloadPayrollIncidences(query: PayrollIncidencesQuery): Promise<PayrollIncidencesExport> {
+  return apiRequest<PayrollIncidencesExport>("/payroll/incidences", { query: compactQuery({ period: query.period, propertyId: query.propertyId ?? undefined, format: "csv" }) });
 }
 
 // ---- Coste de personal importado (Tanda 6c) ------------------------------------------
@@ -290,6 +379,27 @@ export function getPayrollCostReport(query: PayrollCostReportQuery): Promise<Pay
   return apiRequest<PayrollCostReport>("/payroll/cost-report", { query: payrollCostReportQuery(query) });
 }
 
+// Codes of the approval flow (Tanda 8a · Tanda RRHH) that finance-contracts does not name, or names for supplier bills
+// (RBAC_SOD_CONFLICT «quien registró la factura…»): the payroll wording wins here, by `details.rule` when the API sends it.
+const PAYROLL_APPROVAL_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  PAYROLL_PERIOD_ALREADY_APPROVED: "El periodo de nómina ya está aprobado.",
+  PAYROLL_NOT_APPROVED: "Dirección debe aprobar el periodo de nómina antes de pagarlo.",
+  HR_EMPLOYEE_REQUIRED: "Elige una ficha de personal: los turnos y fichajes ya no admiten nombres libres.",
+  ENTITY_SCOPE_REQUIRED: "Sin ámbito de toda la sociedad: elige un centro de trabajo o pide la clave de lectura de sociedad.",
+  PROPERTY_NOT_FOUND: "No se encuentra el centro."
+});
+
+const PAYROLL_SOD_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  calculator_ne_approver: "Quien calculó la nómina no puede aprobarla: otra persona con la clave de aprobación debe hacerlo.",
+  approver_ne_payer: "Quien aprobó la nómina no puede pagarla: otra persona con la clave de pago debe hacerlo."
+});
+
 export function payrollErrorMessage(error: unknown, fallback = "No se pudo completar la operación de nóminas."): string {
+  const code = financeErrorCode(error);
+  if (code === "RBAC_SOD_CONFLICT") {
+    const rule = financeErrorDetails(error)?.rule;
+    if (typeof rule === "string" && PAYROLL_SOD_MESSAGES[rule]) return PAYROLL_SOD_MESSAGES[rule];
+  }
+  if (code && PAYROLL_APPROVAL_MESSAGES[code]) return PAYROLL_APPROVAL_MESSAGES[code];
   return financeErrorMessage(error, fallback);
 }

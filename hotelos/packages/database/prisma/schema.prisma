@@ -574,6 +574,8 @@ model Property {
   /// Código de cuenta de cotización secundario (provincial) of this centre.
   socialSecurityCcc     String?  @map("social_security_ccc")
   laborCenterCode       String?  @map("labor_center_code")
+  /// Tanda RRHH (2026-09-20): convenio colectivo del centro (CollectiveAgreement.id); el del contrato prevalece.
+  agreementId           String?  @map("agreement_id")
 
   legalEntity           LegalEntity? @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
   rateChangeJournals    RateChangeJournal[]
@@ -1658,8 +1660,13 @@ model StaffProfile {
   hourlyCost     Decimal? @map("hourly_cost") @db.Decimal(12, 2)
   active         Boolean  @default(true)
   createdAt      DateTime @default(now()) @map("created_at")
+  // Tanda RRHH (2026-09-20): la ficha de centro apunta al expediente (Employee); userId sigue NOT NULL.
+  employeeId      String?  @map("employee_id")
+  usaliDepartment String?  @map("usali_department")
+  jobTitle        String?  @map("job_title")
 
   @@index([propertyId, active])
+  @@index([employeeId, active])
   @@map("staff_profiles")
 }
 
@@ -1704,6 +1711,11 @@ model AbsenceRequest {
   status         String   @default("pending")
   approvedBy     String?  @map("approved_by")
   createdAt      DateTime @default(now()) @map("created_at")
+  // Tanda RRHH (2026-09-20): SoD solicitante ≠ aprobador — CHECK absence_requests_requested_ne_approved
+  // (migración 20260920173000, escrito a mano: Prisma no declara CHECKs) y 409 APPROVAL_SELF_DECISION en el servicio.
+  requestedBy    String?   @map("requested_by")
+  decidedAt      DateTime? @map("decided_at")
+  reason         String?
 
   @@index([propertyId, status, startDate])
   @@map("absence_requests")
@@ -1718,9 +1730,158 @@ model LaborForecast {
   requiredLaborHours Decimal? @map("required_labor_hours") @db.Decimal(8, 2)
   reasonJson         Json     @default("{}") @map("reason_json")
   createdAt          DateTime @default(now()) @map("created_at")
+  // Tanda RRHH (2026-09-20): previsión por departamento USALI ("all" = fila agregada heredada), origen de los
+  // drivers (otb · pms_forecast · deterministic · actual · manual), drivers usados, FTE y coste estimado.
+  // Único escritor: modules/hr/labor-forecast.service.ts (upsert por la clave única).
+  usaliDepartment    String    @default("all") @map("usali_department")
+  source             String?
+  driversJson        Json      @default("{}") @map("drivers_json")
+  requiredFte        Decimal?  @map("required_fte") @db.Decimal(8, 2)
+  estimatedCost      Decimal?  @map("estimated_cost") @db.Decimal(14, 2)
+  generatedAt        DateTime? @map("generated_at")
 
+  @@unique([propertyId, forecastDate, usaliDepartment])
   @@index([propertyId, forecastDate])
   @@map("labor_forecasts")
+}
+
+// ---- RRHH · plantilla, convenio, estándares y plantilla máxima (Tanda RRHH · 2026-09-20) ----
+// Diseño: docs/design/RRHH-PLANTILLA-NOMINA.md §4 · migración 20260920173000_rrhh_plantilla_nomina.
+// Misma convención plana que el resto del bloque de personal (sin @relation; ids como texto).
+// Employee es el EXPEDIENTE: PII cifrada por la extensión Prisma (PII_FIELDS.Employee en
+// packages/database/src/crypto-fields.ts: taxId, socialSecurityNumber, email, phone, iban) con hash de
+// búsqueda solo para taxId (LOOKUP_HASH_FIELDS.Employee). Los listados nunca devuelven PII
+// (EmployeeSummaryDto en packages/shared/src/hr-types.ts). Datos ficticios en demo; nunca en Faranda.
+
+/// Expediente de una persona empleada por una sociedad (legalEntityId). employeeNumber es único por sociedad.
+model Employee {
+  id                   String    @id @default(cuid())
+  organizationId       String    @map("organization_id")
+  legalEntityId        String    @map("legal_entity_id")
+  employeeNumber       String    @map("employee_number")
+  /// Usuario de la app (acceso) cuando existe; la ficha de centro (StaffProfile) sigue exigiendo userId.
+  userId               String?   @map("user_id")
+  firstName            String    @map("first_name")
+  lastName             String    @map("last_name")
+  /// NIF/NIE cifrado (AES-256-GCM); taxIdLookupHash = HMAC determinista para buscar y para la unicidad por sociedad.
+  taxId                String    @map("tax_id")
+  taxIdLookupHash      String?   @map("tax_id_lookup_hash")
+  /// Número de afiliación a la Seguridad Social (cifrado).
+  socialSecurityNumber String?   @map("social_security_number")
+  email                String?
+  phone                String?
+  iban                 String?
+  /// Registro retributivo (RD 902/2020): valores libres (female · male · other · undisclosed).
+  gender               String?
+  primaryPropertyId    String?   @map("primary_property_id")
+  usaliDepartment      String?   @map("usali_department")
+  jobTitle             String?   @map("job_title")
+  /// active · inactive · leave
+  status               String    @default("active")
+  hiredAt              DateTime  @map("hired_at")
+  terminatedAt         DateTime? @map("terminated_at")
+  terminationReason    String?   @map("termination_reason")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  @@unique([legalEntityId, employeeNumber])
+  @@unique([legalEntityId, taxIdLookupHash])
+  @@index([organizationId, status])
+  @@map("employees")
+}
+
+/// Convenio colectivo parametrizado (ES-15-HOST, ES-33-HOST, ES-39-HOST, ES-28-HOSP…); las reglas viven en AgreementRule.
+model CollectiveAgreement {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  code           String
+  name           String
+  /// Ámbito documental (provincial · autonómico · empresa).
+  scope          String?
+  /// Referencia de publicación (BOP / BOPA / BOC / BOCM).
+  publishedRef   String?   @map("published_ref")
+  validFrom      DateTime  @map("valid_from")
+  validTo        DateTime? @map("valid_to")
+  ultraactivity  Boolean   @default(false)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([organizationId, code])
+  @@map("collective_agreements")
+}
+
+/// Regla de convenio versionada por validFrom: key ∈ HR_AGREEMENT_RULE_KEYS (hr-types.ts), valor en valueJson.
+model AgreementRule {
+  id          String    @id @default(cuid())
+  agreementId String    @map("agreement_id")
+  key         String
+  valueJson   Json      @map("value_json")
+  validFrom   DateTime  @map("valid_from")
+  validTo     DateTime? @map("valid_to")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@unique([agreementId, key, validFrom])
+  @@map("agreement_rules")
+}
+
+/// Estándar de dotación por centro × departamento USALI × driver (diseño §6.2): minutos por unidad, puestos por tramo, FTE por 100 habitaciones…
+model LaborStandard {
+  id              String    @id @default(cuid())
+  propertyId      String    @map("property_id")
+  usaliDepartment String    @map("usali_department")
+  /// occupied_rooms · departures · stayovers · arrivals · pax · covers_breakfast · covers_restaurant · rooms_inventory · fixed
+  driver          String
+  /// minutes_per_unit · units_per_shift · fte_per_100 · posts_by_band
+  unit            String
+  value           Decimal   @db.Decimal(10, 3)
+  /// Tramos para posts_by_band, p. ej. [{ "maxOccupiedRooms": 60, "posts": [1, 1, 1] }].
+  bandsJson       Json?     @map("bands_json")
+  /// Suplementos (descansos, carro, desplazamientos) en %; 0 si no aplica.
+  allowancePct    Decimal   @default(0) @map("allowance_pct") @db.Decimal(5, 2)
+  /// Factor de cobertura (7 días, descansos, absentismo): 1,4 por defecto.
+  coverageFactor  Decimal   @default(1.4) @map("coverage_factor") @db.Decimal(5, 2)
+  validFrom       DateTime  @map("valid_from")
+  validTo         DateTime? @map("valid_to")
+  /// sector_default · measured · agreement
+  source          String    @default("sector_default")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([propertyId, usaliDepartment, driver, validFrom])
+  @@map("labor_standards")
+}
+
+/// Plantilla máxima aprobada por centro × año × temporada (high · shoulder · low); aprobación con SoD (approvedBy ≠ createdBy).
+model StaffingPlan {
+  id         String    @id @default(cuid())
+  propertyId String    @map("property_id")
+  year       Int
+  season     String
+  fromMonth  Int       @map("from_month")
+  toMonth    Int       @map("to_month")
+  /// draft · approved
+  status     String    @default("draft")
+  createdBy  String?   @map("created_by")
+  approvedBy String?   @map("approved_by")
+  approvedAt DateTime? @map("approved_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@unique([propertyId, year, season])
+  @@map("staffing_plans")
+}
+
+/// Línea de plantilla máxima por departamento USALI (FTE, personas y coste mensual presupuestado).
+model StaffingPlanLine {
+  id                String   @id @default(cuid())
+  planId            String   @map("plan_id")
+  usaliDepartment   String   @map("usali_department")
+  maxFte            Decimal  @map("max_fte") @db.Decimal(6, 2)
+  maxHeadcount      Int?     @map("max_headcount")
+  budgetMonthlyCost Decimal? @map("budget_monthly_cost") @db.Decimal(14, 2)
+
+  @@unique([planId, usaliDepartment])
+  @@map("staffing_plan_lines")
 }
 
 model Supplier {
@@ -6044,6 +6205,15 @@ model EmploymentContract {
   active                 Boolean   @default(true)
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
+  // Tanda RRHH (2026-09-20): convenio del contrato (prevalece sobre Property.agreementId), jornada semanal,
+  // % de jornada (100 = completa), fijo discontinuo, grupo de cotización 1-11 (socialSecurityCategory queda
+  // como texto deprecado sin backfill) y causa de fin.
+  agreementId            String?   @map("agreement_id")
+  weeklyHours            Decimal?  @db.Decimal(5, 2) @map("weekly_hours")
+  partTimePct            Decimal?  @db.Decimal(5, 2) @map("part_time_pct")
+  fixedDiscontinuous     Boolean   @default(false) @map("fixed_discontinuous")
+  contributionGroup      Int?      @map("contribution_group")
+  endReason              String?   @map("end_reason")
 
   @@index([staffProfileId, active])
   @@index([propertyId, active])
@@ -6075,6 +6245,9 @@ model PayrollPeriod {
   calculatedByUserId      String?   @map("calculated_by_user_id")
   approvedByUserId        String?   @map("approved_by_user_id")
   approvedAt              DateTime? @map("approved_at")
+  // Tanda RRHH (2026-09-20): external (la gestoría calcula, el ERP importa el agregado) · calculated (preparación interna).
+  mode                    String    @default("external")
+  closedAt                DateTime? @map("closed_at")
 
   @@unique([organizationId, periodCode, propertyId])
   @@index([organizationId, status])

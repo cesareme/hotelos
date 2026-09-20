@@ -1,9 +1,22 @@
 import { prisma } from "@hotelos/database";
+import { HR_END_REASONS } from "@hotelos/shared";
 import type { UserContext } from "../../lib/demo-store.js";
+import { BadRequestError } from "../../lib/http-error.js";
 import { bumpRbacVersion } from "../../lib/rbac-scope.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
+import { payCountFromRules, resolveAgreementForProperty } from "../hr/agreements.service.js";
+import { checkStaffingHeadroom } from "../hr/staffing.service.js";
+import { hrBadRequest, hrNotFound } from "../hr/hr-errors.js";
 import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
 import { PAYROLL_WRITE_KEYS, requireAnyPermission } from "../treasury/permissions.js";
+
+// Tanda RRHH (RRHH-2, design §4 «EmploymentContract»): the contract carries the
+// collective agreement (`agreementId`, prevails over Property.agreementId), the
+// weekly hours, the part-time percentage (100 = full time), the fixed-discontinuous
+// flag, the contribution group (1-11) and, once ended, the end reason. `payCount`
+// defaults to 12 + `extra_pay_count` of the applicable agreement (contract > work
+// centre); without an agreement the historical 14 stays. The agreement resolver is
+// injectable (`ContractDeps`) for the unit tests.
 
 // Tanda 8a (RBAC · L2, design §6.6 «baja inmediata»): deactivating a contract
 // (payroll.manage) is the HR hook that ends the person's access — every live
@@ -22,9 +35,9 @@ import { PAYROLL_WRITE_KEYS, requireAnyPermission } from "../treasury/permission
 // contract. We deliberately keep the shape close to the Prisma row — the only
 // transformation is Decimal → number so the HTTP/JSON boundary is clean.
 //
-// Sharp edge: `payCount` (12 vs 14 in Spain — the famous "pagas extras") is
-// stored but NOT factored into the monthly slip yet. Sprint 24 will add the
-// extra-payment proration. For now we just compute the simple monthly gross.
+// Sharp edge: `payCount` (12 + extra pays of the agreement in Spain — the famous
+// "pagas extras") is stored but NOT factored into the monthly slip yet. Sprint 24
+// will add the extra-payment proration. For now we just compute the simple monthly gross.
 
 export type EmploymentContractRecord = {
   id: string;
@@ -43,7 +56,33 @@ export type EmploymentContractRecord = {
   active: boolean;
   createdAt: string;
   updatedAt: string;
+  // Tanda RRHH (RRHH-2).
+  agreementId?: string;
+  weeklyHours?: number;
+  partTimePct?: number;
+  fixedDiscontinuous: boolean;
+  contributionGroup?: number;
+  endReason?: string;
+  /**
+   * Avisos del alta (nunca bloquean; corrector RRHH · RF-05 / RF-07): position control
+   * HR_STAFFING_EXCEEDED (D §6.3: el departamento supera la maxFte del plan aprobado) y
+   * segundo contrato activo sobre la misma ficha (el headcount cuenta personas, no contratos).
+   */
+  warnings?: string[];
 };
+
+export type ContractDeps = {
+  resolveAgreement: typeof resolveAgreementForProperty;
+  /** Position control (staffing.service): activos + alta prevista frente al plan aprobado del centro. */
+  checkHeadroom: typeof checkStaffingHeadroom;
+};
+
+export const defaultContractDeps: ContractDeps = { resolveAgreement: resolveAgreementForProperty, checkHeadroom: checkStaffingHeadroom };
+export const CONTRACT_ALREADY_ACTIVE_WARNING = "La ficha ya tiene otro contrato activo: la plantilla cuenta a la persona una vez, pero el FTE suma los dos contratos.";
+
+export const CONTRACT_WEEKLY_HOURS_MAX = 60;
+export const CONTRIBUTION_GROUP_MIN = 1;
+export const CONTRIBUTION_GROUP_MAX = 11;
 
 function isoDate(d: Date | null | undefined): string | undefined {
   if (!d) return undefined;
@@ -82,8 +121,20 @@ function mapContract(
     costCenterId: row.costCenterId ?? undefined,
     active: row.active,
     createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString()
+    updatedAt: row.updatedAt.toISOString(),
+    agreementId: row.agreementId ?? undefined,
+    weeklyHours: row.weeklyHours === null || row.weeklyHours === undefined ? undefined : decimalToNumber(row.weeklyHours),
+    partTimePct: row.partTimePct === null || row.partTimePct === undefined ? undefined : decimalToNumber(row.partTimePct),
+    fixedDiscontinuous: row.fixedDiscontinuous,
+    contributionGroup: row.contributionGroup ?? undefined,
+    endReason: row.endReason ?? undefined
   };
+}
+
+function optionalNumber(value: number | undefined, field: string, check: (n: number) => boolean, message: string): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || !check(value)) throw hrBadRequest("VALIDATION_ERROR", { field, message });
+  return value;
 }
 
 export async function listContracts(
@@ -114,7 +165,13 @@ export async function createContract(input: {
   socialSecurityCategory?: string;
   costCenterId?: string;
   correlationId: string;
-}): Promise<EmploymentContractRecord> {
+  // Tanda RRHH (RRHH-2).
+  agreementId?: string;
+  weeklyHours?: number;
+  partTimePct?: number;
+  fixedDiscontinuous?: boolean;
+  contributionGroup?: number;
+}, deps: ContractDeps = defaultContractDeps): Promise<EmploymentContractRecord> {
   requireAnyPermission(input.context, PAYROLL_WRITE_KEYS);
 
   if (!Number.isFinite(input.grossSalary) || input.grossSalary < 0) {
@@ -123,6 +180,17 @@ export async function createContract(input: {
   if (input.endDate && input.endDate < input.startDate) {
     throw new Error("endDate must be on or after startDate.");
   }
+  const weeklyHours = optionalNumber(input.weeklyHours, "weeklyHours", (n) => n > 0 && n <= CONTRACT_WEEKLY_HOURS_MAX, `weeklyHours debe estar entre 0 y ${CONTRACT_WEEKLY_HOURS_MAX} horas.`);
+  const partTimePct = optionalNumber(input.partTimePct, "partTimePct", (n) => n > 0 && n <= 100, "partTimePct debe estar entre 0 y 100.");
+  const contributionGroup = optionalNumber(input.contributionGroup, "contributionGroup", (n) => Number.isInteger(n) && n >= CONTRIBUTION_GROUP_MIN && n <= CONTRIBUTION_GROUP_MAX, `contributionGroup debe ser un entero entre ${CONTRIBUTION_GROUP_MIN} y ${CONTRIBUTION_GROUP_MAX}.`);
+  const fixedDiscontinuous = input.fixedDiscontinuous ?? input.contractType === "fijo_discontinuo";
+
+  // Convenio: el del contrato (de la organización, si no 404 opaco) o el del centro de la ficha.
+  const profile = await prisma.staffProfile.findUnique({ where: { id: input.staffProfileId }, select: { propertyId: true, usaliDepartment: true } });
+  const propertyId = input.propertyId ?? profile?.propertyId ?? null;
+  const resolved = await deps.resolveAgreement({ organizationId: input.context.organizationId, propertyId, contractAgreementId: input.agreementId ?? null, asOf: input.startDate });
+  if (input.agreementId && resolved.source !== "contract") throw hrNotFound("HR_AGREEMENT_NOT_FOUND");
+  const payCount = input.payCount ?? payCountFromRules(resolved.rules);
 
   const created = await prisma.employmentContract.create({
     data: {
@@ -134,15 +202,34 @@ export async function createContract(input: {
       endDate: input.endDate ? dateOnly(input.endDate) : null,
       grossSalary: input.grossSalary,
       payFrequency: input.payFrequency ?? "monthly",
-      payCount: input.payCount ?? 14,
+      payCount,
       irpfRatePct: input.irpfRatePct ?? null,
       socialSecurityCategory: input.socialSecurityCategory ?? null,
       costCenterId: input.costCenterId ?? null,
-      active: true
+      active: true,
+      agreementId: input.agreementId ?? null,
+      weeklyHours,
+      partTimePct,
+      fixedDiscontinuous,
+      contributionGroup
     }
   });
 
   const record = mapContract(created);
+
+  // Avisos (RF-05 / RF-07): position control contra el plan aprobado del centro y segundo contrato activo de la ficha.
+  const warnings: string[] = [];
+  const headroomPropertyId = profile?.propertyId ?? propertyId;
+  if (headroomPropertyId && profile?.usaliDepartment) {
+    try {
+      const headroom = await deps.checkHeadroom({ propertyId: headroomPropertyId, usaliDepartment: profile.usaliDepartment, date: input.startDate, extraFte: 0 });
+      warnings.push(...headroom.warnings);
+    } catch {
+      // Un departamento no USALI o un plan ilegible no bloquea el alta: el aviso simplemente no se emite.
+    }
+  }
+  const otherActive = await prisma.employmentContract.count({ where: { staffProfileId: input.staffProfileId, active: true, id: { not: created.id } } });
+  if (otherActive > 0) warnings.push(CONTRACT_ALREADY_ACTIVE_WARNING);
 
   recordAuditEvent({
     organizationId: input.context.organizationId,
@@ -152,7 +239,7 @@ export async function createContract(input: {
     action: "EMPLOYMENT_CONTRACT_CREATED",
     entityType: "employment_contract",
     entityId: record.id,
-    afterJson: record,
+    afterJson: { ...record, warnings },
     correlationId: input.correlationId
   });
 
@@ -166,14 +253,17 @@ export async function createContract(input: {
       staffProfileId: record.staffProfileId,
       contractType: record.contractType,
       grossSalary: record.grossSalary,
-      irpfRatePct: record.irpfRatePct ?? null
+      irpfRatePct: record.irpfRatePct ?? null,
+      agreementId: record.agreementId ?? null,
+      payCount: record.payCount,
+      fixedDiscontinuous: record.fixedDiscontinuous
     } as Record<string, unknown>,
     actorType: "user",
     actorUserId: input.context.userId,
     correlationId: input.correlationId
   });
 
-  return record;
+  return { ...record, warnings };
 }
 
 /**
@@ -216,17 +306,26 @@ export async function deactivateContract(input: {
   contractId: string;
   correlationId: string;
   rbac?: RbacDeps;
+  /** Tanda RRHH (RRHH-2): fecha de fin (YYYY-MM-DD) y causa (HR_END_REASONS) de la baja; opcionales. */
+  endDate?: string;
+  endReason?: string;
 }): Promise<EmploymentContractRecord> {
   requireAnyPermission(input.context, PAYROLL_WRITE_KEYS);
 
   const existing = await prisma.employmentContract.findUnique({ where: { id: input.contractId } });
   if (!existing) throw new Error("Employment contract was not found.");
   if (!existing.active) return mapContract(existing);
+  if (input.endDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(input.endDate)) throw new BadRequestError("endDate debe ser una fecha YYYY-MM-DD.");
+  if (input.endReason !== undefined && !(HR_END_REASONS as readonly string[]).includes(input.endReason)) throw new BadRequestError(`endReason debe ser uno de: ${HR_END_REASONS.join(", ")}.`);
 
   const before = mapContract(existing);
   const updated = await prisma.employmentContract.update({
     where: { id: existing.id },
-    data: { active: false }
+    data: {
+      active: false,
+      ...(input.endDate !== undefined ? { endDate: dateOnly(input.endDate) } : {}),
+      ...(input.endReason !== undefined ? { endReason: input.endReason } : {})
+    }
   });
   const after = mapContract(updated);
 

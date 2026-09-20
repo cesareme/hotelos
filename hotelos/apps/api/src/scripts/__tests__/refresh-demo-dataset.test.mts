@@ -302,9 +302,9 @@ describe("fix-demo-legal-identity", () => {
 });
 
 describe("demo-guard", () => {
-  it("allows the demo allowlist without any confirmation (org_uxday / prop_uxday = tenant aislado de UX-1 · seed-ux-day; org_chk / prop_chk = tenant aislado de CHK · seed-checkin)", () => {
-    assert.deepEqual([...DEMO_ORG_IDS], ["org_123", "org_uxday", "org_chk"]);
-    assert.deepEqual([...DEMO_PROPERTY_IDS], ["prop_123", "prop_canary", "prop_uxday", "prop_chk"]);
+  it("allows the demo allowlist without any confirmation (org_uxday / prop_uxday = tenant aislado de UX-1 · seed-ux-day; org_chk / prop_chk = tenant aislado de CHK · seed-checkin; org_hr / prop_hr = tenant aislado de RRHH · seed-hr)", () => {
+    assert.deepEqual([...DEMO_ORG_IDS], ["org_123", "org_uxday", "org_chk", "org_hr"]);
+    assert.deepEqual([...DEMO_PROPERTY_IDS], ["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr"]);
     const d = evaluateDemoTarget({ orgId: "org_123", propertyId: "prop_canary", action: "t" }, {});
     assert.deepEqual(d, { allowed: true, via: "allowlist", targets: ["org_123", "prop_canary"] });
   });

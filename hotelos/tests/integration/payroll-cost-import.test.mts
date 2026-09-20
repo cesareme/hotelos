@@ -48,6 +48,7 @@ const accounting = await import("../../apps/api/src/modules/accounting/accountin
 const fiscalPeriods = await import("../../apps/api/src/modules/accounting/fiscal-period.service.js");
 const costImport = await import("../../apps/api/src/modules/payroll/cost-import.service.js");
 const costReport = await import("../../apps/api/src/modules/payroll/cost-report.service.js");
+const periods = await import("../../apps/api/src/modules/payroll/periods.service.js");
 const { HttpError } = await import("../../apps/api/src/lib/http-error.js");
 const { flushAuditQueues } = await import("../../apps/api/src/modules/audit/audit.service.js");
 const { flushAccountingProjection } = await import("../../apps/api/src/modules/accounting/projection.js");
@@ -458,6 +459,16 @@ describe("coste de personal importado · organización aislada (sociedad + HA + 
     assert.equal(draft.rowCount, 3);
     assert.equal(await prisma.payrollCostLine.count({ where: { importId: importC, costCenterId: null } }), 3, "sin centro de coste hasta contabilizar");
     await expectCode(costImport.createPayrollCostImport({ context, body: { format: "csv", content: CSV_C } }), 409, "PAYROLL_IMPORT_DUPLICATE");
+    // Corrector RRHH · RF-10 (diseño §7.1 (3)): una nómina calculada APROBADA en la celda (HB, 2026-05) bloquea la contabilización
+    // del lote (409 PAYROLL_MODE_CONFLICT, nada escrito); una `calculated` sin aprobar solo avisa.
+    const approvedPeriod = await prisma.payrollPeriod.create({ data: { organizationId: ORG, propertyId: HB, periodCode: "2026-05", startDate: new Date("2026-05-01T00:00:00Z"), endDate: new Date("2026-05-31T00:00:00Z"), status: "approved", approvedByUserId: `usr_pc_dg_${RUN}`, approvedAt: new Date(), journalEntryIds: [`je_pc_fake_${RUN}`], mode: "calculated" }, select: { id: true } });
+    const conflict = await expectCode(costImport.postPayrollCostImport({ context, importId: importC, correlationId: CORR }), 409, "PAYROLL_MODE_CONFLICT");
+    assert.equal(conflict.mode, "calculated");
+    assert.equal((await prisma.payrollCostImport.findUnique({ where: { id: importC }, select: { status: true } }))?.status, "draft", "el lote sigue en borrador");
+    await prisma.payrollPeriod.update({ where: { id: approvedPeriod.id }, data: { status: "calculated", approvedByUserId: null, approvedAt: null } });
+    const previewWarned = await costImport.previewPayrollCostImport({ context, body: { format: "csv", content: CSV_C } });
+    assert.ok(previewWarned.warnings.some((warning) => /nómina real ya contabilizado/.test(warning)), "sin aprobar: solo aviso");
+    await prisma.payrollPeriod.delete({ where: { id: approvedPeriod.id } });
     const posted = await costImport.postPayrollCostImport({ context, importId: importC, correlationId: CORR });
     assert.equal(posted.status, "posted");
     assert.equal(posted.entries.length, 1);
@@ -466,6 +477,13 @@ describe("coste de personal importado · organización aislada (sociedad + HA + 
     assert.equal(posted.entries[0]?.created, true);
     assert.equal(await prisma.payrollCostLine.count({ where: { importId: importC, costCenterId: null } }), 0);
     await expectCode(costImport.postPayrollCostImport({ context, importId: importC, correlationId: CORR }), 409, "PAYROLL_IMPORT_ALREADY_POSTED");
+    // Espejo de RF-10: con el lote contabilizado en (HB, 2026-05), calcular una nómina en esa celda es 409 PAYROLL_MODE_CONFLICT.
+    const openPeriod = await prisma.payrollPeriod.create({ data: { organizationId: ORG, propertyId: HB, periodCode: "2026-05", startDate: new Date("2026-05-01T00:00:00Z"), endDate: new Date("2026-05-31T00:00:00Z"), status: "open" }, select: { id: true } });
+    const modeConflict = await expectCode(periods.calculatePeriod({ context, periodId: openPeriod.id, correlationId: CORR }), 409, "PAYROLL_MODE_CONFLICT");
+    assert.equal(modeConflict.mode, "external");
+    assert.deepEqual((modeConflict.imports as Array<{ importId: string; propertyId: string }>).map((row) => [row.importId, row.propertyId]), [[importC, HB]]);
+    assert.equal((await prisma.payrollPeriod.findUnique({ where: { id: openPeriod.id }, select: { status: true } }))?.status, "open");
+    await prisma.payrollPeriod.delete({ where: { id: openPeriod.id } });
     await expectCode(costImport.postPayrollCostImport({ context, importId: importA, correlationId: CORR }), 409, "PAYROLL_IMPORT_REVERSED");
     await expectCode(costImport.postPayrollCostImport({ context, importId: `imp_missing_${RUN}`, correlationId: CORR }), 404, "PAYROLL_IMPORT_NOT_FOUND");
   });

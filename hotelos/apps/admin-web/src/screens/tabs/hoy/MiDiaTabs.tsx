@@ -19,7 +19,10 @@
 //
 // L1b registers: screenKey FrontDeskDashboard · url /hoy · tabs /hoy/operaciones,
 // /hoy/direccion, /hoy/propietario; Tanda CHK adds /hoy/check-in-automatizado
-// (CheckInAutomationSettingsScreen, roles recepcion · direccion · admin · auditoria).
+// (CheckInAutomationSettingsScreen, roles recepcion · direccion · admin · auditoria);
+// Tanda RRHH · PANEL-B adds /hoy/costes-personal (DirectorLaborCostsScreen, roles
+// direccion · finanzas · admin · propiedad · auditoria): coste de personal por
+// centro y departamento frente a ventas (GET /payroll/labor-cost-panel).
 
 import { useEffect, useState } from "react";
 import { CocoaBadge } from "../../../components/cocoa/CocoaBadge";
@@ -39,7 +42,9 @@ const LOADERS: TabLoaders = {
   GeneralManagerScreen: () => import("../../operations/GeneralManagerScreen").then((m) => ({ default: m.GeneralManagerScreen })),
   OwnerHome: () => import("../../owner/OwnerHomeScreen").then((m) => ({ default: m.OwnerHomeScreen })),
   // Tanda CHK · W4-B: ajustes del check-in automatizado (política, pesos, kioscos, métricas), /hoy/check-in-automatizado.
-  CheckInAutomationSettingsScreen: () => import("../../operations/CheckInAutomationSettingsScreen").then((m) => ({ default: m.CheckInAutomationSettingsScreen }))
+  CheckInAutomationSettingsScreen: () => import("../../operations/CheckInAutomationSettingsScreen").then((m) => ({ default: m.CheckInAutomationSettingsScreen })),
+  // Tanda RRHH · PANEL-B: costes de personal de dirección (diario 64x / lote de nómina frente a ventas), /hoy/costes-personal.
+  DirectorLaborCostsScreen: () => import("../../costs/DirectorLaborCostsScreen").then((m) => ({ default: m.DirectorLaborCostsScreen }))
 };
 
 /** Roles whose Mi día includes the front-desk view (the rest land on their own tab). */

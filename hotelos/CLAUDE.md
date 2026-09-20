@@ -638,8 +638,8 @@ node scripts/check-discoverability.mjs
 
 Catorce seeds, tres ámbitos. Todos los parametrizables pasan por el guard
 `packages/database/prisma/lib/demo-guard.ts` (`assertDemoTarget`): la allowlist
-demo es `org_123` / `prop_123` / `prop_canary` (+ `org_uxday` / `prop_uxday` de UX-1 y
-`org_chk` / `prop_chk` de la Tanda CHK); cualquier otro objetivo exige
+demo es `org_123` / `prop_123` / `prop_canary` (+ `org_uxday` / `prop_uxday` de UX-1,
+`org_chk` / `prop_chk` de la Tanda CHK y `org_hr` / `prop_hr` de la Tanda RRHH); cualquier otro objetivo exige
 `SEED_ALLOW_REAL=1` **y** `SEED_CONFIRM=<id exacto[,id]>` o el seed corta con
 exit 2 tras imprimir los `deleteMany` previstos, sin tocar la BD. El contract
 test `tests/demo-seed-contract.test.mjs` exige `assertDemoTarget(` en cada uno.
@@ -755,6 +755,16 @@ tenant aislado `org_chk` / `prop_chk` («Hotel CHK (prueba)») con tres usuarios
 (contraseña `chk-demo` o `SEED_CHK_PASSWORD`; en producción aborta salvo
 `SEED_CHK_ALLOW_PRODUCTION=1`) y diez reservas `CHK-*` relativas a hoy; contrato
 `tests/seed-checkin-contract.test.mjs`; walkthrough en `docs/runbooks/checkin-automatizado.md` §11.
+
+Tanda RRHH: `db:seed:hr` (`prisma/seed-hr.ts`, `--reset` / `--dry-run`; `corepack pnpm --filter
+@hotelos/database db:seed:hr -- --reset`) siembra el tenant aislado `org_hr` / `le_hr` / `prop_hr`
+(«Hotel HR (prueba)», 4★, 60 habitaciones, centros de coste USALI) con doce usuarios `*@hr.test`
+(contraseña `hr-demo` o `SEED_HR_PASSWORD`; en producción aborta salvo `SEED_HR_ALLOW_PRODUCTION=1`):
+24 expedientes ficticios cifrados por la extensión (12 con usuario, ficha y contrato; 2 fijos
+discontinuos, 2 temporales que vencen en 30 días), convenio ES-15-HOST, estándares 4★, dos planes de
+plantilla aprobados, 6 semanas de turnos y fichajes, 3 ausencias, 28 días de previsión y un periodo de
+nómina abierto en modo externo; `--reset` borra SOLO la capa RRHH de `org_hr` / `prop_hr`; contrato
+`tests/seed-hr-contract.test.mjs`; runbook `docs/runbooks/rrhh-plantilla-nomina.md` §10.
 
 ## Convenciones
 
@@ -1217,6 +1227,59 @@ tenant aislado `org_chk` / `prop_chk` («Hotel CHK (prueba)») con tres usuarios
     (migración `20260920160000_checkin_pago_en_recepcion`), recepción cierra sesiones que el
     huésped no cerró (`PATCH …/check-in/guests/:guestId`, `POST …/check-in/resolve-handoff`,
     `dryRun` en `/complete`).
+19. **Tanda RRHH · Plantilla, previsión y nómina (2026-09-20; rama `tanda-rrhh`, BD `hotelos_rrhh`;
+    migración aditiva `20260920173000_rrhh_plantilla_nomina`, sin DROP ni triggers; runbook
+    `docs/runbooks/rrhh-plantilla-nomina.md`, manual `docs/manual/30-rrhh.md`, diseño
+    `docs/design/RRHH-PLANTILLA-NOMINA.md` con apéndice «Estado tras la implementación»):**
+    (a) `labor_standards` unique `(property_id, usali_department, driver, valid_from)` SIN `unit`: los dos
+    estándares de F&B sobre `covers_breakfast` (sala y cocina) se funden en un `minutes_per_unit`
+    equivalente (13,067 min) → 9 estándares por centro en 4★, no 10; el desglose exige una migración
+    aditiva con `unit` en la clave y retirar `mergeSameDriverStandards` (`standards.service.ts`); (b) CERRADO por el
+    corrector (SEC-08): `packages/database/prisma/seed-hr.ts` ya no calcula ni escribe estándares ni previsiones por su
+    cuenta (llama a `resetLaborStandardDefaults` y `generateLaborForecast`, siembra previsiones `pms_import:seed-hr-demo`
+    desde hoy y 58 reservas demo `HRDEMO-*` con régimen para los cubiertos): `db:seed:hr` deja 112 filas de previsión con
+    0 días degradados; `--reset` sigue borrando los planes, estándares y runtime creados a mano en `org_hr`; (c) pareja SoD
+    estática `{payroll.manage, hr.staffing.approve}` YA en `SOD_STATIC_PAIRS` (corrector SEC-06);
+    `rbac:sync` real con las plantillas v5 (+5 claves `hr.*`) NO ejecutado sobre la BD viva: los roles
+    quedan «behind v5» hasta el reinicio; `payroll_hr` sigue sin `users.read` (decisión de T8a) y sin
+    `accounting.entity.read` (el CSV de incidencias «toda la sociedad» responde `ENTITY_SCOPE_REQUIRED`;
+    el diálogo elige el centro activo); `general_manager` no tiene `workforce.schedule.manage` (no puede
+    «Generar previsión»: prepara RRHH, aprueba dirección); (d) fichas de personal (corrector SEC-01 / SEC-02 / RF-01 / RF-03):
+    `POST /payroll/staff-profiles` admite `employeeId` (misma organización y sociedad del centro) y el alta / PATCH del
+    expediente con `userId` retro-enlaza las fichas de ese usuario, así que Plantilla ve fichas y contratos y la baja los
+    cierra; el selector de Personal y turnos lee `GET /workforce/properties/:id/staff-profiles` (`workforce.read`, sin coste
+    ni correo): housekeeper / maintenance / fnb fichan sin `payroll.read`, SOLO con su propia ficha y con hora del servidor
+    (403 `HR_TIMECLOCK_SELF_ONLY` por otra; `workforce.timeclock.manage` ficha por terceros y fija `at`); `GET /hr/absences` y
+    `GET …/time-clock` con solo `workforce.read` devuelven lo propio y `POST /workforce/me/absences` solicita la ausencia
+    propia; `payroll_hr` sigue con `timeclock.manage` sin `timeclock.use` y `receptionist` / `night_auditor` / `sales` /
+    `revenue` con `timeclock.use` sin `workforce.read` (fichan por API, no desde Personal y turnos, que no ven); un
+    expediente sin usuario sigue sin poder tener ficha (`userId` obligatorio); (d2) nómina (corrector RF-02 / RF-06 / RF-10 /
+    SEC-12): `calculate` sobre un periodo aprobado o exportado → 409 `PAYROLL_PERIOD_APPROVED` y `POST …/export` exige la
+    aprobación (409 `PAYROLL_NOT_APPROVED`) — no existe revocación explícita de la aprobación; celda (centro, mes) con lote de
+    coste `posted` ↔ nómina calculada aprobada → 409 `PAYROLL_MODE_CONFLICT` en ambos sentidos (el demo `org_123` tiene el lote
+    manual de 2026-08 en `prop_123`: `treasury-banking.test.mts` calcula su nómina en `prop_canary`); temporales y sustitución
+    al 6,55 / 33,35 y `grossSalary` = bruto a jornada completa × `partTimePct`; `mode` / `closedAt` en todo `PayrollPeriodRecord`
+    (sin envoltorio); `HrKpisDto.activeHeadcount` cuenta personas y `monthLaborCost` cae a la nómina calculada
+    (`monthLaborCostSource`); `GET /hr/employees?search=` rechaza NIF / NIE / IBAN; `HR_PII_READ` una por minuto y pareja;
+    `labor-forecast/generate` es `high`; (e) navegación: sin categoría `/rrhh` (`CATEGORY_ORDER` fijo): RRHH vive como pestañas de
+    Finanzas › RRHH y nóminas (`NominasTabs`, `/finanzas/nominas/{plantilla,prevision,panel}`); el CSV
+    compartido `pilots/tanda5-nav-tree.csv` lleva 6 filas `RealEstate*Screen` de la Tanda ACT sin componente
+    en esta rama, así que `nav-tree.generated.json` se regeneró desde una copia filtrada (70 ítems · 107
+    pestañas · 200 URL) y `build-nav-tree --check` contra el CSV compartido queda rojo hasta fusionar ACT
+    (el CSV completo construye limpio: 71 · 112); `apps/admin-web/src/navigation/__tests__/nav-tree.test.mts`
+    pina 104 pestañas / 197 URL (hoy 107 / 200; PANEL-B añade `/hoy/costes-personal`); el cruce
+    `tests/rbac-nav-contract.test.mjs` × `pilots/screens-inventory.csv` está clasificado en `JUSTIFIED_GAPS`
+    (corrector SEC-03: accountant · controller · compliance · auditor sin `hr.employee.read` en Plantilla y Panel RRHH →
+    `inventory`, las pantallas solo piden `/hr/employees` con la clave; compliance sin `workforce.read` /
+    `workforce.labor_cost.view` / `payroll.read` → `sister`): 21/21 con el inventario compartido; la fila
+    `WorkforceDashboard` del CSV compartido debería listar `/workforce/properties/:p/staff-profiles` (fuera del worktree:
+    orquestador); `docs/design/cocoa-22-inventory.json` desfasado por las
+    4 pantallas de `screens/hr` (regenerar con `node scripts/cocoa-22-inventory.mjs`); (f) fuera de la tanda
+    (`scratchpad/RRHH/plan-olas.md` «Fuera»): WorkdayRecord y trigger de fichajes, llamamientos de fijos
+    discontinuos, comunicaciones TGSS (EmployeeEvent), EmployeeDocument / PRL por persona, WorkCalendar,
+    LeaveBalance, SchedulePeriod, ContractSalaryVersion, PayrollSlipImport, IRPF AEAT, Siltra / A3 oficiales,
+    modelo 190, LaborBudget, app móvil, CostKpiSnapshot / CostBudget / umbrales del panel de costes; las
+    incidencias del mes no llevan horas extra (sin WorkdayRecord: ninguna fila `overtime`, nunca un 0).
 
 ## Docs prioritarios
 
@@ -1252,6 +1315,8 @@ Antes de tomar decisiones de producto, lee:
 - `docs/runbooks/documentos-digitalizacion.md` — operación del módulo de documentos (Tanda T9): almacén (inline / disk cifrado / S3, backup), buzón por centro, flujo centro → oficina paso a paso, IA con y sin proveedor, tabla exacta de rutas y claves (§6.1), códigos de error, retención / purga / GDPR, seed de demo, puertas y lo que solo César puede aportar
 - `docs/design/DOCUMENTOS-DIGITALIZACION.md` — diseño de la digitalización por centro: marco legal (Orden EHA/962/2007, RD 1619/2012, e-factura B2B RD 238/2026), captura, pipeline IA con fallback, flujo y RBAC, contabilización y archivo, modelo de datos, API (§9), front (§10), lotes; con las correcciones «[actualizado 2026-09-19]» de la implementación
 - `docs/design/olas/T9-MERGE-LINES.md` — mergeLines de la Tanda T9 (anclas de texto por fichero compartido, orden de la migración tras fix1, post-fusión: tools/sync, rbac:sync, env:census:write, drift heredado)
+- `docs/design/RRHH-PLANTILLA-NOMINA.md` — diseño de RRHH (expediente cifrado, convenio parametrizado, estándares de dotación, plantilla máxima con SoD, previsión por ocupación, nómina en modo externo con aprobación e incidencias, reglas laborales evaluables, API y permisos, front Cocoa 22) + apéndice «Estado tras la implementación (2026-09-20)» con los deltas frente al código y lo aplazado
+- `docs/runbooks/rrhh-plantilla-nomina.md` — operación del módulo de RRHH (Tanda RRHH): modelo y migración, escritores y lectores de cada tabla, tabla exacta de rutas y claves `/hr/*` + `/payroll/incidences`, motor de previsión y estándares por estrellas, plantilla máxima, nómina externa (aprobación, incidencias, tipos 2026), turnos y ausencias con ficha, RBAC v5, navegación (Finanzas › RRHH y nóminas), demo `org_hr` con comandos, puertas, límites y lo que solo César puede aportar
 
 ## Primera tarea en cada sesión nueva
 

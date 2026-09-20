@@ -10,7 +10,11 @@
  * (lista vacía, transición 404). RBAC_STRICT=true, auth real, sin unión de
  * permisos de demo. Usuarios adicionales por plantilla (manager,
  * maintenance_manager) porque las cinco cuentas del helper no tienen las
- * claves de escritura del motor. Al terminar borra las dos organizaciones.
+ * claves de escritura del motor. Tanda RRHH (RRHH-4): la persona de un turno,
+ * fichaje o ausencia es una FICHA (StaffProfile) del tenant aislado —
+ * `staffProfileId` o alias por código de empleado —, nunca un nombre libre
+ * (400 HR_EMPLOYEE_REQUIRED); la ausencia la aprueba otro usuario que quien la
+ * solicitó (409 APPROVAL_SELF_DECISION). Al terminar borra las dos organizaciones.
  *
  *   cd apps/api && node --env-file-if-exists=../../.env --import tsx --test ../../tests/integration/l2-motor-generico.test.mts
  */
@@ -96,7 +100,10 @@ describe("L2-03 · motor genérico Prisma-only por tabla propia", () => {
   let managerB: Session; // organización B
   let twoHotels: Session; // manager en A.propertyA y A.propertyB (SEC-L2-03: la propiedad de la entidad gana a la cabecera)
   let managerId = "";
+  let twoHotelsId = "";
   let requesterId = "";
+  /** Ficha de la recepcionista de A en A.propertyA (código REC-001); cuelga de la propiedad → cleanupTenant la barre. */
+  let receptionistProfileId = "";
   let invariantsBefore: Awaited<ReturnType<typeof farandaInvariants>>;
   const created_: Record<string, string> = {};
 
@@ -114,7 +121,10 @@ describe("L2-03 · motor genérico Prisma-only por tabla propia", () => {
     const dualUser = await addUser(A, "dual", ["manager", "maintenance_manager"], [A.propertyA]);
     const managerBUser = await addUser(B, "manager", ["manager"], [B.propertyA]);
     managerId = managerUser.id;
+    twoHotelsId = twoHotelsUser.id;
     requesterId = requesterUser.id;
+    receptionistProfileId = `sp_l2m_rec_${A.run}`;
+    await prisma.staffProfile.create({ data: { id: receptionistProfileId, userId: A.users.receptionist.id, propertyId: A.propertyA, employeeCode: "REC-001", active: true } });
     await strict(async () => {
       manager = await loginOrThrow(app, managerUser.email, A.password);
       requester = await loginOrThrow(app, requesterUser.email, A.password);
@@ -138,16 +148,24 @@ describe("L2-03 · motor genérico Prisma-only por tabla propia", () => {
     assert.equal(await prisma.organization.count({ where: { id: { in: [A.organizationId, B.organizationId] } } }), 0, "sin organizaciones residuales de esta suite");
   });
 
-  it("workforce: turno → lista en items → transición con máquina de estados → Prisma; fichaje de recepción; ausencia aprobada", async () =>
+  it("workforce: turno por alias de ficha → lista en items → transición con máquina de estados → Prisma; fichaje de recepción; ausencia aprobada por otro usuario", async () =>
     strict(async () => {
       const startAt = "2026-10-01T09:00:00.000Z";
-      const shift = await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, manager, A.propertyA, { staffName: A.users.receptionist.fullName, role: "recepción", startAt, endAt: "2026-10-01T17:00:00.000Z" });
+      // Alias por código de empleado (insensible a mayúsculas) → id real de la ficha; el nombre visible sale del usuario.
+      const shift = await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, manager, A.propertyA, { staffName: "rec-001", role: "recepción", startAt, endAt: "2026-10-01T17:00:00.000Z" });
       const shiftId = created(shift, "POST shifts");
       created_.shift = shiftId;
+      assert.equal((shift.body.payload as Json).staffProfileId, receptionistProfileId, "el alias se resuelve al id real de la ficha");
       assert.equal((shift.body.payload as Json).staffName, A.users.receptionist.fullName);
-      const extra = await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, manager, A.propertyA, { staffName: "Ana", startAt, endAt: "2026-10-01T17:00:00.000Z", foo: 1 });
+      assert.ok(Array.isArray(shift.body.warnings), "el turno devuelve warnings del motor de reglas (vacío si cumple)");
+      assert.equal((await prisma.shift.findUnique({ where: { id: shiftId }, select: { staffProfileId: true } }))?.staffProfileId, receptionistProfileId);
+      const extra = await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, manager, A.propertyA, { staffProfileId: receptionistProfileId, startAt, endAt: "2026-10-01T17:00:00.000Z", foo: 1 });
       assert.equal(extra.status, 400, "campo no admitido → 400");
       assert.match(String(extra.body.message), /campos no admitidos/);
+      const unknownAlias = await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, manager, A.propertyA, { staffName: "sin-ficha-000", startAt, endAt: "2026-10-01T17:00:00.000Z" });
+      assert.equal(unknownAlias.status, 400, `alias sin ficha → 400: ${JSON.stringify(unknownAlias.body)}`);
+      assert.equal(detailsCode(unknownAlias), "HR_EMPLOYEE_REQUIRED");
+      assert.equal(await prisma.shift.count({ where: { propertyId: A.propertyA, staffProfileId: "sin-ficha-000" } }), 0, "el texto nunca se guarda como id");
 
       const list = await call(app, "GET", `/workforce/properties/${A.propertyA}/schedule`, manager, A.propertyA);
       assert.equal(list.status, 200);
@@ -167,11 +185,16 @@ describe("L2-03 · motor genérico Prisma-only por tabla propia", () => {
       assert.equal(backwards.status, 409, "confirmed → scheduled no está en la máquina");
       assert.equal(detailsCode(backwards), "INVALID_TRANSITION");
 
-      const clockIn = await call(app, "POST", "/workforce/time-clock/clock-in", receptionist, A.propertyA, { propertyId: A.propertyA, staffName: A.users.receptionist.fullName, action: "in", at: new Date().toISOString() });
-      created(clockIn, "POST clock-in");
+      const clockIn = await call(app, "POST", "/workforce/time-clock/clock-in", receptionist, A.propertyA, { propertyId: A.propertyA, staffProfileId: receptionistProfileId, action: "in", at: new Date().toISOString() });
+      const clockInId = created(clockIn, "POST clock-in");
+      assert.equal((clockIn.body.payload as Json).staffProfileId, receptionistProfileId);
+      const clockRow = await prisma.timeClockEntry.findUnique({ where: { id: clockInId }, select: { staffProfileId: true, metadataJson: true } });
+      assert.equal(clockRow?.staffProfileId, receptionistProfileId);
+      assert.equal("staffName" in ((clockRow?.metadataJson ?? {}) as Json), false, "metadataJson sin nombre (solo action)");
       const clocks = await call(app, "GET", `/workforce/properties/${A.propertyA}/time-clock`, manager, A.propertyA);
       assert.equal(clocks.status, 200);
       assert.equal((items(clocks)[0]?.payload as Json | undefined)?.action, "in");
+      assert.equal((items(clocks)[0]?.payload as Json | undefined)?.staffName, A.users.receptionist.fullName, "el nombre visible sale de la ficha");
       // Un propertyId ajeno en el cuerpo lo corta el preHandler de ámbito de
       // server.ts (404 opaco, fuera del ámbito del usuario); si la ruta dejara
       // de leerlo del cuerpo, el esquema del motor lo rechaza con 400.
@@ -179,20 +202,31 @@ describe("L2-03 · motor genérico Prisma-only por tabla propia", () => {
       assert.ok([400, 404].includes(mismatch.status), `propertyId ajeno en el cuerpo: ${mismatch.status}`);
       assert.equal(await prisma.timeClockEntry.count({ where: { propertyId: B.propertyA } }), 0, "nada se fichó en la propiedad ajena");
 
-      const absence = await call(app, "POST", "/workforce/absences", manager, A.propertyA, { staffName: A.users.receptionist.fullName, absenceType: "vacation", startDate: "2026-11-02", endDate: "2026-11-06" });
+      const absence = await call(app, "POST", "/workforce/absences", manager, A.propertyA, { staffProfileId: receptionistProfileId, absenceType: "vacation", startDate: "2026-11-02", endDate: "2026-11-06", reason: "Vacaciones de noviembre" });
       const absenceId = created(absence, "POST absences");
       assert.equal(absence.body.status, "pending");
-      const approved = await call(app, "PATCH", `/workforce/absences/${absenceId}`, manager, A.propertyA, {});
+      assert.equal((absence.body.payload as Json).requestedBy, managerId, "requestedBy = actor de la petición");
+      assert.equal((absence.body.payload as Json).reason, "Vacaciones de noviembre");
+      // SoD: quien solicita no aprueba (409 APPROVAL_SELF_DECISION); otro usuario con la clave sí (decidedAt).
+      const selfDecision = await call(app, "PATCH", `/workforce/absences/${absenceId}`, manager, A.propertyA, {});
+      assert.equal(selfDecision.status, 409, JSON.stringify(selfDecision.body));
+      assert.equal(detailsCode(selfDecision), "APPROVAL_SELF_DECISION");
+      const approved = await call(app, "PATCH", `/workforce/absences/${absenceId}`, twoHotels, A.propertyA, {});
       assert.equal(approved.status, 200, JSON.stringify(approved.body));
       assert.equal(approved.body.status, "approved");
-      assert.equal((await prisma.absenceRequest.findUnique({ where: { id: absenceId }, select: { approvedBy: true } }))?.approvedBy, managerId);
-      assert.equal((await call(app, "PATCH", `/workforce/absences/${absenceId}`, manager, A.propertyA, {})).status, 409);
-      assert.equal((await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, receptionist, A.propertyA, { staffName: "Ana", startAt, endAt: "2026-10-01T17:00:00.000Z" })).status, 403, "sin workforce.schedule.manage → 403");
+      assert.equal((approved.body.payload as Json).approvedBy, twoHotelsId);
+      assert.equal(typeof (approved.body.payload as Json).decidedAt, "string");
+      const absenceRow = await prisma.absenceRequest.findUnique({ where: { id: absenceId }, select: { approvedBy: true, requestedBy: true, decidedAt: true } });
+      assert.equal(absenceRow?.approvedBy, twoHotelsId);
+      assert.equal(absenceRow?.requestedBy, managerId);
+      assert.ok(absenceRow?.decidedAt instanceof Date);
+      assert.equal((await call(app, "PATCH", `/workforce/absences/${absenceId}`, twoHotels, A.propertyA, {})).status, 409);
+      assert.equal((await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, receptionist, A.propertyA, { staffProfileId: receptionistProfileId, startAt, endAt: "2026-10-01T17:00:00.000Z" })).status, 403, "sin workforce.schedule.manage → 403");
     }));
 
   it("paginación keyset: limit=1 devuelve nextCursor que encadena y termina en null", async () =>
     strict(async () => {
-      created(await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, manager, A.propertyA, { staffName: "Turno dos", startAt: "2026-10-02T09:00:00.000Z", endAt: "2026-10-02T17:00:00.000Z" }), "POST shifts #2");
+      created(await call(app, "POST", `/workforce/properties/${A.propertyA}/shifts`, manager, A.propertyA, { staffProfileId: receptionistProfileId, startAt: "2026-10-02T09:00:00.000Z", endAt: "2026-10-02T17:00:00.000Z" }), "POST shifts #2");
       const first = await listAdvancedRecords(A.propertyA, "workforce_labor", "schedule", { limit: 1 });
       assert.equal(first.items.length, 1);
       assert.equal(first.total, 2);

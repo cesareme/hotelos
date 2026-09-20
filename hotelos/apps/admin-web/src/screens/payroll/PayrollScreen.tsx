@@ -46,6 +46,20 @@
 // field is now a CocoaSelect of fichas (label `employeeCode ?? userFullName`)
 // instead of the raw id typed by hand. The «Empleado» columns of contracts and
 // slips paint the same label through a Map by staffProfileId.
+//
+// Tanda RRHH · RRHH-10 (design docs/design/RRHH-PLANTILLA-NOMINA.md §10 «Nómina»;
+// recon §3.10): a CocoaCallout under the KPI strip of Periodos / Recibos names the
+// `mode` of the period (external: the gestoría calculates and the ERP imports the
+// aggregate; calculated: internal preparation to validate with the gestoría); the
+// row action «Aprobar» (POST /payroll/periods/:id/approve, gate `payroll.approve`,
+// SoD approver ≠ calculator, optional note) sits between Calcular and Exportar and
+// only exists for whoever holds the key (RRHH does not see it); «Pagar» stays
+// disabled until dirección approved the register (PAYROLL_NOT_APPROVED otherwise);
+// «Incidencias del mes» (header action, palette command and dialog; gate
+// `workforce.payroll_export`) downloads the CSV of GET /payroll/incidences
+// (altas · bajas · cambios de contrato · ausencias, never a NIF) with the same
+// downloadText pattern as the export; the pagas help says the default comes from
+// the convenio (12 + extra pays; 14 without one); ⌘K gains «Aprobar el periodo».
 
 import { useId, useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
@@ -60,15 +74,22 @@ import { canDo } from "../accounting/accounting-ui";
 import {
   PAYROLL_CONTRACT_TYPES,
   PAYROLL_CONTRACT_TYPE_LABELS_ES,
+  PAYROLL_PERIOD_MODE_LABELS_ES,
+  PAYROLL_PERIOD_MODE_SHORT_ES,
+  approvePayrollPeriod,
   calculatePayrollPeriod,
+  canApprovePayrollPeriod,
   createPayrollContract,
   createPayrollPeriod,
   createStaffProfile,
   deactivatePayrollContract,
+  downloadPayrollIncidences,
   exportPayrollPeriod,
+  isPayrollPeriodApproved,
   listPropertyDepartments,
   payPayrollPeriod,
   payrollErrorMessage,
+  payrollPeriodMode,
   postPayrollCostImport,
   reversePayrollCostImport,
   type PayrollContractRecord,
@@ -78,7 +99,9 @@ import {
   type PayrollCostReport,
   type PayrollExportFormat,
   type PayrollExportResult,
+  type PayrollIncidencesExport,
   type PayrollPayFrequency,
+  type PayrollPeriodMode,
   type PayrollPeriodRecord,
   type PayrollSlipRecord,
   type PropertyDepartmentRecord,
@@ -116,6 +139,7 @@ import {
   type CocoaTableColumn,
   type CocoaTone
 } from "../../components/cocoa";
+import { BRAND } from "../../config/brand";
 import { PayrollCostImportDrawer } from "./PayrollCostImportDrawer";
 import {
   ALL_GROUPS_VALUE,
@@ -157,8 +181,14 @@ import {
 
 type View = "contracts" | "periods" | "slips" | "cost";
 
-const PERIOD_STATUS_LABEL: Record<PayrollPeriodRecord["status"], string> = { open: "Abierto", calculated: "Calculado", exported: "Exportado", closed: "Cerrado" };
-const PERIOD_STATUS_TONE: Record<PayrollPeriodRecord["status"], CocoaTone> = { open: "warning", calculated: "info", exported: "success", closed: "neutral" };
+const PERIOD_STATUS_LABEL: Record<PayrollPeriodRecord["status"], string> = { open: "Abierto", calculated: "Calculado", approved: STATUS_LABELS.approved, exported: "Exportado", closed: "Cerrado" };
+const PERIOD_STATUS_TONE: Record<PayrollPeriodRecord["status"], CocoaTone> = { open: "warning", calculated: "info", approved: "success", exported: "success", closed: "neutral" };
+// Tanda RRHH: what the ERP does with the register in each mode (the title is the shared label of PAYROLL_PERIOD_MODE_LABELS_ES).
+const PERIOD_MODE_HELP: Record<PayrollPeriodMode, string> = {
+  external: `Los recibos que calcula ${BRAND.name} son una preparación: el registro oficial lo emite la gestoría y el coste real entra por «Coste de personal» (importación del agregado por centro y mes). Aprobar y exportar siguen siendo el circuito de control.`,
+  calculated: `${BRAND.name} calcula bruto → IRPF → Seguridad Social → neto con los tipos de cotización de 2026 (6,50 % trabajador · 32,15 % empresa) y contabiliza el devengo; valida el resultado con la gestoría antes de pagar.`
+};
+const PERIOD_CODE_PLACEHOLDER = "AAAA-MM";
 const SLIP_STATUS_LABEL: Record<PayrollSlipRecord["status"], string> = { draft: STATUS_LABELS.draft, issued: "Emitido", paid: "Pagado" };
 const SLIP_STATUS_TONE: Record<PayrollSlipRecord["status"], CocoaTone> = { draft: "neutral", issued: "info", paid: "success" };
 
@@ -176,6 +206,8 @@ const EXPORT_FORMATS: Array<{ value: PayrollExportFormat; label: string }> = [
 
 const DEFAULT_BANK_ACCOUNT = "572";
 const PERIOD_CODE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const APPROVE_HINT = "Dirección aprueba el registro calculado (quien lo calculó no puede aprobarlo); después se exporta y se paga";
+const INCIDENCES_HINT = "Necesitas el permiso de exportación de nóminas (RRHH)";
 // Organisation of the active property (never a fixed demo id, browser-roles#10).
 const ORG_ID = getActiveOrganizationId();
 
@@ -203,11 +235,27 @@ const captionStyle: CSSProperties = { display: "block", fontSize: "var(--cocoa-f
 const secondaryStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
 const deductionStyle: CSSProperties = { color: toneInk("danger") };
 
+// Tanda RRHH: the status plus the trail the status alone hides (an approved period keeps `approved` when exported;
+// an exported one keeps `exported` until dirección approves it) and the short mode («Externo» · «Calculado»).
 function periodBadge(period: PayrollPeriodRecord) {
+  const approved = isPayrollPeriodApproved(period);
   return (
     <span className="cocoa-cluster">
       <CocoaBadge tone={PERIOD_STATUS_TONE[period.status] ?? "neutral"} size="small">
         {PERIOD_STATUS_LABEL[period.status] ?? period.status}
+      </CocoaBadge>
+      {approved && period.status !== "approved" ? (
+        <CocoaBadge tone="success" size="small" title={period.approvedAt ? `Aprobado el ${date(period.approvedAt, "short")}` : STATUS_LABELS.approved}>
+          {STATUS_LABELS.approved}
+        </CocoaBadge>
+      ) : null}
+      {period.exportedAt && period.status !== "exported" ? (
+        <CocoaBadge tone="neutral" size="small" title={`Exportado el ${date(period.exportedAt, "short")}`}>
+          Exportado
+        </CocoaBadge>
+      ) : null}
+      <CocoaBadge tone="neutral" variant="tinted" size="small" title={PAYROLL_PERIOD_MODE_LABELS_ES[payrollPeriodMode(period)]}>
+        {PAYROLL_PERIOD_MODE_SHORT_ES[payrollPeriodMode(period)]}
       </CocoaBadge>
       {period.paidAt ? (
         <CocoaBadge tone="success" size="small" title={`Pagado el ${date(period.paidAt, "short")}`}>
@@ -382,6 +430,9 @@ export function PayrollScreen() {
     () => [...periods].filter((p) => p.status !== "open").sort((a, b) => (a.periodCode < b.periodCode ? 1 : -1))[0],
     [periods]
   );
+  // Tanda RRHH: the mode callout follows the selected period, else the most recent one; periods awaiting dirección.
+  const latestPeriod = useMemo(() => [...periods].sort((a, b) => (a.periodCode < b.periodCode ? 1 : -1))[0] ?? null, [periods]);
+  const pendingApproval = useMemo(() => periods.filter((p) => canApprovePayrollPeriod(p)), [periods]);
   const monthCode = currentMonthCode();
   const grossMonth = periods.filter((p) => p.periodCode === monthCode).reduce((sum, p) => sum + (p.totalGross ?? 0), 0);
   const activeContracts = contracts.filter((c) => c.active).length;
@@ -389,6 +440,9 @@ export function PayrollScreen() {
   // ---- coste de personal importado (Tanda 6c) ----
   // The gate reads the real grants of the active property (never the demo union of the login payload).
   const manage = canDo(useNavGate(), "payroll.manage");
+  // Tanda RRHH: «Aprobar» exists only for dirección (payroll.approve); «Incidencias del mes» needs the RRHH export key.
+  const approve = canDo(useNavGate(), "payroll.approve");
+  const exportIncidences = canDo(useNavGate(), "workforce.payroll_export");
   const matrixId = useId();
   const [costRange, setCostRange] = useState(() => defaultCostRange());
   const [costGroup, setCostGroup] = useState<PayrollCostGroup | "">(ALL_GROUPS_VALUE);
@@ -520,7 +574,7 @@ export function PayrollScreen() {
     setContractSaving(true);
     setContractError(null);
     try {
-      await createPayrollContract({
+      const createdContract = await createPayrollContract({
         staffProfileId: staffProfileId.trim(),
         contractType: contractType as PayrollContractType,
         startDate,
@@ -532,6 +586,9 @@ export function PayrollScreen() {
         socialSecurityCategory: socialSecurityCategory.trim() || undefined
       });
       showToast("Contrato guardado", { variant: "success" });
+      // Position control (RF-05) and second active contract (RF-07): warnings never block, so they follow the success toast.
+      const contractWarnings = toArray<string>(createdContract.warnings);
+      if (contractWarnings.length > 0) showToast(contractWarnings.join(" · "), { variant: "warning" });
       setContractOpen(false);
       resetContractForm();
       contractsState.refresh();
@@ -658,8 +715,10 @@ export function PayrollScreen() {
     }
   }
 
-  // ---- calculate · export · pay (dialogs) ----
+  // ---- calculate · approve · export · pay (dialogs) ----
   const [calcTarget, setCalcTarget] = useState<PayrollPeriodRecord | null>(null);
+  const [approveTarget, setApproveTarget] = useState<PayrollPeriodRecord | null>(null);
+  const [approveNote, setApproveNote] = useState("");
   const [exportTarget, setExportTarget] = useState<PayrollPeriodRecord | null>(null);
   const [exportFormat, setExportFormat] = useState<string>("a3");
   const [lastExport, setLastExport] = useState<PayrollExportResult | null>(null);
@@ -667,6 +726,69 @@ export function PayrollScreen() {
   const [paidAt, setPaidAt] = useState("");
   const [bankLedgerCode, setBankLedgerCode] = useState(DEFAULT_BANK_ACCOUNT);
   const [payReference, setPayReference] = useState("");
+  // ---- incidencias del mes (Tanda RRHH) ----
+  const [incidencesOpen, setIncidencesOpen] = useState(false);
+  const [incidencesPeriod, setIncidencesPeriod] = useState("");
+  // Centre of the CSV when the «Ámbito» is the whole sociedad: the active hotel by default, «Toda la sociedad» ("")
+  // only works with accounting.entity.read (the API answers an opaque 404 ENTITY_SCOPE_REQUIRED otherwise).
+  const [incidencesCentre, setIncidencesCentre] = useState("");
+  const [lastIncidences, setLastIncidences] = useState<PayrollIncidencesExport | null>(null);
+  const incidencesPeriodError = PERIOD_CODE.test(incidencesPeriod.trim()) ? undefined : "El mes debe tener el formato AAAA-MM.";
+  const incidencesPropertyId = propertyId ?? (incidencesCentre || null);
+
+  function openApprove(period: PayrollPeriodRecord) {
+    setApproveNote("");
+    setApproveTarget(period);
+  }
+
+  /** ⌘K «Aprobar el periodo»: the selected period when it awaits approval, else the most recent one awaiting it. */
+  function approveFromPalette() {
+    const candidate = selectedPeriod && canApprovePayrollPeriod(selectedPeriod) ? selectedPeriod : pendingApproval.sort((a, b) => (a.periodCode < b.periodCode ? 1 : -1))[0];
+    if (!candidate) {
+      showToast("No hay periodos calculados pendientes de aprobar.", { variant: "info" });
+      return;
+    }
+    setView("periods");
+    openApprove(candidate);
+  }
+
+  async function approvePeriod() {
+    if (!approveTarget) return;
+    setBusy(true);
+    try {
+      await approvePayrollPeriod(approveTarget.id, { note: approveNote });
+      showToast(`Periodo ${approveTarget.periodCode} aprobado: ya se puede exportar y pagar`, { variant: "success" });
+      setApproveTarget(null);
+      setApproveNote("");
+      periodsState.refresh();
+    } catch (err) {
+      showToast(payrollErrorMessage(err, "No se pudo aprobar el periodo."), { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openIncidences(period?: PayrollPeriodRecord | null) {
+    setIncidencesPeriod(period?.periodCode ?? selectedPeriod?.periodCode ?? lastCalculated?.periodCode ?? monthCode);
+    setIncidencesCentre(propertyId ?? finance.active.propertyId);
+    setIncidencesOpen(true);
+  }
+
+  async function downloadIncidences() {
+    if (incidencesPeriodError || busy) return;
+    setBusy(true);
+    try {
+      const result = await downloadPayrollIncidences({ period: incidencesPeriod.trim(), propertyId: incidencesPropertyId });
+      downloadText(result.filename, result.contentType, result.text);
+      setLastIncidences(result);
+      showToast(`Incidencias de ${result.periodCode} descargadas: ${plural(result.rows.length, "fila", "filas")}`, { variant: "success" });
+      setIncidencesOpen(false);
+    } catch (err) {
+      showToast(payrollErrorMessage(err, "No se pudieron descargar las incidencias del mes."), { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function calculate() {
     if (!calcTarget) return;
@@ -770,6 +892,10 @@ export function PayrollScreen() {
   const state = nothingLoaded ? (anyLoading ? "loading" : "error") : "ready";
   const newContractLabel = newLabel("m", "contrato");
   const exportWarnings = toArray<string>(lastExport?.warnings);
+  const incidenceWarnings = toArray<string>(lastIncidences?.warnings);
+  // Mode of the register on screen: the selected period in «Recibos», the most recent one in «Periodos».
+  const calloutPeriod = view === "slips" ? selectedPeriod : latestPeriod;
+  const calloutMode = payrollPeriodMode(calloutPeriod);
   // Tanda 6b: the export carries the employer block (sociedad NIF · razón social · CCC) — additive on the wire.
   const employer = (lastExport as (PayrollExportResult & { employer?: { legalName: string; taxId: string | null; taxIdValid: boolean; ccc: string | null; cccSource: string | null } }) | null)?.employer ?? null;
 
@@ -787,6 +913,9 @@ export function PayrollScreen() {
           </CocoaButton>
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setPeriodOpen(true)}>
             Abrir periodo
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => openIncidences()} disabled={!exportIncidences} title={exportIncidences ? "CSV para la gestoría: altas, bajas, cambios de contrato y ausencias del mes (sin NIF)" : INCIDENCES_HINT}>
+            Incidencias del mes
           </CocoaButton>
           <CocoaButton variant="bordered" tone="accent" size="small" onClick={openProfileDrawer} disabled={!manage} title={manage ? "Ficha de personal: la persona y su centro; el contrato se crea después sobre ella" : MANAGE_HINT}>
             {newProfileLabel}
@@ -813,6 +942,8 @@ export function PayrollScreen() {
         { id: "payroll-new-contract", label: newContractLabel, run: () => setContractOpen(true) },
         { id: "payroll-new-period", label: "Abrir periodo de nómina", run: () => setPeriodOpen(true) },
         { id: "payroll-cost-tab", label: "Ver el coste de personal", run: () => setView("cost") },
+        ...(approve ? [{ id: "payroll-approve-period", label: "Aprobar el periodo", run: approveFromPalette }] : []),
+        ...(exportIncidences ? [{ id: "payroll-incidences", label: "Descargar las incidencias del mes", run: () => openIncidences() }] : []),
         ...(manage ? [{ id: "payroll-cost-import", label: "Importar informe de coste de personal", run: () => setImportOpen(true) }] : [])
       ]}
     >
@@ -831,6 +962,42 @@ export function PayrollScreen() {
           <CocoaKpi label="Contratos activos" value={number(activeContracts)} polarity="neutral" deltaLabel={plural(contracts.length, "contrato en total", "contratos en total")} degraded={!contractsState.data} />
         </CocoaKpiStrip>
       )}
+
+      {(view === "periods" || view === "slips") && calloutPeriod ? (
+        <CocoaCallout tone="info" title={PAYROLL_PERIOD_MODE_LABELS_ES[calloutMode]}>
+          {PERIOD_MODE_HELP[calloutMode]}
+          {view === "periods" && pendingApproval.length > 0 ? ` ${plural(pendingApproval.length, "periodo calculado pendiente", "periodos calculados pendientes")} de la aprobación de dirección.` : ""}
+        </CocoaCallout>
+      ) : null}
+
+      {lastIncidences ? (
+        <CocoaCallout
+          tone={incidenceWarnings.length > 0 ? "warning" : "success"}
+          title={`Incidencias de ${lastIncidences.periodCode} descargadas`}
+          role="status"
+          actions={
+            <span className="cocoa-cluster">
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => downloadText(lastIncidences.filename, lastIncidences.contentType, lastIncidences.text)}>
+                {ACTIONS.download}
+              </CocoaButton>
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setLastIncidences(null)} aria-label="Ocultar el aviso de incidencias">
+                Ocultar
+              </CocoaButton>
+            </span>
+          }
+        >
+          {lastIncidences.filename} · {plural(lastIncidences.rows.length, "fila", "filas")} · {lastIncidences.propertyCode ? `centro ${lastIncidences.propertyCode}` : "toda la sociedad"} · sin NIF
+          {incidenceWarnings.length > 0 ? (
+            <ul className="c22-section__list">
+              {incidenceWarnings.map((warning, index) => (
+                <li key={index}>
+                  <span>{warning}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </CocoaCallout>
+      ) : null}
 
       {lastExport ? (
         <CocoaCallout
@@ -921,8 +1088,8 @@ export function PayrollScreen() {
                     variant="plain"
                     tone="accent"
                     size="small"
-                    disabled={p.status === "closed" || Boolean(p.paidAt)}
-                    title={p.paidAt ? "El periodo ya está pagado: no se recalcula" : p.status === "open" ? "Calcula y contabiliza los recibos" : "Recalcula: anula los asientos anteriores y vuelve a contabilizar"}
+                    disabled={p.status === "closed" || Boolean(p.paidAt) || isPayrollPeriodApproved(p)}
+                    title={p.paidAt ? "El periodo ya está pagado: no se recalcula" : isPayrollPeriodApproved(p) ? "El periodo ya está aprobado por dirección: no se recalcula" : p.status === "open" ? "Calcula y contabiliza los recibos" : "Recalcula: anula los asientos anteriores y vuelve a contabilizar"}
                     onClick={(event) => {
                       event.stopPropagation();
                       setCalcTarget(p);
@@ -930,12 +1097,27 @@ export function PayrollScreen() {
                   >
                     {p.status === "open" ? "Calcular" : "Recalcular"}
                   </CocoaButton>
+                  {approve ? (
+                    <CocoaButton
+                      variant="plain"
+                      tone="accent"
+                      size="small"
+                      disabled={!canApprovePayrollPeriod(p)}
+                      title={isPayrollPeriodApproved(p) ? (p.approvedAt ? `Aprobado el ${date(p.approvedAt, "short")}` : STATUS_LABELS.approved) : p.status === "open" ? "Calcula el periodo antes de aprobarlo" : APPROVE_HINT}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openApprove(p);
+                      }}
+                    >
+                      {ACTIONS.approve}
+                    </CocoaButton>
+                  ) : null}
                   <CocoaButton
                     variant="plain"
                     tone="neutral"
                     size="small"
-                    disabled={p.status === "open"}
-                    title={p.status === "open" ? "Calcula el periodo antes de exportarlo" : "Exportación auditada a la gestoría"}
+                    disabled={p.status === "open" || !isPayrollPeriodApproved(p)}
+                    title={p.status === "open" ? "Calcula el periodo antes de exportarlo" : !isPayrollPeriodApproved(p) ? "Dirección debe aprobar el periodo antes de exportarlo a la gestoría" : "Exportación auditada a la gestoría"}
                     onClick={(event) => {
                       event.stopPropagation();
                       setExportFormat("a3");
@@ -948,8 +1130,8 @@ export function PayrollScreen() {
                     variant="plain"
                     tone="neutral"
                     size="small"
-                    disabled={p.status === "open" || Boolean(p.paidAt)}
-                    title={p.paidAt ? `Pagado el ${date(p.paidAt, "short")}` : p.status === "open" ? "Calcula el periodo antes de pagarlo" : "Registra el pago del neto (asiento 465 contra tesorería)"}
+                    disabled={p.status === "open" || Boolean(p.paidAt) || !isPayrollPeriodApproved(p)}
+                    title={p.paidAt ? `Pagado el ${date(p.paidAt, "short")}` : p.status === "open" ? "Calcula el periodo antes de pagarlo" : !isPayrollPeriodApproved(p) ? "Dirección debe aprobar el periodo antes de pagarlo" : "Registra el pago del neto (asiento 465 contra tesorería)"}
                     onClick={(event) => {
                       event.stopPropagation();
                       openPay(p);
@@ -1179,7 +1361,7 @@ export function PayrollScreen() {
             <CocoaField label="Periodicidad">
               <CocoaSelect value={payFrequency} onChange={setPayFrequency} options={PAY_FREQUENCIES} />
             </CocoaField>
-            <CocoaField label="Pagas anuales" hint="opcional" error={contractErrors.payCount} help="Entre 12 y 16; por defecto 12.">
+            <CocoaField label="Pagas anuales" hint="opcional" error={contractErrors.payCount} help="Entre 12 y 16; vacío: las del convenio del centro (12 más sus pagas extra; 14 sin convenio).">
               <CocoaInput value={payCount} onChange={setPayCount} type="number" inputMode="numeric" min={12} max={16} step={1} />
             </CocoaField>
             <CocoaField label="IRPF (%)" hint="opcional" error={contractErrors.irpfRatePct} help="Vacío: se calcula automáticamente.">
@@ -1312,6 +1494,50 @@ export function PayrollScreen() {
         busy={busy}
         onConfirm={calculate}
       />
+
+      {/* Aprobar (Tanda RRHH: dirección, SoD aprobador ≠ calculador) */}
+      <CocoaDialog
+        open={approveTarget !== null}
+        onClose={() => setApproveTarget(null)}
+        title={approveTarget ? `Aprobar el registro de nómina ${approveTarget.periodCode}` : "Aprobar periodo"}
+        description={approveTarget ? `Dirección da por bueno el registro calculado (neto ${money(approveTarget.totalNet)}, ${money(approveTarget.totalGross)} bruto): a partir de aquí se puede exportar a la gestoría y registrar el pago. Quien calculó el periodo no puede aprobarlo; la aprobación queda auditada.` : undefined}
+        confirmLabel={ACTIONS.approve}
+        cancelLabel={ACTIONS.cancel}
+        busy={busy}
+        size="md"
+        onConfirm={approvePeriod}
+      >
+        <CocoaField label="Nota" hint="opcional" help="Se guarda en la auditoría de la aprobación (hasta 1.000 caracteres).">
+          <CocoaInput value={approveNote} onChange={setApproveNote} multiline rows={3} maxLength={1000} placeholder="Revisado con la gestoría, sin incidencias…" />
+        </CocoaField>
+      </CocoaDialog>
+
+      {/* Incidencias del mes (Tanda RRHH: CSV a la gestoría, sin NIF) */}
+      <CocoaDialog
+        open={incidencesOpen}
+        onClose={() => setIncidencesOpen(false)}
+        title="Incidencias del mes para la gestoría"
+        description="Altas, bajas, cambios de contrato y ausencias aprobadas del mes, identificadas por número de empleado (nunca por NIF), en CSV para la gestoría."
+        confirmLabel="Descargar CSV"
+        cancelLabel={ACTIONS.cancel}
+        busy={busy}
+        confirmDisabled={Boolean(incidencesPeriodError)}
+        size="md"
+        onConfirm={downloadIncidences}
+      >
+        <CocoaFormRow columns={2}>
+          <CocoaField label="Mes (AAAA-MM)" required error={incidencesPeriod.trim() === "" ? undefined : incidencesPeriodError}>
+            <CocoaInput value={incidencesPeriod} onChange={setIncidencesPeriod} placeholder={PERIOD_CODE_PLACEHOLDER} maxLength={7} autoFocus />
+          </CocoaField>
+          <CocoaField label="Centro de trabajo" help={propertyId ? "El centro del «Ámbito»." : "«Toda la sociedad» necesita la clave de lectura de sociedad; si no, elige un centro."}>
+            {propertyId ? (
+              <CocoaSelect value={propertyId} onChange={() => undefined} options={centreOptions} disabled />
+            ) : (
+              <CocoaSelect value={incidencesCentre} onChange={setIncidencesCentre} options={[{ value: "", label: "Toda la sociedad" }, ...centreOptions]} />
+            )}
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaDialog>
 
       {/* Exportar */}
       <CocoaDialog

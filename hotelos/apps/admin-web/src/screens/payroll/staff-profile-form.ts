@@ -101,7 +101,7 @@ export function employeeLabel(labels: ReadonlyMap<string, string>, staffProfileI
 }
 
 /** Options of the «Ficha de personal» select: active first, then by label; the name follows the code when both exist. */
-export function staffProfileOptions(profiles: readonly StaffProfileRecord[]): Array<{ value: string; label: string }> {
+export function staffProfileOptions(profiles: readonly Pick<StaffProfileRecord, "id" | "employeeCode" | "userFullName" | "active">[]): Array<{ value: string; label: string }> {
   return [...profiles]
     .sort((a, b) => Number(b.active) - Number(a.active) || staffProfileLabel(a).localeCompare(staffProfileLabel(b), "es"))
     .map((profile) => {

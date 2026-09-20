@@ -1,5 +1,5 @@
-// Lote tabs-b (Comercial · Revenue · Finanzas · Informes): the fourteen containers
-// (twelve of Tanda 5 plus Contabilidad and Proveedores y gastos of Tanda 6)
+// Lote tabs-b (Comercial · Revenue · Finanzas · Informes): the fifteen containers
+// (twelve of Tanda 5, Contabilidad and Proveedores y gastos of Tanda 6, RRHH y nóminas of Tanda RRHH)
 // against nav-tree.generated.json through the shared helpers of screens/tabs.
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -23,6 +23,7 @@ const CONTAINERS: Record<string, string> = {
   JournalScreen: "finanzas/ContabilidadTabs.tsx",
   TrialBalanceScreen: "finanzas/EstadosContablesTabs.tsx",
   SupplierBillsScreen: "finanzas/ProveedoresTabs.tsx",
+  PayrollScreen: "finanzas/NominasTabs.tsx",
   ReportingCenter: "informes/CentroInformesTabs.tsx",
   PortfolioDashboard: "informes/CarteraTabs.tsx"
 };
@@ -58,7 +59,7 @@ describe("tabs-b · coverage", () => {
     assert.equal(itemForScreen("SupplierBillsScreen").item.baseTab, "Facturas recibidas");
   });
 
-  it("the lot folders hold exactly the fourteen containers", () => {
+  it("the lot folders hold exactly the fifteen containers", () => {
     const files = ["comercial", "revenue", "finanzas", "informes"].flatMap((folder) =>
       readdirSync(new URL(`../../${folder}`, import.meta.url))
         .filter((entry) => entry.endsWith(".tsx"))

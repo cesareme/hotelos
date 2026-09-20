@@ -246,6 +246,45 @@ const JUSTIFIED_GAPS = [
     evidence: "CheckInAutomationSettingsScreen.tsx useApiData → GET /properties/:p/check-in/policy [guest_self_service.read] (modules/checkin/route-permissions.partial.ts); receptionist y front_office_manager la tienen (permissions.ts); sin ella la pantalla muestra el aviso «Ver la política requiere guest_self_service.read»",
     reason: "la política del check-in en línea (pesos, OTP, pago, kiosco) la consulta recepción de día y la fija jefatura de recepción o dirección (guest_self_service.manage); la auditoría nocturna no la revisa"
   },
+  // --- Tanda RRHH (corrector SEC-03, 2026-09-20): pestañas de Finanzas › RRHH y nóminas y Hoy › Costes de personal ----------
+  {
+    templates: ["accountant", "controller", "compliance", "auditor"],
+    permission: "hr.employee.read",
+    screens: /^HrEmployeesScreen$/,
+    kind: "inventory",
+    evidence: "el inventario atribuye a HrEmployeesScreen GET /hr/employees, /hr/employees/:id, /hr/agreements y /hr/agreements/:id/rules [hr.employee.read], pero HrEmployeesScreen.tsx solo pide el listado con la clave (useApiData(read ? \"/hr/employees\" : null); read = canDo(gate, \"hr.employee.read\")) y sin ella muestra «Sin acceso a la plantilla» (READ_HINT) sin ninguna petición; el detalle, los convenios y sus reglas los pide EmployeeDrawer solo al abrir una fila del listado. Ninguna plantilla de finanzas ni auditor tiene hr.employee.read (permissions.ts v5: dirección, dirección general, operaciones, propiedad y payroll_hr); la fila 302 de tanda5-nav-tree.csv lleva finanzas|auditoria por las pestañas hermanas (Previsión y Panel) de la misma URL /finanzas/nominas"
+  },
+  {
+    templates: ["accountant", "controller", "compliance", "auditor"],
+    permission: "hr.employee.read",
+    screens: /^HrOverviewScreen$/,
+    kind: "inventory",
+    evidence: "el inventario atribuye a HrOverviewScreen GET /hr/employees [hr.employee.read], pero HrOverviewScreen.tsx:130 solo lo pide con la clave (useApiData(canReadEmployees ? \"/hr/employees\" : null); canReadEmployees = canDo(gate, \"hr.employee.read\")) para resolver los nombres de las alertas de vencimiento; sin ella las alertas muestran el número de expediente. Ninguna plantilla de finanzas ni auditor tiene hr.employee.read (permissions.ts v5)"
+  },
+  {
+    templates: ["compliance"],
+    permission: "workforce.read",
+    screens: /^(HrForecastScreen|HrOverviewScreen)$/,
+    kind: "sister",
+    evidence: "hrForecastApi → GET /hr/properties/:p/labor-forecast · /standards · /staffing-plans y GET /hr/alerts [workforce.read] (modules/hr/route-permissions.partial.ts); accountant y controller (token finanzas) la tienen (permissions.ts: payroll.read + workforce.read + workforce.labor_cost.view); compliance no",
+    reason: "la previsión de plantilla y las alertas de personal las consultan contabilidad y dirección financiera (coste laboral); cumplimiento revisa obligaciones, no cuadrantes"
+  },
+  {
+    templates: ["compliance"],
+    permission: "workforce.labor_cost.view",
+    screens: /^HrOverviewScreen$/,
+    kind: "sister",
+    evidence: "hrForecastApi.getHrKpis → GET /hr/kpis [workforce.labor_cost.view] (modules/hr/route-permissions.partial.ts); accountant y controller la tienen (permissions.ts); compliance no",
+    reason: "los KPIs del panel RRHH llevan el coste del mes: los ven contabilidad y dirección financiera, no cumplimiento"
+  },
+  {
+    templates: ["compliance"],
+    permission: "payroll.read",
+    screens: /^(HrEmployeesScreen|DirectorLaborCostsScreen)$/,
+    kind: "sister",
+    evidence: "hrApi.listEmployeeStaffProfiles → GET /payroll/staff-profiles y laborCostPanelApi → GET /payroll/labor-cost-panel [payroll.read] (modules/payroll/route-permissions.partial.ts); accountant y controller la tienen (permissions.ts); compliance no (la versión 2 nunca le dio nómina)",
+    reason: "las fichas de nómina y el panel de costes de personal son de contabilidad y dirección financiera; cumplimiento no lee la nómina"
+  },
   {
     templates: ["receptionist", "night_auditor", "front_office_manager", "auditor"],
     permission: "kiosk.configure",

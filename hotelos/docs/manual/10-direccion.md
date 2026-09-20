@@ -39,7 +39,7 @@ Al entrar aterrizas en **Hoy › Mi día › pestaña «Dirección»** (`/hoy/di
 
 > **Módulo a activar:** la entrada «Punto de venta» (Operaciones) pertenece al módulo `outlet_pos`, apagado en el hotel de demostración; por eso el menú muestra 68 entradas y no 69. Si abres una pantalla del TPV por su dirección verás «Módulo no activado · Esta función pertenece a un módulo que no está activo en la propiedad.» con el botón «Ir a mi página de inicio». Los módulos se activan en Configuración › Módulos e integraciones (guía [60-sistemas.md](60-sistemas.md)).
 
-En Mi día, dirección ve las cuatro pestañas «Recepción · Operaciones · Dirección · Propietario». Las pestañas «Recepción» (cola operativa de llegadas y salidas) y «Operaciones» las usan también recepción y los departamentos; «Dirección» y «Propietario» son tuyas.
+En Mi día, dirección ve las pestañas «Recepción · Operaciones · Dirección · Propietario · Check-in automatizado · Costes de personal». Las pestañas «Recepción» (cola operativa de llegadas y salidas) y «Operaciones» las usan también recepción y los departamentos; «Dirección», «Propietario» y «Costes de personal» (tarea 11) son tuyas.
 
 ### Si tu plantilla es «Propiedad»
 
@@ -356,6 +356,21 @@ Estas seis pantallas son las que dan de alta el hotel y solo las ven las plantil
 
 > **En construcción:** varias etiquetas y valores de estas pantallas siguen en inglés («Status», «Description», «Departure clean», «HVAC», «Language», «Cleaning schemas»…), y la cabecera «SIN INICIAR» no refleja lo cargado por otros medios. No guardes nada en el hotel de demostración desde estas pantallas: cambian la ficha del hotel para todas las guías.
 
+### 11. Ver los costes de personal
+
+**Menú › Hoy › Mi día › pestaña «Costes de personal»** · `/hoy/costes-personal`
+
+Qué te enseña: lo que cuesta la plantilla frente a lo que vende el hotel (o toda la sociedad), por centro y por departamento, y de dónde sale cada cifra. La ven dirección, finanzas, propiedad y auditoría; el dato lo lee ehotelOS del diario contable (cuentas 640 y 642) o, si ese mes no hay asientos de personal, del último informe de nómina que administración contabilizó en Finanzas › RRHH y nóminas › Coste de personal. Nunca suma las dos fuentes.
+
+1. Arriba a la derecha eliges el **«Ámbito»** (toda la sociedad o un centro; con un solo hotel el selector no aparece), el **mes** y la ventana **«Mes»** o **«Acumulado del año»** (de enero al mes elegido). «Actualizar» recarga; en ⌘K tienes «Costes de personal: mes anterior» y «… acumulado del año».
+2. Lee la fila de indicadores: «COSTE DE PERSONAL» (con la variación «vs periodo anterior» y, debajo, la fuente y la ventana: «diario contable (64x) · sept 2026» o «diario 7 · lote 1 · sin datos 4 · ene–sept 2026»), «% SOBRE VENTAS» (sobre las ventas del libro o, si van marcadas «(ref.)», las de referencia del informe de nómina), «COSTE POR EMPLEADO» (solo con la plantilla media del informe de nómina) y «CPOR LABORAL» (coste por habitación ocupada: solo cuando hay habitaciones ocupadas reales de cierres del día o de la importación del PMS). Un guion «—» significa que ese dato no existe para ese ámbito y ventana; el banner «Datos incompletos» de la cabecera enumera por qué.
+3. En **«Coste por departamento»** cada barra es un departamento USALI (Habitaciones, A&B, Administración…). La barra **«Sin desglose»** agrupa el coste de los meses cuyos asientos de personal no llevan centro de coste: el callout amarillo te dice qué meses son. Para verlos por departamento hace falta que administración contabilice el informe de nómina de ese mes o que la gestoría asigne centro de coste a los asientos.
+4. A la derecha, con toda la sociedad, **«Centros por % s/ ventas»** ordena los hoteles del que más pesa la plantilla al que menos (los que no tienen ventas ese mes van al final, en tono de aviso). Con un centro elegido ves en su lugar **«Meses del centro»**: coste, % sobre ventas, CPOR, plantilla y fuente de cada mes; la etiqueta «diario y lote» marca un mes con las dos fuentes (manda el diario).
+5. La tabla **«Centro × departamento»** cruza centros y departamentos con la fila «Total» al pie; la columna «Fuente» resume de dónde sale cada centro («diario 7 · lote 1»). Un centro en tono de aviso no tiene ningún dato en la ventana.
+6. El bloque **«Fuentes»** del pie dice cuántos asientos y qué cuentas se han leído, qué informes de nómina se han usado y en cuántos centros hay habitaciones ocupadas reales; «n avisos del cálculo» despliega el detalle centro a centro.
+
+Demo: en el hotel de prueba de RRHH solo hay datos de septiembre (el devengo de nómina calculado en la guía de RRHH), sin ventas ni habitaciones ocupadas reales: verás el coste del mes y casi todo lo demás en «—», que es lo honesto. En el cliente piloto, enero-julio salen «Sin desglose» (asientos de la gestoría sin centro de coste), agosto por departamento (informe de nómina contabilizado) y dos centros sin ningún dato.
+
 ## Errores frecuentes
 
 | Mensaje o situación | Qué significa | Qué hacer |
@@ -383,6 +398,7 @@ Estas seis pantallas son las que dan de alta el hotel y solo las ven las plantil
 - **«Generar exportación» del Centro de informes** no descarga nada («Exportación lista: undefined»; tarea 7). Las descargas que funcionan son las de «Exportaciones de revenue» y las de Histórico y previsión.
 - **Asistente ehotelOS.** Sin modelo de lenguaje responde por reglas: la pregunta sugerida «¿Cuál es la ocupación ahora mismo?» contesta («Ocupación hoy: 11,1 % (2/18 habitaciones)» en la demo, citando la fuente `get_occupancy_today`), pero «¿Cuántas llegadas tengo hoy?» devuelve «No he sabido enrutar tu pregunta a una herramienta concreta…»: es un defecto conocido, no un fallo tuyo.
 - **Doble factor (2FA).** «Exigir doble factor (2FA)» solo marca la ficha de la persona; la aplicación no pide todavía un segundo factor al iniciar sesión.
+- **Costes de personal sin presupuesto ni umbrales.** La pestaña «Costes de personal» (tarea 11) compara con el periodo anterior, no con un presupuesto: no hay semáforos por objetivo, ni previsión de coste, ni comparación con otros hoteles del sector, ni coste por hora. Los meses con asientos de personal sin centro de coste salen «Sin desglose» (no se reparten por departamento) y el CPOR laboral solo existe donde hay habitaciones ocupadas reales (cierres del día o importación del PMS); el resto de indicadores de coste (A&B, suministros, GOP) siguen fuera.
 
 ## Ver también
 

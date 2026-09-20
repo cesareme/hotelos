@@ -1,4 +1,5 @@
 import { prisma } from "@hotelos/database";
+import { ABSENCE_HEALTH_TYPES, type AbsenceType, type PermissionKey } from "@hotelos/shared";
 
 /**
  * Workforce operations dashboard — read-only statistical view for HR /
@@ -43,7 +44,24 @@ export type WorkforceDashboardInput = {
   propertyId: string;
   from?: string;
   to?: string;
+  /**
+   * Claves del actor (corrector RRHH · SEC-07): los tipos de ausencia de salud (IT, nacimiento y
+   * cuidado; art. 9 RGPD) solo se muestran con hr.employee.read / hr.employee.manage; sin lista
+   * (llamadores internos) se enmascaran igual que sin la clave.
+   */
+  permissions?: readonly PermissionKey[];
 };
+
+const ABSENCE_HEALTH_READ_KEYS: readonly PermissionKey[] = ["hr.employee.read", "hr.employee.manage"];
+
+/** Tipo de ausencia para el cuadro: los de salud salen como null (+ `restricted`) sin la clave de expediente. */
+export function maskDashboardAbsenceType(type: string | null | undefined, permissions: readonly PermissionKey[] | null | undefined): { type: string | null; restricted: boolean } {
+  const value = type ?? null;
+  if (value === null) return { type: null, restricted: false };
+  if (!ABSENCE_HEALTH_TYPES.includes(value as AbsenceType)) return { type: value, restricted: false };
+  if ((permissions ?? []).some((key) => ABSENCE_HEALTH_READ_KEYS.includes(key))) return { type: value, restricted: false };
+  return { type: null, restricted: true };
+}
 
 export type WorkforceDashboardKpis = {
   headcount: number;
@@ -59,7 +77,7 @@ export type WorkforceDashboard = {
   staffByDepartment: Array<{ departmentName: string; count: number }>;
   hoursVsForecast: Array<{ date: string; actualHours: number; forecastHours: number }>;
   upcomingShifts: Array<{ id: string; staffName: string; startAt: string; endAt: string; role?: string }>;
-  pendingAbsences: Array<{ id: string; staffName: string; type: string; startDate: string; endDate: string; status: string }>;
+  pendingAbsences: Array<{ id: string; staffName: string; type: string | null; restricted: boolean; startDate: string; endDate: string; status: string }>;
 };
 
 const CLOCK_IN_TYPES = new Set(["clock_in", "in", "start", "start_break_end", "break_end"]);
@@ -391,7 +409,8 @@ export async function buildWorkforceDashboard(
   const pendingAbsences = pendingAbsenceRows.map((a) => ({
     id: a.id,
     staffName: staffNameByProfileId.get(a.staffProfileId) ?? a.staffProfileId,
-    type: a.absenceType,
+    // SEC-07: mismo enmascarado que GET /hr/absences (maskHealthAbsence) para los datos de salud.
+    ...maskDashboardAbsenceType(a.absenceType, input.permissions),
     startDate: a.startDate.toISOString(),
     endDate: a.endDate.toISOString(),
     status: a.status

@@ -287,14 +287,14 @@ describe("estructura societaria · L4 · organización aislada (sociedad + hotel
     assert.ok(demoStore.auditEvents.some((e) => e.action === "PAYROLL_WORK_CENTER_REQUIRED" && e.entityId === GHOST && e.organizationId === ORG), "audit event recorded before the rollback");
   });
 
-  it("C6 · la nómina de la oficina central contabiliza en la oficina y su retención entra en el Modelo 111 de la sociedad (2.000,00 / 300,00)", async () => {
+  it("C6 · la nómina de la oficina central contabiliza en la oficina y su retención entra en el Modelo 111 de la sociedad (2.000,00 / 300,00 · tipos 2026: 130,00 / 643,00 → 1.570,00)", async () => {
     await prisma.employmentContract.update({ where: { id: GHOST }, data: { active: false } });
     const result = await payroll.calculatePeriod({ context, periodId, correlationId: CORR });
     assert.equal(result.slipIds.length, 1);
     assert.equal(result.journalEntryIds.length, 1);
     assert.equal(result.period.totalGross, 2000);
     assert.equal(result.period.totalIrpf, 300);
-    assert.equal(result.period.totalNet, 1573);
+    assert.equal(result.period.totalNet, 1570);
 
     const entry = await accounting.loadJournalEntry(prisma, result.journalEntryIds[0]!);
     assert.equal(entry?.propertyId, OFFICE, "the 640/642 lines carry the office as work centre");
@@ -302,10 +302,10 @@ describe("estructura societaria · L4 · organización aislada (sociedad + hotel
       entry?.lines.map((l) => [l.accountCode, l.debit, l.credit]),
       [
         ["640", "2000.00", "0.00"],
-        ["642", "610.00", "0.00"],
-        ["465", "0.00", "1573.00"],
+        ["642", "643.00", "0.00"],
+        ["465", "0.00", "1570.00"],
         ["4751", "0.00", "300.00"],
-        ["476", "0.00", "737.00"]
+        ["476", "0.00", "773.00"]
       ]
     );
 
@@ -344,7 +344,7 @@ describe("estructura societaria · L4 · organización aislada (sociedad + hotel
     const lines = csv.text.replace(/^﻿/, "").trimEnd().split("\n");
     assert.ok(lines[0]!.endsWith(";nif_empresa;ccc"), lines[0]);
     assert.equal(lines.length, 2);
-    assert.ok(lines[1]!.endsWith(`;2000,00;15;300,00;127,00;610,00;1573,00;${TAX_ID};${CCC_PRINCIPAL}`), lines[1]);
+    assert.ok(lines[1]!.endsWith(`;2000,00;15;300,00;130,00;643,00;1570,00;${TAX_ID};${CCC_PRINCIPAL}`), lines[1]);
     assert.ok(!csv.warnings.some((w) => /no tiene NIF|backfill pendiente|CCC/.test(w)), csv.warnings.join(" | "));
     const a3 = await payrollExport.buildPayrollExport(periodId, "a3");
     assert.ok(a3.text.startsWith(`${TAX_ID}|OC-001|Empleada Oficina L4|2026-08|2000.00|300.00|`), a3.text);
@@ -381,19 +381,19 @@ describe("estructura societaria · L4 · organización aislada (sociedad + hotel
     const AS_OF = new Date("2026-09-16T00:00:00Z");
     const payablesEntity = await treasury.treasuryPayables({ scope: "entity", organizationId: ORG, context, asOf: AS_OF });
     assert.equal(payablesEntity.scope, "entity");
-    assert.equal(payablesEntity.payroll, "3146.00", "2026-08 (organisation-wide) + 2026-09 (office), each once");
+    assert.equal(payablesEntity.payroll, "3140.00", "2026-08 (organisation-wide) + 2026-09 (office), each once");
     assert.equal(payablesEntity.supplierBills, "121.00", "the office's posted bill");
-    assert.equal(payablesEntity.taxLiabilities, "1037.00", "as of 16/09: 4751 300,00 + 476 737,00 of the August payroll (the September slip is dated 30/09)");
+    assert.equal(payablesEntity.taxLiabilities, "1073.00", "as of 16/09: 4751 300,00 + 476 773,00 of the August payroll (the September slip is dated 30/09)");
     const later = await treasury.treasuryPayables({ scope: "entity", organizationId: ORG, context, asOf: new Date("2026-10-01T00:00:00Z") });
-    assert.equal(later.taxLiabilities, "2074.00", "as of 1/10 both payrolls are booked: 4751 600,00 + 476 1.474,00");
+    assert.equal(later.taxLiabilities, "2146.00", "as of 1/10 both payrolls are booked: 4751 600,00 + 476 1.546,00");
     const payablesHotel = await treasury.treasuryPayables({ propertyId: HOTEL, asOf: AS_OF });
-    assert.equal(payablesHotel.payroll, "1573.00", "a centre sees its own periods and the organisation-wide one");
+    assert.equal(payablesHotel.payroll, "1570.00", "a centre sees its own periods and the organisation-wide one");
     assert.equal(payablesHotel.supplierBills, "0.00");
     assert.equal(payablesHotel.taxLiabilities, "0.00", "the payroll liabilities were posted on the office");
     const payablesOffice = await treasury.treasuryPayables({ propertyId: OFFICE, asOf: AS_OF });
-    assert.equal(payablesOffice.payroll, "3146.00");
+    assert.equal(payablesOffice.payroll, "3140.00");
     assert.equal(payablesOffice.supplierBills, "121.00");
-    assert.equal(payablesOffice.taxLiabilities, "1037.00");
+    assert.equal(payablesOffice.taxLiabilities, "1073.00");
 
     const forecast = await treasury.treasuryForecast({ scope: "entity", organizationId: ORG, context });
     assert.equal(forecast.scope, "entity");

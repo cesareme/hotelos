@@ -489,3 +489,80 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda RRHH · Plantilla, previsión, nómina y panel de costes de dirección,
+2026-09-20, integrador; worktree `tanda-rrhh` sobre a069906, BD `hotelos_rrhh`; commit en la rama,
+pendiente de fusión a main; informe de cierre `docs/audits/TANDA-RRHH-NOMINA-2026-09-20.md`):
+- diseños `docs/design/RRHH-PLANTILLA-NOMINA.md` (apéndice «Estado tras la implementación» A.1-A.3)
+  y `docs/design/PANEL-COSTES-DIRECCION.md` implementados en 12 lotes y 6 olas (RRHH-1 cimientos ·
+  RRHH-2/3/4/7 servicios y demo · RRHH-6 rutas · RRHH-8/9/10 front · RRHH-11 + PANEL-A navegación,
+  docs y API del panel · PANEL-B panel de costes); runbook `docs/runbooks/rrhh-plantilla-nomina.md`
+  (12 secciones), manual `docs/manual/30-rrhh.md` (386 → 512 l.) y `10-direccion.md` §11, runbook
+  finanzas §20, `docs/api-contracts.md` (viñetas RRHH, corrector y panel), CLAUDE.md deuda 19
+- migración aditiva `20260920173000_rrhh_plantilla_nomina` (217 l.: 6 tablas `employees`,
+  `collective_agreements`, `agreement_rules`, `labor_standards`, `staffing_plans`,
+  `staffing_plan_lines`; 21 columnas nulables / con default en `staff_profiles`,
+  `employment_contracts`, `absence_requests`, `labor_forecasts` (+ único por departamento),
+  `payroll_periods` (`mode` external, `closed_at`), `properties.agreement_id`; 1 CHECK
+  `absence_requests_requested_ne_approved`; 0 DROP / triggers, públicos siguen 4); `migrate status`
+  25/25 en el carril · `db:drift:check` «No difference detected.»; 296 → 302 modelos;
+  `PII_FIELDS.Employee` (NIF, NAF, correo, teléfono, IBAN) + `taxIdLookupHash`
+- RBAC: 5 claves `hr.employee.read` / `hr.employee.manage` / `hr.config.manage` /
+  `hr.standards.manage` / `hr.staffing.approve` (catálogo 254 → 259), plantillas v4 → v5
+  (`payroll_hr` 13 → 18 sin `users.read`; `general_manager` +read +approve; `manager` /
+  `operations_director` / `owner` +read), `SOD_STATIC_PAIRS` + `{payroll.manage, hr.staffing.approve}`
+  (35); `rbac:sync --dry-run` limpio, el sync real queda para la BD viva (69 roles «behind v5»)
+- API: `modules/hr/*` (expedientes con PII cifrada y `?pii=1` auditado, convenios con reglas
+  versionadas, estándares por estrellas, motor de previsión puro con drivers reales / OTB /
+  `pms_import` y `driver_missing:*` → null, plantilla máxima con SoD 409 `APPROVAL_SELF_DECISION`,
+  KPIs y alertas con `degraded[]`, motor de reglas ET / convenio, ausencias con `requestedBy ≠`
+  decisor y máscara de salud) con 22 entradas en `modules/hr/route-permissions.partial.ts` (21
+  `/hr/*` + `POST /workforce/me/absences`); nómina: `GET /payroll/incidences` (JSON / CSV sin NIF),
+  `GET /payroll/labor-cost-panel` (diario 64x por cc USALI o «sin desglose», lote `posted` por
+  departamento, 70x y USALI, RN reales, nunca 0 inventado), `GET /workforce/properties/:id/staff-profiles`
+  (`workforce.read`, sin coste ni correo), `POST /payroll/staff-profiles` con `employeeId`,
+  `POST /payroll/contracts` con convenio / jornada / porcentaje / FD / grupo y `warnings`
+  (`HR_STAFFING_EXCEEDED`), aprobación `calculated → approved → exported` con 409
+  `PAYROLL_PERIOD_APPROVED` / `PAYROLL_NOT_APPROVED` / `PAYROLL_MODE_CONFLICT`, tipos 2026 (6,50 /
+  32,15; temporales 6,55 / 33,35; jornada parcial prorrateada), fichaje solo propio con
+  `timeclock.use` (403 `HR_TIMECLOCK_SELF_ONLY`); redacción de PII en logs y Sentry
+- front: ítem «RRHH y nóminas» (`NominasTabs`: Nóminas · Plantilla `/finanzas/nominas/plantilla` ·
+  Previsión de plantilla `/prevision` · Panel RRHH `/panel`), pestaña de Mi día «Costes de personal»
+  `/hoy/costes-personal` (`DirectorLaborCostsScreen`), `EmployeeDrawer` (PII nunca precargada),
+  Nóminas con Aprobar / Incidencias del mes / aviso de modo, Personal y turnos con selector de ficha;
+  0 `style={` nuevos; árbol 70 ítems · 108 pestañas · 201 URL (antes 104 · 197)
+- seed `db:seed:hr` (tenant aislado `org_hr` / `le_hr` / `prop_hr`, 12 usuarios `*@hr.test`
+  contraseña `hr-demo` / `SEED_HR_PASSWORD`, 24 expedientes ficticios con NIE sintético cifrado,
+  convenio ES-15-HOST, turnos, fichajes, ausencias, planes aprobados; tras el corrector el seed llama
+  a `resetLaborStandardDefaults` + `generateLaborForecast`: 112 previsiones, 0 días degradados);
+  Faranda solo lectura en toda la tanda (recuentos idénticos por lote; el panel se cotejó sobre Sage
+  real: LT 2026-05 44.798,47 «sin desglose», agosto por lote, FN / LL sin datos)
+- revisión (2 revisores → dedupe → corrector, 2026-09-20 15:1x-16:44): 18 hallazgos confirmados
+  (5 high · 13 medium) + 14 low, 0 refutados; corregidos en código 16 + 12 (fichaje por persona,
+  circuito de aprobación, ausencias solo propias, día sin datos degradado, position control, tipos
+  temporales y parcial, headcount por personas, Excedencias, coste del mes desde la nómina calculada,
+  bloqueo de modo, `employeeId` en la ficha, fichas para plantillas operativas, `JUSTIFIED_GAPS`,
+  SoD estática, máscara en el cuadro heredado, seed único escritor, riesgo `high` en generate, reloj
+  inyectable, catálogos de auditoría, `mode` / `closedAt` en `PayrollPeriodRecord`, búsqueda sin NIF);
+  sin código: `nav-tree` con el CSV compartido (decisión de fusión) y `pnpm-lock.yaml` (fuera)
+- puerta completa final (2026-09-20 16:52, `scratchpad/RRHH/gates-final.json`): 13/14 — typecheck
+  15 PASS · 0 FAIL · 1 SKIP · api unit 3.730 (3.729 pass · 0 fail · 1 skip) · admin-web unit 2.119
+  (2.118 · 0 · 1) · ai-core 119 · worker 34 · contratos raíz 800 (798 · 0 · 2) · discoverability
+  201 URL · route-access 15 × 201 · cocoa waves §6 al día · rbac dry-run OK · migrate 25/25 + drift
+  «No difference detected.» · admin-web build OK · integración 1.029 (1.021 pass · 0 fail · 8 skip);
+  en rojo SOLO `nav-tree --check` por las 6 filas RealEstate* de la Tanda ACT en el CSV compartido
+  sin componente aquí (con el CSV filtrado «up to date» 70 · 108 · 205: 14/14); base 12/12
+  (api unit 3.569 · admin-web 2.014 · contratos 765 · 197 URL)
+- commit del integrador: `feat(rrhh): plantilla, previsión, nómina y panel de costes de dirección
+  (Tanda RRHH)` en `tanda-rrhh` (78 modificados +2.971 / −364, 60 nuevos 21.696 l., informe y este
+  bloque); `pnpm-lock.yaml` (`M` +64 / −25 preexistente) fuera; pre-commit ejecutado a mano desde
+  `hotelos/` (el hook no se dispara: `core.hooksPath = .husky` se resuelve contra la raíz del árbol
+  y el fichero vive en `hotelos/.husky/`): discoverability OK · typecheck 15 PASS · 1 SKIP
+- fusión: `merge-lane.sh` (censo, Cocoa, whitelist, lock; `ESTADO-VERIFICADO.md` concatena);
+  CLAUDE.md = main + deltas RRHH (deuda 19, docs prioritarios, allowlist `org_hr`, `db:seed:hr`);
+  regenerar `nav-tree.generated.json` con el CSV consolidado tras ACT y subir los pins (71 · 113 ·
+  206); `rbac:sync` real; fila `WorkforceDashboard` de `pilots/screens-inventory.csv`
+  (+`/workforce/properties/:p/staff-profiles`); renumerar la migración si otro carril aporta una
+  marca posterior; lo que solo César puede aportar: convenio real por centro, CCC y códigos de
+  centro, formato de la gestoría, `users.read` / `accounting.entity.read` para `payroll_hr`,
+  aprobación de plantilla por dirección de hotel, origen de la ocupación prevista sin H&F

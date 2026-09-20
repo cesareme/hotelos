@@ -99,6 +99,14 @@ export const FINANCE_SCOPE_POLICIES: Readonly<Record<string, FinanceScopePolicy>
   FixedAssetsScreen: "centre_default",
   SuppliersScreen: "entity_forced",
   PayrollScreen: "entity_default",
+  // Tanda RRHH (RRHH-11): the three tabs of RRHH y nóminas read the sociedad by default (the employer) and a centre on demand;
+  // Previsión and Panel exclude the oficina central themselves (`excludeOffice`) because the forecast is per hotel.
+  HrEmployeesScreen: "entity_default",
+  HrForecastScreen: "entity_default",
+  HrOverviewScreen: "entity_default",
+  // Tanda RRHH (PANEL-B): Hoy › Mi día › Costes de personal reads the sociedad by default (ranking of centres, oficina central
+  // included: its personnel is A&G) and one centre on demand (GET /payroll/labor-cost-panel with propertyId).
+  DirectorLaborCostsScreen: "entity_default",
   CommissionsScreen: "centre_default",
   // Facturación y TPV (emitir es operativo: siempre un centro hotel / otro)
   BillingCenterScreen: "centre_default",
@@ -498,10 +506,25 @@ export function peekFinanceStructure(): FinanceStructure | null {
   return structureCache;
 }
 
+/** Keys that open GET /organizations/me/structure (modules/structure/route-permissions.partial.ts: accounting.read, the calendar key). */
+export const FINANCE_STRUCTURE_READ_KEYS: readonly string[] = ["accounting.read", "accounting.reports.read"];
+
+/** RF-17: with the grants of the active property known and none of the structure keys among them, the route would only answer 403. */
+export function canReadFinanceStructure(grantedPermissions: readonly string[] | null | undefined, isPlatformAdmin = false): boolean {
+  if (isPlatformAdmin || grantedPermissions === null || grantedPermissions === undefined) return true;
+  return grantedPermissions.some((key) => FINANCE_STRUCTURE_READ_KEYS.includes(key));
+}
+
 async function fetchFinanceStructure(organizationId: string): Promise<FinanceStructure> {
   // The typed client of L6 (services/structureApi.ts) is the ONE reader of the structure route; imported lazily
   // (it reaches api-client and import.meta.env) so this module stays loadable under node --test.
-  const [{ getOrganizationStructure }, { loadSwitchableProperties }] = await Promise.all([import("./structureApi"), import("./activeProperty")]);
+  const [{ getOrganizationStructure }, { loadSwitchableProperties }, { getSessionRoleSnapshot }] = await Promise.all([import("./structureApi"), import("./activeProperty"), import("./usersApi")]);
+  const snapshot = getSessionRoleSnapshot();
+  if (!canReadFinanceStructure(snapshot.grantedPermissions, snapshot.isPlatformAdmin)) {
+    // payroll_hr and the other templates without accounting.read: straight to the switcher rows, no 403 in the console.
+    const rows = (await loadSwitchableProperties()) as StructuredPropertyRow[];
+    return structureFromProperties(rows, organizationId);
+  }
   try {
     const response = await getOrganizationStructure();
     return structureFromResponse(response);

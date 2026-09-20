@@ -170,6 +170,13 @@ export const PII_FIELDS: Record<string, readonly string[]> = {
   // carry PII and are encrypted at rest with the same envelope (strings of
   // ~10 KB). A real object store (T9) will replace them with opaque keys.
   Signature: ["objectKey", "pdfObjectKey"],
+  // Tanda RRHH (RRHH-1): expediente de empleado (docs/design/RRHH-PLANTILLA-NOMINA.md
+  // §9 «Privacidad»). NIF/NIE, número de afiliación, correo, teléfono e IBAN con el
+  // mismo envelope; nombre, apellidos, número de empleado, centro, puesto y estado
+  // quedan en claro para listados. El listado (EmployeeSummaryDto) nunca devuelve
+  // estos campos; el detalle los descifra campo a campo bajo hr.employee.read.
+  // Espejo en HR_PII_FIELDS (packages/shared/src/hr-types.ts).
+  Employee: ["taxId", "socialSecurityNumber", "email", "phone", "iban"],
   // OAuth refresh token + IMAP password for email connectors, encrypted at rest.
   EmailConnection: ["oauthRefreshToken", "imapPassword"],
   // Payment Service Provider references — opaque tokens that can be replayed
@@ -240,6 +247,12 @@ export const LOOKUP_HASH_FIELDS = {
     documentNumber: "documentNumberLookupHash",
     email: "emailLookupHash",
     phoneMobile: "phoneMobileLookupHash"
+  },
+  // Tanda RRHH (RRHH-1): unicidad del NIF por sociedad
+  // (@@unique([legalEntityId, taxIdLookupHash])) y búsqueda por NIF ya cifrado
+  // (HR_EMPLOYEE_TAXID_DUPLICATE en el servicio). Solo taxId lleva hash.
+  Employee: {
+    taxId: "taxIdLookupHash"
   },
   // Payment.pspReference is encrypted (PII_FIELDS) and markInvoicePaid relies
   // on `findFirst({ where: { invoiceId, pspReference } })` for idempotency:

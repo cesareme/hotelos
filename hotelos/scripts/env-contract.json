@@ -1064,6 +1064,7 @@
         "apps/api/src/security/route-permissions.ts",
         "apps/api/src/server.ts",
         "packages/database/prisma/seed-checkin.ts",
+        "packages/database/prisma/seed-hr.ts",
         "packages/database/prisma/seed-ux-day.ts",
         "packages/database/src/client.ts",
         "packages/database/src/crypto-fields.ts"
@@ -1377,6 +1378,32 @@
       "doc": "db:seed:snapshots: el literal 1 permite crear habitaciones demo en una propiedad de la allowlist que no tenga ninguna; sin él la propiedad se omite.",
       "readBy": [
         "packages/database/prisma/seed-revenue-snapshots.ts"
+      ]
+    },
+    "SEED_HR_ALLOW_PRODUCTION": {
+      "section": "Seeds",
+      "format": "enum",
+      "values": [
+        "1"
+      ],
+      "tags": [
+        "dev-only",
+        "dangerous"
+      ],
+      "doc": "seed-hr (Tanda RRHH, lote RRHH-7): con NODE_ENV=production el seed aborta (crea usuarios con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente.",
+      "readBy": [
+        "packages/database/prisma/seed-hr.ts"
+      ]
+    },
+    "SEED_HR_PASSWORD": {
+      "section": "Seeds",
+      "format": "string",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "seed-hr (Tanda RRHH, lote RRHH-7): contraseña de los usuarios *@hr.test del tenant aislado org_hr / prop_hr; sin ella, «hr-demo». Nunca en producción.",
+      "readBy": [
+        "packages/database/prisma/seed-hr.ts"
       ]
     },
     "SEED_ORG_ID": {

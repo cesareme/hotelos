@@ -770,6 +770,18 @@ const RESOLVERS = {
   payrollCostImport: byOrganization("Importación de coste de personal no encontrada.", (id) =>
     prisma.payrollCostImport.findUnique({ where: { id }, select: selectOrganization })
   ),
+  // RRHH · plantilla y previsión (Tanda RRHH · RRHH-6): expediente y convenio
+  // cuelgan de la organización (GET/PATCH /hr/employees/:id, POST …/terminate,
+  // GET/PUT /hr/agreements/:id/rules); el ámbito por centro (primaryPropertyId)
+  // lo aplica el servicio con propertyWithinScope. El plan de plantilla cuelga
+  // del centro (POST /hr/properties/:propertyId/staffing-plans/:id/approve, con
+  // la comprobación cruzada `propertyId`). Mensajes = HR_ERROR_MESSAGES_ES, así
+  // el 404 de la tenencia y el del servicio son indistinguibles (sin oráculo).
+  employee: byOrganization("No se encuentra el expediente.", (id) => prisma.employee.findUnique({ where: { id }, select: selectOrganization })),
+  collectiveAgreement: byOrganization("No se encuentra el convenio.", (id) =>
+    prisma.collectiveAgreement.findUnique({ where: { id }, select: selectOrganization })
+  ),
+  staffingPlan: byProperty("No se encuentra el plan de plantilla.", (id) => prisma.staffingPlan.findUnique({ where: { id }, select: selectProperty })),
   // Importación contable desde Sage 200 (Tanda 7c · L3): lote y reconciliación
   // agregados por organización (GET /accounting/ledger-imports/:id, POST …/:id/post,
   // POST …/:id/reverse, GET …/reconciliation/:id[/csv]); el ámbito por centro (R11)

@@ -23,6 +23,7 @@ export { default as ConciliacionTabs } from "./finanzas/ConciliacionTabs";
 export { default as EstadosContablesTabs } from "./finanzas/EstadosContablesTabs";
 // Tanda 6 · Finanzas (lote nav-services): Contabilidad y Proveedores y gastos.
 export { default as ContabilidadTabs } from "./finanzas/ContabilidadTabs";
+export { default as NominasTabs } from "./finanzas/NominasTabs";
 export { default as ProveedoresTabs } from "./finanzas/ProveedoresTabs";
 export { default as CentroInformesTabs } from "./informes/CentroInformesTabs";
 export { default as CarteraTabs } from "./informes/CarteraTabs";

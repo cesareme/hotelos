@@ -77,6 +77,30 @@ const L1C_READ_GATED_GETS: Expectation[] = [
   { path: "/properties/:propertyId/rooms", permission: "pms.reservation.read", templates: ["manager", "receptionist", "housekeeper", "maintenance"] }
 ];
 
+// Tanda RRHH (RRHH-6): the GET routes of /hr/* (modules/hr/route-permissions.partial.ts)
+// carry READ keys only — hr.employee.read for the expediente and the convenios,
+// workforce.read for estándares / planes / previsión / alertas / ausencias and
+// workforce.labor_cost.view for the KPIs (they show the month's labour cost).
+// Templates = the ones whose token opens «RRHH y nóminas» (rrhh = payroll_hr,
+// direccion = manager / operations_director / general_manager) and hold the key;
+// owner reads everything. The write keys (hr.employee.manage, hr.config.manage,
+// hr.standards.manage, hr.staffing.approve) stay on mutations.
+const HR_DIRECTION: RoleKey[] = ["manager", "operations_director", "general_manager"];
+const HR_READ_GATED_GETS: Expectation[] = [
+  { path: "/hr/employees", permission: "hr.employee.read", templates: [...HR_DIRECTION, "payroll_hr"] },
+  { path: "/hr/employees/:id", permission: "hr.employee.read", templates: [...HR_DIRECTION, "payroll_hr"] },
+  { path: "/hr/agreements", permission: "hr.employee.read", templates: [...HR_DIRECTION, "payroll_hr"] },
+  { path: "/hr/agreements/:id/rules", permission: "hr.employee.read", templates: [...HR_DIRECTION, "payroll_hr"] },
+  { path: "/hr/properties/:propertyId/standards", permission: "workforce.read", templates: [...HR_DIRECTION, "payroll_hr", "accountant", "controller", "auditor"] },
+  { path: "/hr/properties/:propertyId/staffing-plans", permission: "workforce.read", templates: [...HR_DIRECTION, "payroll_hr", "accountant", "controller", "auditor"] },
+  { path: "/hr/properties/:propertyId/labor-forecast", permission: "workforce.read", templates: [...HR_DIRECTION, "payroll_hr", "accountant", "controller", "auditor"] },
+  { path: "/hr/kpis", permission: "workforce.labor_cost.view", templates: [...HR_DIRECTION, "payroll_hr", "accountant", "controller", "auditor"] },
+  { path: "/hr/alerts", permission: "workforce.read", templates: [...HR_DIRECTION, "payroll_hr", "accountant", "controller", "auditor"] },
+  { path: "/hr/absences", permission: "workforce.read", templates: [...HR_DIRECTION, "payroll_hr", "housekeeping_manager", "front_office_manager"] },
+  // Incidencias del mes para la gestoría: solo payroll_hr (workforce.payroll_export); owner does NOT export payroll data.
+  { path: "/payroll/incidences", permission: "workforce.payroll_export", templates: ["payroll_hr"] }
+];
+
 /** Every template of every token: GET /backoffice/properties/:id/modules feeds the menu (modulesAny). */
 const MODULE_LIST_GETS = ["/backoffice/properties/:propertyId/modules", "/properties/:propertyId/modules", "/modules/catalog"];
 
@@ -205,5 +229,60 @@ describe("route manifest · L1c read keys (invoices, SES settings, finance, seco
         assert.equal(ROLE_PERMISSION_MAP[template].includes(key), false, `${template} must not hold ${key}`);
       }
     }
+  });
+});
+
+describe("route manifest · Tanda RRHH (RRHH-6) read keys for GET /hr/* and GET /payroll/incidences", () => {
+  it("every GET /hr/* requires exactly its read key, the key exists, and every template of the token that opens the screen passes the gate (owner included except the payroll export)", () => {
+    for (const expected of HR_READ_GATED_GETS) {
+      const entry = findRoutePermission("GET", expected.path);
+      assert.ok(entry, `GET ${expected.path} has no manifest entry`);
+      assert.deepEqual(entry.permissions, [expected.permission], `GET ${expected.path}`);
+      assert.ok(expected.permission in PERMISSIONS, `${expected.permission} not in PERMISSIONS`);
+      const templates = expected.path === "/payroll/incidences" ? expected.templates : [...expected.templates, "owner" as RoleKey];
+      for (const template of templates) {
+        assert.doesNotThrow(() => assertPermissions(ROLE_PERMISSION_MAP[template], entry.permissions), `${template} → GET ${expected.path}`);
+      }
+    }
+  });
+
+  it("no GET /hr/* is gated by a write key; the mutations keep hr.employee.manage / hr.config.manage / hr.standards.manage / hr.staffing.approve / workforce.schedule.manage", () => {
+    const writeKeys: PermissionKey[] = ["hr.employee.manage", "hr.config.manage", "hr.standards.manage", "hr.staffing.approve", "workforce.schedule.manage", "payroll.manage"];
+    const writeGatedGets = routePermissionManifest.filter((entry) => entry.method === "GET" && entry.path.startsWith("/hr/") && entry.permissions.some((key) => writeKeys.includes(key)));
+    assert.deepEqual(writeGatedGets.map((entry) => entry.path), []);
+    assert.equal(routePermissionManifest.filter((entry) => entry.path.startsWith("/hr/")).length, 21, "21 /hr/* entries (modules/hr/route-permissions.partial.ts)");
+    assert.deepEqual(findRoutePermission("POST", "/hr/employees")?.permissions, ["hr.employee.manage"]);
+    assert.equal(findRoutePermission("POST", "/hr/employees/:id/terminate")?.riskLevel, "critical");
+    assert.deepEqual(findRoutePermission("POST", "/hr/agreements")?.permissions, ["hr.config.manage"]);
+    assert.deepEqual(findRoutePermission("PUT", "/hr/agreements/:id/rules")?.permissions, ["hr.config.manage"]);
+    assert.deepEqual(findRoutePermission("PUT", "/hr/properties/:propertyId/standards")?.permissions, ["hr.standards.manage"]);
+    assert.deepEqual(findRoutePermission("POST", "/hr/properties/:propertyId/standards/reset-defaults")?.permissions, ["hr.standards.manage"]);
+    assert.deepEqual(findRoutePermission("POST", "/hr/properties/:propertyId/staffing-plans")?.permissions, ["hr.standards.manage"]);
+    assert.deepEqual(findRoutePermission("POST", "/hr/properties/:propertyId/staffing-plans/:id/approve")?.permissions, ["hr.staffing.approve"]);
+    assert.deepEqual(findRoutePermission("POST", "/hr/properties/:propertyId/labor-forecast/generate")?.permissions, ["workforce.schedule.manage"]);
+    // Corrector RRHH · SEC-09: escritura de labor_forecasts → high (nunca con el contexto demo sin token).
+    assert.equal(findRoutePermission("POST", "/hr/properties/:propertyId/labor-forecast/generate")?.riskLevel, "high");
+    // Corrector RRHH · RF-03 / SEC-02: solicitud propia con la clave de fichar; fichas del centro para fichar con workforce.read.
+    assert.deepEqual(findRoutePermission("POST", "/workforce/me/absences")?.permissions, ["workforce.timeclock.use"]);
+    assert.deepEqual(findRoutePermission("GET", "/workforce/properties/:propertyId/staff-profiles")?.permissions, ["workforce.read"]);
+    assert.deepEqual(findRoutePermission("POST", "/hr/absences/:id/decide")?.permissions, ["workforce.schedule.manage"]);
+    // Static SoD (design §9): no template prepares AND approves the staffing plan, nor manages payroll AND approves it.
+    for (const template of ROLE_TEMPLATE_KEYS) {
+      if (template === "break_glass") continue;
+      const keys = ROLE_PERMISSION_MAP[template];
+      assert.equal(keys.includes("hr.standards.manage") && keys.includes("hr.staffing.approve"), false, `${template} prepares and approves the plan`);
+      assert.equal(keys.includes("payroll.manage") && keys.includes("hr.staffing.approve"), false, `${template} manages payroll and approves the plan`);
+    }
+  });
+
+  it("least privilege: the HR keys stay out of the operational and commercial templates; payroll_hr does not approve the plan", () => {
+    for (const template of ["receptionist", "housekeeper", "maintenance", "fnb", "revenue", "sales", "compliance", "admin", "night_auditor"] as RoleKey[]) {
+      for (const key of ["hr.employee.read", "hr.employee.manage", "hr.config.manage", "hr.standards.manage", "hr.staffing.approve", "workforce.payroll_export"] as PermissionKey[]) {
+        assert.equal(ROLE_PERMISSION_MAP[template].includes(key), false, `${template} must not hold ${key}`);
+      }
+    }
+    assert.equal(ROLE_PERMISSION_MAP.payroll_hr.includes("hr.staffing.approve"), false);
+    assert.equal(ROLE_PERMISSION_MAP.general_manager.includes("hr.employee.manage"), false);
+    assert.equal(ROLE_PERMISSION_MAP.owner.includes("workforce.payroll_export"), false, "owner reads the expediente but never exports payroll data");
   });
 });

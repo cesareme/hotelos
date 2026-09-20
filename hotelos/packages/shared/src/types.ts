@@ -201,6 +201,13 @@ export type PermissionKey =
   | "workforce.labor_cost.view"
   | "workforce.payroll_export"
   | "payroll.manage"
+  // Tanda RRHH (2026-09-20): expediente, convenio, estándares y plantilla máxima
+  // (docs/design/RRHH-PLANTILLA-NOMINA.md §9; catálogo en permissions.ts tras payroll.read).
+  | "hr.employee.read"
+  | "hr.employee.manage"
+  | "hr.config.manage"
+  | "hr.standards.manage"
+  | "hr.staffing.approve"
   | "banking.reconcile"
   | "notifications.manage"
   | "procurement.read"
