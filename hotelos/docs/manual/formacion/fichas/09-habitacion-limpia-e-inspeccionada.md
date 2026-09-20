@@ -12,7 +12,7 @@
 
 1. Abre **Menú › Operaciones › Pisos** (`/operaciones/pisos`), pestaña «Tablero». Arriba, los indicadores «SUCIAS», «LIMPIAS», «INSPECCIONADAS» (vendibles), «FUERA DE SERVICIO» y «TAREAS ABIERTAS»; debajo, los filtros «Todas · n», «Sucias · n», «Limpias · n», «Inspeccionadas · n», «Ocupadas · n», «Fuera de servicio · n» y «Con tareas · n».
 2. Pulsa «Sucias · n» y localiza la tarjeta de la habitación (número, planta, etiqueta «SUCIA» y sus tareas abiertas).
-3. Si la tarjeta tiene una tarea («Salida (limpieza) · alta · pendiente»), pulsa «Empezar» al comenzar (pasa a «en curso») y «Completar» al terminar (desaparece de la tarjeta). Los avisos dicen «Tarea empezar.» y «Tarea completar.».
+3. Si la tarjeta tiene una tarea («Salida (limpieza) · alta · pendiente»), pulsa «Empezar» al comenzar (pasa a «en curso») y «Completar» al terminar (desaparece de la tarjeta). Los avisos dicen «Tarea empezada.» y «Tarea completada.».
 4. Pulsa «Marcar limpia». Aviso «Habitación 305 marcada limpia.»; la etiqueta pasa a «LIMPIA», «SUCIAS» baja y «LIMPIAS» sube.
 5. La gobernanta revisa la habitación y pulsa «Inspeccionar» en la misma tarjeta. Aviso «Habitación 206 inspeccionada.»; etiqueta «INSPECCIONADA» y la tarjeta ya no ofrece ni «Marcar limpia» ni «Inspeccionar».
 6. Desde el móvil, en **Menú › Operaciones › Pisos › «Mi turno»** (`/operaciones/pisos/mi-turno`) haz lo mismo con los botones grandes de la tarjeta: «Iniciar» (aviso «Hab. 203 → En limpieza», etiqueta «EN LIMPIEZA»), «Limpia» («Hab. 203 → Limpia») e «Inspeccionada» («Hab. 203 → Inspeccionada»). «Reportar» abre el parte de avería para mantenimiento.
@@ -34,7 +34,7 @@
 | La habitación sigue en Mi turno con «Tarea pendiente · departure_clean» aunque está inspeccionada | «Limpia» e «Inspeccionada» cambian la habitación, no cierran la tarea: pulsa «Completar» en la tarjeta del tablero. |
 | Aviso rojo «No se pudo completar la acción.» | Pulsa «Actualizar» y repite: otra persona ha cambiado la habitación antes que tú, o está bloqueada por mantenimiento (ficha [10](10-parte-de-mantenimiento.md)). |
 
-> **En construcción:** el botón «Nueva tarea» de la tarjeta abre un cajón lateral que hoy no se muestra en pantalla (defecto de estilo); crear tareas nuevas desde el tablero no funciona hasta que se corrija. Marcar limpia, inspeccionar, empezar y completar sí funcionan.
+> **Nota:** el botón «Nueva tarea» de la tarjeta abre el cajón «Nueva tarea · Habitación <n>» («Tipo de tarea», «Prioridad» y «Crear tarea»; aviso «Tarea creada.»): el paso a paso está en la guía 40, tarea 2.
 
 ## Más detalle
 

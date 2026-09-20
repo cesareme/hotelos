@@ -1722,6 +1722,8 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "workforce.payroll_export",
     // M18 Informes y analítica · V
     "analytics.read",
+    // M21 Usuarios, roles y auditoría · V (CIERRE-1: selector «Persona» de la ficha de personal → GET /rbac/users)
+    "users.read",
     // M22 Módulos · V
     "modules.read",
     // M23 IA · C A
@@ -2434,6 +2436,9 @@ export const ORGANIZATION_TEMPLATE_ROLE_KEYS: readonly RoleKey[] = [
  * las cuatro claves `documents.*` (capture, review, archive.read, admin) se
  * reparten entre 15 plantillas según el diseño §6.2; ninguna plantilla pierde
  * claves y ROLE_TEMPLATE_REVOCATIONS no cambia.
+ * CIERRE-1 (2026-09-20): payroll_hr + users.read (selector «Persona» de la ficha
+ * de personal → GET /rbac/users), aditiva, sin bump: la entrega el top-up de
+ * rbac:sync / arranque (la versión solo sube cuando una plantilla pierde claves).
  */
 export const ROLE_TEMPLATE_VERSION = 4;
 

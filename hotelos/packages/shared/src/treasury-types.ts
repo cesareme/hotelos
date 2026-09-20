@@ -181,7 +181,20 @@ export type SepaRemittanceRecord = {
   updatedAt: string;
   /** Only on the detail read and on creation. */
   xml?: string;
+  /** Only on remittances built by `POST /treasury/sepa/supplier-payments`: bills paid and the SoD outcome of each (corrector CIERRE-1 · FUN-07). */
+  billIds?: string[];
+  sod?: SupplierPaymentSodDto[];
 };
+
+/** Outcome of the dynamic SoD check of ONE bill inside a supplier remittance (mirror of `treasury/permissions.ts` SodCheckOutcome). */
+export type SodCheckOutcomeDto = {
+  rule: string;
+  authorUserId: string | null;
+  authorUnknown: boolean;
+  privileged: "platform_admin" | "break_glass" | null;
+};
+
+export type SupplierPaymentSodDto = { billId: string; creator: SodCheckOutcomeDto; approver: SodCheckOutcomeDto | null; controllerException: boolean };
 
 export type SepaNorma19Request = {
   schema: "CORE" | "B2B";
@@ -290,6 +303,7 @@ export type TreasuryErrorCode =
   | "SUPPLIER_BILL_AMOUNT_MISMATCH"
   | "REMITTANCE_STATUS_TRANSITION"
   | "REMITTANCE_EMPTY"
+  | "SUPPLIER_PAYMENT_ROUTE_REQUIRED"
   | "COMMISSION_NOT_ACCRUED"
   | "COMMISSION_SETTLED"
   | "PAYROLL_PERIOD_EXISTS"

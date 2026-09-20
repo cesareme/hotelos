@@ -9,10 +9,12 @@ import type { Prisma } from "@hotelos/database";
 //   * Sprint 19 added `promisedDate` and `receivedDate` columns. OTD% is now
 //     computed from the ratio of POs received on/before promisedDate over
 //     POs with both dates populated. Suppliers with no dated POs surface 0.
-//   * `Supplier.organizationId` (no `propertyId`). We therefore derive the
-//     "active suppliers" set from the suppliers actually referenced by POs of
-//     this property — this is the only way to scope supplier counts per
-//     property without a schema change.
+//   * `Supplier.organizationId` (no `propertyId`). Suppliers are read ONLY
+//     within the organisation of the property (Tanda CIERRE-1 · T9 deuda 17e:
+//     the former `findMany({ active: true })` leaked every tenant's suppliers)
+//     and the "active suppliers" set is derived from the suppliers actually
+//     referenced by POs of this property — the only way to scope supplier
+//     counts per property without a schema change.
 //   * `PurchaseOrder.total` is the source of truth for committed/received
 //     value; we do not re-sum lines (would double-count when total is set).
 //   * `from`/`to` default to the current calendar month and filter `createdAt`.
@@ -73,27 +75,54 @@ const RECEIVED_STATUSES = new Set(["received", "closed"]);
 // Statuses we treat as "committed" (approved or ordered but not yet received).
 const COMMITTED_STATUSES = new Set(["approved", "ordered", "sent", "partially_received"]);
 
-export async function buildProcurementDashboard(input: {
-  propertyId: string;
-  from?: Date;
-  to?: Date;
-}): Promise<ProcurementDashboard> {
+/** Prisma delegates the builder reads (injectable: `__tests__/procurement-org-scope.test.mts` passes a fake). */
+export type ProcurementDashboardDb = Pick<typeof prisma, "purchaseOrder" | "supplier" | "property">;
+
+/** Collaborators (Tanda CIERRE-1, same pattern as `FrontDeskQueueDeps`): in production `prisma` is used. */
+export type ProcurementDashboardDeps = {
+  db?: ProcurementDashboardDb;
+};
+
+type SupplierRow = { id: string; name: string; active: boolean };
+
+export async function buildProcurementDashboard(
+  input: {
+    propertyId: string;
+    /** Organisation of the property (the tenancy hook guarantees the pair); resolved from `property` when absent. */
+    organizationId?: string;
+    from?: Date;
+    to?: Date;
+  },
+  deps: ProcurementDashboardDeps = {}
+): Promise<ProcurementDashboard> {
+  const db = deps.db ?? prisma;
   const propertyId = input.propertyId;
   const now = new Date();
   const from = parseDate(input.from) ?? startOfMonth(now);
   const to = parseDate(input.to) ?? endOfMonth(now);
 
+  // Tenant scope of the supplier read (Tanda CIERRE-1 · T9 deuda 17e): the
+  // organisation comes from the caller or from the property itself; without
+  // one there is NO supplier query at all (never an unfiltered `findMany`).
+  const organizationId =
+    input.organizationId ??
+    (await db.property.findUnique({ where: { id: propertyId }, select: { organizationId: true } }))?.organizationId ??
+    null;
+
   // 1) Load purchase orders in window + suppliers in parallel.
   //    POs are filtered by createdAt within [from, to]; recentPOs uses the
   //    same window. We also load all POs of the property for status totals
   //    that should reflect "open right now" (openPOs/pendingApproval KPIs).
+  const supplierRowsPromise: Promise<SupplierRow[]> = organizationId
+    ? db.supplier.findMany({ where: { active: true, organizationId } })
+    : Promise.resolve([]);
   const [poRowsInWindow, poRowsAll, supplierRows] = await Promise.all([
-    prisma.purchaseOrder.findMany({
+    db.purchaseOrder.findMany({
       where: { propertyId, createdAt: { gte: from, lte: to } },
       orderBy: { createdAt: "desc" }
     }),
-    prisma.purchaseOrder.findMany({ where: { propertyId } }),
-    prisma.supplier.findMany({ where: { active: true } })
+    db.purchaseOrder.findMany({ where: { propertyId } }),
+    supplierRowsPromise
   ]);
 
   const supplierById = new Map(supplierRows.map((s) => [s.id, s]));
@@ -159,7 +188,10 @@ export async function buildProcurementDashboard(input: {
   // 4) topSuppliers — group all POs of this property by supplier, then take
   //    top 10 by committed value. OTD% = % of POs with both promisedDate and
   //    receivedDate where receivedDate <= promisedDate. Suppliers with no
-  //    dated POs surface 0.
+  //    dated POs surface 0. Corrector CIERRE-1 (FUN-05): a supplier id the
+  //    organisation does not resolve (another tenant's row referenced by a PO,
+  //    or an inactive one) is OMITTED — no «Unknown supplier» row reaches the
+  //    Spanish screen; `kpis.openPOs` / `committedValueEur` still count its POs.
   type SupplierAgg = {
     id: string;
     name: string;
@@ -173,7 +205,8 @@ export async function buildProcurementDashboard(input: {
   for (const po of poRowsAll) {
     if (!po.supplierId) continue;
     const supplier = supplierById.get(po.supplierId);
-    const name = supplier?.name ?? "Unknown supplier";
+    if (!supplier) continue;
+    const name = supplier.name;
     const key = po.supplierId;
     const isActive = !CLOSED_STATUSES.has(po.status);
     const isCommitted = COMMITTED_STATUSES.has(po.status);

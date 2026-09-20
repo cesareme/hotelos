@@ -13,7 +13,7 @@
 1. Abre **Menú › Configuración › Usuarios y roles** (`/configuracion/usuarios`). Subtítulo: «Quién trabaja en cada hotel y con qué plantilla: asignaciones por hotel, grupo, sociedad u organización; invitaciones con ámbito; separación de funciones. Todo cambio queda en el registro de auditoría.».
 2. Comprueba en las pestañas «Este hotel» y «Sociedad» que la persona no existe ya (tabla «USUARIO · PLANTILLA RBAC · NIVEL · ÁMBITO · HOTELES · ÚLTIMO ACCESO · ESTADO · 2FA»).
 3. Pulsa «Invitar con ámbito» (arriba a la derecha). Se abre el cajón «Invitar con ámbito» («La persona recibirá un enlace de un solo uso y quedará asignada al ámbito elegido al aceptarlo.»).
-4. Rellena «Persona»: «Nombre completo*», «Correo electrónico*», «Teléfono» (opcional) y el interruptor «Exigir doble factor (2FA)» («Obligatorio para supervisión y niveles superiores (diseño D8).»): déjalo activado para jefaturas, gobernanta, encargado de mantenimiento y dirección. Hoy ese interruptor solo deja la marca «2FA: Activo» en la ficha de la persona; la verificación del segundo factor al entrar todavía no está activada en la aplicación (ver «En construcción» más abajo).
+4. Rellena «Persona»: «Nombre completo*», «Correo electrónico*», «Teléfono» (opcional) y el interruptor «Exigir doble factor (2FA)» («Deja la marca “2FA: Activo” en la ficha para cuando se active la verificación del segundo factor; hoy el acceso no la exige.»): déjalo activado para jefaturas, gobernanta, encargado de mantenimiento y dirección. Decisión del 19/09/2026: la marca **no es un control de acceso** (la aplicación no pide un segundo factor al entrar); no la presentes como tal a la persona.
 5. Rellena «Rol y ámbito» («Solo puedes asignar roles de nivel igual o inferior al tuyo y dentro de tu ámbito; la API lo comprueba de nuevo.»): «Rol (plantilla)*» (por ejemplo «Recepción · Operativo (N1)», «Dirección · Dirección de hotel (N3)», «Contabilidad · Administración central (N7)»), «Ámbito*» («Hotel», «Grupo de hoteles», «Sociedad», «Organización») y, debajo, el campo con el nombre del ámbito («Hotel*»: elige tu hotel). «Motivo» y «Caduca el» son opcionales («Asignación temporal (refuerzos, sustituciones): al vencer deja de aplicarse.»).
 6. Lee los avisos del cajón: si aparece «Nivel superior al tuyo» o «Separación de funciones» con «Pares incompatibles», no deja enviar; cambia la plantilla o consulta a dirección.
 7. Pulsa «Crear invitación» («Cancelar» cierra sin enviar).
@@ -28,7 +28,7 @@
 
 > **Nota:** el paso 7 no se ha ejecutado en la demo (no se envía ninguna invitación): el resultado está descrito según la pantalla y la guía de sistemas.
 
-> **En construcción:** «Exigir doble factor (2FA)» solo deja la marca «2FA: Activo» en la ficha de la persona: la aplicación no pide todavía un segundo factor al iniciar sesión.
+> **Nota:** sobre el doble factor no hay nada «en construcción»: la decisión (19/09/2026) es que «Exigir doble factor (2FA)» deja la marca «2FA: Activo» en la ficha sin exigir el segundo factor al entrar (guía de sistemas, apartado 1.2, regla «Doble factor»).
 
 ## Si algo falla
 

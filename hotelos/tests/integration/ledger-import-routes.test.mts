@@ -764,4 +764,40 @@ describe("L3 · FIX-1 · F11 · GET /accounting/ledger-imports/third-parties (te
     });
     assert.equal(await prisma.ledgerImport.count({ where: { organizationId: ORG } }), baseline.lots + 1, "los lotes anteriores y el de terceros");
   });
+
+  it("(R11 · CIERRE-1) usuario de centro sin accounting.entity.read → 404 ENTITY_SCOPE_REQUIRED en GET third-parties; con accounting.entity.read → 200", async (t) => {
+    const s = needsSession(t);
+    if (!s) return;
+    // Rol custom con las claves del gate y del servicio (reports.read + accounting.read) pero SIN
+    // accounting.entity.read, asignado por centro (user_property_roles en HA / HB / OC →
+    // assignedPropertyIds definido, orgScope false): el residuo SEC-03 del dosier FIX-1 listaba
+    // los terceros de toda la sociedad a este perfil (manager / admin_clerk de un solo centro).
+    const centreOnly = await createUser(`contable.lr.centro.${RUN}@example.com`, "Contable LR centro", ["accounting.read", "accounting.reports.read"]);
+    if (!centreOnly) {
+      t.skip(NO_SESSION);
+      return;
+    }
+    const scoped = await request<ErrorBody>("GET", TP, centreOnly);
+    assert.equal(scoped.status, 404, scoped.text.slice(0, 300));
+    assert.equal(scoped.body?.details?.code, "ENTITY_SCOPE_REQUIRED", scoped.text.slice(0, 300));
+    assert.equal((scoped.body?.details as { requiredPermission?: string } | undefined)?.requiredPermission, "accounting.entity.read");
+    assert.doesNotMatch(scoped.text, /"rows"/, "sin ámbito de sociedad no viaja ninguna fila");
+    // Corrector CIERRE-1 (FUN-01): mensaje propio del directorio — la ruta no admite `propertyId` (400 abajo), así que el
+    // 404 no puede pedir «indica el centro de trabajo asignado (propertyId)» como libros / 347 / diario.
+    assert.match(String(scoped.body?.message), /toda la sociedad/, scoped.text.slice(0, 300));
+    assert.match(String(scoped.body?.message), /accounting\.entity\.read/);
+    assert.doesNotMatch(String(scoped.body?.message), /propertyId|indica el centro/, "nunca un remedio que la ruta no ofrece");
+    const withProperty = await request<ErrorBody>("GET", `${TP}?propertyId=${HA}&limit=1`, centreOnly);
+    assert.equal(withProperty.status, 400, "la ruta no tiene dimensión de centro: propertyId es una clave no admitida");
+    assert.equal(withProperty.body?.details?.code, "VALIDATION_ERROR");
+    const scopedFiltered = await request<ErrorBody>("GET", `${TP}?role=supplier&limit=1`, centreOnly);
+    assert.equal(scopedFiltered.status, 404, "tampoco con filtros: el guard va antes de la consulta");
+    assert.equal(scopedFiltered.body?.details?.code, "ENTITY_SCOPE_REQUIRED");
+    // Mismo ámbito de centro (HA / HB / OC) pero con accounting.entity.read (LIMITED_KEYS): 200 con el directorio completo.
+    if (!limitedSession) return t.skip(NO_SESSION);
+    const entity = await request<ThirdPartyPage>("GET", TP, limitedSession);
+    assert.equal(entity.status, 200, entity.text.slice(0, 300));
+    assert.equal(entity.body?.total, baseline.total + 5);
+    assert.equal(entity.headers["x-total-count"], String(baseline.total + 5));
+  });
 });

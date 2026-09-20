@@ -140,6 +140,10 @@ export function registerTreasuryRoutes(app: FastifyInstance): void {
   });
 
   // ---- Remesas SEPA (Norma 19 / 34) persistidas ----
+  // Corrector CIERRE-1 (REV-02 / FUN-02): `kind: "norma34"` here is refused by the
+  // service (403 SUPPLIER_PAYMENT_ROUTE_REQUIRED) — a transfer file is a payment
+  // order and only leaves through /treasury/sepa/supplier-payments (payables.pay +
+  // per-bill SoD gate); this route persists Norma 19 direct debits.
   app.post("/treasury/sepa/remittances", async (request) => {
     const body = parseOr400(remittanceBodySchema, request.body ?? {}, "body");
     const propertyId = await propertyScope(request, body.propertyId);

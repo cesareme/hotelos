@@ -14,7 +14,7 @@ Fuente: diseño [`docs/design/DOCUMENTOS-DIGITALIZACION.md`](../design/DOCUMENTO
 `apps/api/src/modules/integrations/email/email-documents.service.ts`, esquemas `apps/api/src/schemas/documents.schemas.ts`,
 contrato compartido `packages/shared/src/documents-types.ts`, front `apps/admin-web/src/screens/documents/*` +
 `services/documentsApi.ts` + `services/goodsReceiptsApi.ts`, seed ficticio `apps/api/src/scripts/seed-documents-demo.ts`
-(dataset puro `seed-documents-demo.dataset.ts`). Rutas, cuerpos y permisos: `docs/api-contracts.md` «Documentos (Tanda T9)».
+(dataset puro `seed-documents-demo.dataset.ts`). Rutas, cuerpos y permisos: `docs/api-contracts.md` «Documentos y digitalización (Tanda T9 · 2026-09-19)».
 
 **Todos los datos de este documento son ficticios**: proveedores «… Demo SL», NIF calculados, usuarios `@example.com`.
 Nunca se pega aquí una factura real ni el nombre de una persona.
@@ -89,8 +89,10 @@ Variables de `apps/api/src/modules/documents/env.partial.ts` (las lee solo `docu
   already_ingested`; mismo sha256 en la organización → `ignored: duplicate` (409 `DOCUMENT_DUPLICATE_FILE` interno) con el
   registro original. El `InboundEmail` queda `documents_ingested` o `documents_ignored` (motivo por adjunto en
   `draftJson`); el cuerpo solo como `snippet` (≤ 280 caracteres).
-- `POST /properties/:propertyId/email/ingest` («Probar con un correo pegado») **no reenvía adjuntos** hoy (el cast del
-  cuerpo en `server.ts` omite `attachments`): sirve para probar el clasificador, no la captura (lote T9-07, abierto).
+- `POST /properties/:propertyId/email/ingest` («Probar con un correo pegado») **reenvía `attachments`** (corrector RV-09:
+  el cast del cuerpo en `server.ts` filtra `[{ fileName, mimeType?, base64 }]` y los pasa a `ingestManualEmail`, que los
+  normaliza y los entrega a la captura como cualquier adjunto del poller; con adjuntos el cuerpo puede ir vacío): sirve para
+  probar el clasificador y la captura completa sin buzón conectado.
 
 ## 4 · Flujo centro → oficina, paso a paso
 
@@ -394,8 +396,8 @@ allowlist demo.
   los absorbidos; la hoja de remesa
   cuelga del primer documento del lote (si se purga, la hoja desaparece); cotejo a 2 vías (los pedidos siguen en memoria:
   3 vías = lote L7 opcional); búsqueda `ILIKE` sin índice trigram (migración propia con `pg_trgm` cuando el archivo crezca);
-  el buzón no expone `emailMeta` en la bandeja; `POST …/email/ingest` no reenvía adjuntos; el estado de la e-factura no se
-  envía a la SPFE; las notificaciones son in-app (sin e-mail adjunto); el poller de correo depende de OAuth (sin IMAP).
+  el buzón no expone `emailMeta` en la bandeja (`POST …/email/ingest` ya reenvía `attachments`, corrector RV-09); el estado
+  de la e-factura no se envía a la SPFE; las notificaciones son in-app (sin e-mail adjunto); el poller de correo depende de OAuth (sin IMAP).
 - **Decisiones y datos de César** (diseño §12.2): (1) `AI_PROVIDER=anthropic` + clave + `AI_MODEL`, encargo de
   tratamiento (DPA/ZDR, `inference_geo`) — sin ello todo funciona por reglas y a mano; (2) un buzón `docs-<centro>@…` por
   centro (Gmail Workspace o Microsoft 365) y `GMAIL_CLIENT_ID/SECRET` o `MS_CLIENT_ID/SECRET`; (3) modelo y configuración

@@ -461,7 +461,7 @@ Es la forma de trabajar cuando el portal no ofrece conexión (hoy, todos salvo G
 | «La fecha debe estar dentro de la estancia del grupo (24–26 oct 2026).» al crear un evento | El evento se asocia al grupo de la fila y su fecha cae fuera de la estancia | Usa una fecha entre la llegada y la salida del grupo, o crea el evento desde la fila del grupo correcto |
 | «Nuevo cupo» apagado | No hay ningún tour operador dado de alta | Crea primero el tour operador con «Nuevo TT.OO.» |
 | «8 reseñas · insuficiente (mínimo 10)» y el índice en «—» | El índice exige 10 reseñas en 30 días | Importa o conecta más reseñas; la bandeja y los casos funcionan igual |
-| «Exportación lista: undefined» en Centro de informes | Defecto de «Generar exportación» | Usa «Exportaciones de revenue» o «Exportar CSV / Excel» del informe de Histórico y previsión |
+| «Exportación no encontrada o caducada.» al pulsar «Descargar exportación» en Centro de informes | Han pasado más de 15 minutos desde «Generar exportación», el servidor se ha reiniciado o la petición ha llegado a otra instancia (la exportación vive en memoria) | Pulsa «Generar exportación» de nuevo y descarga en el momento |
 | La cuenta «n celdas guardadas sin enviar a canales» desaparece de la barra | Se guarda en tu navegador y se pierde al recargar | Las tarifas están guardadas (míralas en «Historial»); consulta su estado en la capa «Estado de envío» › «Ver estado por canal» |
 
 ## Qué no hace todavía
@@ -474,7 +474,7 @@ Es la forma de trabajar cuando el portal no ofrece conexión (hoy, todos salvo G
 - **Clientes y fidelización** (segmentos, programa, membresías, campañas) se guardan en memoria y se pierden al reiniciar el servidor; las métricas de envío de campañas no existen.
 - **Ventas a empresas** es solo lectura y **Ofertas** parte vacío; el «Portal del huésped» se configura pero su publicación real depende de la puesta en marcha del hotel.
 - **Grupos**: «Bloquear habitaciones» solo aparece en las filas de «Próximos grupos», que en la demo no lista un grupo recién creado sin bloqueo; el resumen de la ficha del grupo muestra las fechas como «—»; «Nuevo evento» del resumen asocia el evento a un grupo que no eliges.
-- **Centro de informes › «Generar exportación»** no descarga nada («Exportación lista: undefined»).
+- **Centro de informes › «Generar exportación»**: «XLSX» baja hoy un CSV (con extensión `.csv`) y «PDF» una página HTML lista para imprimir; la exportación se conserva 15 minutos en la memoria de la instancia que la generó (no en disco ni en almacenamiento compartido).
 - **Comisiones** sin reglas ni devengos en la demo (el cajón «Nueva regla» se abre y funciona; no se ha creado ninguna).
 
 ## Ver también

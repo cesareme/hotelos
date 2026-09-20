@@ -144,6 +144,21 @@ describe("Contabilidad › Importar desde Sage 200 · pantalla (Tanda 7c · L4)"
     assert.match(screen, /El fichero no se guarda: solo el lote y el resultado por asiento\./);
   });
 
+  it("corrector CIERRE-1 (FUN-01): «Terceros» is of the whole sociedad — a centre-scoped reader (structure.entityReadable false) gets a specific state, never a request that always fails nor «elige un centro»", () => {
+    assert.match(screen, /const thirdPartiesEntityLocked = canRead && finance\.structure !== null && !finance\.structure\.entityReadable;/);
+    assert.match(screen, /if \(view !== "terceros" \|\| !canRead \|\| thirdPartiesEntityLocked\) return undefined;/, "no request while the directory is locked for the reader");
+    assert.match(screen, /\}, \[view, canRead, thirdPartiesEntityLocked, tpQuery, tpRole, tpNonce\]\);/);
+    assert.match(screen, /function renderThirdPartiesView\(\) \{\s*if \(thirdPartiesEntityLocked\) \{\s*return <CocoaState kind="empty" illustration="search" title="Directorio de toda la sociedad" message=\{THIRD_PARTIES_ENTITY_SCOPE_MESSAGE\} \/>;/);
+    assert.equal(count(screen, /ledgerThirdPartiesErrorMessage\(err, "No se pudieron cargar (?:los terceros importados|más terceros)\."\)/g), 2, "both directory loads map their errors through the directory helper");
+    assert.doesNotMatch(screen, /ledgerImportErrorMessage\(err, "No se pudieron cargar (?:los|más) terceros/);
+    assert.match(service, /export function ledgerThirdPartiesErrorMessage\(error: unknown, fallback: string = "No se pudieron cargar los terceros importados\."\): string \{\s*if \(financeErrorCode\(error\) === "ENTITY_SCOPE_REQUIRED"\) return THIRD_PARTIES_ENTITY_SCOPE_MESSAGE;\s*return ledgerImportErrorMessage\(error, fallback\);/);
+    const sentence = /export const THIRD_PARTIES_ENTITY_SCOPE_MESSAGE = "([^"]+)";/.exec(service)?.[1] ?? "";
+    assert.match(sentence, /accounting\.entity\.read/, "names the key that unlocks the directory");
+    assert.match(sentence, /toda la sociedad/);
+    assert.doesNotMatch(sentence, /elige un centro|indica el centro|propertyId/, "never a remedy the route does not offer");
+    assert.match(sentence, /[.]$/, "full sentence");
+  });
+
   it("paints the steps of the kind with CocoaChart.Progress and ONE aria-current=\"step\" on the step button", () => {
     assert.match(screen, /<CocoaChart\.Progress value=\{\(\(stepIndex \+ 1\) \/ steps\.length\) \* 100\}/);
     assert.match(screen, /<ol className="c22-section__list" aria-label="Pasos del asistente">/);

@@ -124,6 +124,12 @@ corepack pnpm --filter @hotelos/database db:seed:ux-day -- --reset
 (cd apps/admin-web && VITE_API_URL=http://127.0.0.1:3913 node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5183 --strictPort &)
 E2E_BASE_URL=http://127.0.0.1:5183 E2E_API_URL=http://127.0.0.1:3913 corepack pnpm --filter @hotelos/admin-web e2e:measure
 # todo (humo + medida): E2E_BASE_URL=… E2E_API_URL=… corepack pnpm --filter @hotelos/admin-web e2e
+# Navegador (CIERRE-1 · C4a): si la versión instalada de @playwright/test pide una build de Chromium que no está en
+# ~/Library/Caches/ms-playwright («Executable doesn't exist … chromium_headless_shell-NNNN») y no se puede descargar,
+# E2E_CHROMIUM_EXECUTABLE apunta al binario de otra build ya en caché (proyectos `chromium` y `touch`; opcional):
+E2E_CHROMIUM_EXECUTABLE=$HOME/Library/Caches/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-mac-arm64/chrome-headless-shell \
+  E2E_BASE_URL=http://127.0.0.1:5183 E2E_API_URL=http://127.0.0.1:3913 \
+  corepack pnpm --filter @hotelos/admin-web e2e e2e/quick-checkin.spec.ts --project chromium --grep "solo teclado"
 ```
 
 Notas de la baseline 2026-09-19: T4 no era completable (`completed: false`: la ficha no ofrecía «Cambiar habitación» a un

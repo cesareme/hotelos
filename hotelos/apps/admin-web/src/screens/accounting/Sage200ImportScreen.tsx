@@ -121,6 +121,7 @@ import { listChartAccounts } from "../../services/accountingApi";
 import { centreNameFor, centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   LEDGER_IMPORTS_PATH,
+  THIRD_PARTIES_ENTITY_SCOPE_MESSAGE,
   createLedgerImport,
   downloadLedgerImportTemplate,
   downloadReconciliationCsv,
@@ -129,6 +130,7 @@ import {
   getLedgerImport,
   getReconciliation,
   ledgerImportErrorMessage,
+  ledgerThirdPartiesErrorMessage,
   listLedgerThirdParties,
   postLedgerImport,
   previewLedgerImport,
@@ -353,6 +355,10 @@ export function Sage200ImportScreen() {
   const canImport = canDo(gate, "accounting.journal.post");
   const canMap = canDo(gate, "accounting.configure");
   const canReverse = canImport && canDo(gate, "ai.high_risk.confirm");
+  // Corrector CIERRE-1 (FUN-01): the third-party directory is of the whole sociedad (R11) and has no centre dimension —
+  // a centre-scoped reader (GET /organizations/me/structure scope ≠ entity) gets a specific state instead of a request
+  // that always answers 404 and a remedy («elige un centro») that does not exist; with the structure unknown the API decides.
+  const thirdPartiesEntityLocked = canRead && finance.structure !== null && !finance.structure.entityReadable;
   // Viewer's profile (GET /users/me, cached): names the author of a lot as the own name instead of a raw id.
   const { profile } = useCurrentUserProfile();
   const session = useMemo<ActorSession>(() => (profile ? { userId: profile.userId, fullName: profile.fullName } : null), [profile]);
@@ -474,7 +480,7 @@ export function Sage200ImportScreen() {
 
   // ---- third parties: first page whenever the view opens or a filter changes (search debounced); «Cargar más» appends by cursor ----
   useEffect(() => {
-    if (view !== "terceros" || !canRead) return undefined;
+    if (view !== "terceros" || !canRead || thirdPartiesEntityLocked) return undefined;
     let alive = true;
     const timer = window.setTimeout(() => {
       setTpLoading(true);
@@ -487,7 +493,7 @@ export function Sage200ImportScreen() {
         })
         .catch((err: unknown) => {
           if (!alive) return;
-          setTpError(ledgerImportErrorMessage(err, "No se pudieron cargar los terceros importados."));
+          setTpError(ledgerThirdPartiesErrorMessage(err, "No se pudieron cargar los terceros importados."));
           setTpLoading(false);
         });
     }, THIRD_PARTY_SEARCH_DEBOUNCE_MS);
@@ -495,7 +501,7 @@ export function Sage200ImportScreen() {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [view, canRead, tpQuery, tpRole, tpNonce]);
+  }, [view, canRead, thirdPartiesEntityLocked, tpQuery, tpRole, tpNonce]);
 
   async function loadMoreThirdParties() {
     const cursor = tpPage?.nextCursor;
@@ -506,7 +512,7 @@ export function Sage200ImportScreen() {
       const next = await listLedgerThirdParties({ q: tpQuery.trim() || undefined, role: tpRole || undefined, limit: THIRD_PARTY_PAGE_LIMIT, cursor });
       setTpPage((current) => (current && current.nextCursor === cursor ? { rows: [...current.rows, ...next.rows], total: next.total, nextCursor: next.nextCursor } : current));
     } catch (err: unknown) {
-      setTpError(ledgerImportErrorMessage(err, "No se pudieron cargar más terceros."));
+      setTpError(ledgerThirdPartiesErrorMessage(err, "No se pudieron cargar más terceros."));
     } finally {
       setTpLoadingMore(false);
     }
@@ -1825,6 +1831,9 @@ export function Sage200ImportScreen() {
   }
 
   function renderThirdPartiesView() {
+    if (thirdPartiesEntityLocked) {
+      return <CocoaState kind="empty" illustration="search" title="Directorio de toda la sociedad" message={THIRD_PARTIES_ENTITY_SCOPE_MESSAGE} />;
+    }
     const rows = tpPage?.rows ?? [];
     const filtered = tpQuery.trim() !== "" || tpRole !== "";
     return (

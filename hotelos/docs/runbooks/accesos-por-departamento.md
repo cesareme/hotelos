@@ -94,7 +94,7 @@ del 2026-09-18).
 | `revenue` | Revenue corporativo | N4 operations_director | organization | T4 | revenue | 53 |
 | `accountant` | Contabilidad | N7 central_admin | legal_entity | T1 | finanzas | 57 |
 | `controller` | Dirección financiera | N5 general_management | legal_entity | T4 | finanzas | 80 |
-| `payroll_hr` | RRHH y nóminas | N7 central_admin | legal_entity | T1 | rrhh | 13 |
+| `payroll_hr` | RRHH y nóminas | N7 central_admin | legal_entity | T1 | rrhh | 14 (13 v3 + `users.read`, CIERRE-1) |
 | `compliance` | Cumplimiento | N7 central_admin | legal_entity | T1 | finanzas | 58 |
 | `asset_manager` | Gestión del activo | N7 central_admin | legal_entity | T1 | activos | 29 |
 | `general_manager` | Dirección general | N5 general_management | organization | > T4 | direccion | 117 |
@@ -139,6 +139,21 @@ dos claves salen de `ROLE_TEMPLATE_REVOCATIONS.admin`. Ninguna plantilla pierde
 claves; `rbac:sync -- --upgrade-templates` sella la versión 3 y entrega las dos
 claves en una pasada auditada (`ROLE_TEMPLATE_UPGRADED`, revoked = []).
 Administración de sistema pasa de 70 a 72 claves y sigue sin dinero ni folio.
+
+Nota CIERRE-1 (2026-09-20, lote C4b): cambio **aditivo sin versión nueva**.
+`payroll_hr` gana `users.read` (M21 V) porque el selector «Persona» del cajón
+de ficha de personal (`PayrollScreen.tsx` → `listUsersInScope` →
+`GET /rbac/users`, manifiesto `users.read`) quedaba vacío con esa plantilla
+(FIX-1 §6.16 / §8.10). `ROLE_TEMPLATE_VERSION` sigue en 4: la clave la entrega
+el top-up aditivo de `rbac:sync` / arranque a los roles `payroll_hr` existentes
+(`+1` por rol; en la BD viva del 2026-09-20, 3 roles). La clave abre además
+`GET /rbac/assignments` y `GET /backoffice/properties/:propertyId/users` (que
+devuelve el teléfono): efecto aceptado para RRHH (revisión REV-06). Efecto colateral
+aceptado: una persona RRHH puede abrir `/configuracion/usuarios` por URL en
+solo lectura (`UsersRolesScreen.tsx` `can("users.read")`); el menú y
+`check-route-access` van por token (`rrhh` no lista esa ruta) y no cambian.
+Alternativa descartada: endpoint propio `GET /payroll/staff-profiles/people`
+bajo `payroll.manage`.
 
 Notas de la versión 2 respecto a las plantillas anteriores:
 
@@ -199,7 +214,7 @@ Rec = receptionist · AudN = night_auditor · JRec = front_office_manager · Cam
 
 ### 2.2 Central (sociedad / grupo)
 
-DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = controller · RRHH = payroll_hr · Cumpl = compliance · Act = asset_manager · DG = general_manager · Prop = owner · Aud = auditor · Adm = admin. ³ Versión 3 (fusión TL): solo `pms.reservation.read` + `guests.read` para el Live Timeline de Hoy.
+DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = controller · RRHH = payroll_hr · Cumpl = compliance · Act = asset_manager · DG = general_manager · Prop = owner · Aud = auditor · Adm = admin. ³ Versión 3 (fusión TL): solo `pms.reservation.read` + `guests.read` para el Live Timeline de Hoy. ⁴ CIERRE-1 (2026-09-20, aditiva sin bump): solo `users.read` (selector «Persona» de la ficha de personal → `GET /rbac/users`).
 
 | Módulo | DirOps | Rev | Cont | DirFin | RRHH | Cumpl | Act | DG | Prop | Aud | Adm |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -225,7 +240,7 @@ DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = c
 | M18b Cuadro del propietario | V C | – | – | V | – | – | V | V C | V C | V | – |
 | M19 Configuración | V E | V | V | V | – | V | – | V E | V | V | V E |
 | M20 Estructura y fiscal | V | – | V | V E | – | V | V | V E | V | V | E (solo `organization.structure.manage`) |
-| M21 Usuarios y roles | V C X | – | – | – | – | – | – | V C X | V | V | V C E X |
+| M21 Usuarios y roles | V C X | – | – | – | V⁴ | – | – | V C X | V | V | V C E X |
 | M22 Módulos | V | V | V | V | V | V | V | V E | V | V | V E |
 | M22b Integraciones y desarrollo | V | – | V | V | – | V | – | V | – | V | V C E |
 | M23 IA | V C A | V C A | V C A | V C A | C A | V C A E | C A | V C A E | C | V | C A E |

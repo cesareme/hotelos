@@ -158,6 +158,35 @@ export async function provisionDeparture(
 }
 
 /**
+ * Llegada de prueba creada por API (CIERRE-1 · C4a): llega hoy, sale mañana, Doble
+ * SIN habitación asignada (como UXDAY-A2: la fila y el inspector ofrecen «Check-in
+ * en NNN» con la candidata del motor), sin cargos ni cobros. La fila de Mi día no
+ * pinta el código, así que —como hace el seed con UXDAY-A2— se deja en «Peticiones»
+ * (`specialRequests`, PATCH con pms.reservation.modify) para que la spec localice la
+ * fila por `code`. La spec «solo teclado» de quick-checkin.spec la registra, así no
+ * depende de UXDAY-A2/A3, del orden de specs ni del proyecto «measure». Sin factura
+ * la borra `db:seed:ux-day -- --reset`.
+ */
+export async function provisionArrival(
+  request: APIRequestContext,
+  headers: Record<string, string>,
+  options: { guest: { firstName: string; surname1: string } }
+): Promise<{ id: string; code: string }> {
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  const created = await request.post(`${E2E_API_URL}/properties/${UXDAY.propertyId}/reservations`, {
+    headers,
+    data: { arrivalDate: isoDate(today), departureDate: isoDate(tomorrow), adults: 2, roomTypeId: "rt_uxday_dbl", channel: "direct", bookingSource: "walk_in", currency: "EUR", primaryGuest: options.guest }
+  });
+  expect(created.ok(), `POST reservations → ${created.status()}`).toBeTruthy();
+  const reservation = (await created.json()) as { id: string; code: string };
+  const noted = await request.patch(`${E2E_API_URL}/reservations/${reservation.id}`, { headers, data: { specialRequests: `${reservation.code} · llegada de prueba solo teclado` } });
+  expect(noted.ok(), `PATCH reservations/${reservation.code} (specialRequests) → ${noted.status()}`).toBeTruthy();
+  return { id: reservation.id, code: reservation.code };
+}
+
+/**
  * Diagnóstico: si tras el dev-bypass sigue apareciendo la LoginScreen (botón
  * «Iniciar sesión»), la spec FALLA con el motivo (sesión no persistida, API
  * distinto al de la app, usuario sin propiedad). Nunca se salta.

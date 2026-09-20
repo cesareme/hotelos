@@ -232,14 +232,18 @@ const ENTITY_SCOPE_UNAVAILABLE = "Ámbito no disponible: indica el centro de tra
  * Without one, the caller needs the whole-sociedad scope; otherwise a 404
  * with `details.code = ENTITY_SCOPE_REQUIRED` — the same status the sister
  * centre gets, so neither answer is an oracle of the sociedad's structure.
+ * `options.entityScopeMessage` replaces the generic sentence (which points to
+ * `propertyId`) for readers WITHOUT a centre dimension, such as the third-party
+ * directory (corrector CIERRE-1 · FUN-01); the code and `requiredPermission`
+ * never change.
  */
-export function assertFinanceReadScope(context: FinanceScopeContext, propertyId: string | null | undefined): void {
+export function assertFinanceReadScope(context: FinanceScopeContext, propertyId: string | null | undefined, options: { entityScopeMessage?: string } = {}): void {
   if (propertyId) {
     if (!propertyWithinScope(context, propertyId)) throw new NotFoundError(PROPERTY_NOT_FOUND);
     return;
   }
   if (hasEntityReadScope(context)) return;
-  const error = new NotFoundError(ENTITY_SCOPE_UNAVAILABLE);
+  const error = new NotFoundError(options.entityScopeMessage ?? ENTITY_SCOPE_UNAVAILABLE);
   error.details = { code: "ENTITY_SCOPE_REQUIRED", requiredPermission: ENTITY_READ_PERMISSION };
   throw error;
 }

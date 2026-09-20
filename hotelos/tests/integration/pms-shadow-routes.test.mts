@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { localDay } from "./helpers/local-day.mts";
 
 try {
   process.loadEnvFile(fileURLToPath(new URL("../../.env", import.meta.url)));
@@ -85,9 +86,9 @@ const APP_OTHER = { clientId: `cli_pl_${RUN}_other_org`, secret: `sec_pl_${RUN}_
 const APP_BOUND_LT = { clientId: `cli_pl_${RUN}_bound_lt`, secret: `sec_pl_${RUN}_boundboundbound` };
 const keyOf = (app: { clientId: string; secret: string }): string => `${app.clientId}.${app.secret}`;
 
+/** Hoy + n días en la ZONA DEL HOTEL: el servidor ancla el corte al día local de la propiedad (`localDateTime`, pms-shadow.service), no a UTC (flake 00:00-02:00 CEST · CIERRE-1 C4a). */
 function day(offset: number): string {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + offset * 86400000).toISOString().slice(0, 10);
+  return localDay(offset, TIMEZONE);
 }
 const ymd = (offset: number): string => day(offset).replace(/-/g, "");
 const TODAY = day(0);

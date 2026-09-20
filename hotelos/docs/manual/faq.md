@@ -391,9 +391,9 @@ Guía: [Administración › 8.3 Proveedores, facturas recibidas y gastos](20-adm
 
 **P:** «Nóminas» dice «Aún no hay contratos», al calcular el periodo sale todo a 0,00 €, o «Personal y turnos» me responde «Módulo no activado».
 
-**R:** Sin contratos no hay nada que calcular: el periodo se calcula vacío. Da de alta cada contrato con «Nuevo contrato» (necesita una ficha de personal; si el identificador no existe verás «No se pudo guardar · Perfil de empleado no encontrado.»). El cajón «Nuevo contrato» se abre («El empleado debe existir como ficha de personal de la propiedad; el contrato entra en el siguiente periodo que se calcule.»), pero hoy no hay pantalla de alta de fichas de personal: el identificador solo existe si administración de sistema cargó la plantilla por importación, así que pídeselo antes de dar de alta el contrato. «Personal y turnos» depende del módulo de personal (activo en la demostración): si en tu hotel está apagado, lo activa administración de sistema en «Módulos e integraciones». Y si ves «Necesitas el permiso de gestión de nóminas…», tu usuario solo tiene lectura: pide la plantilla «RRHH y nóminas» completa. Con esa plantilla «Mi día» (`/hoy`) responde «Sin acceso»: tu página de inicio es «Nóminas».
+**R:** Sin contratos no hay nada que calcular: el periodo se calcula vacío. Da de alta primero la ficha de personal con «Nueva ficha» (persona con acceso a ehotelOS, centro, código de empleado, departamento, modalidad y coste hora; aviso «Ficha creada.») y después el contrato con «Nuevo contrato»: su selector «Ficha de personal» ofrece las fichas del ámbito (la recién creada viene preseleccionada) y el cajón avisa «El empleado debe tener una ficha de personal en el centro («Nueva ficha»); el contrato entra en el siguiente periodo que se calcule.». Si ves «No se pudo guardar · Perfil de empleado no encontrado.», la ficha se borró o pertenece a un centro fuera de tu ámbito: pulsa «Actualizar» y vuelve a elegirla. «Personal y turnos» depende del módulo de personal (activo en la demostración): si en tu hotel está apagado, lo activa administración de sistema en «Módulos e integraciones». Y si ves «Necesitas el permiso de gestión de nóminas…», tu usuario solo tiene lectura: pide la plantilla «RRHH y nóminas» completa. Con esa plantilla «Mi día» (`/hoy`) responde «Sin acceso»: tu página de inicio es «Nóminas».
 
-Comprobado en la demostración («Contratos (0)»). Guía: [RRHH › 2. Contratos](30-rrhh.md#2-contratos-nuevo-contrato) · [6. Personal y turnos](30-rrhh.md#6-personal-y-turnos).
+Comprobado en la demostración el 19/09/2026 (ficha `MANUAL-F10-001` y su contrato: «Contratos (1)»). Guía: [RRHH › 2. Contratos: «Nueva ficha» y «Nuevo contrato»](30-rrhh.md#2-contratos-nueva-ficha-y-nuevo-contrato) · [6. Personal y turnos](30-rrhh.md#6-personal-y-turnos).
 
 **P:** Al exportar o pagar sale «Calcula el periodo de nómina antes de exportarlo o pagarlo.», «El periodo debe tener el formato AAAA-MM.» o «No se pudo abrir el periodo · El periodo 2026-09 ya existe.».
 
@@ -459,11 +459,11 @@ En la demostración los 7 partes están incompletos a propósito y el envío va 
 
 Comprobado en la demostración. Guía: [Administración › 7. Partes de viajeros](20-administracion.md#7-partes-de-viajeros-plantilla-administración-de-hotel-o-superior).
 
-**P:** Cada vez que entro sale la franja «Faltan 1 comprobación para poner la propiedad en marcha.».
+**P:** Cada vez que entro sale la franja «Falta 1 comprobación para poner la propiedad en marcha.».
 
 **R:** La lista de «Salida en vivo» de la puesta en marcha tiene una comprobación bloqueante; en la demostración es el registro de viajeros (SES.Hospedajes) en modo de pruebas, así que la franja es permanente. «Ahora no» la oculta solo durante tu sesión; desaparece de verdad cuando dirección o administración de sistema resuelven la comprobación en «Menú › Configuración › Puesta en marcha» (`/configuracion/puesta-en-marcha`), pestaña «Salida en vivo», y aprueban la salida en vivo (permiso «property.go_live»). No afecta a tu trabajo diario.
 
-Comprobado en la demostración (el texto dice «Faltan» aunque sea una sola comprobación). Guía: [Dirección › 9. Personas y puesta en marcha](10-direccion.md#9-personas-y-puesta-en-marcha-visión-de-dirección) · [Sistemas › 5.1 Puesta en marcha](60-sistemas.md#51-puesta-en-marcha).
+Comprobado en la demostración. Guía: [Dirección › 9. Personas y puesta en marcha](10-direccion.md#9-personas-y-puesta-en-marcha-visión-de-dirección) · [Sistemas › 5.1 Puesta en marcha](60-sistemas.md#51-puesta-en-marcha).
 
 **P:** Un huésped dice que el portal del huésped le responde «Sesión del portal del huésped no válida o caducada.».
 
@@ -475,7 +475,7 @@ Guía: [Comercial y revenue › 8.2 Ventas adicionales, ofertas y portal del hu�
 
 **P:** El «Asistente ehotelOS» lleva la etiqueta «SIN MODELO DE LENGUAJE» y «Dictar (IA)» o los borradores de mensajes responden de forma muy básica.
 
-**R:** No hay proveedor de modelo de lenguaje configurado. En «Menú › Configuración › Inteligencia artificial» (`/configuracion/ia`) la comprobación «Proveedor de IA» lo dice: «Sin modelo configurado: la IA responde por reglas y las funciones de modelo quedan omitidas.» (estado «REQUIERE ATENCIÓN», «5 de 6 comprobaciones correctas»). El asistente contesta con reglas sobre tus datos: algunas preguntas sugeridas funcionan («¿Cuál es la ocupación ahora mismo?» responde con la ocupación del día y cita la fuente consultada), pero otras no se enrutan a ninguna herramienta (en la demostración, «¿Cuántas llegadas tengo hoy?» devuelve «No he sabido enrutar tu pregunta a una herramienta concreta…» con la lista de lo que sí puede responder: es un defecto conocido). Los borradores son deterministas y el coste es 0,00 €. Lo configura el proveedor técnico; tu trabajo no cambia: la IA propone y una persona confirma.
+**R:** No hay proveedor de modelo de lenguaje configurado. En «Menú › Configuración › Inteligencia artificial» (`/configuracion/ia`) la comprobación «Proveedor de IA» lo dice: «Sin modelo configurado: la IA responde por reglas y las funciones de modelo quedan omitidas.» (estado «REQUIERE ATENCIÓN», «5 de 6 comprobaciones correctas»). El asistente contesta con reglas sobre tus datos: cada pregunta sugerida se enruta a una herramienta y la respuesta cita la fuente consultada («¿Cuál es la ocupación ahora mismo?» responde con la ocupación del día; «¿Cuántas llegadas tengo hoy?», con «N reservas con llegada hoy.»); solo una pregunta sin ninguna palabra clave del catálogo («hola») devuelve «No he sabido enrutar tu pregunta a una herramienta concreta…» con la lista de lo que sí puede responder. Los borradores son deterministas y el coste es 0,00 €. Lo configura el proveedor técnico; tu trabajo no cambia: la IA propone y una persona confirma.
 
 Comprobado en la demostración. Guía: [Dirección › 5. Supervisar la IA](10-direccion.md#5-supervisar-la-ia-informe-ia-del-día-y-pendientes-de-la-ia) · [Sistemas › 5.4 Inteligencia artificial](60-sistemas.md#54-inteligencia-artificial).
 
@@ -485,11 +485,17 @@ Comprobado en la demostración. Guía: [Dirección › 5. Supervisar la IA](10-d
 
 Guía: [Comercial y revenue › 3.1 Reglas y recomendaciones](50-comercial-revenue.md#31-reglas-y-recomendaciones) · [Dirección › 8. Revenue básico](10-direccion.md#8-revenue-básico).
 
-**P:** Un informe sale con «No hemos podido cargar este informe. Inténtalo de nuevo.», un indicador aparece como «—», o «Generar exportación» del Centro de informes termina con «Exportación lista: undefined» y no descarga nada.
+**P:** Un informe sale con «No hemos podido cargar este informe. Inténtalo de nuevo.» o un indicador aparece como «—».
 
-**R:** El dato no se ha podido calcular en ese momento y la pantalla lo marca como no disponible en lugar de inventar un cero: pulsa «Reintentar» o «Actualizar». Los informes de solo lectura («Rentabilidad por habitación», «Activos», «Energía y agua») se recalculan cada 5 minutos, así que un dato muy reciente puede tardar en aparecer; si el «—» persiste durante horas, avisa a administración de sistema. Lo de «Exportación lista: undefined» es un defecto conocido de esa pantalla: usa «Exportaciones de revenue» (`/informes/exportaciones-revenue`, plantilla Revenue), los botones «Exportar CSV / Excel» del informe «Histórico y previsión» o, para el diario y los estados contables, sus propios «Exportar CSV» y «Exportar a gestoría».
+**R:** El dato no se ha podido calcular en ese momento y la pantalla lo marca como no disponible en lugar de inventar un cero: pulsa «Reintentar» o «Actualizar». Los informes de solo lectura («Rentabilidad por habitación», «Activos», «Energía y agua») se recalculan cada 5 minutos, así que un dato muy reciente puede tardar en aparecer; si el «—» persiste durante horas, avisa a administración de sistema. Para exportar a fichero tienes «Generar exportación» del Centro de informes (descarga al momento y deja el fichero 15 minutos en «Descargar exportación»), «Exportaciones de revenue» (`/informes/exportaciones-revenue`, plantilla Revenue), los botones «Exportar CSV / Excel» del informe «Histórico y previsión» y, para el diario y los estados contables, sus propios «Exportar CSV» y «Exportar a gestoría».
 
 Guía: [Dirección › 7. Informes](10-direccion.md#7-informes) · [Comercial y revenue › 4. Exportaciones de revenue](50-comercial-revenue.md#4-exportaciones-de-revenue).
+
+**P:** «Descargar exportación» del Centro de informes responde «Exportación no encontrada o caducada.».
+
+**R:** Cada exportación de «Generar exportación» se conserva 15 minutos en el servidor (en la memoria de la instancia que la generó, no en disco): han pasado más de 15 minutos, el servidor se ha reiniciado o la petición ha llegado a otra instancia. Vuelve a pulsar «Generar exportación» y descarga en el momento (el navegador ya baja el fichero al generarlo). «XLSX» baja hoy un CSV (con extensión `.csv`): ábrelo con Excel o elige «CSV».
+
+Guía: [Dirección › 7. Informes](10-direccion.md#7-informes).
 
 **P:** Los indicadores de «hoy» (ocupación, llegadas hechas, turno) salen a 0 o no cuadran con lo que veo en recepción.
 
@@ -525,9 +531,9 @@ Guía: la tabla «Errores frecuentes» de la guía de tu perfil.
 
 **P:** Aparece «Algo ha fallado en la interfaz · El error ya ha sido reportado al equipo. Puedes intentarlo de nuevo.».
 
-**R:** Se ha roto la pantalla (no el servidor): tus datos guardados siguen ahí. Pulsa «Reintentar»; si vuelve a fallar, recarga la página. Hoy ocurre al pulsar «Comparar plantillas» en «Usuarios y roles»: usa la tabla de plantillas de la guía de Sistemas hasta que se corrija. Si te pasa en otra pantalla, anota cuál y qué habías pulsado, y avisa a administración de sistema.
+**R:** Se ha roto la pantalla (no el servidor): tus datos guardados siguen ahí. Pulsa «Reintentar»; si vuelve a fallar, recarga la página. Anota en qué pantalla estabas y qué habías pulsado, y avisa a administración de sistema («Comparar plantillas» de «Usuarios y roles», que lo provocaba, está corregido desde el 19/09/2026).
 
-Guía: [Sistemas › 1.5 Comparar plantillas](60-sistemas.md#15-comparar-plantillas).
+Guía: la tabla «Errores frecuentes» de la guía de tu perfil · [Sistemas › 1.5 Comparar plantillas](60-sistemas.md#15-comparar-plantillas).
 
 **P:** En «Módulos e integraciones» hay un aviso amarillo: «Datos guardados en memoria · Los datos de Clientes y fidelización y Compras e inventario se guardan por ahora en memoria: se pierden al reiniciar el servidor…».
 
@@ -554,7 +560,7 @@ Guía: [Sistemas › 6. Copias de seguridad y estado del sistema](60-sistemas.md
 Lo que verás en la aplicación de demostración (y, en parte, en cualquier hotel recién instalado) a 19 de septiembre de 2026:
 
 - **IA sin proveedor.** No hay modelo de lenguaje configurado: el Asistente ehotelOS muestra «SIN MODELO DE LENGUAJE», «Dictar (IA)», los borradores de mensajes y respuestas a reseñas, el Informe IA del día, los Pendientes de la IA y las recomendaciones de revenue funcionan por reglas; el coste de IA es 0,00 €. «Aprobar» en Pendientes de la IA registra la confirmación pero no ejecuta la acción.
-- **VeriFactu y SES.Hospedajes en modo de pruebas.** Las facturas se emiten con huella y QR, pero los envíos salen «SIMULADO · NO ENVIADO» y el registro de viajeros va a un simulador; la declaración del software VeriFactu está incompleta y el conector SES está en «CONFIGURACIÓN PENDIENTE». Por eso la franja «Faltan 1 comprobación para poner la propiedad en marcha.» es permanente. TicketBAI e IGIC no aplican a un hotel peninsular.
+- **VeriFactu y SES.Hospedajes en modo de pruebas.** Las facturas se emiten con huella y QR, pero los envíos salen «SIMULADO · NO ENVIADO» y el registro de viajeros va a un simulador; la declaración del software VeriFactu está incompleta y el conector SES está en «CONFIGURACIÓN PENDIENTE». Por eso la franja «Falta 1 comprobación para poner la propiedad en marcha.» es permanente. TicketBAI e IGIC no aplican a un hotel peninsular.
 - **Modelos de la AEAT solo para presentación manual.** Cálculo y resumen por casilla; sin presentación telemática ni fichero de diseño de registro.
 - **Correo saliente sin configurar.** Confirmaciones, invitaciones, recuperación de contraseña, enlaces del portal del huésped y facturas por correo no salen: la pantalla te da el enlace para entregarlo a mano cuando existe. Correo entrante (Gmail, Microsoft 365, IMAP) también sin configurar: solo el conector manual.
 - **Pasarela de pago ausente.** «Tarjeta en línea» y «Enlace de pago» no disponibles; los cobros se registran a mano (efectivo, datáfono, transferencia). Sin cuentas bancarias, extractos ni remesas SEPA en la demo; Tesorería «SOLO LIBRO CONTABLE».
@@ -571,7 +577,7 @@ Lo que verás en la aplicación de demostración (y, en parte, en cualquier hote
 - **Hotel UXDAY (prueba).** Sus cuentas no tienen permisos de pisos (no marcan habitaciones limpias ni bloquean) y el envío a SES.Hospedajes no está configurado (el cajón de check-in lo avisa y se queda abierto); su plan del día es relativo a la fecha en que se siembra.
 - **Textos con jerga en recepción que verás tal cual:** «Firma digital aplicada con sello "sig_drawer_checkin".» y «Política de cancelación: FLEX24.» (cajón de check-in); «…el API solo admite el cambio de habitación (REC-03).» (ficha); «Late checkout sin resolver» (cola); «Prioridad high · open» y «Saldo abierto · €743.00 sin cobrar» (Turno); «Maintenance», «· open · high» (Actividad de la reserva); «room · 2x», «minibar» (líneas del folio en el check-out); «PASSPORT» (tipo de documento); «conv_maria», «guest_maria», «app» (Mensajes); «Una reserva en casa solo puede cambiar de habitación» (Live Timeline y ficha rápida); «cancelled», «checked_in» en el mensaje de estado no válido; los botones «Walk-in ⌥W» y «Nueva reserva ⌥N» de Mi día ligeramente recortados.
 - **Canales en modo de pruebas.** Booking.com, Expedia y Channex trabajan contra un simulador local sin credenciales reales; solo «Double · BAR» tiene correspondencia. Reputación con fuentes sin credenciales (solo importación CSV o fuente de demostración) y sin encuestas enviadas.
-- **Otros defectos conocidos.** «Comparar plantillas» rompe la interfaz; «Generar exportación» del Centro de informes no descarga; «Pausar» y «Eliminar» de Webhooks fallan («Suscripción de webhook no encontrada.»); la pregunta sugerida «¿Cuántas llegadas tengo hoy?» del Asistente no se enruta a ninguna herramienta; el interruptor «Exigir doble factor (2FA)» solo marca la ficha (no se pide un segundo factor al entrar); no hay asignación de tareas ni de técnico a una persona desde Pisos y Mantenimiento; no hay pantalla de fichas de personal (sin ellas no hay contratos ni nóminas); algunos textos de Mi día y del Centro de informes siguen en inglés o con códigos internos (las tarjetas de ayuda de Pisos y Mantenimiento ya están en español).
+- **Otros defectos conocidos.** El interruptor «Exigir doble factor (2FA)» solo deja la marca «2FA: Activo» en la ficha: la aplicación no pide un segundo factor al entrar y la marca no es un control de acceso (decisión documentada en [Sistemas › 1.2](60-sistemas.md#12-las-plantillas-que-puedes-invitar), regla «Doble factor»); no hay asignación de tareas de pisos a una persona desde la pantalla (en Mantenimiento, «Tomar» asigna la orden a quien la toma, pero no hay selector de técnico); algunos textos de Mi día y del Centro de informes siguen en inglés (las tarjetas de ayuda de Pisos y Mantenimiento ya están en español). Corregidos el 19/09/2026 (ya no aplican): «Comparar plantillas», «Generar exportación» del Centro de informes, «Pausar» / «Eliminar» de Webhooks, la pregunta sugerida «¿Cuántas llegadas tengo hoy?» del Asistente, los avisos de «Empezar» / «Completar» de Pisos (ahora «Tarea empezada.» / «Tarea completada.») y el alta de fichas de personal («Nueva ficha» en Finanzas › Nóminas, [RRHH › 2.1](30-rrhh.md#21-paso-previo-la-ficha-de-personal-nueva-ficha)).
 
 ## Ver también
 

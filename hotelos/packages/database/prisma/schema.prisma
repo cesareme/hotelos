@@ -147,7 +147,7 @@ enum VatBookSourceType {
   simplified
   supplier_bill
   expense
-  /// Tanda 7c: fila de los libros de IVA importada desde Sage 200 (lote vat_books; sourceId <empresa>:<ejercicio>:<serie>:<factura>[:R]). rebuildVatBooks la conserva.
+  /// Tanda 7c: fila de los libros de IVA importada desde Sage 200 (lote vat_books; sourceId <empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:<recepción>][:R] (FIX-1 · F4: en recibidas el NIF y el nº o fecha de recepción). rebuildVatBooks la conserva.
   sage200
 }
 

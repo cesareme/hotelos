@@ -8,7 +8,8 @@
 // `treasury.sepa_remittance`, queueName `treasury`, status one of
 // generated · sent · accepted · rejected · cancelled (never `queued`, so a
 // future job runner cannot pick them up), payloadJson = the request + control
-// totals, resultJson = { xml }. The store is behind `SepaRemittanceStore` so
+// totals (+ `billIds` and `sod` when built by `buildSupplierPaymentRemittance`,
+// corrector CIERRE-1 · REV-01), resultJson = { xml }. The store is behind `SepaRemittanceStore` so
 // the integrator can move it to a dedicated table without touching callers
 // (handoff: model `SepaRemittance` in the report).
 //
@@ -19,22 +20,42 @@
 // account may belong to the centre or to the sociedad (no centre:
 // `bankAccountServesCentre`), and every stored remittance carries the
 // `legalEntityId` it was generated for.
+//
+// Audit (corrector CIERRE-1 · REV-01): every remittance persisted by
+// `createRemittance` — Norma 19 or 34, from `POST /treasury/sepa/remittances`
+// or from `POST /treasury/sepa/supplier-payments` with `generate` — records
+// `SEPA_REMITTANCE_GENERATED` (entity `worker_job_run`) with the control data
+// and, for supplier remittances, the bills paid and the SoD outcome of each
+// (`privileged` / controller exception / unknown author visible in the review);
+// never the XML, the IBANs, the names nor the warnings.
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requireLegalIdentity } from "../../lib/finance-scope.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
+import { recordAuditEvent } from "../audit/audit.service.js";
+import { assertSupplierBillPaymentAuthorized } from "../payables/supplier-bills.service.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { generateSepaRemittance, validateCreditorId, validateIban, type SepaRemittance } from "../banking-spain/sepa-norma19.generator.js";
 import { generateSepaTransferRemittance, type SepaTransferRemittance } from "../banking-spain/sepa-norma34.generator.js";
 import { dec, money, round2, sum } from "./money.js";
-import { REMITTANCE_WRITE_KEYS, TREASURY_READ_KEYS, requireAnyPermission } from "./permissions.js";
+import { REMITTANCE_WRITE_KEYS, TREASURY_READ_KEYS, requireAnyPermission, type SodCheckOutcome } from "./permissions.js";
 import { bankAccountServesCentre } from "./treasury.service.js";
 
 export const SEPA_JOB_NAME = "treasury.sepa_remittance";
 export const SEPA_QUEUE_NAME = "treasury";
+/** Corrector CIERRE-1 (REV-01): audit action of every persisted remittance (`docs/runbooks/auditoria-eventos.md` §6.3). */
+export const SEPA_REMITTANCE_GENERATED_ACTION = "SEPA_REMITTANCE_GENERATED";
+/**
+ * Corrector CIERRE-1 (REV-02 / FUN-02): `details.code` of the 403 a Norma 34 gets
+ * when its body was NOT built by `buildSupplierPaymentRemittance` — a transfer
+ * file is a payment and only leaves through `POST /treasury/sepa/supplier-payments`
+ * (`payables.pay` + per-bill SoD gate); the generic route keeps the Norma 19.
+ */
+export const SUPPLIER_PAYMENT_ROUTE_REQUIRED_CODE = "SUPPLIER_PAYMENT_ROUTE_REQUIRED";
+export const SUPPLIER_PAYMENT_ROUTE_REQUIRED_MESSAGE = "Las remesas Norma 34 (transferencias) solo se generan desde POST /treasury/sepa/supplier-payments, que aplica la separación de funciones por factura (payables.pay); la remesa genérica admite adeudos Norma 19.";
 
 export type SepaRemittanceKind = "norma19" | "norma34";
 export type SepaRemittanceStatus = "generated" | "sent" | "accepted" | "rejected" | "cancelled";
@@ -126,7 +147,27 @@ export type SepaRemittanceRecord = {
   updatedAt: string;
   /** Only on detail reads. */
   xml?: string;
+  /** Only on remittances built by `buildSupplierPaymentRemittance`: the bills paid and the SoD outcome of each (corrector CIERRE-1 · FUN-07: `banking.read` sees them on the list and the detail, not only `audit.read`). */
+  billIds?: string[];
+  sod?: SupplierPaymentSod[];
 };
+
+/** Outcome of the payment gate for ONE bill of a supplier remittance (corrector CIERRE-1 · REV-01): what `POST …/supplier-bills/:id/pay` audits, per bill. */
+export type SupplierPaymentSod = { billId: string; creator: SodCheckOutcome; approver: SodCheckOutcome | null; controllerException: boolean };
+
+type SupplierPaymentProvenance = { billIds: string[]; sod: SupplierPaymentSod[] };
+
+/**
+ * Provenance of the bodies built by `buildSupplierPaymentRemittance`, keyed by
+ * the body object itself (corrector CIERRE-1 · REV-01): the route hands that
+ * SAME object to `createRemittance` (`POST /treasury/sepa/supplier-payments`
+ * with `generate: true`), which persists `billIds` + `sod` in the payload and
+ * audits them without the route threading them through. A cloned or hand-made
+ * body carries no provenance: since the corrector CIERRE-1 (REV-02 / FUN-02) a
+ * Norma 34 without it is REFUSED (403 `SUPPLIER_PAYMENT_ROUTE_REQUIRED`, nothing
+ * parsed nor persisted) — the rbac-sod suite pins the HTTP path both ways.
+ */
+const supplierPaymentProvenance = new WeakMap<object, SupplierPaymentProvenance>();
 
 type StoredPayload = {
   kind: SepaRemittanceKind;
@@ -142,6 +183,9 @@ type StoredPayload = {
   history: SepaRemittanceRecord["history"];
   createdBy: string | null;
   request: unknown;
+  /** Only on remittances built by `buildSupplierPaymentRemittance`: bills paid and the SoD outcome of each (corrector CIERRE-1 · REV-01). */
+  billIds?: string[];
+  sod?: SupplierPaymentSod[];
 };
 
 export type SepaRemittanceStore = {
@@ -176,7 +220,9 @@ function rowToRecord(row: JobRow, withXml: boolean): SepaRemittanceRecord {
     createdBy: payload.createdBy ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    ...(withXml ? { xml: result.xml ?? "" } : {})
+    ...(withXml ? { xml: result.xml ?? "" } : {}),
+    // Corrector CIERRE-1 (FUN-07): the provenance persisted by REV-01 reaches the DTO (list and detail).
+    ...(payload.billIds ? { billIds: payload.billIds, sod: payload.sod ?? [] } : {})
   };
 }
 
@@ -248,6 +294,16 @@ export type CreateRemittanceResult = SepaRemittanceRecord & { xml: string; total
 
 export async function createRemittance(input: CreateRemittanceInput): Promise<CreateRemittanceResult> {
   requireAnyPermission(input.context, REMITTANCE_WRITE_KEYS);
+  // Corrector CIERRE-1 (REV-01): a body built by buildSupplierPaymentRemittance carries the bills paid and their SoD outcomes.
+  const provenance = input.kind === "norma34" && typeof input.body === "object" && input.body !== null ? supplierPaymentProvenance.get(input.body) : undefined;
+  // Corrector CIERRE-1 (REV-02 / FUN-02): a Norma 34 is a payment order. Without
+  // provenance (hand-made body through POST /treasury/sepa/remittances under
+  // banking.reconcile, or a clone) it would pay the caller's own bills without
+  // payables.pay nor the per-bill SoD gate of T9 17d → 403, before parsing the
+  // body and before touching the store (fail-closed, nothing persisted).
+  if (input.kind === "norma34" && !provenance) {
+    throw new ForbiddenError(SUPPLIER_PAYMENT_ROUTE_REQUIRED_MESSAGE, { code: SUPPLIER_PAYMENT_ROUTE_REQUIRED_CODE, route: "POST /treasury/sepa/supplier-payments", requiredPermission: "payables.pay" });
+  }
   const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
   if (!property) throw new NotFoundError("La propiedad no existe.");
   if (property.organizationId !== input.context.organizationId && !input.context.isPlatformAdmin) throw new NotFoundError("La propiedad no existe.");
@@ -283,6 +339,7 @@ export async function createRemittance(input: CreateRemittanceInput): Promise<Cr
   if (!bankAccountId) warnings.push("El IBAN de la remesa no corresponde a ninguna cuenta bancaria registrada de la propiedad ni de la sociedad.");
 
   const now = new Date().toISOString();
+  const totalAmount = money(generated.control.totalAmount);
   const record = await store.create({
     payload: {
       kind: input.kind,
@@ -291,18 +348,45 @@ export async function createRemittance(input: CreateRemittanceInput): Promise<Cr
       propertyId: input.propertyId,
       bankAccountId,
       messageId: generated.messageId,
-      totalAmount: money(generated.control.totalAmount),
+      totalAmount,
       transactions: generated.control.transactions,
       executionDate,
       warnings,
       history: [{ status: "generated", at: now, by: input.context.userId, note: null }],
       createdBy: input.context.userId,
-      request: input.body
+      request: input.body,
+      ...(provenance ? { billIds: provenance.billIds, sod: provenance.sod } : {})
     },
     xml: generated.xml,
     correlationId: input.correlationId
   });
-  return { ...record, xml: generated.xml, totalAmount: money(generated.control.totalAmount), warnings };
+  // Corrector CIERRE-1 (REV-01): generating a bank file is audited — control
+  // data and, for a supplier remittance, the bills and the SoD outcome of each
+  // (`privileged` / controller exception / unknown author must reach the
+  // review). Never the XML, IBANs, names nor warnings (they may quote a name).
+  recordAuditEvent({
+    organizationId: property.organizationId,
+    propertyId: input.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "user",
+    action: SEPA_REMITTANCE_GENERATED_ACTION,
+    entityType: "worker_job_run",
+    entityId: record.id,
+    afterJson: {
+      kind: input.kind,
+      status: "generated",
+      messageId: generated.messageId,
+      legalEntityId: identity.legalEntityId,
+      bankAccountId,
+      totalAmount,
+      transactions: generated.control.transactions,
+      executionDate,
+      billIds: provenance?.billIds ?? null,
+      sod: provenance?.sod ?? null
+    },
+    correlationId: input.correlationId
+  });
+  return { ...record, xml: generated.xml, totalAmount, warnings };
 }
 
 /** Active account of the centre — or of the sociedad (no centre) — with that IBAN; null when none. */
@@ -339,8 +423,22 @@ export async function updateRemittanceStatus(input: { context: UserContext; id: 
  * Builds a Norma 34 body from posted, unpaid supplier bills whose supplier has
  * an IBAN (the payer bank account gives the debtor side). Bills without a
  * supplier IBAN are reported, never silently dropped.
+ *
+ * Separation of duties (Tanda CIERRE-1 · T9 deuda 17d): every payable bill
+ * goes through `assertSupplierBillPaymentAuthorized`, the same gate as
+ * `POST …/supplier-bills/:id/pay` — the registrar of a bill cannot order its
+ * payment by remittance (409 RBAC_SOD_CONFLICT `creator_ne_payer`) and neither
+ * can its approver (`approver_ne_payer`) unless the actor is a controller in
+ * the centre (audited exception). Fail-closed: one conflicting bill refuses
+ * the WHOLE remittance (never `skipped`), so nothing is built nor persisted;
+ * platform admins and break-glass sessions pass as `privileged`.
+ *
+ * The result also lists the bills that enter the remittance (`billIds`) and
+ * the gate outcome of each (`sod`), and the built body carries them as
+ * provenance so `createRemittance` persists and audits them (corrector
+ * CIERRE-1 · REV-01).
  */
-export async function buildSupplierPaymentRemittance(input: { context: UserContext; propertyId: string; bankAccountId: string; billIds: string[]; executionDate: string }): Promise<{ body: SepaTransferRemittance; skipped: Array<{ billId: string; reason: string }>; totalAmount: string }> {
+export async function buildSupplierPaymentRemittance(input: { context: UserContext; propertyId: string; bankAccountId: string; billIds: string[]; executionDate: string }): Promise<{ body: SepaTransferRemittance; skipped: Array<{ billId: string; reason: string }>; totalAmount: string; billIds: string[]; sod: SupplierPaymentSod[] }> {
   requireAnyPermission(input.context, REMITTANCE_WRITE_KEYS);
   const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
   if (!property) throw new NotFoundError("La propiedad no existe.");
@@ -363,6 +461,8 @@ export async function buildSupplierPaymentRemittance(input: { context: UserConte
   const supplierById = new Map(suppliers.map((s) => [s.id, s]));
   const skipped: Array<{ billId: string; reason: string }> = [];
   const creditors: SepaTransferRemittance["creditors"] = [];
+  const billIds: string[] = [];
+  const sod: SupplierPaymentSod[] = [];
   for (const id of input.billIds) {
     const bill = bills.find((b) => b.id === id);
     if (!bill) {
@@ -377,12 +477,19 @@ export async function buildSupplierPaymentRemittance(input: { context: UserConte
       skipped.push({ billId: id, reason: "ya pagada" });
       continue;
     }
+    // SoD gate (Tanda CIERRE-1 · 17d): registrar ≠ payer, approver ≠ payer unless controller; a conflict is a 409 for the whole remittance.
+    const gate = await assertSupplierBillPaymentAuthorized({
+      context: input.context,
+      bill: { id: bill.id, propertyId: bill.propertyId, createdByUserId: bill.createdByUserId ?? null, approvedBy: bill.approvedBy ?? null }
+    });
     const supplier = bill.supplierId ? supplierById.get(bill.supplierId) : undefined;
     if (!supplier?.iban || !validateIban(supplier.iban)) {
       skipped.push({ billId: id, reason: "el proveedor no tiene IBAN válido" });
       continue;
     }
     creditors.push({ name: supplier.name, iban: supplier.iban, amount: money(bill.total), description: `Factura ${bill.invoiceNumber ?? bill.id}`, endToEndId: `SB-${bill.id}`.slice(0, 35), category: "SUPP" });
+    billIds.push(bill.id);
+    sod.push({ billId: bill.id, creator: gate.creator, approver: gate.approver, controllerException: gate.controllerException });
   }
   if (creditors.length === 0) throw new ConflictError("Ninguna factura seleccionada se puede pagar por remesa.", { code: "REMITTANCE_EMPTY", skipped });
   const body: SepaTransferRemittance = {
@@ -390,5 +497,6 @@ export async function buildSupplierPaymentRemittance(input: { context: UserConte
     debtor: { name: identity.legalName.slice(0, 70), taxId: identity.taxId, iban: account.iban, ...(account.bic ? { bic: account.bic } : {}) },
     creditors
   };
-  return { body, skipped, totalAmount: money(sum(creditors.map((c) => dec(c.amount)))) };
+  supplierPaymentProvenance.set(body, { billIds, sod });
+  return { body, skipped, totalAmount: money(sum(creditors.map((c) => dec(c.amount)))), billIds, sod };
 }

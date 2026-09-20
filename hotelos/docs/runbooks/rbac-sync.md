@@ -185,6 +185,19 @@ exactamente esas claves si aún las tiene, concede las que le faltan, sella
 Roles con `managed = false`, sin plantilla o de plataforma: intactos
 (`skippedReason: custom | no_template | platform`).
 
+Historial de cambios **aditivos** posteriores (sin versión nueva; los entrega
+el top-up del paso 1 en el siguiente arranque o `rbac:sync`; el `--dry-run`
+los anticipa como `topped up: <rol> ← <plantilla>: +N`):
+
+- CIERRE-1 · C4b (2026-09-20): `payroll_hr` + `users.read` (selector «Persona»
+  de la ficha de personal, `GET /rbac/users`; `ROLE_TEMPLATE_VERSION` sigue
+  en 4). La clave abre además `GET /rbac/assignments` y
+  `GET /backoffice/properties/:propertyId/users` (que devuelve el teléfono):
+  efecto aceptado para RRHH (revisión REV-06). Dry-run contra la BD viva antes de aplicar: `+0 created · 3 topped up`
+  (los tres roles «RRHH y nóminas» de Faranda, org_123 y org_uxday, `+1` cada
+  uno); tras el primer arranque del API (o `rbac:sync` real) la segunda
+  pasada debe reportar `+0 created · 0 topped up`.
+
 Procedimiento (una vez por entorno, tras L3; en Faranda dentro del orden de
 §8):
 

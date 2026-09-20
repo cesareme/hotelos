@@ -93,7 +93,8 @@ const context = {
   userId: USER,
   fullName: "Dirección L4",
   deviceId: "l4-test",
-  permissions: ["accounting.journal.post", "accounting.read", "accounting.entity.read", "payroll.manage", "banking.reconcile", "banking.read", "ai.high_risk.confirm"]
+  // CIERRE-1 · C1: `buildSupplierPaymentRemittance` pasa por `assertSupplierBillPaymentAuthorized` (T9 deuda 17d), que exige `payables.pay`.
+  permissions: ["accounting.journal.post", "accounting.read", "accounting.entity.read", "payroll.manage", "banking.reconcile", "banking.read", "payables.pay", "ai.high_risk.confirm"]
 } as unknown as UserContext;
 
 type Details = Record<string, unknown>;

@@ -7692,7 +7692,8 @@ export async function buildApiServer() {
   });
   app.get("/dashboards/procurement", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildProcurementDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from ? new Date(q.from) : undefined, to: q.to ? new Date(q.to) : undefined });
+    // Tanda CIERRE-1 (T9 deuda 17e): suppliers scoped to the caller's organisation (the scope hook already pins propertyId to it).
+    return buildProcurementDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, organizationId: request.userContext.organizationId, from: q.from ? new Date(q.from) : undefined, to: q.to ? new Date(q.to) : undefined });
   });
   app.get("/dashboards/groups-events", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };

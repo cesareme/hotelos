@@ -33,6 +33,8 @@ const { prisma, hashPassword } = await import("@hotelos/database");
 const { buildApiServer } = await import("../../apps/api/src/server.js");
 const { resetRbacScopeCacheForTests } = await import("../../apps/api/src/lib/rbac-scope.js");
 const { flushAuditQueues } = await import("../../apps/api/src/modules/audit/audit.service.js");
+const { createSubscription } = await import("../../apps/api/src/modules/webhooks/webhooks.service.js");
+type UserContext = import("../../apps/api/src/lib/demo-store.js").UserContext;
 
 type ApiApp = Awaited<ReturnType<typeof buildApiServer>>;
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
@@ -448,6 +450,9 @@ describe("L2-08 · webhooks: suscripciones con ámbito de propiedad / organizaci
   let subscriptionId = "";
   let legacyId = "";
   let appIdB = "";
+  /** Caso (4): control del guard (propiedad propia por servicio directo); caso (5): suscripción con entregas. Ambas se borran en el caso y, si falla a medias, en after(). */
+  let controlSubscriptionId = "";
+  let deliveriesSubscriptionId = "";
   // Sistemas de B (plantilla admin, CON developer.manage_webhooks): el 404 de
   // los casos cruzados sale del guard de tenencia, nunca del gate de permisos.
   let systemsB: Session;
@@ -457,7 +462,7 @@ describe("L2-08 · webhooks: suscripciones con ámbito de propiedad / organizaci
   });
 
   after(async () => {
-    const ids = [subscriptionId, legacyId].filter(Boolean);
+    const ids = [subscriptionId, legacyId, controlSubscriptionId, deliveriesSubscriptionId].filter(Boolean);
     if (ids.length) {
       await prisma.webhookDelivery.deleteMany({ where: { webhookSubscriptionId: { in: ids } } });
       await prisma.webhookSubscription.deleteMany({ where: { id: { in: ids } } });
@@ -544,8 +549,94 @@ describe("L2-08 · webhooks: suscripciones con ámbito de propiedad / organizaci
     assert.ok(await prisma.webhookSubscription.findUnique({ where: { id: subscriptionId } }), "B no borra la fila de A");
     const deleted = await call("DELETE", `/webhooks/subscriptions/${subscriptionId}`, systems);
     assert.equal(deleted.status, 200, deleted.raw.slice(0, 300));
-    assert.deepEqual(deleted.body, { ok: true, id: subscriptionId });
+    assert.deepEqual(deleted.body, { ok: true, id: subscriptionId, deliveriesDeleted: 0 }, "forma { ok, id } conservada + deliveriesDeleted aditivo (CIERRE-1); sin entregas → 0");
     assert.equal(await prisma.webhookSubscription.findUnique({ where: { id: subscriptionId } }), null);
     subscriptionId = "";
+  });
+
+  it("(4) POST /webhooks/subscriptions con propertyId de otra organización → 400 del servicio (404 opaco del hook por HTTP) y sin fila nueva (CIERRE-1)", async () => {
+    const foreignUrl = `${targetUrl}-ajena`;
+    const message = "La propiedad indicada no pertenece a esta organización.";
+    const rejects400 = (error: unknown): boolean => (error as { statusCode?: number }).statusCode === 400 && (error as Error).message === message;
+    // Por HTTP el hook global (server.ts · pickPropertyId → grantPropertyAccess) lee el `propertyId` del
+    // cuerpo y contesta ANTES con el 404 opaco a un usuario que no es de plataforma (a uno de plataforma
+    // lo re-apunta a la organización de la propiedad: acción cross-tenant legítima). El guard del
+    // servicio (CIERRE-1) es la barrera para los llamadores directos (jobs, scripts, otros servicios)
+    // y si el hook dejara de leer el cuerpo: antes, la fila se persistía colgando de la propiedad ajena.
+    expect404(await call("POST", "/webhooks/subscriptions", systems, { propertyId: A.propertyA, payload: { targetUrl: foreignUrl, eventTypes: ["reservation.created"], propertyId: B.propertyB } }));
+    // Servicio directo con el contexto de sistemas de A (sin plataforma): rama sin developerAppId (app_<org> sintético).
+    const contextA: UserContext = { organizationId: A.organizationId, propertyId: A.propertyA, userId: A.users.systems.id, fullName: "Sistemas L2", deviceId: "l2-08-plat-servicio", permissions: ["developer.manage_webhooks"] };
+    await assert.rejects(createSubscription({ context: contextA, payload: { targetUrl: foreignUrl, eventTypes: ["reservation.created"], propertyId: B.propertyB } }), rejects400, "propiedad de B con contexto de A → 400 del servicio");
+    // Rama con developerAppId (app propia de B, creada en el caso (2)) y propertyId de A: el mismo 400 (ambas ramas resuelven propertyId antes del guard).
+    assert.ok(appIdB, "la app de B la creó el caso (2)");
+    const contextB: UserContext = { ...contextA, organizationId: B.organizationId, propertyId: B.propertyA, userId: B.users.systems.id };
+    await assert.rejects(createSubscription({ context: contextB, payload: { targetUrl: foreignUrl, eventTypes: ["reservation.created"], developerAppId: appIdB, propertyId: A.propertyA } }), rejects400, "propiedad de A con la app de B → 400 del servicio");
+    // Un id inexistente tampoco se persiste (antes: fila colgada de una propiedad inexistente, huérfana para la tenencia).
+    await assert.rejects(createSubscription({ context: contextA, payload: { targetUrl: foreignUrl, eventTypes: ["reservation.created"], propertyId: `prop_l2_ghost_${RUN}` } }), rejects400, "propiedad inexistente → 400 del servicio");
+    assert.equal(await prisma.webhookSubscription.count({ where: { targetUrl: foreignUrl } }), 0, "ninguna fila con la propiedad ajena / inexistente");
+    assert.equal(await prisma.webhookSubscription.count({ where: { propertyId: { in: [A.propertyA, A.propertyB, B.propertyA, B.propertyB] }, targetUrl: { startsWith: targetUrl } } }), 0, "el caso (3) borró la de A y nada nuevo cuelga de A ni de B");
+    // Control del guard: la otra propiedad de la MISMA organización sí se acepta y la fila cuelga de ella.
+    const own = await createSubscription({ context: contextA, payload: { targetUrl: `${targetUrl}-propia`, eventTypes: ["reservation.created"], propertyId: A.propertyB } });
+    controlSubscriptionId = own.id;
+    assert.equal(own.propertyId, A.propertyB);
+    assert.equal(own.developerAppId, `app_${A.organizationId}`);
+    const removed = await call("DELETE", `/webhooks/subscriptions/${controlSubscriptionId}`, systems);
+    assert.equal(removed.status, 200, removed.raw.slice(0, 300));
+    assert.deepEqual(removed.body, { ok: true, id: controlSubscriptionId, deliveriesDeleted: 0 });
+    controlSubscriptionId = "";
+  });
+
+  it("(5) DELETE borra también las entregas (webhook_deliveries) de la suscripción (CIERRE-1)", async () => {
+    const created = await call("POST", "/webhooks/subscriptions", systems, { propertyId: A.propertyA, payload: { targetUrl: `${targetUrl}-entregas`, eventTypes: ["reservation.created"] } });
+    assert.equal(created.status, 200, created.raw.slice(0, 300));
+    deliveriesSubscriptionId = created.body.id;
+    // El test de la suscripción persiste SIEMPRE una entrega (delivered o permanent_failure):
+    // `example.invalid` no resuelve → fallo registrado; la respuesta HTTP del test no es el objeto de este caso.
+    const tested = await call("POST", `/webhooks/subscriptions/${deliveriesSubscriptionId}/test`, systems);
+    assert.ok([200, 502].includes(tested.status), `el test responde 200 (delivered: false) o 502: ${tested.status} ${tested.raw.slice(0, 200)}`);
+    const before = await prisma.webhookDelivery.count({ where: { webhookSubscriptionId: deliveriesSubscriptionId } });
+    assert.ok(before >= 1, `el test dejó al menos una entrega (${before})`);
+    const listed = await call("GET", `/webhooks/subscriptions/${deliveriesSubscriptionId}/deliveries`, systems);
+    assert.equal(listed.status, 200, listed.raw.slice(0, 300));
+    assert.equal(listed.body.items.length, before);
+    expect404(await call("DELETE", `/webhooks/subscriptions/${deliveriesSubscriptionId}`, systemsB), WEBHOOK_404);
+    assert.equal(await prisma.webhookDelivery.count({ where: { webhookSubscriptionId: deliveriesSubscriptionId } }), before, "B no borra las entregas de A");
+    const deleted = await call("DELETE", `/webhooks/subscriptions/${deliveriesSubscriptionId}`, systems);
+    assert.equal(deleted.status, 200, deleted.raw.slice(0, 300));
+    assert.equal(deleted.body.ok, true);
+    assert.equal(deleted.body.id, deliveriesSubscriptionId);
+    assert.equal(deleted.body.deliveriesDeleted, before, "deliveriesDeleted = entregas que colgaban de la suscripción");
+    assert.equal(await prisma.webhookDelivery.count({ where: { webhookSubscriptionId: deliveriesSubscriptionId } }), 0, "sin entregas huérfanas (antes: sin cascade quedaban en webhook_deliveries)");
+    assert.equal(await prisma.webhookSubscription.findUnique({ where: { id: deliveriesSubscriptionId } }), null);
+    deliveriesSubscriptionId = "";
+  });
+
+  it("(6) POST /webhooks/subscriptions con propertyId \"\", tipos incorrectos, evento desconocido o clave desconocida → 400 VALIDATION_ERROR sin fila; el servicio normaliza \"\" a la propiedad activa (corrector CIERRE-1 · REV-07)", async () => {
+    const emptyUrl = `${targetUrl}-vacio`;
+    // Antes del esquema zod la fila se persistía con propertyId "" (ni null = organización ni un centro) y un tipo
+    // incorrecto llegaba a Prisma; ahora la ruta contesta 400 antes del servicio y del guard de organización.
+    const cases: Array<[string, unknown]> = [
+      ["propertyId vacío", { targetUrl: emptyUrl, eventTypes: ["reservation.created"], propertyId: "" }],
+      ["targetUrl no string", { targetUrl: 123, eventTypes: ["reservation.created"] }],
+      ["targetUrl sin esquema", { targetUrl: "example.invalid/hook", eventTypes: ["reservation.created"] }],
+      ["eventTypes string", { targetUrl: emptyUrl, eventTypes: "reservation.created" }],
+      ["eventTypes vacío", { targetUrl: emptyUrl, eventTypes: [] }],
+      ["evento desconocido", { targetUrl: emptyUrl, eventTypes: ["reservation.teleported"] }],
+      ["clave desconocida", { targetUrl: emptyUrl, eventTypes: ["reservation.created"], extra: true }]
+    ];
+    for (const [label, payload] of cases) {
+      const reply = await call("POST", "/webhooks/subscriptions", systems, { propertyId: A.propertyA, payload });
+      assert.equal(reply.status, 400, `${label}: ${reply.raw.slice(0, 300)}`);
+      assert.equal(reply.body?.details?.code, "VALIDATION_ERROR", label);
+    }
+    assert.equal(await prisma.webhookSubscription.count({ where: { OR: [{ targetUrl: emptyUrl }, { targetUrl: "example.invalid/hook" }, { propertyId: "" }] } }), 0, "ninguna fila con propertyId \"\" ni con las URL de los casos");
+    // Llamador directo (sin la ruta): "" ya no se persiste tal cual, cae en la propiedad activa del contexto (o null = organización).
+    const contextA: UserContext = { organizationId: A.organizationId, propertyId: A.propertyA, userId: A.users.systems.id, fullName: "Sistemas L2", deviceId: "l2-08-plat-vacio", permissions: ["developer.manage_webhooks"] };
+    const own = await createSubscription({ context: contextA, payload: { targetUrl: emptyUrl, eventTypes: ["reservation.created"], propertyId: "" } });
+    controlSubscriptionId = own.id;
+    assert.equal(own.propertyId, A.propertyA, "\"\" → propiedad activa del contexto, nunca la cadena vacía");
+    const removed = await call("DELETE", `/webhooks/subscriptions/${controlSubscriptionId}`, systems);
+    assert.equal(removed.status, 200, removed.raw.slice(0, 300));
+    controlSubscriptionId = "";
   });
 });
