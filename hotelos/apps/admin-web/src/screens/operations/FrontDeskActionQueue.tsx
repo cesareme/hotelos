@@ -37,7 +37,7 @@
 // acciones»; detectores de W3-D en front-desk-queue.service.ts): ocho `kind`
 // nuevos con etiqueta y tono (precheckin_ready, assignment_suggested,
 // self_checkin_done, identity_review, minor_without_guardian, room_not_ready,
-// payment_failed, ses_rejected) y dos acciones: `confirm_assignment` (POST
+// payment_failed, ses_rejected, signature_pending) y dos acciones: `confirm_assignment` (POST
 // /assignment-suggestions/:id/confirm, optimista como `assign_room`; una
 // primera asignación no tiene reversa, así que sin «Deshacer») y
 // `open_precheckin` (abre ArrivalPreCheckInDrawer, solo lectura). Sin `style=`
@@ -98,10 +98,12 @@ type QueueKind =
   | "minor_without_guardian"
   | "room_not_ready"
   | "payment_failed"
-  | "ses_rejected";
+  | "ses_rejected"
+  // Corrector L7-REV-05: «Firmar en recepción» pedido desde el kiosco/móvil.
+  | "signature_pending";
 
-/** Los ocho `kind` del check-in automatizado (orden del servicio). */
-export const CHECKIN_QUEUE_KINDS: readonly QueueKind[] = ["precheckin_ready", "assignment_suggested", "self_checkin_done", "identity_review", "minor_without_guardian", "room_not_ready", "payment_failed", "ses_rejected"];
+/** Los nueve `kind` del check-in automatizado (orden del servicio). */
+export const CHECKIN_QUEUE_KINDS: readonly QueueKind[] = ["precheckin_ready", "assignment_suggested", "self_checkin_done", "identity_review", "minor_without_guardian", "room_not_ready", "payment_failed", "ses_rejected", "signature_pending"];
 
 type ActionKind =
   | "open_reservation"
@@ -168,7 +170,8 @@ const KIND_LABEL: Record<QueueKind, string> = {
   minor_without_guardian: "Menor sin adulto",
   room_not_ready: "Habitación no lista",
   payment_failed: "Pago rechazado",
-  ses_rejected: "Parte SES rechazado"
+  ses_rejected: "Parte SES rechazado",
+  signature_pending: "Firma en recepción"
 };
 
 const KIND_TONE: Record<QueueKind, CocoaTone> = {
@@ -191,7 +194,8 @@ const KIND_TONE: Record<QueueKind, CocoaTone> = {
   minor_without_guardian: "danger",
   room_not_ready: "warning",
   payment_failed: "warning",
-  ses_rejected: "danger"
+  ses_rejected: "danger",
+  signature_pending: "warning"
 };
 
 /** Etiqueta del badge de un `kind`; un valor desconocido lee «Acción pendiente», nunca el enum (P6). */

@@ -265,6 +265,82 @@ export const SYSTEM_TEMPLATES: readonly SystemTemplate[] = [
     subject: "",
     body: ["{{propertyName}}: tu código de verificación es {{otpCode}}. Caduca en pocos minutos; no lo compartas.", BRAND.name].join("\n"),
     variables: ["propertyName", "otpCode"]
+  },
+
+  // ---------------------------------------------------------------------------
+  // Encuesta post-estancia (Tanda L7 · lote L7-04, recon §19.7; T8 decisión 14).
+  // La invita el paso `runPostStaySurveyStep` del tick del check-in (o
+  // POST /reservations/:id/post-stay/survey-invite) con notificationId
+  // `post_stay_survey:<reservationId>` y `redact: { variables: ["surveyUrl"] }`:
+  // el enlace lleva un token de GuestPortalSession (30 días) que NUNCA se
+  // persiste en notification_deliveries. Sin proveedor de correo el despacho
+  // queda «SIMULADO» (nunca un envío ficticio). Texto plano, marca solo en el
+  // pie, sin IA (la encuesta no enlaza al asistente).
+  // ---------------------------------------------------------------------------
+  {
+    code: "post_stay_survey",
+    channel: "email",
+    language: "es",
+    subject: "¿Qué tal tu estancia en {{propertyName}}?",
+    body: [
+      "Hola {{guestFirstName}},",
+      "",
+      "Gracias por alojarte en {{propertyName}}. Nos ayudaría mucho saber cómo ha ido tu estancia:",
+      "dos preguntas, menos de un minuto.",
+      "",
+      "{{surveyUrl}}",
+      "",
+      "El enlace es personal y caduca en 30 días. Tus respuestas solo las ve el equipo del hotel",
+      "para mejorar el servicio.",
+      "",
+      "Si no has sido tú quien se ha alojado, ignora este mensaje.",
+      "",
+      `— {{propertyName}} · enviado con ${BRAND.name}`
+    ].join("\n"),
+    variables: ["guestFirstName", "propertyName", "surveyUrl"]
+  },
+  {
+    code: "post_stay_survey",
+    channel: "email",
+    language: "en",
+    subject: "How was your stay at {{propertyName}}?",
+    body: [
+      "Hello {{guestFirstName}},",
+      "",
+      "Thank you for staying at {{propertyName}}. We would love to know how your stay went:",
+      "two questions, less than a minute.",
+      "",
+      "{{surveyUrl}}",
+      "",
+      "This link is personal and expires in 30 days. Only the hotel team sees your answers,",
+      "to improve the service.",
+      "",
+      "If you did not stay with us, please ignore this message.",
+      "",
+      `— {{propertyName}} · sent with ${BRAND.name}`
+    ].join("\n"),
+    variables: ["guestFirstName", "propertyName", "surveyUrl"]
+  },
+  {
+    code: "post_stay_survey",
+    channel: "whatsapp",
+    language: "es",
+    subject: "",
+    body: [
+      "Hola {{guestFirstName}}, gracias por alojarte en {{propertyName}}.",
+      "¿Nos cuentas qué tal ha ido? Dos preguntas, menos de un minuto: {{surveyUrl}}",
+      "El enlace es personal y caduca en 30 días.",
+      `Enviado con ${BRAND.name}`
+    ].join("\n"),
+    variables: ["guestFirstName", "propertyName", "surveyUrl"]
+  },
+  {
+    code: "post_stay_survey",
+    channel: "sms",
+    language: "es",
+    subject: "",
+    body: ["{{propertyName}}: gracias por tu estancia, {{guestFirstName}}. ¿Qué tal ha ido? Dos preguntas (enlace válido 30 días): {{surveyUrl}}", BRAND.name].join("\n"),
+    variables: ["guestFirstName", "propertyName", "surveyUrl"]
   }
 ];
 

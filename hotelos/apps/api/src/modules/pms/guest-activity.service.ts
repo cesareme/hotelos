@@ -45,6 +45,37 @@ export type GuestActivity = {
 function cap(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1).replace(/_/g, " ");
 }
+
+// Tanda L7 (L7-02): copy en español (el CSV de navegación marcaba este feed en
+// inglés: «conversation · guest awaiting reply», «(no messages yet)»). Los
+// vocabularios cerrados se traducen; un valor desconocido cae en `cap()`.
+const DEPARTMENT_LABELS: Record<string, string> = {
+  housekeeping: "Limpieza",
+  maintenance: "Mantenimiento",
+  front_office: "Recepción",
+  reception: "Recepción",
+  food_beverage: "Restauración",
+  concierge: "Conserjería"
+};
+const CHANNEL_LABELS: Record<string, string> = { web: "web", whatsapp: "WhatsApp", email: "correo", sms: "SMS", phone: "teléfono", app: "app" };
+const SENDER_LABELS: Record<string, string> = { guest: "Huésped", staff: "Personal", user: "Personal", agent: "Personal", ai: "Asistente", bot: "Asistente", system: "Sistema" };
+const TASK_LABELS: Record<string, string> = { cleaning: "Limpieza", turndown: "Cobertura", inspection: "Inspección", deep_clean: "Limpieza a fondo", linen_change: "Cambio de lencería" };
+/** Peticiones del portal (guest-portal.service.ts), del bot (guest-bot.service.ts) y de salida (Tanda L7, guest-stay.service.ts). */
+const REQUEST_LABELS: Record<string, string> = {
+  express_checkout: "Salida exprés",
+  late_checkout: "Salida tardía",
+  invoice_email: "Factura por correo",
+  luggage: "Consigna de equipaje",
+  housekeeping: "Limpieza",
+  food_beverage: "Restauración",
+  concierge: "Conserjería",
+  maintenance: "Mantenimiento",
+  towels: "Toallas y lencería",
+  cleaning: "Limpieza",
+  parking: "Parking",
+  breakfast: "Desayuno"
+};
+const label = (table: Record<string, string>, value: string): string => table[value] ?? cap(value);
 const HK_CLOSED = new Set(["done", "rejected"]);
 const WO_CLOSED = new Set(["resolved", "closed"]);
 const SR_CLOSED = new Set(["done", "cancelled"]);
@@ -55,7 +86,7 @@ export async function getGuestActivity(input: {
 }): Promise<GuestActivity> {
   requirePermissions(input.context, ["pms.reservation.read"]);
   const res = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
-  if (!res) throw new NotFoundError("Reservation not found.");
+  if (!res) throw new NotFoundError("Reserva no encontrada.");
 
   const primaryLink = await prisma.reservationGuest.findFirst({
     where: { reservationId: res.id, isPrimary: true },
@@ -97,8 +128,8 @@ export async function getGuestActivity(input: {
       id: c.id,
       kind: "message",
       department: "Chat",
-      title: `${cap(c.channel)} conversation${guestLast ? " · guest awaiting reply" : ""}`,
-      detail: last ? `${last.senderType}: ${last.body.slice(0, 160)}` : "(no messages yet)",
+      title: `Conversación por ${label(CHANNEL_LABELS, c.channel)}${guestLast ? " · huésped esperando respuesta" : ""}`,
+      detail: last ? `${label(SENDER_LABELS, last.senderType)}: ${last.body.slice(0, 160)}` : "(sin mensajes todavía)",
       status: c.status,
       channel: c.channel,
       at: (last?.sentAt ?? c.createdAt).toISOString(),
@@ -116,8 +147,8 @@ export async function getGuestActivity(input: {
       items.push({
         id: t.id,
         kind: "housekeeping",
-        department: "Housekeeping",
-        title: cap(t.taskType),
+        department: "Limpieza",
+        title: label(TASK_LABELS, t.taskType),
         status: t.status,
         priority: t.priority,
         at: t.createdAt.toISOString(),
@@ -135,7 +166,7 @@ export async function getGuestActivity(input: {
       items.push({
         id: w.id,
         kind: "maintenance",
-        department: "Maintenance",
+        department: "Mantenimiento",
         title: w.title,
         detail: w.description ?? undefined,
         status: w.status,
@@ -167,8 +198,8 @@ export async function getGuestActivity(input: {
     items.push({
       id: s.id,
       kind: "service_request",
-      department: s.assignedDepartment ? cap(s.assignedDepartment) : "Reception",
-      title: cap(s.requestType),
+      department: s.assignedDepartment ? label(DEPARTMENT_LABELS, s.assignedDepartment) : "Recepción",
+      title: label(REQUEST_LABELS, s.requestType),
       status: s.status,
       at: s.at,
       open: !SR_CLOSED.has(s.status)

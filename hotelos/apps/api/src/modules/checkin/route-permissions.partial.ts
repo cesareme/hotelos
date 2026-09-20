@@ -1,6 +1,6 @@
 // Check-in automatizado (Tanda CHK · lotes W2-A, W3-A y W4-D) · entradas del
-// manifiesto de permisos de las 30 rutas de checkin.routes.ts (15 de huésped,
-// 15 de personal). W4-D: POST /guest-portal/chat (bot del huésped, público
+// manifiesto de permisos de las 31 rutas de checkin.routes.ts (16 de huésped,
+// 15 de personal; corrector L7-REV-05 añade POST /guest-portal/check-in/handoff). W4-D: POST /guest-portal/chat (bot del huésped, público
 // por token; prefijo "/guest-portal/chat" en PUBLIC_PREFIXES).
 //
 // CABLEADO: security/route-permissions.ts importa `checkinRoutePermissions`
@@ -46,6 +46,7 @@ export const checkinRoutePermissions: ApiRoutePermission[] = [
   { method: "POST", path: "/guest-portal/check-in/otp/request", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/guest-portal/check-in/otp/verify", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/guest-portal/check-in/arrive", permissions: [], riskLevel: "public" },
+  { method: "POST", path: "/guest-portal/check-in/handoff", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/guest-portal/check-in/kiosk/claim", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/guest-portal/chat", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/properties/:propertyId/check-in/arrivals", permissions: ["pms.reservation.read"], riskLevel: "low" },

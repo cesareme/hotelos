@@ -1,7 +1,9 @@
 // Unit tests · Tanda CHK · lote W3-C — jobs del líder del check-in
 // (checkin-jobs.ts) con dobles: base de datos en memoria (política, reservas,
 // sesiones, worker_job_runs), invitación/lote/purga/auditoría grabados en
-// listas, reloj fijo en Europe/Madrid. Sin base de datos, sin red. Desde apps/api:
+// listas, reloj fijo en Europe/Madrid. Tanda L7 · L7-04: el paso 5 (encuesta
+// post-estancia) se inyecta como doble `postStaySurvey` y se comprueba su
+// cableado (reloj, zona, resumen, fallos, lock). Sin base de datos, sin red. Desde apps/api:
 //   node --import tsx --test src/modules/checkin/__tests__/checkin-jobs.test.mts
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -25,6 +27,7 @@ import {
   type CheckinJobsDeps
 } from "../checkin-jobs.js";
 import type { InvitationResult } from "../checkin-session.service.js";
+import type { PostStaySurveyStepSummary } from "../../guest-portal/post-stay-survey.service.js";
 import { CHECKIN_SERVICE_PERMISSIONS, buildServiceContext } from "../service-context.js";
 
 // ── Reloj: 2026-09-19 (sábado) · CEST = UTC+2 ────────────────────────────────
@@ -143,21 +146,26 @@ type InviteCall = { reservationId: string; channel: string; userId: string; prop
 type BatchCall = { propertyId: string; date: string; userId: string };
 type AuditCall = Parameters<typeof recordAuditEvent>[0];
 
+type SurveyCall = { day: string; time: string; timeZone: string; now: Date };
+const EMPTY_SURVEY: PostStaySurveyStepSummary = { invited: 0, skipped: 0, failed: 0, properties: 0, outcomes: [] };
+
 type Harness = {
   deps: Partial<CheckinJobsDeps>;
   invites: InviteCall[];
   batches: BatchCall[];
   audits: AuditCall[];
   purgeCalls: Date[];
+  surveyCalls: SurveyCall[];
   calls: string[];
 };
 
-function harness(state: State, now: Date, options: StubOptions & { inviteThrowsFor?: string; batchThrows?: boolean; purged?: number } = {}): Harness {
+function harness(state: State, now: Date, options: StubOptions & { inviteThrowsFor?: string; batchThrows?: boolean; purged?: number; surveyResult?: PostStaySurveyStepSummary; surveyThrows?: boolean } = {}): Harness {
   const { db, calls } = stubDb(state, options);
   const invites: InviteCall[] = [];
   const batches: BatchCall[] = [];
   const audits: AuditCall[] = [];
   const purgeCalls: Date[] = [];
+  const surveyCalls: SurveyCall[] = [];
   let ids = 0;
   const deps: Partial<CheckinJobsDeps> = {
     db,
@@ -183,12 +191,18 @@ function harness(state: State, now: Date, options: StubOptions & { inviteThrowsF
       purgeCalls.push(at);
       return { purged: options.purged ?? 0 };
     },
+    // Paso 5 (L7-04): doble del paso de encuesta (el real vive en guest-portal/post-stay-survey.service.ts y tiene sus propios tests).
+    postStaySurvey: async (input) => {
+      surveyCalls.push({ day: input.clock.day, time: input.clock.time, timeZone: input.timeZone, now: input.now() });
+      if (options.surveyThrows) throw new Error("survey step exploded");
+      return options.surveyResult ?? EMPTY_SURVEY;
+    },
     audit: ((input: AuditCall) => {
       audits.push(input);
       return { id: `aud_${audits.length}` } as unknown as ReturnType<typeof recordAuditEvent>;
     }) as typeof recordAuditEvent
   };
-  return { deps, invites, batches, audits, purgeCalls, calls };
+  return { deps, invites, batches, audits, purgeCalls, surveyCalls, calls };
 }
 
 const policy = (propertyId: string, enabled = true, inviteDaysBefore = 3, reminderDaysBefore = 1): PolicyRow => ({ propertyId, selfCheckInEnabled: enabled, inviteDaysBefore, reminderDaysBefore });
@@ -278,6 +292,7 @@ describe("invita solo propiedades con self check-in y solo reservas sin sesión"
     assert.equal(summary.invited, 2);
     assert.equal(summary.reminded, 0);
     assert.deepEqual(summary.failed, []);
+    assert.deepEqual(summary.postStaySurvey, { invited: 0, skipped: 0, failed: 0 });
     assert.equal(summary.details.properties, 1);
     assert.deepEqual(summary.details.localDay, TODAY);
     assert.deepEqual(h.invites.map((call) => call.reservationId).sort(), ["r_plus2", "r_today"]);
@@ -521,6 +536,48 @@ describe("purga vacía capturas caducadas y expira sesiones", () => {
   });
 });
 
+// ── Encuesta post-estancia (paso 5 · L7-04) ──────────────────────────────────
+
+describe("encuesta post-estancia: paso independiente del tick", () => {
+  it("se invoca una vez por vuelta con el reloj y la zona del tick, aun sin políticas de self check-in; el resumen copia las cifras y los fallos por reserva van a failed[] con step post_stay_survey", async () => {
+    const state: State = { policies: [], reservations: [], sessions: [], runs: [] };
+    const surveyResult: PostStaySurveyStepSummary = {
+      invited: 2,
+      skipped: 1,
+      failed: 1,
+      properties: 1,
+      outcomes: [
+        { propertyId: "prop_s", reservationId: "r_ok", status: "invited", reason: null, dispatched: true, simulated: true, channel: "email", recipient: "g***@l7.test", deliveryId: "del_1" },
+        { propertyId: "prop_s", reservationId: "r_skip", status: "skipped", reason: "no_recipient", dispatched: false, simulated: false, channel: null, recipient: null, deliveryId: null },
+        { propertyId: "prop_s", reservationId: "r_bad", status: "failed", reason: "template_not_found", dispatched: false, simulated: false, channel: null, recipient: null, deliveryId: null },
+        { propertyId: "prop_s", reservationId: "", status: "failed", reason: "db down", dispatched: false, simulated: false, channel: null, recipient: null, deliveryId: null }
+      ]
+    };
+    const h = harness(state, MORNING, { surveyResult });
+    const result = await runCheckinJobsTick(h.deps);
+    assert.equal(result.skipped, false);
+    assert.deepEqual(h.surveyCalls, [{ day: TODAY, time: "10:30", timeZone: "Europe/Madrid", now: MORNING }]);
+    assert.deepEqual(result.summary?.postStaySurvey, { invited: 2, skipped: 1, failed: 1 });
+    assert.deepEqual(result.summary?.failed, [
+      { propertyId: "prop_s", step: "post_stay_survey", entityId: "r_bad", error: "template_not_found" },
+      { propertyId: "prop_s", step: "post_stay_survey", entityId: null, error: "db down" }
+    ]);
+    assert.equal(result.summary?.details.properties, 0, "las propiedades de la encuesta no se mezclan con las del self check-in");
+    assert.deepEqual(h.invites, [], "la encuesta no pasa por inviteReservation");
+  });
+
+  it("si el paso revienta, el fallo queda en failed[] (propertyId null) y el resto de la vuelta ya corrió (invitación y purga)", async () => {
+    const state: State = { policies: [policy("prop_a")], reservations: [reservation("r_a", "prop_a", 1)], sessions: [], runs: [] };
+    const h = harness(state, MORNING, { surveyThrows: true, purged: 2 });
+    const result = await runCheckinJobsTick(h.deps);
+    assert.equal(result.summary?.invited, 1);
+    assert.equal(result.summary?.purged, 2);
+    assert.deepEqual(result.summary?.postStaySurvey, { invited: 0, skipped: 0, failed: 0 });
+    assert.deepEqual(result.summary?.failed, [{ propertyId: null, step: "post_stay_survey", entityId: null, error: "Error: survey step exploded" }]);
+    assert.equal(h.surveyCalls.length, 1);
+  });
+});
+
 // ── Lock y arranque ──────────────────────────────────────────────────────────
 
 describe("lock global y startCheckinJobs", () => {
@@ -532,6 +589,7 @@ describe("lock global y startCheckinJobs", () => {
     assert.equal(result.summary, null);
     assert.deepEqual(h.invites, []);
     assert.deepEqual(h.purgeCalls, []);
+    assert.deepEqual(h.surveyCalls, [], "sin lock tampoco corre la encuesta post-estancia");
     assert.deepEqual(h.calls, ["lock:checkin.jobs"]);
   });
 

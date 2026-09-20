@@ -4,15 +4,20 @@
   --gp-surface: #ffffff;
   --gp-ink: #2a1f15;
   --gp-ink-soft: #6b5b4a;
-  --gp-muted: #9a8a78;
+  /* Tanda L7 · L7-01 (WCAG 1.4.3): texto secundario y colores de estado a ≥ 4,5:1
+     sobre fondo, superficie y sus fondos suaves (muted 5,7:1; accent-deep 4,7:1
+     sobre accent-soft; success 5,2:1; warn 5,1:1). */
+  --gp-muted: #726250;
   --gp-line: #ece3d6;
   --gp-soft: #f6efe2;
   --gp-accent: #b08a3e;
   --gp-accent-soft: #f4ead2;
-  --gp-accent-deep: #8e6b25;
-  --gp-success: #2e7d57;
+  --gp-accent-deep: #836221;
+  --gp-accent-hover: #6e5219;
+  --gp-on-accent: #ffffff;
+  --gp-success: #27704e;
   --gp-success-soft: #e7f3eb;
-  --gp-warn: #b97a1f;
+  --gp-warn: #8f5d13;
   --gp-warn-soft: #fdf2dc;
   --gp-error: #b3382f;
   --gp-error-soft: #fbe7e3;
@@ -41,6 +46,8 @@
     --gp-accent: #d2a64e;
     --gp-accent-soft: #2e2614;
     --gp-accent-deep: #e2bb6a;
+    --gp-accent-hover: #f0cf86;
+    --gp-on-accent: #15120e;
     --gp-success: #5fcf95;
     --gp-success-soft: #14291e;
     --gp-warn: #e2a84e;
@@ -87,6 +94,32 @@ a {
   color: inherit;
 }
 
+/* Tanda L7 · L7-01 (WCAG 2.4.7 / 2.4.11): foco visible de 2 px en todo control. */
+:focus-visible {
+  outline: 2px solid var(--gp-accent-deep);
+  outline-offset: 2px;
+}
+
+/* Enlace «Ir al contenido» (WCAG 2.4.1): oculto hasta recibir el foco. */
+.gp-skip {
+  position: absolute;
+  left: 16px;
+  top: -100px;
+  z-index: 20;
+  padding: 12px 16px;
+  min-height: 44px;
+  border-radius: 12px;
+  background: var(--gp-accent-deep);
+  color: var(--gp-on-accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.gp-skip:focus,
+.gp-skip:focus-visible {
+  top: 12px;
+}
+
 /* -------- Shell -------- */
 .gp-shell {
   max-width: 480px;
@@ -108,7 +141,14 @@ a {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  min-height: 32px;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.gp-header-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .gp-wordmark {
@@ -119,18 +159,44 @@ a {
   color: var(--gp-accent-deep);
 }
 
+/* Tanda L7 · L7-01 (WCAG 2.5.8): todo control ≥ 44 × 44 px. */
 .gp-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   background: none;
   border: none;
+  border-radius: 10px;
   color: var(--gp-accent-deep);
   font-weight: 600;
   cursor: pointer;
-  padding: 6px 0;
+  padding: 10px 8px;
+  min-height: 44px;
+  min-width: 44px;
   font-size: 14px;
 }
 
 .gp-link:hover {
   text-decoration: underline;
+}
+
+.gp-link:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Selector de idioma es/en de la cabecera (Tanda L7 · L7-01). */
+.gp-lang-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.gp-lang.is-active {
+  background: var(--gp-accent-soft);
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
 
 .gp-hero {
@@ -186,6 +252,11 @@ a {
   flex-direction: column;
   gap: 16px;
   flex: 1;
+}
+
+/* Destino del enlace «Ir al contenido»: foco programático sin anillo. */
+.gp-main:focus {
+  outline: none;
 }
 
 .gp-footer {
@@ -292,6 +363,17 @@ a {
   cursor: progress;
 }
 
+/* Tarjeta informativa (sin acción): p. ej. «Recepción · Pregunta en recepción». */
+.gp-action-static {
+  cursor: default;
+}
+
+.gp-action-static:hover {
+  border-color: var(--gp-line);
+  transform: none;
+  box-shadow: none;
+}
+
 .gp-action-icon {
   font-size: 20px;
   color: var(--gp-accent-deep);
@@ -350,6 +432,13 @@ a {
   outline: none;
   border-color: var(--gp-accent);
   box-shadow: 0 0 0 3px var(--gp-accent-soft);
+}
+
+.gp-field input:focus-visible,
+.gp-field select:focus-visible,
+.gp-field textarea:focus-visible {
+  outline: 2px solid var(--gp-accent-deep);
+  outline-offset: 1px;
 }
 
 .gp-field textarea {
@@ -438,16 +527,17 @@ a {
 }
 
 .gp-button-primary {
-  background: var(--gp-accent);
-  color: #ffffff;
+  background: var(--gp-accent-deep);
+  color: var(--gp-on-accent);
 }
 
 .gp-button-primary:hover:not(:disabled) {
-  background: var(--gp-accent-deep);
+  background: var(--gp-accent-hover);
 }
 
 .gp-button-primary:disabled {
   background: var(--gp-muted);
+  color: var(--gp-on-accent);
   cursor: progress;
 }
 
@@ -614,8 +704,10 @@ a {
 }
 
 .gp-lang {
-  font-size: 12px;
-  padding: 4px 0;
+  font-size: 13px;
+  padding: 10px 10px;
+  min-height: 44px;
+  min-width: 44px;
 }
 
 .gp-progress-bar {
@@ -685,9 +777,9 @@ a {
 }
 
 .gp-step.is-current .gp-step-index {
-  background: var(--gp-accent);
-  border-color: var(--gp-accent);
-  color: #fff;
+  background: var(--gp-accent-deep);
+  border-color: var(--gp-accent-deep);
+  color: var(--gp-on-accent);
 }
 
 /* -------- Formularios del asistente -------- */
@@ -930,10 +1022,10 @@ a {
   border: 1px solid var(--gp-line);
   background: var(--gp-surface);
   border-radius: 999px;
-  padding: 8px 14px;
+  padding: 10px 14px;
   font-size: 13px;
   cursor: pointer;
-  min-height: 40px;
+  min-height: 44px;
 }
 
 .gp-chip.is-active {
@@ -1153,8 +1245,8 @@ a {
 }
 
 .gp-chat-guest .gp-chat-bubble {
-  background: var(--gp-accent);
-  color: #ffffff;
+  background: var(--gp-accent-deep);
+  color: var(--gp-on-accent);
 }
 
 .gp-chat-action {
@@ -1189,4 +1281,158 @@ a {
   height: auto;
   border-radius: 8px;
   background: #ffffff;
+}
+
+/* ======================================================================
+   Tanda L7 · L7-06 — estancia y salida: folio real, facturas, peticiones,
+   pago honesto y datos del hotel. Sin `style=` inline; controles ≥ 44 px.
+   ====================================================================== */
+
+/* Acción principal de la etapa (CTA) destacada en la rejilla de acciones. */
+.gp-action-primary {
+  border-color: var(--gp-accent);
+  background: var(--gp-accent-soft);
+}
+
+.gp-action-primary .gp-action-label {
+  color: var(--gp-accent-deep);
+}
+
+/* Tarjeta de error con reintento (texto + botón). */
+.gp-error-text {
+  margin: 0 0 12px;
+}
+
+.gp-folio,
+.gp-invoices,
+.gp-requests,
+.gp-survey,
+.gp-info,
+.gp-checkout-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Líneas del folio (cargos y pagos). */
+.gp-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gp-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--gp-line);
+  font-size: 15px;
+}
+
+.gp-line-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gp-line-amount {
+  font-weight: 600;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.gp-line-total {
+  border-top: 2px solid var(--gp-ink);
+  font-weight: 700;
+}
+
+.gp-folio-balance {
+  padding-top: 8px;
+  border-top: 1px solid var(--gp-line);
+}
+
+/* Desplegable «Ver el detalle»: el resumen es un control ≥ 44 px. */
+.gp-fold > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--gp-accent-deep);
+  list-style: none;
+}
+
+.gp-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.gp-fold > summary::before {
+  content: "▸";
+  margin-right: 8px;
+}
+
+.gp-fold[open] > summary::before {
+  content: "▾";
+}
+
+/* Listas de facturas y peticiones. */
+.gp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gp-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--gp-line);
+}
+
+.gp-list-item .gp-value {
+  font-size: 15px;
+}
+
+/* Enlace pintado como botón («Pagar ahora» con enlace real, «Llamar a recepción»). */
+a.gp-button {
+  text-decoration: none;
+}
+
+/* Bloque de éxito dentro de una tarjeta (petición enviada). */
+.gp-card-flat {
+  border-radius: 14px;
+  padding: 16px;
+}
+
+/* Datos del hotel: lista de definiciones. */
+.gp-info-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gp-info-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 0;
+  border-top: 1px solid var(--gp-line);
+}
+
+.gp-info-row dd {
+  margin: 0;
+}
+
+.gp-mono {
+  font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+  letter-spacing: 0.04em;
 }

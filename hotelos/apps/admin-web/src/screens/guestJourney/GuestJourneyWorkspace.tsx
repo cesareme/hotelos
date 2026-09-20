@@ -11,6 +11,21 @@
 // fetchGuest and fetchGuestActivity, plus fetchRooms so the «Habitación
 // asignada» step names the room number instead of its id (qa#9); deep links
 // through openTabPath and the shell channel (navigateTo).
+//
+// Tanda L7 · lote L7-07 (recorrido con datos reales): the steps come from
+// `computeJourney` (./journey.ts, pure, tested under node --test) and now read
+// the API journey too — GET /reservations/:id/guest-journey
+// (services/guestJourneyApi.ts): check-in session (channel, state, signed
+// n/m), notifications sent to the guest (with their honest «simulada» mark and
+// masked recipient), mobile key, open requests and the post-stay survey. Six
+// new steps (invitación · pre-check-in · llave · bienvenida · peticiones ·
+// encuesta), a «Avisos al huésped» section, and two actions: «Reenviar
+// invitación» / «Invitar al check-in en línea» (checkinApi.inviteSession) and
+// «Enviar encuesta ahora» (POST /reservations/:id/post-stay/survey-invite of
+// lote L7-04; while that route is not deployed the notice says so). The API
+// journey failing degrades to «no disponible» steps that are never proposed as
+// next action. 0 new `style=` (Cocoa 22): the new markup uses the layout
+// classes of cocoa-base.css.
 
 import { useEffect, useState, type CSSProperties } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
@@ -31,12 +46,25 @@ import {
   type ActivityItem
 } from "../../services/pmsCommerceApi";
 import { fetchGuest, type GuestProfile } from "../../services/guestsApi";
+import { getGuestJourney, isRouteUnavailable, sendPostStaySurveyNow, type GuestJourneyView } from "../../services/guestJourneyApi";
+import { inviteSession } from "../../services/checkinApi";
 import { useTabHost } from "../tabs/TabHost";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { navigateTo } from "../../lib/navigate";
-import { channelLabel, date, dateRange, money, plural, relativeTime } from "../../lib/format";
+import { dateRange, dateTime, plural, relativeTime } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
-import { reservationStatus, type StatusEntry } from "../../content/status-dictionary";
+import {
+  NEXT_ACTION_LABEL,
+  NOTIFICATION_KIND_LABEL,
+  computeJourney,
+  describeNotification,
+  invitationAction,
+  invitationChannel,
+  journeyChannel,
+  listStage,
+  surveyActionAvailable,
+  type StepState
+} from "./journey";
 import {
   CocoaBadge,
   CocoaStatusBadge,
@@ -67,7 +95,11 @@ const LIST_MAX_HEIGHT = 640;
 // detail's title within a 768 px viewport (qa#10).
 const LIST_MAX_HEIGHT_STACKED = 360;
 
-type PanelErrors = { folio?: string; guest?: string; activity?: string };
+type PanelErrors = { folio?: string; guest?: string; activity?: string; journey?: string };
+
+/** Outcome of an action (invitation / survey) painted as a CocoaCallout with role="status". */
+type ActionNotice = { tone: CocoaTone; title: string; text: string; key: number };
+type ActionKind = "invite" | "survey";
 
 // Deep links open through the shared openTabPath (CocoaRouteTabs): one channel, no local pushState copy (code-review#12).
 const go = (path: string) => openTabPath(path);
@@ -79,118 +111,14 @@ function guestPath(id: string): string {
 function reservationPath(id: string): string {
   return urlForScreen("ReservationDetailWorkspace", { id }) ?? `/recepcion/reservas/${encodeURIComponent(id)}`;
 }
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-type StepState = "done" | "active" | "pending" | "blocked" | "skipped";
-type JourneyStep = { key: string; label: string; state: StepState; detail: string };
-
-const NEXT_ACTION_LABEL: Record<string, string> = {
-  booked: "Confirmar la reserva",
-  identity: "Registrar la identidad del huésped",
-  payment: "Cobrar el pago o el depósito",
-  room: "Asignar habitación",
-  checkin: "Hacer el check-in",
-  checkout: "Hacer el check-out"
-};
-
 const STEP_TONE: Record<StepState, CocoaTone> = { done: "success", active: "accent", pending: "neutral", blocked: "danger", skipped: "neutral" };
 const STEP_LABEL: Record<StepState, string> = { done: "Hecho", active: "En curso", pending: STATUS_LABELS.pending, blocked: "Bloqueado", skipped: "Omitido" };
 
-/**
- * Derive the journey purely from real reservation + folio + guest data.
- * `assignedRoomNumber` is the room's visible number (resolved from fetchRooms);
- * null when the room list is unavailable or does not contain the room.
- */
-function computeJourney(res: AdminReservation, folio: FolioBalance | null, guest: GuestProfile | null, assignedRoomNumber: string | null) {
-  const today = todayISO();
-  const cancelled = res.status === "cancelled" || res.status === "no_show";
-  const checkedIn = res.status === "checked_in" || res.status === "checked_out";
-  const checkedOut = res.status === "checked_out";
-  const steps: JourneyStep[] = [];
-
-  steps.push({
-    key: "booked",
-    label: "Reserva confirmada",
-    state: cancelled ? "skipped" : res.status === "draft" ? "pending" : "done",
-    detail: res.status === "draft" ? "La reserva sigue en borrador." : `${channelLabel(res.channel)} · ${dateRange(res.arrivalDate, res.departureDate)}`
-  });
-
-  const hasDoc = Boolean(guest?.documentNumber);
-  steps.push({
-    key: "identity",
-    label: "Identidad y parte de viajeros (SES)",
-    state: cancelled ? "skipped" : hasDoc ? "done" : checkedIn ? "blocked" : "pending",
-    detail: hasDoc
-      ? `Documento registrado${guest?.documentType ? ` (${guest.documentType})` : ""}.`
-      : "Sin documento de identidad: es obligatorio para el parte de viajeros."
-  });
-
-  let payState: StepState;
-  let payDetail: string;
-  if (!folio) {
-    payState = "pending";
-    payDetail = "Folio todavía no cargado.";
-  } else {
-    const bal = folio.balanceDue;
-    const cur = folio.folio.currency;
-    if (folio.chargesTotal > 0 && bal <= 0.005) {
-      payState = "done";
-      payDetail = `Saldo liquidado (${money(folio.paymentsTotal, cur)}).`;
-    } else if (folio.paymentsTotal > 0) {
-      payState = checkedOut && bal > 0.005 ? "blocked" : "active";
-      payDetail = `Pago parcial · saldo ${money(bal, cur)}.`;
-    } else {
-      payState = checkedOut ? "blocked" : "pending";
-      payDetail = `Sin pagos · saldo ${money(bal, cur)}.`;
-    }
-  }
-  steps.push({ key: "payment", label: "Pago", state: cancelled ? "skipped" : payState, detail: payDetail });
-
-  const assigned = Boolean(res.assignedRoomId);
-  steps.push({
-    key: "room",
-    label: "Habitación asignada",
-    state: cancelled ? "skipped" : assigned ? "done" : checkedIn ? "blocked" : "pending",
-    // The reservation only carries the room id: paint the number, never the id (qa#9).
-    detail: assigned ? (assignedRoomNumber ? `Habitación ${assignedRoomNumber}.` : "Habitación asignada.") : "Todavía sin habitación asignada."
-  });
-
-  const arrivalPast = res.arrivalDate < today;
-  steps.push({
-    key: "checkin",
-    label: "Check-in",
-    state: cancelled ? "skipped" : checkedIn ? "done" : arrivalPast && res.status === "confirmed" ? "blocked" : "pending",
-    detail: checkedIn ? "Huésped registrado." : arrivalPast ? "La fecha de llegada ya pasó sin check-in." : `Prevista el ${date(res.arrivalDate, "medium")}.`
-  });
-
-  steps.push({
-    key: "stay",
-    label: "Estancia",
-    state: cancelled ? "skipped" : res.status === "checked_in" ? "active" : checkedOut ? "done" : "pending",
-    detail: res.status === "checked_in" ? "El huésped está en casa." : checkedOut ? "Estancia completada." : "No ha empezado."
-  });
-
-  steps.push({
-    key: "checkout",
-    label: "Check-out y factura",
-    state: cancelled ? "skipped" : checkedOut ? "done" : "pending",
-    detail: checkedOut ? "Salida hecha." : `Prevista el ${date(res.departureDate, "medium")}.`
-  });
-
-  const total = steps.filter((s) => s.state !== "skipped").length;
-  const done = steps.filter((s) => s.state === "done").length;
-  const next = steps.find((s) => s.state === "blocked") ?? steps.find((s) => s.state === "pending" && s.key !== "stay");
-  return { steps, done, total, next, cancelled };
-}
-
-/** Lightweight stage from the reservation alone (for the list, no extra fetch); the badge reads the common status dictionary (UX-1 · U2, D5). */
-function listStage(res: AdminReservation): { done: number; total: number; status: StatusEntry } {
-  const status = reservationStatus(res.status);
-  if (res.status === "cancelled" || res.status === "no_show") return { done: 0, total: 4, status };
-  const flags = [res.status !== "draft", Boolean(res.assignedRoomId), res.status === "checked_in" || res.status === "checked_out", res.status === "checked_out"];
-  return { done: flags.filter(Boolean).length, total: 4, status };
+/** Tone of a notification row: sent → success (simulated → warning), failed → danger, pending → neutral. */
+function notificationTone(item: { status: string; simulated: boolean }): CocoaTone {
+  if (item.status === "failed") return "danger";
+  if (item.status === "sent") return item.simulated ? "warning" : "success";
+  return "neutral";
 }
 
 const KIND_TONE: Record<ActivityItem["kind"], CocoaTone> = {
@@ -259,6 +187,10 @@ export function GuestJourneyWorkspace() {
   const [folio, setFolio] = useState<FolioBalance | null>(null);
   const [guest, setGuest] = useState<GuestProfile | null>(null);
   const [activity, setActivity] = useState<GuestActivity | null>(null);
+  // L7-07: the API journey (check-in session, notifications, key, requests, survey); null while loading or unavailable.
+  const [journeyView, setJourneyView] = useState<GuestJourneyView | null>(null);
+  const [actionBusy, setActionBusy] = useState<ActionKind | null>(null);
+  const [notice, setNotice] = useState<ActionNotice | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   // QC-06: a failed detail load is an explicit error (with the id, so retry
   // targets the right reservation) — never blank panels or a stale selection.
@@ -318,13 +250,15 @@ export function GuestJourneyWorkspace() {
     setFolio(null);
     setGuest(null);
     setActivity(null);
+    setJourneyView(null);
+    setNotice(null);
     if (reveal) setDetailOpen(true);
     const describe = (e: unknown) => (e instanceof Error ? e.message : "no disponible");
     try {
       const res = await fetchReservation(id);
       setSelected(res);
       const errors: PanelErrors = {};
-      const [f, g, a] = await Promise.all([
+      const [f, g, a, j] = await Promise.all([
         fetchReservationFolio(id).catch((e: unknown) => {
           errors.folio = describe(e);
           return null;
@@ -340,11 +274,16 @@ export function GuestJourneyWorkspace() {
         fetchGuestActivity(id).catch((e: unknown) => {
           errors.activity = describe(e);
           return null;
+        }),
+        getGuestJourney(id).catch((e: unknown) => {
+          errors.journey = describe(e);
+          return null;
         })
       ]);
       setFolio(f);
       setGuest(g);
       setActivity(a);
+      setJourneyView(j);
       setPanelErrors(errors);
     } catch (err) {
       setDetailError({ id, message: err instanceof Error ? err.message : "No se pudo cargar la reserva." });
@@ -353,10 +292,76 @@ export function GuestJourneyWorkspace() {
     }
   }
 
+  /** Reloads only the API journey after an action (the reservation, folio and activity did not change). */
+  async function refreshJourney(id: string) {
+    try {
+      const j = await getGuestJourney(id);
+      setJourneyView(j);
+      setPanelErrors((current) => ({ ...current, journey: undefined }));
+    } catch (e: unknown) {
+      setPanelErrors((current) => ({ ...current, journey: e instanceof Error ? e.message : "no disponible" }));
+    }
+  }
+
+  function describeFailure(e: unknown, fallback: string): string {
+    return e instanceof Error && e.message ? e.message : fallback;
+  }
+
+  /** «Invitar al check-in en línea» / «Reenviar invitación»: POST /properties/:propertyId/check-in/sessions (honest outcome). */
+  async function runInvite() {
+    if (!selected || actionBusy) return;
+    const channel = invitationChannel(journeyView);
+    setActionBusy("invite");
+    try {
+      const result = await inviteSession(selected.propertyId, selected.id, channel);
+      const n = result.notification;
+      const via = journeyChannel(n.channel ?? channel);
+      if (n.dispatched && !n.simulated) {
+        setNotice({ tone: "success", title: "Invitación enviada", text: `Enlace del check-in en línea enviado por ${via}.`, key: Date.now() });
+      } else if (n.dispatched && n.simulated) {
+        setNotice({ tone: "warning", title: "Invitación simulada", text: `Sin proveedor de ${via} configurado: el envío queda registrado como simulado y no llegó al huésped.`, key: Date.now() });
+      } else {
+        setNotice({ tone: "danger", title: "Invitación no enviada", text: `La sesión existe pero el aviso no salió${n.reason ? ` (${n.reason})` : ""}.`, key: Date.now() });
+      }
+      await refreshJourney(selected.id);
+    } catch (e: unknown) {
+      setNotice({ tone: "danger", title: "No se pudo invitar", text: describeFailure(e, "El API rechazó la invitación."), key: Date.now() });
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  /** «Enviar encuesta ahora»: POST /reservations/:id/post-stay/survey-invite (lote L7-04). */
+  async function runSurvey() {
+    if (!selected || actionBusy) return;
+    setActionBusy("survey");
+    try {
+      const result = await sendPostStaySurveyNow(selected.id);
+      const via = journeyChannel(result.channel);
+      if (result.dispatched && !result.simulated) {
+        setNotice({ tone: "success", title: "Encuesta enviada", text: `Invitación a la encuesta enviada por ${via}${result.recipient ? ` a ${result.recipient}` : ""}.`, key: Date.now() });
+      } else if (result.dispatched && result.simulated) {
+        setNotice({ tone: "warning", title: "Encuesta simulada", text: `Sin proveedor de ${via} configurado: el envío queda registrado como simulado y no llegó al huésped.`, key: Date.now() });
+      } else {
+        setNotice({ tone: "danger", title: "Encuesta no enviada", text: result.reason ? `Motivo: ${result.reason}.` : "El aviso no salió.", key: Date.now() });
+      }
+      await refreshJourney(selected.id);
+    } catch (e: unknown) {
+      if (isRouteUnavailable(e)) {
+        setNotice({ tone: "warning", title: "Envío inmediato no disponible", text: "Este servidor no permite el envío inmediato de la encuesta; se envía sola tras la salida cuando la política del hotel la activa.", key: Date.now() });
+      } else {
+        setNotice({ tone: "danger", title: "No se pudo enviar la encuesta", text: describeFailure(e, "El API rechazó el envío."), key: Date.now() });
+      }
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   const panelErrorSummary = [
     panelErrors.folio ? `folio (${panelErrors.folio})` : null,
     panelErrors.guest ? `huésped (${panelErrors.guest})` : null,
-    panelErrors.activity ? `actividad (${panelErrors.activity})` : null
+    panelErrors.activity ? `actividad (${panelErrors.activity})` : null,
+    panelErrors.journey ? `check-in en línea (${panelErrors.journey})` : null
   ].filter(Boolean);
 
   function roomTypeName(id: string) {
@@ -368,7 +373,10 @@ export function GuestJourneyWorkspace() {
 
   // Same resolution as ReservationWorkspaceScreen: the room id → its number, or nothing.
   const assignedRoomNumber = selected?.assignedRoomId ? (rooms.find((r) => r.id === selected.assignedRoomId)?.number ?? null) : null;
-  const journey = selected ? computeJourney(selected, folio, guest, assignedRoomNumber) : null;
+  const journey = selected ? computeJourney(selected, folio, guest, assignedRoomNumber, journeyView) : null;
+  const inviteAction = selected ? invitationAction(selected, journeyView) : null;
+  const surveyAction = selected ? surveyActionAvailable(selected, journeyView) : false;
+  const inviteLabel = inviteAction === "resend" ? "Reenviar invitación" : "Invitar al check-in en línea";
   const listReady = !loading && !error && filtered.length > 0;
 
   const listFooter = !loading && !error && reservations.length > 0 ? (
@@ -452,7 +460,7 @@ export function GuestJourneyWorkspace() {
   ) : detailError ? (
     <CocoaState kind="error" title="No se pudo cargar la reserva" message={detailError.message} onRetry={() => void openReservation(detailError.id)} />
   ) : !selected || !journey ? (
-    <CocoaState kind="empty" illustration="box" title="Elige una reserva" message="Su recorrido —reserva, identidad, pago, habitación, check-in, estancia y check-out— aparece aquí." />
+    <CocoaState kind="empty" illustration="box" title="Elige una reserva" message="Su recorrido —reserva, invitación, pre-check-in, identidad, pago, habitación, check-in, llave, bienvenida, estancia, peticiones, check-out y encuesta— aparece aquí." />
   ) : (
     <div className="cocoa-stack" data-gap="4">
       <div className="cocoa-row" data-justify="between">
@@ -472,7 +480,13 @@ export function GuestJourneyWorkspace() {
             </CocoaButton>
           }
         >
-          {panelErrorSummary.join(" · ")}. Los pasos de identidad y pago pueden mostrarse incompletos.
+          {panelErrorSummary.join(" · ")}. Los pasos de identidad, pago, invitación, llave, bienvenida y encuesta pueden mostrarse incompletos.
+        </CocoaCallout>
+      ) : null}
+
+      {notice ? (
+        <CocoaCallout key={notice.key} tone={notice.tone} role="status" title={notice.title}>
+          {notice.text}
         </CocoaCallout>
       ) : null}
 
@@ -485,6 +499,14 @@ export function GuestJourneyWorkspace() {
             journey.next.key === "identity" && selected.primaryGuestId ? (
               <CocoaButton variant="filled" tone="accent" size="small" onClick={() => go(guestPath(selected.primaryGuestId!))}>
                 Abrir perfil de huésped
+              </CocoaButton>
+            ) : (journey.next.key === "invitation" || journey.next.key === "precheckin") && inviteAction ? (
+              <CocoaButton variant="filled" tone="accent" size="small" loading={actionBusy === "invite"} disabled={actionBusy !== null} onClick={() => void runInvite()}>
+                {inviteLabel}
+              </CocoaButton>
+            ) : journey.next.key === "survey" && surveyAction ? (
+              <CocoaButton variant="filled" tone="accent" size="small" loading={actionBusy === "survey"} disabled={actionBusy !== null} onClick={() => void runSurvey()}>
+                Enviar encuesta ahora
               </CocoaButton>
             ) : (
               <CocoaButton variant="filled" tone="accent" size="small" onClick={() => go(reservationPath(selected.id))}>
@@ -510,12 +532,73 @@ export function GuestJourneyWorkspace() {
                 <span className="cocoa-caption">{s.detail}</span>
               </span>
               <CocoaBadge tone={STEP_TONE[s.state]} variant="dot" size="small">
-                {isNext ? "Siguiente" : STEP_LABEL[s.state]}
+                {isNext ? "Siguiente" : (s.badge ?? STEP_LABEL[s.state])}
               </CocoaBadge>
             </li>
           );
         })}
       </ol>
+
+      {/* L7-07 · Avisos al huésped: invitación, recordatorio, bienvenida y encuesta (recipient masked by the API; «simulada» = no provider). */}
+      <CocoaSection
+        title="Avisos al huésped"
+        meta={
+          journeyView ? (
+            <span className="cocoa-cluster">
+              <CocoaBadge tone={journeyView.notifications.some((n) => n.simulated) ? "warning" : "neutral"}>{plural(journeyView.notifications.length, "aviso", "avisos")}</CocoaBadge>
+              <span className="cocoa-caption">
+                {journeyView.portalSessions.active === 1 ? "1 sesión del portal activa" : `${journeyView.portalSessions.active} sesiones del portal activas`}
+                {journeyView.portalSessions.lastCreatedAt ? ` · última ${dateTime(journeyView.portalSessions.lastCreatedAt, { style: "dayMonth" })}` : ""}
+              </span>
+            </span>
+          ) : (
+            "Invitación, recordatorio, bienvenida y encuesta"
+          )
+        }
+        footer={
+          inviteAction || surveyAction ? (
+            <div className="cocoa-row" data-gap="2">
+              {inviteAction ? (
+                <CocoaButton variant="bordered" tone="neutral" size="small" loading={actionBusy === "invite"} disabled={actionBusy !== null} onClick={() => void runInvite()}>
+                  {inviteLabel}
+                </CocoaButton>
+              ) : null}
+              {surveyAction ? (
+                <CocoaButton variant="bordered" tone="neutral" size="small" loading={actionBusy === "survey"} disabled={actionBusy !== null} onClick={() => void runSurvey()}>
+                  Enviar encuesta ahora
+                </CocoaButton>
+              ) : null}
+            </div>
+          ) : undefined
+        }
+        aria-label="Avisos al huésped"
+      >
+        {!journeyView ? (
+          panelErrors.journey ? (
+            <CocoaState kind="degraded" inline title="Avisos no disponibles" message={panelErrors.journey} />
+          ) : (
+            <CocoaState kind="loading" inline title="Cargando los avisos…" />
+          )
+        ) : journeyView.notifications.length === 0 ? (
+          <CocoaState kind="empty" inline title="Todavía no se ha enviado ningún aviso a este huésped." />
+        ) : (
+          <ul className="c22-section__list" aria-label="Avisos enviados al huésped">
+            {journeyView.notifications.map((n) => (
+              <li key={n.id}>
+                <span className="cocoa-stack" data-gap="1">
+                  <strong>{NOTIFICATION_KIND_LABEL[n.kind]}</strong>
+                  <span className="cocoa-caption">
+                    {describeNotification(n)} · {n.recipient}
+                  </span>
+                </span>
+                <CocoaBadge tone={notificationTone(n)} size="small">
+                  {n.status === "failed" ? "Falló" : n.status === "sent" ? (n.simulated ? "Simulado" : STATUS_LABELS.sent) : STATUS_LABELS.pending}
+                </CocoaBadge>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CocoaSection>
 
       {/* Requests & messages — direct line to chat, housekeeping, maintenance */}
       <CocoaSection
@@ -625,7 +708,7 @@ export function GuestJourneyWorkspace() {
       subtitle={
         hosted
           ? undefined
-          : "El avance real de cada reserva —reserva, identidad (SES), pago, habitación, check-in, estancia y check-out— con el paso bloqueado y la siguiente mejor acción. Elige una reserva para ver su recorrido completo y actuar."
+          : "El avance real de cada reserva —reserva, invitación y pre-check-in en línea, identidad (SES), pago, habitación, check-in, llave, bienvenida, estancia, peticiones, check-out y encuesta— con el paso bloqueado y la siguiente mejor acción. Elige una reserva para ver su recorrido completo y actuar."
       }
       actions={
         <CocoaButton variant="bordered" tone="neutral" size="small" onClick={load} disabled={loading}>

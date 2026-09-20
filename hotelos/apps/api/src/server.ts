@@ -114,6 +114,13 @@ import { startPmsShadowJob } from "./modules/pms-shadow/pms-shadow.job.js";
 // job diario del líder (modules/reputation/reputation-sync.job.ts) en el bloque de schedulers.
 import { registerReputationRoutes } from "./modules/reputation/reputation.routes.js";
 import { registerCheckinRoutes } from "./modules/checkin/checkin.routes.js";
+// Portal del huésped · estancia y salida (Tanda L7 · L7-02): GET /guest-portal/stay,
+// POST /guest-portal/stay/{requests,payment-link} y GET /guest-portal/invoices/:id/pdf
+// por token opaco (modules/guest-portal/guest-portal.routes.ts; permisos en su partial).
+import { registerGuestPortalRoutes } from "./modules/guest-portal/guest-portal.routes.js";
+// Recorrido del huésped en recepción (Tanda L7 · L7-07): GET /reservations/:id/guest-journey
+// (modules/guest-portal/guest-journey.routes.ts; permisos en journey-route-permissions.partial.ts).
+import { registerGuestJourneyRoutes } from "./modules/guest-portal/guest-journey.routes.js";
 import { registerRoomAssignmentRoutes } from "./modules/pms/room-assignment.routes.js";
 // Check-in automatizado (Tanda CHK · W3-C/W4-D): jobs del líder (invitación J-3, recordatorio J-1, lote de asignación, purga).
 import { readCheckInConfig } from "./modules/checkin/checkin-config.js";
@@ -1101,7 +1108,9 @@ async function initSentry() {
  */
 export function redactTokenInUrl(url: string | undefined): string | undefined {
   if (typeof url !== "string") return url;
-  return url.replace(/([?&]token=)[^&#]*/gi, "$1<redacted>");
+  // `?token=` de cualquier ruta y el token en el path de la familia legada
+  // /guest-portal/session/:token[/folio|/pay] (corrector REV-L7-07).
+  return url.replace(/([?&]token=)[^&#]*/gi, "$1<redacted>").replace(/(\/guest-portal\/session\/)[^/?#]+/gi, "$1<redacted>");
 }
 
 export async function buildApiServer() {
@@ -3030,6 +3039,8 @@ export async function buildApiServer() {
   // (/guest-portal/check-in*, token opaco), llegadas, invitaciones, política y
   // kioscos del personal (/properties/:propertyId/check-in/* y /kiosks*).
   registerCheckinRoutes(app);
+  registerGuestPortalRoutes(app); // Portal del huésped · estancia y salida (Tanda L7 · L7-02)
+  registerGuestJourneyRoutes(app); // Recorrido del huésped en recepción (Tanda L7 · L7-07)
   registerRoomAssignmentRoutes(app); // Asignación explicable (Tanda CHK · W3-B): sugerencias, confirmación, lote, bloqueos y comunicadas
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
@@ -3272,7 +3283,17 @@ export async function buildApiServer() {
     return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", entityId: (request.params as { id: string }).id, status: "received", auditAction: "PurchaseOrderReceived", requiredPermissions: ["purchase_orders.receive"], payload: request.body as never, correlationId: createId("corr") });
   });
 
-  app.get("/guest-portal/session/:token", async (request) => ({ token: (request.params as { token: string }).token, status: "active" }));
+  // Tanda L7 (L7-02, recon §19.6 · D8): el legado devolvía { status: "active" }
+  // para CUALQUIER token sin verificar. Ahora verifica con verifyGuestToken
+  // (401 si no vale) y nunca devuelve el token en claro (acabaría en logs).
+  app.get("/guest-portal/session/:token", async (request, reply) => {
+    const session = await verifyGuestToken((request.params as { token: string }).token);
+    if (!session || !session.reservationId) {
+      reply.code(401);
+      return { message: "Sesión del portal del huésped no válida o caducada.", details: { code: "GUEST_SESSION_INVALID" } };
+    }
+    return { token: "[redacted]", status: "active", reservationId: session.reservationId };
+  });
   // Finanzas (2026-09-15): the guest sees the REAL balance of the primary
   // folio of the reservation the token belongs to (never a literal 0), and
   // «pagar» creates a PSP payment link — or answers 409 PSP_NOT_CONFIGURED
@@ -3362,8 +3383,9 @@ export async function buildApiServer() {
       return await getGuestReservationView(guestTokenFrom(request));
     } catch (error) {
       if (error instanceof GuestPortalAuthError) {
+        // Corrector L7-REV-01: 401 tipado como el resto del portal (el cliente decide por `details.code`).
         reply.code(error.statusCode);
-        return { message: error.message };
+        return { message: error.message, details: { code: "GUEST_SESSION_INVALID" } };
       }
       throw error;
     }
@@ -3383,8 +3405,9 @@ export async function buildApiServer() {
       });
     } catch (error) {
       if (error instanceof GuestPortalAuthError) {
+        // Corrector L7-REV-01: 401 tipado como el resto del portal (el cliente decide por `details.code`).
         reply.code(error.statusCode);
-        return { message: error.message };
+        return { message: error.message, details: { code: "GUEST_SESSION_INVALID" } };
       }
       throw error;
     }
@@ -3401,8 +3424,9 @@ export async function buildApiServer() {
       });
     } catch (error) {
       if (error instanceof GuestPortalAuthError) {
+        // Corrector L7-REV-01: 401 tipado como el resto del portal (el cliente decide por `details.code`).
         reply.code(error.statusCode);
-        return { message: error.message };
+        return { message: error.message, details: { code: "GUEST_SESSION_INVALID" } };
       }
       throw error;
     }

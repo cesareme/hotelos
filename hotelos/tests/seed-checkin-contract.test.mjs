@@ -170,12 +170,19 @@ describe("Seed «tenant de prueba CHK» (W1-D)", () => {
     assert.match(seed, /MISMATCH_IDENTITY = \{ firstName: "Persona", surname1: "Prueba"/, "la identidad discrepante también es ficticia");
   });
 
-  it("los deleteMany van acotados a prop_chk (deleteScoped) o, el de huéspedes huérfanos, a org_chk; nunca toca Faranda ni otros tenants", () => {
+  it("los deleteMany van acotados a prop_chk (deleteScoped), a org_chk (huéspedes huérfanos) o a las encuestas de prop_chk (respuestas, L7-04); nunca toca Faranda ni otros tenants", () => {
     const calls = [...seed.matchAll(/deleteMany\(/g)];
-    assert.equal(calls.length, 2, "deleteScoped + huéspedes huérfanos de org_chk");
+    assert.equal(calls.length, 3, "deleteScoped + huéspedes huérfanos de org_chk + respuestas de las encuestas de prop_chk");
     assert.match(seed, /const where = \{ \.\.\.extraWhere, propertyId: PROPERTY_ID \};/);
     assert.match(seed, /prisma\.guest\.deleteMany\(\{ where: \{ organizationId: ORG_ID, reservationGuests: \{ none: \{\} \} \} \}\)/);
-    assert.match(seed, /deleteScoped\("reservation", \{ code: \{ startsWith: RESERVATION_PREFIX \}, id: \{ notIn: protectedIds \} \}\)/, "--reset borra SOLO reservas CHK-*");
+    assert.match(seed, /const chkSurveys = await prisma\.survey\.findMany\(\{ where: \{ propertyId: PROPERTY_ID \}, select: \{ id: true \} \}\);\s*counts\.surveyResponse = \(await prisma\.surveyResponse\.deleteMany\(\{ where: \{ surveyId: \{ in: chkSurveys\.map\(\(s\) => s\.id\) \} \} \}\)\)\.count;/, "respuestas acotadas a las encuestas de prop_chk");
+    assert.match(seed, /deleteScoped\("reservation", \{ code: \{ startsWith: RESERVATION_PREFIX \}, id: \{ notIn: protectedIds \} \}\)/, "--reset borra las reservas CHK-*");
+    // Corrector L7-REV-10: y las RES-* de las corridas e2e (titular prueba.portal.*), solo de prop_chk y solo sin factura.
+    assert.match(seed, /export const E2E_BOOKER_EMAIL_PREFIX = "prueba\.portal\."/);
+    assert.match(seed, /prisma\.reservation\.findMany\(\{ where: \{ propertyId: PROPERTY_ID, bookerEmail: \{ startsWith: E2E_BOOKER_EMAIL_PREFIX \} \}, select: \{ id: true \} \}\)/);
+    assert.match(seed, /const purgeIds = e2eIds\.filter\(\(id\) => !invoicedIds\.has\(id\) && !protectedReservationIds\.has\(id\)\);/, "las facturadas y las protegidas se conservan");
+    assert.match(seed, /deleteScoped\("reservation", \{ id: \{ in: purgeIds \}, bookerEmail: \{ startsWith: E2E_BOOKER_EMAIL_PREFIX \} \}\)/, "purga acotada a prop_chk (deleteScoped) y al titular e2e");
+    assert.doesNotMatch(seed, /deleteScoped\("reservation", \{ \}\)|deleteScoped\("reservation"\)/, "nunca todas las reservas de prop_chk");
     assert.match(seed, /verifactuHash: \{ not: null \}/, "las reservas con factura VeriFactu se conservan");
     for (const model of ["guestRegisterRecord", "sesHospedajesSubmission", "guestPortalSession", "guestPortalAction", "housekeepingTask", "workOrder", "paymentIntent"]) {
       assert.match(seed, new RegExp(`deleteScoped\\("${model}"`), `satélite ${model} acotado a prop_chk`);
@@ -253,6 +260,10 @@ describe("Seed CHK · escenarios de sesión, MRZ sintéticas, política y kiosco
     assert.match(seed, /POLICY_VERIFICATION_METHODS = \["visual_reception", "mrz_checksum", "otp_email"\] as const/);
     assert.match(seed, /upsertPolicy\(\{\s*context: contexts\.admin,\s*propertyId: PROPERTY_ID,\s*patch: \{\s*selfCheckInEnabled: true,\s*depositPolicy: "balance",\s*allowedVerificationMethods: \[\.\.\.POLICY_VERIFICATION_METHODS\],[\s\S]{0,600}?requireVisualCheckAtKiosk: false,\s*guestConsentText: GUEST_CONSENT_TEXT,\s*aiDisclosureText: AI_DISCLOSURE_TEXT/);
     assert.match(seed, /decisión de demo, no del diseño/, "el cotejo visual en el kiosco desactivado queda declarado como decisión de demo");
+    // Lote L7-04: encuesta post-estancia activa (24 h) en la misma política.
+    assert.match(seed, /aiDisclosureText: AI_DISCLOSURE_TEXT,\s*postStaySurveyEnabled: true,\s*postStaySurveyDelayHours: POST_STAY_SURVEY_DELAY_HOURS/);
+    assert.match(seed, /export const POST_STAY_SURVEY_DELAY_HOURS = 24/);
+    assert.match(seed, /current\.postStaySurveyEnabled === true &&\s*current\.postStaySurveyDelayHours === POST_STAY_SURVEY_DELAY_HOURS/, "el «unchanged» también mira la encuesta");
     // Kiosco: fila por id fijo y emparejamiento real (solo hashes en la fila).
     assert.match(seed, /export const KIOSK_ID = "chk_kiosk_01"/);
     assert.match(seed, /capabilitiesJson = \{ mrzReader: false, cardEncoder: false, paymentTerminal: false, printer: false \}/);
@@ -266,6 +277,15 @@ describe("Seed CHK · escenarios de sesión, MRZ sintéticas, política y kiosco
     assert.match(seed, /createRoomConnection\(\{[\s\S]*?kind: "connecting"/);
     // Las dos claves de configuración solo viven en el contexto admin del seed (buildServiceContext rechaza las prohibidas).
     assert.match(seed, /permissions: \[\.\.\.CHECKIN_SERVICE_PERMISSIONS, "guest_self_service\.manage", "kiosk\.configure"\] as PermissionKey\[\]/);
+  });
+
+  it("L7-04: Survey post_stay fija de prop_chk (cuestionario por defecto del portal) y --reset borra solo sus respuestas", () => {
+    assert.match(seed, /export const SURVEY_ID = "chk_survey_post_stay"/);
+    assert.match(seed, /export const SURVEY_NAME = "Encuesta post-estancia CHK \(prueba\)"/);
+    assert.match(seed, /import \{ DEFAULT_GUEST_SURVEY_QUESTIONS, type PermissionKey \} from "\.\.\/\.\.\/shared\/src\/index\.js"/, "las preguntas son las del portal (una sola fuente)");
+    assert.match(seed, /prisma\.survey\.upsert\(\{\s*where: \{ id: SURVEY_ID \},\s*create: \{ id: SURVEY_ID, propertyId: PROPERTY_ID, name: SURVEY_NAME, surveyType: "post_stay", questionsJson: DEFAULT_GUEST_SURVEY_QUESTIONS\.map\(\(question\) => \(\{ \.\.\.question \}\)\), active: true \},\s*update: \{ propertyId: PROPERTY_ID, name: SURVEY_NAME, surveyType: "post_stay", active: true \}/);
+    assert.doesNotMatch(seed, /deleteScoped\("survey"|prisma\.survey\.deleteMany/, "la encuesta es fija: nunca se borra");
+    assert.match(seed, /const survey = await ensureSurvey\(\);/);
   });
 
   it("--reset rearma también la capa del check-in, siempre acotada a prop_chk (contrato de W1-D intacto)", () => {

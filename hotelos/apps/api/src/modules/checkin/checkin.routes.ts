@@ -15,7 +15,8 @@
 //     con paymentLinkServiceContext; 409 PSP_NOT_CONFIGURED → { status:
 //     "at_reception" } y paymentStatus at_reception), POST …/otp/request ·
 //     …/otp/verify (otp.service.ts), POST …/arrive (completeCheckIn actor
-//     guest|kiosk).
+//     guest|kiosk), POST …/handoff (corrector L7-REV-05: «Firmar en recepción»
+//     → handoffToReception, sesión handed_off con ticket K-nnnn del servidor).
 //   · personal: GET /reservations/:id/check-in (sesión + viajeros + capturas y
 //     firmas sin PII), POST …/scan (captureDocument con el usuario), POST
 //     …/signature (touch_reception), POST …/verify-identity
@@ -70,6 +71,7 @@ import { getEnabledModuleCodes } from "../product-modules/product-modules.servic
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { GuestPortalAuthError } from "../guest-portal/guest-portal.service.js";
 import { verifyGuestToken } from "../guest-portal/guest-portal-auth.service.js";
+import { STAY_CLOSED_STATUSES } from "../guest-portal/guest-stay.service.js";
 import { completeCheckIn, precheckCheckIn } from "./arrival.service.js";
 import { GUEST_BOT_TEXT_MAX, handleGuestMessage } from "./guest-bot.service.js";
 import { getPolicy, upsertPolicy } from "./checkin-policy.service.js";
@@ -80,6 +82,7 @@ import {
   ensureGuestRegisterRecordsForSession,
   getSessionById,
   getSessionForToken,
+  handoffToReception,
   inviteReservation,
   listArrivals,
   removeGuest,
@@ -96,6 +99,7 @@ import {
   ArrivalsQuerySchema,
   CompleteCheckInSchema,
   DocumentCaptureSchema,
+  GuestHandoffSchema,
   GuestInputSchema,
   GuestSignatureSchema,
   KioskClaimSchema,
@@ -167,6 +171,18 @@ export function guestTokenFrom(request: { headers: Record<string, unknown>; quer
   return "";
 }
 
+/**
+ * Corrector REV-L7-05: misma regla que STAY_CLOSED_STATUSES del portal
+ * (guest-stay.service.ts): una reserva cancelled | no_show no admite chat.
+ */
+export async function assertGuestStayOpen(reservationId: string): Promise<void> {
+  const reservation = await prisma.reservation.findFirst({ where: { id: reservationId, deletedAt: null }, select: { status: true } });
+  if (!reservation) throw new NotFoundError("Reserva no encontrada.");
+  if (STAY_CLOSED_STATUSES.includes(reservation.status)) {
+    throw new ConflictError("La reserva está cerrada: no admite peticiones desde el portal.", { code: "STAY_CLOSED", status: reservation.status });
+  }
+}
+
 /** Ejecuta un handler de huésped mapeando GuestPortalAuthError → 401 tipado. */
 async function guestHandler<T>(reply: FastifyReply, run: () => Promise<T>): Promise<T | { message: string; details: { code: string } }> {
   try {
@@ -215,7 +231,8 @@ function requireSessionGuest(session: CheckInSessionView, checkInGuestId: string
 export const DOCUMENT_BODY_LIMIT = 8 * 1024 * 1024;
 const DOCUMENT_OPTIONS = { bodyLimit: DOCUMENT_BODY_LIMIT };
 
-type PaymentLinkOutcome = { status: "settled" | "no_folio"; paymentStatus: string } | { status: "at_reception"; paymentStatus: "at_reception"; reason: string; details: unknown } | { status: "link_sent"; paymentStatus: "link_sent"; link: Awaited<ReturnType<typeof createPaymentLink>> };
+// Corrector L7-REV-03: `no_charges` = folio sin líneas (nunca «pagado» sobre una cuenta vacía; paymentStatus = el de la sesión).
+type PaymentLinkOutcome = { status: "settled" | "no_folio" | "no_charges"; paymentStatus: string } | { status: "at_reception"; paymentStatus: "at_reception"; reason: string; details: unknown } | { status: "link_sent"; paymentStatus: "link_sent"; link: Awaited<ReturnType<typeof createPaymentLink>> };
 
 /** Vista de personal de una reserva: sesión + viajeros + capturas y firmas SIN PII (ni campos del documento ni trazo). */
 async function reservationCheckInView(reservationId: string) {
@@ -374,6 +391,8 @@ export function registerCheckinRoutes(app: FastifyInstance): void {
         recordAuditEvent({ organizationId: context.organizationId, propertyId: session.propertyId, actorUserId: context.userId, actorType: "system", action: "CheckInPaymentStatusChanged", entityType: "checkin_session", entityId: session.id, beforeJson: { paymentStatus: session.paymentStatus }, afterJson: { paymentStatus, ...extra }, deviceId: context.deviceId, correlationId });
       };
       if (!folio) return { status: "no_folio", paymentStatus: session.paymentStatus };
+      // Corrector L7-REV-03: un folio SIN líneas no está «pagado»; no se persiste paymentStatus=paid sobre una cuenta vacía.
+      if (folio.lines.length === 0 && folio.reservationBalanceDue <= 0.005) return { status: "no_charges", paymentStatus: session.paymentStatus };
       if (folio.reservationBalanceDue <= 0.005) {
         await setPaymentStatus("paid", { reason: "folio_settled", balanceDue: folio.reservationBalanceDue });
         return { status: "settled", paymentStatus: "paid" };
@@ -432,6 +451,18 @@ export function registerCheckinRoutes(app: FastifyInstance): void {
     })
   );
 
+  // Corrector L7-REV-05: «Firmar en recepción» (kiosco o móvil) deriva la sesión
+  // en el SERVIDOR (handed_off · signature_pending · ticket K-nnnn · kioskDeviceId
+  // · auditoría); la tablet solo pinta el ticket que devuelve esta ruta.
+  app.post("/guest-portal/check-in/handoff", async (request, reply) =>
+    guestHandler(reply, async () => {
+      const session = await guestSession(request);
+      const body = parseOr400(GuestHandoffSchema, request.body ?? {}, "Derivación a recepción");
+      const kiosk = await kioskFrom(request, session.propertyId);
+      return handoffToReception({ token: guestTokenFrom(request), kind: body.kind, kioskDeviceId: kiosk?.id ?? null, correlationId: createId("corr") });
+    })
+  );
+
   // Kiosco: la tablet reclama el código de 8 dígitos y recibe su deviceToken (una sola vez).
   // Bot del huésped (W4-D): el token identifica la reserva; el propertyId sale de la sesión verificada, nunca del cuerpo.
   app.post("/guest-portal/chat", CHAT_OPTIONS, async (request, reply) =>
@@ -441,6 +472,8 @@ export function registerCheckinRoutes(app: FastifyInstance): void {
       const verified = await verifyGuestToken(token);
       if (!verified || !verified.reservationId) throw new GuestPortalAuthError("Sesión del portal del huésped no válida o caducada.");
       await requireSelfServiceModule(verified.propertyId);
+      // Corrector REV-L7-05: una reserva cancelada / no_show no abre conversación (el bot creaba peticiones para recepción).
+      await assertGuestStayOpen(verified.reservationId);
       return handleGuestMessage({ channel: "web", propertyId: verified.propertyId, token, text: body.text, ...(body.conversationId ? { conversationId: body.conversationId } : {}), ...(body.language ? { language: body.language } : {}), correlationId: createId("corr") });
     })
   );

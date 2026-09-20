@@ -569,6 +569,58 @@ fusión de `tanda-ux1` 4e7fdee):
   contraste 1.4.11 en claro de badges warning/success, `role=grid` para selección
   múltiple, sesiones con recepcionistas reales (kit en `docs/runbooks/ux-recepcion-pruebas.md`)
 
+Estado verificado (Tanda L7 · Huésped y móvil, 2026-09-20, carril `tanda-l7` sobre a069906,
+BD `hotelos_l7`; resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe
+`docs/audits/TANDA-L7-HUESPED-MOVIL-2026-09-20.md`, runbook `docs/runbooks/portal-huesped.md`):
+- portal `apps/guest-web` de punta a punta en español (+ inglés) y accesible (WCAG 2.2 AA,
+  móvil primero, objetivos ≥ 44 px, selector es/en con `<html lang>`, skip link, regiones
+  vivas, 0 `style=`): acceso por código + correo o por enlace (token fuera de la URL,
+  `sessionStorage`), asistente de 6 pasos de CHK con «Firmar en recepción» como alternativa
+  a la firma táctil (2.5.7, D6), páginas nuevas «Salida y cuenta» (folio REAL, facturas
+  PDF por token, peticiones `express_checkout · late_checkout · invoice_email · luggage`
+  → `SRQ-<8>`), «Información del hotel» (faq del bot, nada inventado) y «Encuesta
+  post-estancia» (NPS 0-10); pago honesto sin PSP («se cobra en recepción», nunca
+  «pagado»); kiosco con aviso de inactividad como alerta y ticket `K-nnnn`; modo sin API
+  marcado «vista previa sin API»
+- API `apps/api/src/modules/guest-portal/*`: `GET /guest-portal/stay`, `POST
+  …/stay/{requests,payment-link}`, `GET …/invoices/:id/pdf`, `GET|POST …/survey` (token
+  opaco en `x-guest-token`, `PUBLIC_PREFIXES`, 401 `GUEST_SESSION_INVALID`, `?token=` solo
+  en GET), `POST /reservations/:id/post-stay/survey-invite` (`pms.reservation.modify`),
+  `GET /reservations/:id/guest-journey` (`pms.reservation.read`); legado
+  `GET /guest-portal/session/:token` verifica (D8); migración
+  `20260920190000_portal_huesped_l7` (`post_stay_survey_enabled` + `_delay_hours` en
+  `property_checkin_policies`, 25/25, deriva cero); plantilla de sistema `post_stay_survey`;
+  paso 5 independiente del tick del check-in (sesión de 30 días, token redactado, simulado
+  sin `EMAIL_PROVIDER`); copy de `GET /reservations/:id/activity` en español
+- recepción: «Recorrido» de la reserva con 13 pasos reales (sesión CHK, avisos con badge
+  «Simulado» y destinatario enmascarado, llave, peticiones, encuesta), «Invitar / Reenviar»
+  y «Enviar encuesta ahora»; «Portal del huésped» persiste SOLO las 3 claves reales de la
+  política (`postStaySurveyEnabled`, `postStaySurveyDelayHours`, `allowPayAtReception`)
+- pruebas: proyecto Playwright `guest` (`apps/admin-web/e2e/guest-portal/`, 5 specs sobre el
+  tenant CHK con titulares inventados, 32 pantallas medidas: 0 objetivos < 24 px) 5/5 en
+  42,9 s el 2026-09-20; unitarios nuevos api 50 · admin-web 26 · guest-web 70 (38 + 32) ·
+  contratos raíz 43 (32 UI + 11 a11y) · integración 27 (guest-stay 11 · guest-survey 11 ·
+  guest-journey 5); puerta rápida 11/12 en las tres olas y 11/12 al cierre (solo
+  `nav-tree --check` rojo: el CSV compartido cambió por la Tanda ACT y el JSON generado
+  queda stale; ajeno al carril); puerta completa final: 13/14 el 2026-09-20 (14:51 → 14:58, `scratchpad/L7/gates-final.json`): typecheck 15 PASS · 0 FAIL · 1 SKIP (guest-web) · api unit 3.625 (3.624 pass · 0 fail · 1 skip) · admin-web unit 2.040 (2.039 · 0 · 1) · ai-core 119 · worker 34 · contratos raíz 796 (794 · 0 · 2 skip) · discoverability 197 URL · route-access 15 × 197 · cocoa waves §6 al día · rbac dry-run OK · migrate status + drift «No difference detected.» · admin-web build OK (3,13 s) · integración 1.010 (1.002 pass · 0 fail · 8 skip); única roja `nav-tree --check` (CSV compartido cambiado por la Tanda ACT, JSON generado stale; ajeno al carril)
+- `apps/mobile` congelada como demo interna (D5, `apps/mobile/README.md`): `AuthProvider`
+  definido y sin montar, `prop_123` / `org_123` / `sig_mobile_demo` / `demo.jwt.token`,
+  respaldos inventados en `services/api.ts`, check-in por IA como maqueta sin cámara ni firma
+  (no enrutado); typecheck 0 errores; sin cambios de código
+- corrector L7-REV (2026-09-20): sesión del enlace de la encuesta acotada
+  (`guest_portal_sessions.purpose`, migración `20260920210000_guest_portal_session_purpose`;
+  `survey` solo abre `GET|POST /guest-portal/survey`), peticiones de salida por etapa
+  (`GUEST_STAY_REQUEST_KINDS_BY_STAGE`; `checked_out` → 409 `STAY_CLOSED` salvo factura;
+  `STAY_REQUEST_NOT_ALLOWED`), enlace de pago `no_charges` con folio vacío, encuesta solo con
+  reserva `checked_out`, recorrido por igualdad (`res_07` ≠ `res_07p`), cancelada sin «Salida y
+  cuenta» ni pago, `POST /guest-portal/check-in/handoff` (ticket `K-nnnn` del servidor, cola
+  `signature_pending`, `CheckInHandedOff`), `?token=` solo en el PDF, `redactTokenInUrl` del path
+  legado, `returnUrl` solo http(s), `GuestJourneyView` en `@hotelos/shared` + `api-contracts.md`,
+  `--reset` purga las `RES-*` de e2e; bloque completo en `docs/audits/ESTADO-VERIFICADO.md`
+- pendientes con dueño (deuda 19; runbook §10; informe §8): `ensureSession` crea sesiones en
+  reservas alojadas/salidas, `survey_detractor`, `@types/react` (D7), PSP / correo / WhatsApp /
+  dominio (César)
+
 ## Servicios en local Mac Pro
 
 - Postgres 16 brew · puerto 5432 · DB hotelos / user hotelos / pass
@@ -793,7 +845,8 @@ tenant aislado `org_chk` / `prop_chk` («Hotel CHK (prueba)») con tres usuarios
    ESG/ESRS reporting completo, AI Operations Agents/Audit/Costs,
    Marketplace público).
 5. Endpoints TODO: Compliance Exports Hub, Modules Manager.
-6. E2E tests son TODO (Playwright no montado). Sí hay tests de integración
+6. E2E: Playwright montado en `apps/admin-web` desde UX-1 y L7 (proyectos `measure`,
+   `chromium`, `touch` y `guest`; deuda 19) pero fuera de CI. Sí hay tests de integración
    reales con `app.inject` (`pnpm test:integration`, audit #8) además de los
    contract tests readFileSync.
 7. **OTAs (audit #11) — CERRADA por Rate Grid v2 (deuda 13):** adaptadores
@@ -1218,6 +1271,35 @@ tenant aislado `org_chk` / `prop_chk` («Hotel CHK (prueba)») con tres usuarios
     huésped no cerró (`PATCH …/check-in/guests/:guestId`, `POST …/check-in/resolve-handoff`,
     `dryRun` en `/complete`).
 
+19. **Tanda L7 · Huésped y móvil (2026-09-20):** (a) ~~la derivación «Firmar en recepción» del
+    kiosco es solo del cliente~~ → cerrado por el corrector L7-REV-05 (`POST /guest-portal/check-in/handoff`,
+    `handed_off · signature_pending · K-nnnn`, cola `signature_pending`); en el móvil la firma
+    diferida sigue siendo un aviso local y el parte lo cierra recepción a la llegada; (b)
+    `GET /guest-portal/check-in` (`ensureSession`) crea una sesión `invited` al vuelo también en
+    reservas alojadas, salidas o canceladas (el portal ya no la llama desde la estancia); (c)
+    ~~`db:seed:checkin -- --reset` solo borra `CHK-%`~~ → cerrado por el corrector L7-REV-10 (purga
+    las `RES-*` de `bookerEmail prueba.portal.*` sin factura; `precheckin`/`survey` re-marcan limpia
+    su habitación); (d) ~~`GuestJourneyView` sin sección en `docs/api-contracts.md`~~ → cerrado por el
+    corrector L7-REV-04 (wire type en `guest-portal-types.ts`, tabla en `api-contracts.md`); la
+    respuesta detractora (≤ 6) no crea `QualityCase
+    survey_detractor` (REPUTACION §6.4); `answers` de cuestionarios personalizados sin validar el
+    rango de `scale`/`nps` en servidor; en producción sin `EMAIL_PROVIDER` la invitación a la
+    encuesta queda `failed` y bloquea el reintento (`already_invited`); (e) `apps/guest-web` sigue
+    fuera del typecheck (`@types/react`, D7; puerta = build + tests + contratos + e2e);
+    `client.ts` `signIn` lanza `Error` con texto inglés para `ok:false`; el asistente duplica el
+    selector de idioma de la cabecera; casillas `.gp-check` 26 px y `<input type=date>` 39 px
+    (< 44 objetivo, ≥ 24 mínimo); `DELETE …/check-in/guests/:id` corregido sin ejercicio e2e;
+    (f) identidad admitida por `mrz_checksum` no persiste `identityVerifiedAt` (el recorrido no
+    dice «identidad verificada»); `CocoaSearchInput` botón de borrar 20 × 20 px; el paso «Pago» del
+    recorrido propone cobrar con folio vacío; `apps/admin-web/e2e/**` sin typecheck en ninguna
+    puerta; (g) `apps/mobile` congelada como demo interna (D5): `AuthProvider` sin montar,
+    `prop_123` / `org_123` / `sig_mobile_demo` / `demo.jwt.token`, respaldos inventados en
+    `services/api.ts`, check-in por IA como maqueta sin cámara ni firma (`apps/mobile/README.md`);
+    (h) en la fusión: regenerar `nav-tree.generated.json` con el CSV compartido (rojo desde la
+    Tanda ACT), `node scripts/env-census.mjs --write`, `node scripts/cocoa-22-waves.mjs --write`,
+    renumerar `20260920190000_portal_huesped_l7` si L8 aporta una marca posterior,
+    `pnpm-lock.yaml` fuera del commit.
+
 ## Docs prioritarios
 
 Antes de tomar decisiones de producto, lee:
@@ -1251,6 +1333,9 @@ Antes de tomar decisiones de producto, lee:
 - `docs/audits/TANDA-T9-DOCUMENTOS-2026-09-19.md` — cierre de la Tanda T9 · Documentos y digitalización: qué construyó cada lote y cómo se verificó, puertas por ola (12/14 final, rojos externos), los 18 hallazgos confirmados y 2 refutados con su corrección, qué es real sin clave / cuenta / escáner, pendientes, decisiones de César con el defecto aplicado y mensaje de commit
 - `docs/runbooks/documentos-digitalizacion.md` — operación del módulo de documentos (Tanda T9): almacén (inline / disk cifrado / S3, backup), buzón por centro, flujo centro → oficina paso a paso, IA con y sin proveedor, tabla exacta de rutas y claves (§6.1), códigos de error, retención / purga / GDPR, seed de demo, puertas y lo que solo César puede aportar
 - `docs/design/DOCUMENTOS-DIGITALIZACION.md` — diseño de la digitalización por centro: marco legal (Orden EHA/962/2007, RD 1619/2012, e-factura B2B RD 238/2026), captura, pipeline IA con fallback, flujo y RBAC, contabilización y archivo, modelo de datos, API (§9), front (§10), lotes; con las correcciones «[actualizado 2026-09-19]» de la implementación
+- `docs/runbooks/portal-huesped.md` — operación del portal del huésped (Tanda L7): variables y qué pasa sin cada una, etapas pre-llegada → post-estancia con rutas y permisos, sesión y token, notificaciones y modo simulado, encuesta post-estancia y NPS, kiosco, accesibilidad (criterios cubiertos y excepción 2.5.7 de la firma), pruebas y e2e, recorrido en recepción, límites y decisiones de César
+- `docs/audits/TANDA-L7-HUESPED-MOVIL-2026-09-20.md` — cierre de la Tanda L7 · Huésped y móvil: inventario por etapa antes/después con fichero:línea, qué construyó cada lote, puertas por ola, runtime con capturas sintéticas, inventario verificado de `apps/mobile`, decisiones D1-D10 con el defecto aplicado, deuda y fusión
+- `apps/mobile/README.md` — estado real de la app móvil («demo interna: no publicar»): qué es maqueta, ids ficticios, qué haría falta para conectarla
 - `docs/design/olas/T9-MERGE-LINES.md` — mergeLines de la Tanda T9 (anclas de texto por fichero compartido, orden de la migración tras fix1, post-fusión: tools/sync, rbac:sync, env:census:write, drift heredado)
 
 ## Primera tarea en cada sesión nueva

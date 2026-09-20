@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { Layout } from "../components/Layout";
-import { signIn } from "../api/client";
+import { Layout, useLang } from "../components/Layout";
+import { isApiError, signIn } from "../api/client";
 import { useGuestSession } from "../auth/GuestSessionContext";
-import { PROPERTY_QUERY_PARAM, resolveGuestPropertyId } from "../config/guest-config";
+import { PROPERTY_QUERY_PARAM, isApiConfigured, resolveGuestPropertyId } from "../config/guest-config";
+import { t } from "../checkin/wizard";
 
 export function SignInPage({ initialError = null }: { initialError?: string | null }) {
   const { setSession } = useGuestSession();
+  const lang = useLang();
   const [reservationCode, setReservationCode] = useState("");
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(initialError);
@@ -15,6 +17,14 @@ export function SignInPage({ initialError = null }: { initialError?: string | nu
   // VITE_GUEST_PROPERTY_ID). Viaja como campo oculto y, si falta, se avisa antes
   // de enviar: sin él el API responde ok:false por diseño (anti-enumeración).
   const [propertyId] = useState(() => resolveGuestPropertyId());
+  // Tanda L7 · L7-01: el aviso «cualquier código entra» solo es cierto sin API.
+  const [apiConfigured] = useState(() => isApiConfigured());
+
+  // El error del enlace caducado llega ya traducido desde App; si cambia el
+  // idioma (o el enlace) se vuelve a mostrar en el idioma nuevo.
+  useEffect(() => {
+    setError(initialError);
+  }, [initialError]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -24,7 +34,10 @@ export function SignInPage({ initialError = null }: { initialError?: string | nu
       const session = await signIn({ reservationCode, email, propertyId });
       setSession(session);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign in failed.");
+      // api/client.ts responde a `ok:false` (anti-enumeración) con un Error
+      // genérico en inglés: aquí se traduce. Un fallo HTTP o de red → mensaje
+      // genérico honesto, nunca el texto crudo del servidor.
+      setError(isApiError(err) || err instanceof TypeError ? t(lang, "signInFailed") : t(lang, "signInNotFound"));
     } finally {
       setSubmitting(false);
     }
@@ -32,48 +45,46 @@ export function SignInPage({ initialError = null }: { initialError?: string | nu
 
   return (
     <Layout
-      eyebrow="Guest portal"
-      title="Welcome"
-      subtitle="Sign in with your reservation code and the email you used when booking."
-      footer={<p>Need help? Reach out to the hotel and a team member will assist you.</p>}
+      eyebrow={t(lang, "signInEyebrow")}
+      title={t(lang, "signInTitle")}
+      subtitle={t(lang, "signInSubtitle")}
+      footer={<p>{t(lang, "signInHelp")}</p>}
     >
-      <form className="gp-card gp-form" onSubmit={onSubmit} noValidate>
+      <form className="gp-card gp-form" onSubmit={onSubmit} noValidate aria-busy={submitting}>
         <input type="hidden" name="propertyId" value={propertyId} readOnly />
         {!propertyId ? (
           <p className="gp-error" role="alert">
-            This portal link is missing the hotel identifier (<code>?{PROPERTY_QUERY_PARAM}=</code>). Open the link the hotel sent you or contact reception.
+            {t(lang, "missingProperty", { param: `?${PROPERTY_QUERY_PARAM}=` })}
           </p>
         ) : null}
         <label className="gp-field">
-          <span>Reservation code</span>
+          <span>{t(lang, "reservationCode")}</span>
           <input
             type="text"
             inputMode="text"
             autoComplete="off"
-            placeholder="RES-2026-00042"
+            placeholder={t(lang, "reservationCodePlaceholder")}
             value={reservationCode}
             onChange={(e) => setReservationCode(e.target.value)}
             required
           />
         </label>
         <label className="gp-field">
-          <span>Email</span>
+          <span>{t(lang, "email")}</span>
           <input
             type="email"
             autoComplete="email"
-            placeholder="you@example.com"
+            placeholder={t(lang, "emailPlaceholder")}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
           />
         </label>
-        {error ? <p className="gp-error" role="alert">{error}</p> : null}
+        <div aria-live="polite">{error ? <p className="gp-error" role="alert">{error}</p> : null}</div>
         <button type="submit" className="gp-button gp-button-primary" disabled={submitting || !propertyId}>
-          {submitting ? "Signing in..." : "Continue"}
+          {submitting ? t(lang, "signingInButton") : t(lang, "next")}
         </button>
-        <p className="gp-hint">
-          We will send a single-use link to your email in production. For now any code and email work in this preview.
-        </p>
+        {!apiConfigured ? <p className="gp-hint">{t(lang, "previewAnyCode")}</p> : null}
       </form>
     </Layout>
   );

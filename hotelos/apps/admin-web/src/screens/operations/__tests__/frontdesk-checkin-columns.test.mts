@@ -41,8 +41,8 @@ const ROOMS = [
 
 const ENGINE = { suggestionId: "as_1", roomId: "r103", number: "103", reasons: ["Inspeccionada esta mañana", "Del tipo reservado", "Reparte el uso"], confidence: 0.75 };
 
-// Las ocho `kind` de W3-D (front-desk-queue.service.ts) con etiqueta y tono propios.
-const NEW_KINDS = ["precheckin_ready", "assignment_suggested", "self_checkin_done", "identity_review", "minor_without_guardian", "room_not_ready", "payment_failed", "ses_rejected"];
+// Las ocho `kind` de W3-D + `signature_pending` (corrector L7-REV-05) con etiqueta y tono propios.
+const NEW_KINDS = ["precheckin_ready", "assignment_suggested", "self_checkin_done", "identity_review", "minor_without_guardian", "room_not_ready", "payment_failed", "ses_rejected", "signature_pending"];
 
 describe("Mi día · columna «Pre-check-in» (preCheckInBadge)", () => {
   it("traduce los estados de la sesión al vocabulario de §8 y cuenta viajeros completos", () => {
@@ -157,7 +157,7 @@ describe("Mi día · filtro por estado de pre-check-in y optimismo", () => {
   });
 });
 
-describe("Cola de acciones · los ocho kind nuevos (queueKindLabel / queueKindTone)", () => {
+describe("Cola de acciones · los nueve kind nuevos (queueKindLabel / queueKindTone)", () => {
   it("cada kind tiene etiqueta en español y tono; ninguna etiqueta es el enum", () => {
     assert.deepEqual([...CHECKIN_QUEUE_KINDS], NEW_KINDS);
     const expected: Record<string, string> = {
@@ -168,7 +168,8 @@ describe("Cola de acciones · los ocho kind nuevos (queueKindLabel / queueKindTo
       minor_without_guardian: "Menor sin adulto",
       room_not_ready: "Habitación no lista",
       payment_failed: "Pago rechazado",
-      ses_rejected: "Parte SES rechazado"
+      ses_rejected: "Parte SES rechazado",
+      signature_pending: "Firma en recepción"
     };
     for (const kind of NEW_KINDS) {
       assert.equal(queueKindLabel(kind), expected[kind], kind);

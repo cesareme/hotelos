@@ -99,6 +99,14 @@ const PUBLIC_PREFIXES = [
   // opaco del portal; GET/POST /webhooks/whatsapp con verify token y firma
   // X-Hub-Signature-256 de Meta (routes/webhooks-whatsapp.routes.ts), sin JWT.
   "/guest-portal/chat",
+  // Portal del huésped · estancia y salida (Tanda L7 · L7-02, recon §19.1): la
+  // vista de la estancia, las peticiones de salida, el enlace de pago, el PDF de
+  // factura por token y la encuesta post-estancia (L7-04) usan el mismo token
+  // opaco; cada handler de modules/guest-portal/guest-portal.routes.ts llama a
+  // verifyGuestToken (401 GUEST_SESSION_INVALID).
+  "/guest-portal/stay",
+  "/guest-portal/invoices",
+  "/guest-portal/survey",
   "/webhooks/whatsapp",
   "/integrations/email/oauth/callback",
   // Finanzas (2026-09-16): PSP notifications (Stripe / Redsys → API, signed

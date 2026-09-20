@@ -72,6 +72,12 @@ import { documentArchiveRoutePermissions } from "../modules/documents/archive-ro
 // huésped, riskLevel public) y /properties/:propertyId/check-in/* · /kiosks* (modules/
 // checkin/checkin.routes.ts). Claves existentes; sin rbac:sync.
 import { checkinRoutePermissions } from "../modules/checkin/route-permissions.partial.js";
+// Portal del huésped · estancia y salida (Tanda L7 · L7-02): 4 rutas públicas
+// por token opaco (modules/guest-portal/route-permissions.partial.ts).
+import { guestPortalRoutePermissions } from "../modules/guest-portal/route-permissions.partial.js";
+// Recorrido del huésped en recepción (Tanda L7 · L7-07): GET /reservations/:id/guest-journey
+// (modules/guest-portal/journey-route-permissions.partial.ts, segundo partial del módulo).
+import { guestJourneyRoutePermissions } from "../modules/guest-portal/journey-route-permissions.partial.js";
 // Asignación explicable (Tanda CHK · W3-B): sugerencias por reserva, confirmación,
 // lote manual, bloqueos y comunicadas (modules/pms/room-assignment.routes.ts;
 // segundo partial del módulo pms). Claves existentes; sin rbac:sync.
@@ -206,6 +212,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...documentArchiveRoutePermissions,
   // Check-in automatizado (Tanda CHK): 18 entradas, ver modules/checkin/route-permissions.partial.ts.
   ...checkinRoutePermissions,
+  ...guestPortalRoutePermissions,
+  ...guestJourneyRoutePermissions,
   // Asignación explicable (Tanda CHK · W3-B): 10 entradas, ver modules/pms/room-assignment-route-permissions.partial.ts.
   ...roomAssignmentRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },

@@ -133,6 +133,14 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.deepEqual(echo.map((r) => `${r.method} ${r.path}`), []);
   });
 
+  // Huésped y móvil (Tanda L7 · puerta de ola 2): encuesta post-estancia y recorrido del huésped en español.
+  it("Tanda L7 · the post-stay survey and guest-journey routes read in Spanish", () => {
+    assert.equal(describeEndpoint("GET", "/guest-portal/survey"), "Obtener la encuesta post-estancia de la sesión del huésped.");
+    assert.equal(describeEndpoint("POST", "/guest-portal/survey"), "Responder la encuesta post-estancia del huésped (dos preguntas, una sola vez por sesión).");
+    assert.equal(describeEndpoint("POST", "/reservations/:id/post-stay/survey-invite"), "Invitar al huésped a la encuesta post-estancia (crea la sesión de 30 días y envía el enlace).");
+    assert.equal(describeEndpoint("GET", "/reservations/:id/guest-journey"), "Obtener el recorrido del huésped de la reserva (etapas, sesiones y notificaciones, sin datos personales).");
+  });
+
   // Documentos y digitalización (Tanda T9 · puerta de ola 2): las rutas del centro no
   // devuelven segmentos en inglés («file», «pages», «image», «send-to-office», «recapture»).
   it("Tanda T9 · the document capture routes read in Spanish", () => {

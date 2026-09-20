@@ -489,3 +489,163 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda L7 · Huésped y móvil, 2026-09-20, cierre L7-10 + revisión del carril +
+corrector L7-REV + integrador; informe `docs/audits/TANDA-L7-HUESPED-MOVIL-2026-09-20.md`, runbook
+`docs/runbooks/portal-huesped.md`):
+- rama `tanda-l7` sobre a069906 (BD `hotelos_l7`, puertos :3937/:5207/:5237), 10 lotes en 4 olas sobre el
+  recon `scratchpad/L7/recon-delta.md` (§18 D1-D10, §19 contratos) → cierre L7-10 → revisión en runtime por
+  dos revisores (8 hallazgos medium confirmados + 10 low, 0 refutados; informe §8.1) → corrector L7-REV (18
+  corregidos con test; segunda migración) → integrador (informe definitivo, este bloque, puertas y commit).
+  Hitos del working tree: tras L7-09 48 modificados (+3.353/−893) + 33 nuevos (9.374 líneas); tras L7-10 51
+  (+3.520/−894) + 36 (10.034); **en el commit 65 modificados (+4.111/−969) + 37 nuevos (10.649 líneas)**;
+  `pnpm-lock.yaml` limpio y fuera del commit; sin dependencias nuevas
+- portal `apps/guest-web` (8.925 líneas) de punta a punta en español + inglés (`wizard.ts` 384 claves,
+  selector es/en con `<html lang>`, skip link, regiones vivas, `--gp-muted` 5,7:1, 0 `style=`, objetivos
+  ≥ 44 px): acceso por código + correo o enlace (token fuera de la URL, `sessionStorage`), asistente de 6
+  pasos de CHK con `progressbar`/`aria-current`, cámara por teclado, «Firmar en recepción» (2.5.7, D6),
+  páginas nuevas `CheckOutPage` (folio REAL con cargos y pagos, facturas PDF por token, peticiones
+  `express_checkout · late_checkout · invoice_email · luggage` → `SRQ-<8>`, «Quiero pagar ahora» → sin
+  PSP «Se cobra en recepción», nunca «pagado»; folio vacío = «sin cargos todavía»), `StayInfoPage` (faq
+  del bot + dirección, nada inventado), `SurveyPage` (`?survey=1`, NPS 0-10 como radiogroup, 409 →
+  «Ya has respondido», enlace caducado → acceso); `StayOverviewPage` con etapa `pre_arrival · arrival_day
+  · in_house · departure_day · post_stay · cancelled`, acción principal/secundaria (`stay/stay.ts`),
+  llave, chat salvo cancelada; modo sin API marcado «vista previa sin API»; kiosco con aviso de
+  inactividad `role="alert"` a 75 s + «Continuar», reinicio a 90 s sin restos, ticket `K-nnnn`,
+  selector de idioma, objetivos ≥ 56 px
+- API `apps/api/src/modules/guest-portal/*` (3.184 líneas): `GET /guest-portal/stay`
+  (`GuestStayView`: etapa por fecha local, folio principal real, facturas emitidas, info, peticiones,
+  encuesta), `POST /guest-portal/stay/requests` (201 `SRQ-<8>`, `ServiceRequest front_office` + evento
+  `GuestCheckoutRequested`, 409 `STAY_CLOSED`), `POST /guest-portal/stay/payment-link` (`at_reception`
+  sin PSP, nunca registra pago), `GET /guest-portal/invoices/:id/pdf` (solo `Invoice.reservationId` de la
+  sesión, `?token=` solo aquí), `GET|POST /guest-portal/survey` (cuestionario `post_stay` del hotel o
+  NPS + comentario por defecto; 201 → 409 `SURVEY_ALREADY_ANSWERED`; 409 `SURVEY_NOT_AVAILABLE` fuera de
+  `post_stay`), `POST /reservations/:id/post-stay/survey-invite` (`pms.reservation.modify`, medium;
+  `surveyUrl` solo si simulado), `GET /reservations/:id/guest-journey` (`pms.reservation.read`, low;
+  `GuestJourneyView` sin PII, wire type en `guest-portal-types.ts` y sección propia en `api-contracts.md`
+  tras el corrector L7-REV); token opaco en `x-guest-token` (`?token=` ÚNICAMENTE en el PDF de la factura;
+  corrector L7-REV-09), prefijos `/guest-portal/{stay,invoices, survey}` en `PUBLIC_PREFIXES`, 401
+  `GUEST_SESSION_INVALID`; legado `GET /guest-portal/session/:token`
+  verifica y redacta (D8); 0 claves RBAC nuevas (2 partials); migración `20260920190000_portal_huesped_l7`
+  (`property_checkin_policies.post_stay_survey_enabled` boolean default false ·
+  `post_stay_survey_delay_hours` int default 24; reversible, sin índices ni enums; 25/25, deriva cero);
+  plantilla de sistema `post_stay_survey` (email es/en, whatsapp es, sms es; `redact` del token);
+  `issueGuestPortalSession` de 30 días con ámbito `purpose = survey` (migración
+  `20260920210000_guest_portal_session_purpose`, corrector L7-REV-01: esa sesión SOLO abre `GET|POST
+  /guest-portal/survey`; el resto del portal → 401); `runPostStaySurveyStep` como paso 5 independiente del tick del
+  check-in (ventana `[hoy − 3 d, día local de (ahora − delay)]`, consentimiento `gdprAt` o `marketing !==
+  false`, idempotente por `notificationId post_stay_survey:<reservationId>`, `summary.postStaySurvey`);
+  sin `EMAIL_PROVIDER` entrega `sent` + «SIMULADO…» fuera de producción y `failed` en producción; copy de
+  `GET /reservations/:id/activity` en español (`pms/guest-activity.service.ts`); seed `db:seed:checkin`
+  con la encuesta activa (24 h) y `Survey chk_survey_post_stay`, `--reset` borra sus respuestas
+- back office: «Recorrido» de la reserva (`/recepcion/reservas/:id/recorrido`, `journey.ts` puro) con 13
+  pasos reales (reserva · invitación · pre-check-in n/m firmados · identidad · pago · habitación ·
+  check-in · llave con serie y «QR de demo» · bienvenida · estancia · peticiones · check-out · encuesta),
+  avisos con badge «Simulado» y destinatario enmascarado, botones «Invitar / Reenviar invitación» y
+  «Enviar encuesta ahora» (resultado honesto, `isRouteUnavailable`); sin recorrido del API los pasos
+  quedan `unknown` y nunca se proponen; «Portal del huésped» (`/comercial/ventas-adicionales/portal`)
+  persiste SOLO `postStaySurveyEnabled` / `postStaySurveyDelayHours` (0-72) / `allowPayAtReception` con
+  `PUT /properties/:id/check-in/policy` (`guestPortalApi.ts`; pantalla 292 → 270 líneas)
+- pruebas: proyecto Playwright `guest` (`apps/admin-web/playwright.config.ts`; `apps/admin-web/e2e/guest-portal/`:
+  helpers + `precheckin` · `stay-checkout` · `kiosk` · `journey` · `survey` .spec.ts + README; tenant CHK
+  con titulares inventados, Pixel 5 / tablet / escritorio; `assertTargets` 0 objetivos < 24 px en 32
+  pantallas, < 44 px solo 3 casillas `.gp-check` de 26 px; 0 excepciones, ninguna respuesta ≥ 400 no
+  declarada, token nunca en una URL) **5/5 en 42,9 s** el 2026-09-20 14:45 contra la instancia del cierre
+  (`scratchpad/L7/l710-e2e/`); unitarios nuevos api 50 (`guest-stay` 21 · `post-stay-survey` 17 ·
+  `guest-journey` 12), admin-web 26 (`journey` 15 · `guest-portal-settings` 11), guest-web 70 (`wizard`
+  38 · `stay` 32), contratos raíz +31 (`guest-portal-a11y-contract` 11 nuevo; `guest-portal-ui-contract`
+  32 y `seed-checkin-contract` 14 ampliados), integración 27 (`guest-stay` 11 · `guest-survey` 11 ·
+  `guest-journey` 5, tenants aislados + invariantes de Faranda 13.457 reservas · 13.436 huéspedes)
+- puertas rápidas (`scratchpad/L7/gates-{base,ola1,ola2,ola3}.json`): base 12/12 → 11/12 en las tres olas
+  (typecheck 15 PASS · 1 SKIP guest-web; api unit 3.569 → 3.625; admin-web 2.014 → 2.040; contratos 765 →
+  796; ai-core 119; worker 34; discoverability 197; route-access 15 × 197; cocoa; rbac; migrate + drift),
+  única roja `nav-tree --check`: el CSV compartido `pilots/tanda5-nav-tree.csv` cambió a las 12:19 por la
+  Tanda ACT y `nav-tree.generated.json` del worktree queda stale (L7 no añade rutas; regenerar en la
+  fusión); puerta completa final (`scratchpad/L7/gates-final.json`): 13/14 el 2026-09-20 (14:51 → 14:58, `scratchpad/L7/gates-final.json`): typecheck 15 PASS · 0 FAIL · 1 SKIP (guest-web) · api unit 3.625 (3.624 pass · 0 fail · 1 skip) · admin-web unit 2.040 (2.039 · 0 · 1) · ai-core 119 · worker 34 · contratos raíz 796 (794 · 0 · 2 skip) · discoverability 197 URL · route-access 15 × 197 · cocoa waves §6 al día · rbac dry-run OK · migrate status + drift «No difference detected.» · admin-web build OK (3,13 s) · integración 1.010 (1.002 pass · 0 fail · 8 skip); única roja `nav-tree --check` (CSV compartido cambiado por la Tanda ACT, JSON generado stale; ajeno al carril)
+- runtime con capturas sintéticas (`scratchpad/L7/`, sin nombres reales): `l701-*` (24: portal es/en,
+  oscuro, stub sin API), `l705-kiosk-*`/`l705-movil-*` (21: kiosco y asistente accesibles),
+  `l706-*` (13: estancia por etapa, salida y cuenta, información), `l707-recorrido*` (2), `l708-admin-portal-*`
+  (5: ajustes), `e2e/*.png` (32, L7-09) y `l710-e2e/shots` (32, cierre); sondas de API `l704-runtime.json`,
+  `l706-runtime-rerun.json`, `l707-runtime.json`, `l708-admin-runtime.json`
+- `apps/mobile` congelada como demo interna (D5, `apps/mobile/README.md`): 110 pantallas / 9.243 líneas de
+  maqueta, `AuthProvider` definido sin montar, `loginDemo()` → `demo.jwt.token` + `prop_123`,
+  `services/api.ts` con `prop_123` × 16 / `org_123` × 2 y respaldos inventados, check-in por IA
+  (`screens/ai/checkin/*`) sin cámara ni firma (`sig_mobile_demo`) y no enrutado, `GuestJourneyScreen`
+  fijo; typecheck 0 errores; sin cambios de código
+- datos del carril (solo lectura): `prop_chk` 63 reservas (11 `CHK-*` + 52 `RES-*` de e2e), 54 sesiones de
+  check-in, 4 respuestas de encuesta, 4 entregas `post_stay_survey` simuladas, 83 sesiones de portal
+  activas, 8 kioscos «Tablet e2e» `disabled`; desde el corrector L7-REV `--reset` purga también las `RES-*`
+  de e2e (titular `prueba.portal.*`, sin factura)
+- **corrector L7-REV (2026-09-20, tras la revisión del carril)** — 7 medium + 10 low cerrados: (1) sesión
+  del enlace de la encuesta acotada (`guest_portal_sessions.purpose`; `verifyGuestToken(token, { purposes })`;
+  el portal verifica `?survey=1&token=` contra `GET /guest-portal/survey`, monta solo `SurveyPage` y ofrece
+  «Entrar en el portal con mi código»); (2) `POST /guest-portal/stay/requests` exige las listas por etapa
+  (`GUEST_STAY_REQUEST_KINDS_BY_STAGE`): `checked_out` → 409 `STAY_CLOSED` salvo `invoice_email`, resto → 409
+  `STAY_REQUEST_NOT_ALLOWED`; (3) enlace de pago con folio sin líneas → `no_charges` / `none` (también
+  `/check-in/payment-link`, que ya no persiste `paid` sobre una cuenta vacía); (4) recorrido: la encuesta se
+  busca por igualdad (`res_07` ya no hereda la de `res_07p`), test `r1`/`r1x`; (5) encuesta solo con la reserva
+  `checked_out` (`surveyOpenFor`; el portal no da las gracias ni la ofrece a una confirmada con la salida
+  pasada: «La fecha de salida ya pasó sin registrar tu llegada»); (6) reserva cancelada sin «Salida y cuenta»
+  (`folioActionKey`), cabecera «Reserva cancelada · cargos de cancelación» sin CTA de pago; (7) «Firmar en
+  recepción» del kiosco deriva en el servidor: `POST /guest-portal/check-in/handoff` → `handed_off ·
+  signature_pending · ticket K-nnnn (handoffTicketFor) · kioskDeviceId · CheckInHandedOff`, kind
+  `signature_pending` en la cola de Mi día, `resolve-handoff` lo cierra; la tablet solo pinta el ticket del API
+  (`kiosk-mode.ts` ya no calcula ninguno); low: `/service-request` y `/chat` → 409 `STAY_CLOSED` con la
+  reserva cerrada y sin «Pedir un servicio» tras la salida; `Router key` + página inicial a la estancia tras
+  «Cerrar sesión»; `redactTokenInUrl` cubre `/guest-portal/session/<token>`; `returnUrl` solo `http(s)` (400) en
+  ambos esquemas; cabecera de `playwright.config.ts` con `--project=guest`; copy del Recorrido sin número de
+  lote; `E2E_API_URL` por defecto :3937; `--reset` purga las `RES-*` de e2e (`prueba.portal.*`, sin factura) y
+  `precheckin`/`survey` dejan limpia su habitación (`releaseReservationRoom`); legado `/guest-portal/{reservation,
+  pre-check-in,service-request}` con 401 tipado. Tests: api unit `guest-journey` 13 · `guest-stay` 28 ·
+  `post-stay-survey` 18 · `front-desk-checkin` 12 · `checkin-session` 20; guest-web 72; contratos
+  `guest-portal-ui` 32 · `guest-portal-a11y` 11 · `seed-checkin` 14 · `cors` 12 · `api-route-permissions` 32;
+  integración `guest-survey` 13 · `guest-stay` 14 · `kiosk-pairing` 8 (handoff de punta a punta); migración
+  26/26 y deriva cero en `hotelos_l7`; e2e proyecto `guest` **5/5 en 39,6 s** (2026-09-20, API :3937 + portal
+  :5237 + admin :5207 del carril, `scratchpad/L7/corr-e2e-run2.log`, capturas `corr-e2e/`: la encuesta por
+  enlace termina en «Entrar en el portal con mi código» → acceso → «Estancia terminada · Gracias por tu
+  opinión»); sondas de API `scratchpad/L7/corr-probe.json` (sesión `survey` → 401 en 8 rutas, `no_charges`,
+  409 `STAY_CLOSED`/`STAY_REQUEST_NOT_ALLOWED`, handoff → `handed_off` + ticket + `resolve-handoff`, recorrido
+  de `CHK-07` sin la invitación de `CHK-07P`, log con `/guest-portal/session/<redacted>`); puerta completa
+  **12/14** el 2026-09-20 (`scratchpad/L7/corr-gates-full.json`): typecheck 15 PASS · 0 FAIL · 1 SKIP
+  (guest-web) · api unit 3.637 (3.636 · 0 · 1) · admin-web 2.040 (2.039 · 0 · 1) · ai-core 119 · worker 34 ·
+  contratos raíz 796 (794 · 0 · 2) · discoverability 197 · route-access 15 × 197 · rbac dry-run · migrate
+  status + drift «No difference detected.» (26/26) · admin-web build OK (2,96 s) · integración 1.016 (1.008 ·
+  0 · 8 skip); rojas: `nav-tree --check` (CSV compartido cambiado por la Tanda ACT, ajeno al carril) y `cocoa
+  waves --check` (§6 regenerado con `cocoa-22-waves.mjs --write` tras `cocoa-22-inventory.mjs`; puerta rápida
+  posterior `corr-gates-quick2.json` **11/12** con `cocoa waves` en verde y solo `nav-tree` rojo); `db:seed:checkin
+  -- --reset` ejecutado en `hotelos_l7` (`scratchpad/L7/corr-seed-reset.sh`): `e2eReservation=68` purgadas,
+  `prop_chk` 79 → 11 reservas (las 11 `CHK-*`), Faranda 13.556 reservas antes y después
+- pendientes con dueño (`CLAUDE.md` deuda 19; informe §8; runbook §10): `ensureSession` crea sesiones en
+  reservas alojadas/salidas; `survey_detractor` no se crea; `answers` sin validar rango; `failed` sin reintento
+  en producción; `@types/react` (D7);
+  `signIn` con `Error` inglés; toggle de idioma duplicado; casillas 26 px / fechas 39 px;
+  `identityVerifiedAt` con `mrz_checksum`; `CocoaSearchInput` 20 × 20; `e2e/**` sin typecheck; en la
+  fusión `nav-tree`, `env-census --write`, `cocoa-22-waves --write`, renumerar las dos migraciones si L8
+  aporta una marca posterior; PSP / correo / WhatsApp / dominio `huesped.ehotelos.com` (César, D1-D4, D10)
+- **integrador (2026-09-20 16:27 → commit)** — working tree confirmado con `git status`/`diff --numstat`
+  (65 M +4.111/−969 · 37 nuevos 10.649 líneas · `pnpm-lock.yaml` limpio); recuento de la revisión corregido
+  respecto al resumen del corrector: son **8** medium (3 funcionales + 5 de seguridad/datos, ids
+  `funcional-runtime-REV-L7-01…03` y `seguridad-datos-regresiones-L7-REV-01…05`) + 10 low, 0 refutados, 18
+  corregidos (tabla con hallazgo → corrección → test en el informe §8.1); puerta completa FINAL sobre el árbol
+  del commit (`scratchpad/L7/gates-final.json`, 16:23, tras el corrector y la regeneración de Cocoa §6):
+  **13/14** — typecheck 15 PASS · 0 FAIL · 1 SKIP (guest-web) · 21,0 s · api unit 3.637 (3.636 · 0 · 1) ·
+  admin-web 2.040 (2.039 · 0 · 1) · ai-core 119 · worker 34 · contratos raíz 796 (794 · 0 · 2) ·
+  discoverability 197 · route-access 15 × 197 · cocoa waves §6 al día · rbac dry-run OK · migrate status +
+  drift «No difference detected.» (26/26) · admin-web build 2,85 s · integración 1.016 (1.008 · 0 · 8 skip);
+  única roja `nav-tree --check`: el CSV compartido tiene 304 filas (el JSON del worktree se generó con 294) y
+  las 10 nuevas son pantallas de los carriles RRHH/ACT inexistentes aquí (`HrEmployees/HrOverview/HrForecast/
+  DirectorLaborCosts/RealEstate*`) más la etiqueta de `PayrollScreen`; regenerar aquí rompería
+  discoverability/route-access, así que el JSON se dejó intacto y se regenera tras fusionar RRHH/ACT;
+  puerta rápida tras las ediciones documentales (`gates-integrador-quick.json`, 16:35 → 16:36): **11/12** con
+  las mismas cifras (contratos raíz 796 verdes con este bloque y el informe ya editados; solo `nav-tree` rojo);
+  `bash .husky/pre-commit` (discoverability 197 URL · 0 broken · 16/20 + `typecheck-all` 15 PASS · 1 SKIP,
+  22,4 s) ejecutado A MANO desde `hotelos/` porque
+  `core.hooksPath = .husky` (ruta relativa) se resuelve contra la raíz del worktree, donde no existe el
+  directorio (vive en `hotelos/`): git no dispara el hook solo (informe §8.2 fila 10); BD `hotelos_l7` por SQL de
+  solo lectura tras el `--reset` del corrector: 26 migraciones aplicadas (última
+  `20260920210000_guest_portal_session_purpose`), `prop_chk` 11 reservas (todas `CHK-*`: 9 confirmadas · 1
+  alojada · 1 salida), 9 sesiones de check-in, 0 respuestas de encuesta, 8 sesiones de portal `invitation`,
+  política encuesta ON / 24 h / pago en recepción OFF; reservas totales 13.567 = 13.556 fuera de `prop_chk`
+  (sin cambio) + 11; ningún proceso en :3937/:5207/:5237 (`lsof`), :3000/:5173 y el PID ajeno intactos;
+  commit único en `tanda-l7` (`feat(huesped): …`, cuerpo por lote + corrector, autor cesareme, sin
+  `--no-verify`, sin `push`; sha en el informe del orquestador)

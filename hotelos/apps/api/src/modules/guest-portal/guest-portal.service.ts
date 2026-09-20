@@ -11,6 +11,7 @@
 
 import { prisma } from "@hotelos/database";
 import { recordDomainEvent } from "../audit/audit.service.js";
+import { ConflictError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
 import { verifyGuestToken } from "./guest-portal-auth.service.js";
 import { computeReservationBalance } from "../folio/folio-balance.service.js";
@@ -278,9 +279,15 @@ export async function submitServiceRequest(
 
   const reservation = await prisma.reservation.findUnique({
     where: { id: session.reservationId },
-    select: { id: true, code: true, propertyId: true }
+    select: { id: true, code: true, propertyId: true, status: true }
   });
   if (!reservation) throw new GuestPortalAuthError("Reservation no longer available.");
+  // Corrector REV-L7-05: misma regla que POST /guest-portal/stay/requests (STAY_CLOSED_STATUSES de
+  // guest-stay.service.ts, no importado para no crear un ciclo): una reserva cancelada o no_show no
+  // crea peticiones abiertas para recepción.
+  if (reservation.status === "cancelled" || reservation.status === "no_show") {
+    throw new ConflictError("La reserva está cerrada: no admite peticiones desde el portal.", { code: "STAY_CLOSED", status: reservation.status });
+  }
 
   // Map portal categories onto a best-fit assigned department.
   const departmentByCategory: Record<string, string> = {

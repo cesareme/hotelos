@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
-import { Layout } from "../components/Layout";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import type { FormEvent, RefObject } from "react";
+import { LangContext, Layout } from "../components/Layout";
 import { StatusPill } from "../components/StatusPill";
 import { ChatWidget } from "../components/ChatWidget";
 import { DocumentCamera } from "../components/DocumentCamera";
-import { SignaturePad } from "../components/SignaturePad";
+import { SignaturePad, deferSignatureLabel } from "../components/SignaturePad";
 import type { SignaturePayload } from "../components/SignaturePad";
 import { useGuestSession } from "../auth/GuestSessionContext";
 import {
@@ -13,6 +13,7 @@ import {
   completeCheckIn,
   getCheckIn,
   getReservation,
+  handoffCheckIn,
   isApiError,
   patchCheckIn,
   patchGuest,
@@ -62,6 +63,22 @@ import type { ArrivalOutcome } from "./ArrivalPage";
 // La sesión se reanuda por el primer paso incompleto (initialStep). Aviso
 // legal: retention (RD 933/2021, tres años) en el pie, igual que en
 // PreCheckInPage.
+//
+// Tanda L7 · L7-05 — accesibilidad WCAG 2.2 AA (UX-RECEPCION-FEEL.md §7.1,
+// recon-delta §14 y §18 D6), solo con claves de copy existentes y clases de
+// styles.css (0 CSS nuevo, 0 `style=`):
+//   · el título del paso («Paso n de 6 · Nombre») es un encabezado con
+//     tabIndex -1 que recibe el foco al cambiar de paso y al cargar (2.4.3);
+//   · errores y estado «guardando…» en regiones vivas (`aria-live`, `role=alert`,
+//     `role=status`) y `aria-busy` en el asistente (4.1.3);
+//   · cada campo con `<label htmlFor>` + `id`; en «Datos» los campos que faltan
+//     llevan `aria-invalid` y `aria-describedby` a la lista de faltas y al origen
+//     del dato (MRZ / visión) (1.3.1, 3.3.1, 3.3.2);
+//   · firma con alternativa sin arrastre «Firmar en recepción» (2.5.7 · D6):
+//     en el kiosco registra la llegada y deriva al mostrador con ticket; en el
+//     móvil deja el aviso y permite seguir (recepción cierra el parte);
+//   · el selector de idioma vive en la cabecera (LangContext); el asistente solo
+//     pinta el suyo si no hay proveedor (sin dos controles equivalentes).
 
 export type KioskContext = { deviceId: string; name: string | null; capabilities: { mrzReader: boolean; cardEncoder: boolean; paymentTerminal: boolean; printer: boolean } };
 
@@ -107,6 +124,36 @@ const MISSING_LABEL: Record<string, CopyKey> = {
   guardianTitle: "guardianTitle"
 };
 
+/** Claves de falta (cliente + servidor) que marcan cada campo de «Datos» como inválido. */
+const MISSING_BY_FIELD: Record<string, readonly string[]> = {
+  sex: ["sex"],
+  nationality: ["nationality"],
+  dateOfBirth: ["dateOfBirth"],
+  documentType: ["documentType"],
+  documentNumber: ["documentNumber"],
+  documentSupportNumber: ["documentSupportNumber"],
+  documentExpiryDate: ["documentExpiryDate"],
+  email: ["contact", "email"],
+  phoneMobile: ["contact", "phoneMobile"],
+  residenceFullAddress: ["residenceFullAddress", "residenceAddress"],
+  residenceLocality: ["residenceLocality"],
+  residenceCountry: ["residenceCountry"],
+  providedByCheckInGuestId: ["providedByCheckInGuestId", "providedByAdultGuestId"],
+  kinship: ["kinship", "kinshipRelationIfMinor"],
+  guardianTitle: ["guardianTitle"]
+};
+
+/** Id estable y único por tarjeta + viajero + campo (los ids de viajero son cuid). */
+export function fieldId(scope: string, guestId: string, field: string): string {
+  return `gp-${scope}-${guestId}-${field}`;
+}
+
+/** true si alguna de las faltas (cliente o servidor) afecta al campo. */
+export function isFieldMissing(field: string, missing: readonly string[]): boolean {
+  const keys = MISSING_BY_FIELD[field] ?? [field];
+  return missing.some((key) => keys.includes(key));
+}
+
 function missingLabel(key: string, lang: Lang): string {
   const copy = MISSING_LABEL[key];
   return copy ? t(lang, copy) : key;
@@ -134,23 +181,31 @@ function withReservation(session: CheckInSession, reservation: ReservationSummar
 
 // ── Progreso ───────────────────────────────────────────────────────────────────
 
-function StepProgress({ step, lang, onLangChange }: { step: WizardStep; lang: Lang; onLangChange: (lang: Lang) => void }) {
+export const STEP_TITLE_ID = "gp-step-title";
+
+function StepProgress({ step, lang, onLangChange, titleRef }: { step: WizardStep; lang: Lang; onLangChange: (lang: Lang) => void; titleRef: RefObject<HTMLElement | null> }) {
   const progress = progressFor(step);
+  // Con LangContext (portal) el selector es/en está en la cabecera: no se duplica aquí.
+  const headerHasLanguage = useContext(LangContext) !== null;
   return (
     <div className="gp-progress" role="group" aria-label={t(lang, "stepOf", { index: progress.index, total: progress.total })}>
       <div className="gp-progress-top">
-        <span className="gp-progress-label">{t(lang, "stepOf", { index: progress.index, total: progress.total })}</span>
-        <button type="button" className="gp-link gp-lang" onClick={() => onLangChange(lang === "es" ? "en" : "es")} aria-label={t(lang, "language")}>
-          {t(lang, "language")}
-        </button>
+        <span className="gp-progress-label" role="heading" aria-level={2} id={STEP_TITLE_ID} tabIndex={-1} ref={titleRef}>
+          {t(lang, "stepOf", { index: progress.index, total: progress.total })} · {stepLabel(step, lang)}
+        </span>
+        {!headerHasLanguage ? (
+          <button type="button" className="gp-link gp-lang" onClick={() => onLangChange(lang === "es" ? "en" : "es")} lang={lang === "es" ? "en" : "es"}>
+            {t(lang, "language")}
+          </button>
+        ) : null}
       </div>
-      <div className="gp-progress-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
+      <div className="gp-progress-bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent} aria-labelledby={STEP_TITLE_ID}>
         <span className="gp-progress-fill" data-percent={progress.percent} />
       </div>
       <ol className="gp-steps">
         {WIZARD_STEPS.map((key, index) => (
           <li key={key} className={`gp-step${key === step ? " is-current" : index < progress.index - 1 ? " is-done" : ""}`} aria-current={key === step ? "step" : undefined}>
-            <span className="gp-step-index">{index + 1}</span>
+            <span className="gp-step-index" aria-hidden>{index + 1}</span>
             <span className="gp-step-label">{stepLabel(key, lang)}</span>
           </li>
         ))}
@@ -170,6 +225,8 @@ function TravellerCard({ guest, session, lang, onSave, onRemove, busy }: { guest
   const [kinship, setKinship] = useState(guest.kinship ?? "");
   const dirty = firstName !== (guest.firstName ?? "") || surname1 !== (guest.surname1 ?? "") || surname2 !== (guest.surname2 ?? "") || dateOfBirth !== "" || providedBy !== (guest.providedByCheckInGuestId ?? "") || kinship !== (guest.kinship ?? "");
   const adults = adultsFor(session, guest.id);
+  const id = (field: string) => fieldId("trav", guest.id, field);
+  const headId = id("head");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -182,39 +239,39 @@ function TravellerCard({ guest, session, lang, onSave, onRemove, busy }: { guest
   }
 
   return (
-    <form className="gp-card gp-form gp-traveller" onSubmit={(event) => void submit(event)} noValidate>
+    <form className="gp-card gp-form gp-traveller" onSubmit={(event) => void submit(event)} noValidate aria-labelledby={headId} aria-busy={busy}>
       <div className="gp-traveller-head">
-        <strong>{guest.isPrimary ? t(lang, "travellerPrimary") : t(lang, "travellerCompanion", { n: guest.ordinal })}</strong>
+        <strong id={headId}>{guest.isPrimary ? t(lang, "travellerPrimary") : t(lang, "travellerCompanion", { n: guest.ordinal })}</strong>
         <div className="gp-traveller-badges">
           {guest.isMinor ? <StatusPill label={t(lang, "travellerMinor")} tone="warn" /> : null}
           {isSigned(guest) ? <StatusPill label={t(lang, "statusReady")} tone="ok" /> : null}
         </div>
       </div>
       <div className="gp-grid-2">
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("firstName")}>
           <span>{t(lang, "firstName")}</span>
-          <input type="text" value={firstName} onChange={(event) => setFirstName(event.target.value)} autoComplete="given-name" required />
+          <input id={id("firstName")} type="text" value={firstName} onChange={(event) => setFirstName(event.target.value)} autoComplete="given-name" required aria-required />
         </label>
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("surname1")}>
           <span>{t(lang, "surname1")}</span>
-          <input type="text" value={surname1} onChange={(event) => setSurname1(event.target.value)} autoComplete="family-name" required />
+          <input id={id("surname1")} type="text" value={surname1} onChange={(event) => setSurname1(event.target.value)} autoComplete="family-name" required aria-required />
         </label>
       </div>
       <div className="gp-grid-2">
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("surname2")}>
           <span>{t(lang, "surname2")}</span>
-          <input type="text" value={surname2} onChange={(event) => setSurname2(event.target.value)} />
+          <input id={id("surname2")} type="text" value={surname2} onChange={(event) => setSurname2(event.target.value)} />
         </label>
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("dateOfBirth")}>
           <span>{t(lang, "dateOfBirth")}</span>
-          <input type="date" value={dateOfBirth} onChange={(event) => setDateOfBirth(event.target.value)} placeholder={guest.ageAtArrival !== null ? String(guest.ageAtArrival) : ""} />
+          <input id={id("dateOfBirth")} type="date" value={dateOfBirth} onChange={(event) => setDateOfBirth(event.target.value)} />
         </label>
       </div>
       {guest.isMinor ? (
         <div className="gp-grid-2">
-          <label className="gp-field">
+          <label className="gp-field" htmlFor={id("providedBy")}>
             <span>{t(lang, "minorGuardian")}</span>
-            <select value={providedBy} onChange={(event) => setProvidedBy(event.target.value)}>
+            <select id={id("providedBy")} value={providedBy} onChange={(event) => setProvidedBy(event.target.value)}>
               <option value="">{t(lang, "chooseAdult")}</option>
               {adults.map((adult) => (
                 <option key={adult.id} value={adult.id}>
@@ -223,9 +280,9 @@ function TravellerCard({ guest, session, lang, onSave, onRemove, busy }: { guest
               ))}
             </select>
           </label>
-          <label className="gp-field">
+          <label className="gp-field" htmlFor={id("kinship")}>
             <span>{t(lang, "kinship")}</span>
-            <input type="text" value={kinship} onChange={(event) => setKinship(event.target.value)} />
+            <input id={id("kinship")} type="text" value={kinship} onChange={(event) => setKinship(event.target.value)} />
           </label>
         </div>
       ) : null}
@@ -234,7 +291,7 @@ function TravellerCard({ guest, session, lang, onSave, onRemove, busy }: { guest
           {busy ? t(lang, "saving") : t(lang, "saveTraveller")}
         </button>
         {!guest.isPrimary && !isSigned(guest) ? (
-          <button type="button" className="gp-link" onClick={() => void onRemove(guest.id)} disabled={busy}>
+          <button type="button" className="gp-link" onClick={() => void onRemove(guest.id)} disabled={busy} aria-describedby={headId}>
             {t(lang, "removeTraveller")}
           </button>
         ) : null}
@@ -279,10 +336,12 @@ function DocumentStep({ session, lang, captures, unreadable, mismatch, busyGuest
         const capture = captures[guest.id];
         const done = hasDocument(guest);
         const showCapture = !done || rereading[guest.id] === true;
+        const headId = fieldId("doc", guest.id, "head");
+        const typeId = fieldId("doc", guest.id, "type");
         return (
-          <section key={guest.id} className="gp-card gp-document">
+          <section key={guest.id} className="gp-card gp-document" aria-labelledby={headId} aria-busy={busyGuestId === guest.id}>
             <div className="gp-traveller-head">
-              <strong>{t(lang, "documentFor", { name: guestLabel(guest, lang) })}</strong>
+              <strong id={headId}>{t(lang, "documentFor", { name: guestLabel(guest, lang) })}</strong>
               {done ? <StatusPill label={t(lang, "documentDone", { last3: guest.documentNumberLast3 ?? "" })} tone="ok" /> : null}
             </div>
             {done ? <p className="gp-meta">{documentOriginLabel(guest, mismatch[guest.id] ? undefined : capture, lang)}</p> : null}
@@ -296,9 +355,9 @@ function DocumentStep({ session, lang, captures, unreadable, mismatch, busyGuest
             ) : null}
             {showCapture ? (
               <>
-                <label className="gp-field">
+                <label className="gp-field" htmlFor={typeId}>
                   <span>{t(lang, "documentType")}</span>
-                  <select value={documentType} onChange={(event) => setTypes((current) => ({ ...current, [guest.id]: event.target.value }))}>
+                  <select id={typeId} value={documentType} onChange={(event) => setTypes((current) => ({ ...current, [guest.id]: event.target.value }))}>
                     {DOCUMENT_TYPES.map((option) => (
                       <option key={option.value} value={option.value}>
                         {t(lang, option.key)}
@@ -307,7 +366,7 @@ function DocumentStep({ session, lang, captures, unreadable, mismatch, busyGuest
                   </select>
                 </label>
                 <DocumentCamera lang={lang} documentType={documentType} busy={busyGuestId === guest.id} showMrzFallback={Boolean(unreadable[guest.id])} onImage={(dataUrl) => onImage(guest.id, dataUrl, documentType)} onMrz={(lines) => onMrz(guest.id, lines)} />
-                {unreadable[guest.id] ? <p className="gp-error" role="alert">{t(lang, "documentUnreadable")}</p> : null}
+                <div aria-live="polite">{unreadable[guest.id] ? <p className="gp-error" role="alert">{t(lang, "documentUnreadable")}</p> : null}</div>
                 {done ? (
                   <button type="button" className="gp-link" onClick={() => setRereading((current) => ({ ...current, [guest.id]: false }))}>
                     {t(lang, "documentRereadCancel")}
@@ -315,7 +374,7 @@ function DocumentStep({ session, lang, captures, unreadable, mismatch, busyGuest
                 ) : null}
               </>
             ) : null}
-            {mismatch[guest.id] ? <p className="gp-error" role="alert">{t(lang, "documentMismatch")}</p> : null}
+            <div aria-live="polite">{mismatch[guest.id] ? <p className="gp-error" role="alert">{t(lang, "documentMismatch")}</p> : null}</div>
           </section>
         );
       })}
@@ -369,15 +428,33 @@ function DetailsCard({ guest, session, lang, capture, serverMissing, busy, onSav
   const [touched, setTouched] = useState<Set<keyof DetailsForm>>(() => new Set());
   const missing = mergeMissing(missingFor(guest), serverMissing);
   const adults = adultsFor(session, guest.id);
+  const id = (field: string) => fieldId("det", guest.id, field);
+  const headId = id("head");
+  const missingId = id("missing");
 
   function set<K extends keyof DetailsForm>(key: K, value: string) {
     setForm((current) => ({ ...current, [key]: value }));
     setTouched((current) => new Set(current).add(key));
   }
 
+  function hasBadge(key: keyof DocumentCapture["fields"]): boolean {
+    return Boolean(capture && key in capture.fields && !touched.has(key as keyof DetailsForm));
+  }
+
   function badge(key: keyof DocumentCapture["fields"]) {
-    if (!capture || !(key in capture.fields) || touched.has(key as keyof DetailsForm)) return null;
-    return <small className="gp-badge-source">{sourceLabel(capture.source, capture.confidence[key] ?? null, lang)}</small>;
+    if (!capture || !hasBadge(key)) return null;
+    return (
+      <small className="gp-badge-source" id={id(`${key}-source`)}>
+        {sourceLabel(capture.source, capture.confidence[key] ?? null, lang)}
+      </small>
+    );
+  }
+
+  /** aria-invalid (falta) + aria-describedby (lista de faltas, origen del dato) del campo. */
+  function a11y(key: keyof DetailsForm) {
+    const invalid = isFieldMissing(key, missing);
+    const describedBy = [invalid ? missingId : null, hasBadge(key as keyof DocumentCapture["fields"]) ? id(`${key}-source`) : null].filter(Boolean).join(" ");
+    return { id: id(key), "aria-invalid": invalid || undefined, "aria-describedby": describedBy || undefined } as const;
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -397,35 +474,35 @@ function DetailsCard({ guest, session, lang, capture, serverMissing, busy, onSav
   }
 
   return (
-    <form className="gp-card gp-form gp-details" onSubmit={(event) => void submit(event)} noValidate>
+    <form className="gp-card gp-form gp-details" onSubmit={(event) => void submit(event)} noValidate aria-labelledby={headId} aria-busy={busy}>
       <div className="gp-traveller-head">
-        <strong>{guestLabel(guest, lang)}</strong>
+        <strong id={headId}>{guestLabel(guest, lang)}</strong>
         {missing.length === 0 ? <StatusPill label={t(lang, "statusReady")} tone="ok" /> : <StatusPill label={`${t(lang, "missingTitle")}: ${missing.length}`} tone="warn" />}
       </div>
-      {missing.length > 0 ? <p className="gp-missing">{missing.map((key) => missingLabel(key, lang)).join(" · ")}</p> : null}
+      <div aria-live="polite">{missing.length > 0 ? <p className="gp-missing" id={missingId}>{missing.map((key) => missingLabel(key, lang)).join(" · ")}</p> : null}</div>
       <div className="gp-grid-2">
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("sex")}>
           <span>{t(lang, "sex")} {badge("sex")}</span>
-          <select value={form.sex} onChange={(event) => set("sex", event.target.value)}>
+          <select {...a11y("sex")} value={form.sex} onChange={(event) => set("sex", event.target.value)}>
             <option value="">—</option>
             <option value="H">{t(lang, "sexH")}</option>
             <option value="M">{t(lang, "sexM")}</option>
             <option value="O">{t(lang, "sexO")}</option>
           </select>
         </label>
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("nationality")}>
           <span>{t(lang, "nationality")} {badge("nationality")}</span>
-          <input type="text" value={form.nationality} onChange={(event) => set("nationality", event.target.value)} maxLength={3} autoCapitalize="characters" />
+          <input {...a11y("nationality")} type="text" value={form.nationality} onChange={(event) => set("nationality", event.target.value)} maxLength={3} autoCapitalize="characters" />
         </label>
       </div>
       <div className="gp-grid-2">
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("dateOfBirth")}>
           <span>{t(lang, "dateOfBirth")} {badge("dateOfBirth")}</span>
-          <input type="date" value={form.dateOfBirth} onChange={(event) => set("dateOfBirth", event.target.value)} />
+          <input {...a11y("dateOfBirth")} type="date" value={form.dateOfBirth} onChange={(event) => set("dateOfBirth", event.target.value)} />
         </label>
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("documentType")}>
           <span>{t(lang, "documentType")} {badge("documentType")}</span>
-          <select value={form.documentType} onChange={(event) => set("documentType", event.target.value)}>
+          <select {...a11y("documentType")} value={form.documentType} onChange={(event) => set("documentType", event.target.value)}>
             <option value="">—</option>
             {DOCUMENT_TYPES.map((option) => (
               <option key={option.value} value={option.value}>
@@ -436,49 +513,49 @@ function DetailsCard({ guest, session, lang, capture, serverMissing, busy, onSav
         </label>
       </div>
       <div className="gp-grid-2">
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("documentNumber")}>
           <span>{t(lang, "documentNumber")} {badge("documentNumber")}</span>
-          <input type="text" value={form.documentNumber} onChange={(event) => set("documentNumber", event.target.value)} placeholder={guest.documentNumberLast3 ? `···${guest.documentNumberLast3}` : ""} autoComplete="off" />
+          <input {...a11y("documentNumber")} type="text" value={form.documentNumber} onChange={(event) => set("documentNumber", event.target.value)} placeholder={guest.documentNumberLast3 ? `···${guest.documentNumberLast3}` : ""} autoComplete="off" />
         </label>
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("documentSupportNumber")}>
           <span>{t(lang, "documentSupportNumber")} {badge("documentSupportNumber")}</span>
-          <input type="text" value={form.documentSupportNumber} onChange={(event) => set("documentSupportNumber", event.target.value)} autoComplete="off" />
+          <input {...a11y("documentSupportNumber")} type="text" value={form.documentSupportNumber} onChange={(event) => set("documentSupportNumber", event.target.value)} autoComplete="off" />
         </label>
       </div>
-      <label className="gp-field">
+      <label className="gp-field" htmlFor={id("documentExpiryDate")}>
         <span>{t(lang, "documentExpiryDate")} {badge("documentExpiryDate")}</span>
-        <input type="date" value={form.documentExpiryDate} onChange={(event) => set("documentExpiryDate", event.target.value)} />
+        <input {...a11y("documentExpiryDate")} type="date" value={form.documentExpiryDate} onChange={(event) => set("documentExpiryDate", event.target.value)} />
       </label>
       <div className="gp-grid-2">
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("email")}>
           <span>{t(lang, "email")}</span>
-          <input type="email" value={form.email} onChange={(event) => set("email", event.target.value)} placeholder={guest.hasEmail ? "✓" : ""} autoComplete="email" />
+          <input {...a11y("email")} type="email" value={form.email} onChange={(event) => set("email", event.target.value)} placeholder={guest.hasEmail ? "✓" : ""} autoComplete="email" />
         </label>
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("phoneMobile")}>
           <span>{t(lang, "phoneMobile")}</span>
-          <input type="tel" value={form.phoneMobile} onChange={(event) => set("phoneMobile", event.target.value)} placeholder={guest.hasPhoneMobile ? "✓" : "+34"} autoComplete="tel" />
+          <input {...a11y("phoneMobile")} type="tel" value={form.phoneMobile} onChange={(event) => set("phoneMobile", event.target.value)} placeholder={guest.hasPhoneMobile ? "✓" : "+34"} autoComplete="tel" />
         </label>
       </div>
-      <label className="gp-field">
+      <label className="gp-field" htmlFor={id("residenceFullAddress")}>
         <span>{t(lang, "residenceFullAddress")}</span>
-        <input type="text" value={form.residenceFullAddress} onChange={(event) => set("residenceFullAddress", event.target.value)} autoComplete="street-address" />
+        <input {...a11y("residenceFullAddress")} type="text" value={form.residenceFullAddress} onChange={(event) => set("residenceFullAddress", event.target.value)} autoComplete="street-address" />
       </label>
       <div className="gp-grid-2">
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("residenceLocality")}>
           <span>{t(lang, "residenceLocality")}</span>
-          <input type="text" value={form.residenceLocality} onChange={(event) => set("residenceLocality", event.target.value)} autoComplete="address-level2" />
+          <input {...a11y("residenceLocality")} type="text" value={form.residenceLocality} onChange={(event) => set("residenceLocality", event.target.value)} autoComplete="address-level2" />
         </label>
-        <label className="gp-field">
+        <label className="gp-field" htmlFor={id("residenceCountry")}>
           <span>{t(lang, "residenceCountry")}</span>
-          <input type="text" value={form.residenceCountry} onChange={(event) => set("residenceCountry", event.target.value)} maxLength={3} autoCapitalize="characters" autoComplete="country" />
+          <input {...a11y("residenceCountry")} type="text" value={form.residenceCountry} onChange={(event) => set("residenceCountry", event.target.value)} maxLength={3} autoCapitalize="characters" autoComplete="country" />
         </label>
       </div>
       {guest.isMinor ? (
         <>
           <div className="gp-grid-2">
-            <label className="gp-field">
+            <label className="gp-field" htmlFor={id("providedByCheckInGuestId")}>
               <span>{t(lang, "minorGuardian")}</span>
-              <select value={form.providedByCheckInGuestId} onChange={(event) => set("providedByCheckInGuestId", event.target.value)}>
+              <select {...a11y("providedByCheckInGuestId")} value={form.providedByCheckInGuestId} onChange={(event) => set("providedByCheckInGuestId", event.target.value)}>
                 <option value="">{t(lang, "chooseAdult")}</option>
                 {adults.map((adult) => (
                   <option key={adult.id} value={adult.id}>
@@ -487,14 +564,14 @@ function DetailsCard({ guest, session, lang, capture, serverMissing, busy, onSav
                 ))}
               </select>
             </label>
-            <label className="gp-field">
+            <label className="gp-field" htmlFor={id("kinship")}>
               <span>{t(lang, "kinship")}</span>
-              <input type="text" value={form.kinship} onChange={(event) => set("kinship", event.target.value)} />
+              <input {...a11y("kinship")} type="text" value={form.kinship} onChange={(event) => set("kinship", event.target.value)} />
             </label>
           </div>
-          <label className="gp-field">
+          <label className="gp-field" htmlFor={id("guardianTitle")}>
             <span>{t(lang, "guardianTitle")}</span>
-            <input type="text" value={form.guardianTitle} onChange={(event) => set("guardianTitle", event.target.value)} />
+            <input {...a11y("guardianTitle")} type="text" value={form.guardianTitle} onChange={(event) => set("guardianTitle", event.target.value)} />
           </label>
         </>
       ) : null}
@@ -508,24 +585,25 @@ function DetailsCard({ guest, session, lang, capture, serverMissing, busy, onSav
 function ConsentCard({ session, lang, busy, onConsent }: { session: Session; lang: Lang; busy: boolean; onConsent: (consent: { gdpr?: boolean; aiDisclosure?: boolean; marketing?: boolean; whatsappOptIn?: boolean }) => Promise<void> }) {
   const consent = session.consent;
   const policy = session.policy;
+  const id = (field: string) => fieldId("consent", session.id, field);
   return (
-    <section className="gp-card gp-consent">
-      {policy.guestConsentText ? <p className="gp-meta">{policy.guestConsentText}</p> : null}
-      <label className="gp-check">
-        <input type="checkbox" checked={Boolean(consent.gdprAt)} disabled={busy} onChange={(event) => void onConsent({ gdpr: event.target.checked })} />
+    <section className="gp-card gp-consent" aria-busy={busy}>
+      {policy.guestConsentText ? <p className="gp-meta" id={id("gdpr-text")}>{policy.guestConsentText}</p> : null}
+      <label className="gp-check" htmlFor={id("gdpr")}>
+        <input id={id("gdpr")} type="checkbox" checked={Boolean(consent.gdprAt)} disabled={busy} onChange={(event) => void onConsent({ gdpr: event.target.checked })} aria-required aria-describedby={policy.guestConsentText ? id("gdpr-text") : undefined} />
         <span>{t(lang, "consentGdpr")}</span>
       </label>
-      {policy.aiDisclosureText ? <p className="gp-meta">{policy.aiDisclosureText}</p> : null}
-      <label className="gp-check">
-        <input type="checkbox" checked={Boolean(consent.aiDisclosureAt)} disabled={busy} onChange={(event) => void onConsent({ aiDisclosure: event.target.checked })} />
+      {policy.aiDisclosureText ? <p className="gp-meta" id={id("ai-text")}>{policy.aiDisclosureText}</p> : null}
+      <label className="gp-check" htmlFor={id("ai")}>
+        <input id={id("ai")} type="checkbox" checked={Boolean(consent.aiDisclosureAt)} disabled={busy} onChange={(event) => void onConsent({ aiDisclosure: event.target.checked })} aria-describedby={policy.aiDisclosureText ? id("ai-text") : undefined} />
         <span>{t(lang, "consentAi")}</span>
       </label>
-      <label className="gp-check">
-        <input type="checkbox" checked={consent.marketing} disabled={busy} onChange={(event) => void onConsent({ marketing: event.target.checked })} />
+      <label className="gp-check" htmlFor={id("marketing")}>
+        <input id={id("marketing")} type="checkbox" checked={consent.marketing} disabled={busy} onChange={(event) => void onConsent({ marketing: event.target.checked })} />
         <span>{t(lang, "consentMarketing")}</span>
       </label>
-      <label className="gp-check">
-        <input type="checkbox" checked={Boolean(consent.whatsappOptInAt)} disabled={busy} onChange={(event) => void onConsent({ whatsappOptIn: event.target.checked })} />
+      <label className="gp-check" htmlFor={id("whatsapp")}>
+        <input id={id("whatsapp")} type="checkbox" checked={Boolean(consent.whatsappOptInAt)} disabled={busy} onChange={(event) => void onConsent({ whatsappOptIn: event.target.checked })} />
         <span>{t(lang, "consentWhatsapp")}</span>
       </label>
     </section>
@@ -534,33 +612,44 @@ function ConsentCard({ session, lang, busy, onConsent }: { session: Session; lan
 
 // ── Paso 4 · Firma ────────────────────────────────────────────────────────────
 
-function SignatureStep({ session, lang, preparing, busyGuestId, onSign }: { session: Session; lang: Lang; preparing: boolean; busyGuestId: string | null; onSign: (guestId: string, payload: SignaturePayload) => Promise<void> }) {
+/** Aviso del móvil tras «Firmar en recepción»: derivado de claves existentes (sin copy nuevo). */
+export function deferredSignatureMessage(lang: Lang): string {
+  return `${t(lang, "signatureMissing")} ${deferSignatureLabel(lang)}.`;
+}
+
+function SignatureStep({ session, lang, preparing, busyGuestId, kiosk, deferred, onSign, onDefer }: { session: Session; lang: Lang; preparing: boolean; busyGuestId: string | null; kiosk: boolean; deferred: Record<string, boolean>; onSign: (guestId: string, payload: SignaturePayload) => Promise<void>; onDefer: (guestId: string) => void }) {
   const [payloads, setPayloads] = useState<Record<string, SignaturePayload | null>>({});
   const pending = pendingSigners(session);
   return (
     <>
       <p className="gp-intro">{t(lang, "signatureIntro")}</p>
-      {preparing ? <p className="gp-card gp-skeleton">{t(lang, "preparingRecords")}</p> : null}
-      {session.guests.map((guest) => (
-        <section key={guest.id} className="gp-card gp-signature-card">
-          <div className="gp-traveller-head">
-            <strong>{t(lang, "signatureFor", { name: guestLabel(guest, lang) })}</strong>
-            {guest.isMinor ? <StatusPill label={t(lang, "travellerMinor")} tone="info" /> : isSigned(guest) ? <StatusPill label={t(lang, "statusReady")} tone="ok" /> : null}
-          </div>
-          {guest.isMinor ? (
-            <p className="gp-meta">{t(lang, "signatureIntro")}</p>
-          ) : isSigned(guest) ? (
-            <p className="gp-meta">{t(lang, "signatureDone", { date: new Date(guest.updatedAt).toLocaleDateString(lang === "es" ? "es-ES" : "en-GB") })}</p>
-          ) : pending.some((row) => row.id === guest.id) ? (
-            <>
-              <SignaturePad lang={lang} disabled={busyGuestId === guest.id || preparing || !guest.guestRegisterRecordId} onChange={(payload) => setPayloads((current) => ({ ...current, [guest.id]: payload }))} />
-              <button type="button" className="gp-button gp-button-primary" disabled={!payloads[guest.id] || busyGuestId === guest.id || preparing || !guest.guestRegisterRecordId} onClick={() => void onSign(guest.id, payloads[guest.id]!)}>
-                {busyGuestId === guest.id ? t(lang, "saving") : t(lang, "sign")}
-              </button>
-            </>
-          ) : null}
-        </section>
-      ))}
+      <div aria-live="polite">{preparing ? <p className="gp-card gp-skeleton" role="status">{t(lang, "preparingRecords")}</p> : null}</div>
+      {session.guests.map((guest) => {
+        const headId = fieldId("sig", guest.id, "head");
+        return (
+          <section key={guest.id} className="gp-card gp-signature-card" aria-labelledby={headId} aria-busy={busyGuestId === guest.id}>
+            <div className="gp-traveller-head">
+              <strong id={headId}>{t(lang, "signatureFor", { name: guestLabel(guest, lang) })}</strong>
+              {guest.isMinor ? <StatusPill label={t(lang, "travellerMinor")} tone="info" /> : isSigned(guest) ? <StatusPill label={t(lang, "statusReady")} tone="ok" /> : deferred[guest.id] ? <StatusPill label={t(lang, "statusHandedOff")} tone="info" /> : null}
+            </div>
+            {guest.isMinor ? (
+              <p className="gp-meta">{t(lang, "signatureIntro")}</p>
+            ) : isSigned(guest) ? (
+              <p className="gp-meta">{t(lang, "signatureDone", { date: new Date(guest.updatedAt).toLocaleDateString(lang === "es" ? "es-ES" : "en-GB") })}</p>
+            ) : !kiosk && deferred[guest.id] ? (
+              // Móvil: aviso honesto; el parte lo cierra recepción a la llegada (recon §18 D6).
+              <p className="gp-meta" role="status">{deferredSignatureMessage(lang)}</p>
+            ) : pending.some((row) => row.id === guest.id) ? (
+              <>
+                <SignaturePad lang={lang} disabled={busyGuestId === guest.id || preparing || !guest.guestRegisterRecordId} onChange={(payload) => setPayloads((current) => ({ ...current, [guest.id]: payload }))} onDefer={() => onDefer(guest.id)} />
+                <button type="button" className="gp-button gp-button-primary" disabled={!payloads[guest.id] || busyGuestId === guest.id || preparing || !guest.guestRegisterRecordId} onClick={() => void onSign(guest.id, payloads[guest.id]!)}>
+                  {busyGuestId === guest.id ? t(lang, "saving") : t(lang, "sign")}
+                </button>
+              </>
+            ) : null}
+          </section>
+        );
+      })}
     </>
   );
 }
@@ -573,15 +662,16 @@ function PaymentStep({ session, lang, outcome, busy, onPay, onRefresh }: { sessi
   let message: string;
   if (settled || outcome?.status === "settled") message = t(lang, "paymentSettled");
   else if (session.paymentStatus === "at_reception" || outcome?.status === "at_reception") message = t(lang, "paymentAtReception");
-  else if (outcome?.status === "no_folio" || (session.balanceDue ?? 0) <= 0) message = t(lang, "paymentNothingDue");
+  else if (outcome?.status === "no_folio" || outcome?.status === "no_charges" || (session.balanceDue ?? 0) <= 0) message = t(lang, "paymentNothingDue");
   else if (outcome?.status === "link_sent" || session.paymentStatus === "link_sent") message = outcome?.status === "link_sent" ? t(lang, "paymentLinkReady") : t(lang, "paymentPending");
   else message = t(lang, "paymentPending");
+  const titleId = fieldId("pay", session.id, "title");
   return (
     <>
-      <section className="gp-card gp-payment">
-        <p className="gp-label">{t(lang, "paymentIntro")}</p>
+      <section className="gp-card gp-payment" aria-labelledby={titleId} aria-busy={busy}>
+        <p className="gp-label" id={titleId}>{t(lang, "paymentIntro")}</p>
         {balance && (session.balanceDue ?? 0) > 0 ? <p className="gp-value">{t(lang, "balanceDue", { amount: balance })}</p> : null}
-        <p className="gp-payment-message">{busy && !outcome ? t(lang, "loading") : message}</p>
+        <p className="gp-payment-message" role="status">{busy && !outcome ? t(lang, "loading") : message}</p>
         {outcome?.status === "link_sent" ? (
           <button type="button" className="gp-button gp-button-primary" onClick={onPay} disabled={busy}>
             {t(lang, "payNow")}
@@ -594,8 +684,8 @@ function PaymentStep({ session, lang, outcome, busy, onPay, onRefresh }: { sessi
         ) : null}
       </section>
       {session.offers && session.offers.length > 0 ? (
-        <section className="gp-card gp-extras">
-          <p className="gp-label">{t(lang, "extrasTitle")}</p>
+        <section className="gp-card gp-extras" aria-labelledby={fieldId("pay", session.id, "extras")}>
+          <p className="gp-label" id={fieldId("pay", session.id, "extras")}>{t(lang, "extrasTitle")}</p>
           <p className="gp-meta">{t(lang, "extrasIntro")}</p>
           <ul className="gp-offers">
             {session.offers.map((offer) => (
@@ -627,6 +717,7 @@ function ArrivalStep({ session, lang, kiosk, busy, otp, onSavePreferences, onReq
   const prefsDirty = eta !== (session.etaDeclared ?? "") || preferences.join(",") !== session.preferences.join(",");
   // Sesión ya cerrada (llegada registrada / alojada / en recepción): nada que editar ni volver a llegar.
   const closed = (ARRIVED_SESSION_STATUSES as readonly string[]).includes(session.status);
+  const id = (field: string) => fieldId("arr", session.id, field);
 
   async function verify() {
     await onVerifyOtp(code);
@@ -647,13 +738,13 @@ function ArrivalStep({ session, lang, kiosk, busy, otp, onSavePreferences, onReq
     <>
       <p className="gp-intro">{t(lang, "arrivalIntro")}</p>
       {!kiosk ? (
-        <section className="gp-card gp-form">
-          <label className="gp-field">
+        <section className="gp-card gp-form" aria-labelledby={id("prefs-title")} aria-busy={busy}>
+          <label className="gp-field" htmlFor={id("eta")}>
             <span>{t(lang, "eta")}</span>
-            <input type="time" value={eta} onChange={(event) => setEta(event.target.value)} />
+            <input id={id("eta")} type="time" value={eta} onChange={(event) => setEta(event.target.value)} />
           </label>
-          <p className="gp-label">{t(lang, "preferences")}</p>
-          <div className="gp-chips">
+          <p className="gp-label" id={id("prefs-title")}>{t(lang, "preferences")}</p>
+          <div className="gp-chips" role="group" aria-labelledby={id("prefs-title")}>
             {PREFERENCE_OPTIONS.map((option) => (
               <button key={option.code} type="button" className={`gp-chip${preferences.includes(option.code) ? " is-active" : ""}`} aria-pressed={preferences.includes(option.code)} onClick={() => setPreferences((current) => togglePreference(current, option.code))}>
                 {lang === "es" ? option.es : option.en}
@@ -667,20 +758,28 @@ function ArrivalStep({ session, lang, kiosk, busy, otp, onSavePreferences, onReq
       ) : null}
 
       {!kiosk && channels.length > 0 && (otpRequired || verified || Boolean(primary?.identityVerifiedAt)) ? (
-        <section className="gp-card gp-otp">
-          <p className="gp-label">{t(lang, "otpTitle")}</p>
+        <section className="gp-card gp-otp" aria-labelledby={id("otp-title")} aria-busy={busy}>
+          <p className="gp-label" id={id("otp-title")}>{t(lang, "otpTitle")}</p>
           {identityOk ? (
-            <StatusPill label={t(lang, "otpVerified")} tone="ok" />
+            <p role="status">
+              <StatusPill label={t(lang, "otpVerified")} tone="ok" />
+            </p>
           ) : (
             <>
               <p className="gp-meta">{t(lang, "otpIntro")}</p>
+              <div aria-live="polite">
+                {otp ? (
+                  <>
+                    <p className="gp-meta" id={id("otp-sent")}>{t(lang, "otpSentTo", { recipient: otp.recipient })}</p>
+                    {otp.debugCode ? <p className="gp-hint">{t(lang, "otpDebug", { code: otp.debugCode })}</p> : null}
+                  </>
+                ) : null}
+              </div>
               {otp ? (
                 <>
-                  <p className="gp-meta">{t(lang, "otpSentTo", { recipient: otp.recipient })}</p>
-                  {otp.debugCode ? <p className="gp-hint">{t(lang, "otpDebug", { code: otp.debugCode })}</p> : null}
-                  <label className="gp-field">
+                  <label className="gp-field" htmlFor={id("otp-code")}>
                     <span>{t(lang, "otpCode")}</span>
-                    <input type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(event) => setCode(event.target.value)} />
+                    <input id={id("otp-code")} type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(event) => setCode(event.target.value)} aria-describedby={id("otp-sent")} />
                   </label>
                   <button type="button" className="gp-button gp-button-primary" disabled={busy || code.replace(/\D/g, "").length !== 6} onClick={() => void verify()}>
                     {t(lang, "otpVerify")}
@@ -700,10 +799,10 @@ function ArrivalStep({ session, lang, kiosk, busy, otp, onSavePreferences, onReq
       ) : null}
       {!kiosk && !identityOk && !otpRequired ? <p className="gp-meta">{t(lang, "identityAtReception")}</p> : null}
 
-      {inlineError ? <p className="gp-error" role="alert">{inlineError}</p> : null}
-      <section className="gp-card gp-arrive">
-        <p className="gp-meta">{t(lang, "arriveHint")}</p>
-        <button type="button" className="gp-button gp-button-primary gp-button-big" disabled={busy} onClick={() => void onArrive()}>
+      <div aria-live="polite">{inlineError ? <p className="gp-error" role="alert">{inlineError}</p> : null}</div>
+      <section className="gp-card gp-arrive" aria-busy={busy}>
+        <p className="gp-meta" id={id("arrive-hint")}>{t(lang, "arriveHint")}</p>
+        <button type="button" className="gp-button gp-button-primary gp-button-big" disabled={busy} onClick={() => void onArrive()} aria-describedby={id("arrive-hint")}>
           {busy ? t(lang, "saving") : t(lang, "arriveNow")}
         </button>
       </section>
@@ -731,9 +830,17 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
   const [payment, setPayment] = useState<PaymentLinkResponse | null>(null);
   const [otp, setOtp] = useState<OtpRequestResponse | null>(null);
   const [arrivalError, setArrivalError] = useState<string | null>(null);
+  /** Firmas que el huésped dejó para recepción («Firmar en recepción», solo móvil; estado de la pestaña). */
+  const [deferredSignatures, setDeferredSignatures] = useState<Record<string, boolean>>({});
   const reservationRef = useRef<ReservationSummary | null>(null);
   const preparedRef = useRef(false);
   const paymentAskedRef = useRef(false);
+  const titleRef = useRef<HTMLElement | null>(null);
+  const focusedStepRef = useRef<WizardStep | null>(null);
+  // L7-05 (WCAG 3.2.2 On Input): cambiar de idioma NO recarga la sesión ni devuelve al
+  // primer paso incompleto; `load` lee el idioma por ref para no depender de él.
+  const langRef = useRef<Lang>(lang);
+  langRef.current = lang;
 
   const apply = useCallback((next: CheckInSession) => {
     setSession(withReservation(next, reservationRef.current));
@@ -752,15 +859,23 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
       setStep(initialStep(merged));
     } catch (err) {
       if (isApiError(err) && (err.status === 401 || err.status === 403 || err.status === 404)) setNotInvited(true);
-      else setError(errorMessage(err, lang));
+      else setError(errorMessage(err, langRef.current));
     } finally {
       setLoading(false);
     }
-  }, [guestSession, lang]);
+  }, [guestSession]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // L7-05 (2.4.3): al cargar y en cada cambio de paso el foco va al título del paso.
+  const ready = !loading && session !== null;
+  useEffect(() => {
+    if (!ready || focusedStepRef.current === step) return;
+    focusedStepRef.current = step;
+    titleRef.current?.focus({ preventScroll: false });
+  }, [ready, step]);
 
   async function run<T>(work: () => Promise<T>, guestId: string | null = null): Promise<T | undefined> {
     setBusy(true);
@@ -913,7 +1028,11 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
       apply(await getCheckIn());
     });
   };
-  const doArrive = async () => {
+  /**
+   * POST /guest-portal/check-in/arrive. `handoff` fuerza el ticket del kiosco
+   * aunque el 409 no sea de handoff (el huésped pidió terminar en recepción).
+   */
+  const doArrive = async (handoff = false) => {
     setArrivalError(null);
     setBusy(true);
     const at = new Date().toISOString();
@@ -924,13 +1043,45 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
       onArrived({ ok: true, data, at, ...(timeZone ? { timeZone } : {}) });
     } catch (err) {
       if (isApiError(err)) {
-        onArrived({ ok: false, code: err.code, message: err.message, details: err.details, at, ...(timeZone ? { timeZone } : {}) });
+        onArrived({ ok: false, code: err.code, message: err.message, details: err.details, at, ...(timeZone ? { timeZone } : {}), ...(handoff ? { handoff: true } : {}) });
       } else {
         setArrivalError(errorMessage(err, lang));
       }
     } finally {
       setBusy(false);
     }
+  };
+
+  /**
+   * Corrector L7-REV-05: «Firmar en recepción» en el kiosco deriva la sesión en
+   * el SERVIDOR (POST /guest-portal/check-in/handoff → handed_off · signature_pending
+   * · ticket K-nnnn · kioskDeviceId · auditoría; recepción lo ve en su cola). La
+   * pantalla de llegada solo pinta el ticket que devuelve esa ruta.
+   */
+  const handoffAtReception = async () => {
+    setError(null);
+    setBusy(true);
+    const at = new Date().toISOString();
+    const timeZone = reservationRef.current?.propertyTimezone;
+    try {
+      const result = await handoffCheckIn("signature");
+      onArrived({ ok: false, code: "SIGNATURE_AT_RECEPTION", message: t(lang, "handoffSignatureMessage"), details: { handoffKind: result.handoffKind, ticket: result.ticket, sessionId: result.sessionId }, at, ...(timeZone ? { timeZone } : {}), handoff: true, ticket: result.ticket });
+    } catch (err) {
+      setError(isApiError(err) && err.message ? err.message : t(lang, "handoffError"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ── Firma en recepción (2.5.7 · D6) ──
+  const deferSignature = (guestId: string) => {
+    if (kiosk) {
+      // Kiosco: el huésped está en el hotel → la derivación se registra en el servidor y
+      // la página de llegada muestra el ticket que devuelve el API.
+      void handoffAtReception();
+      return;
+    }
+    setDeferredSignatures((current) => ({ ...current, [guestId]: true }));
   };
 
   // ── Navegación ──
@@ -950,7 +1101,7 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
   if (loading) {
     return (
       <Layout eyebrow={t(lang, "wizardEyebrow")} title={t(lang, "wizardTitle")} reservationCode={reservationCode} back={{ label: t(lang, "backToStay"), onClick: onBack }} footer={footer}>
-        <div className="gp-card gp-skeleton">{t(lang, "loading")}</div>
+        <div className="gp-card gp-skeleton" role="status" aria-live="polite">{t(lang, "loading")}</div>
       </Layout>
     );
   }
@@ -966,8 +1117,10 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
     );
   }
 
-  const advance = canAdvance(session, step);
   const isKiosk = Boolean(kiosk);
+  // Móvil: con todas las firmas pendientes dejadas para recepción se puede seguir (el API sigue mandando en la llegada).
+  const allDeferred = !isKiosk && step === "signature" && session.guests.every((guest) => Boolean(guest.guestRegisterRecordId)) && pendingSigners(session).length > 0 && pendingSigners(session).every((guest) => deferredSignatures[guest.id]);
+  const advance = canAdvance(session, step) || allDeferred;
 
   return (
     <Layout
@@ -979,9 +1132,10 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
       back={{ label: isKiosk ? t(lang, "kioskFinish") : t(lang, "backToStay"), onClick: onBack }}
       footer={footer}
     >
-      <div className={`gp-wizard${isKiosk ? " gp-wizard-kiosk" : ""}`}>
-        <StepProgress step={step} lang={lang} onLangChange={onLangChange} />
-        {error ? <p className="gp-error" role="alert">{error}</p> : null}
+      <div className={`gp-wizard${isKiosk ? " gp-wizard-kiosk" : ""}`} aria-busy={busy || preparing}>
+        <StepProgress step={step} lang={lang} onLangChange={onLangChange} titleRef={titleRef} />
+        <p className="gp-visually-hidden" role="status">{busy ? t(lang, "saving") : ""}</p>
+        <div aria-live="polite">{error ? <p className="gp-error" role="alert">{error}</p> : null}</div>
 
         {step === "travellers" ? <TravellersStep session={session} lang={lang} busy={busy} onSave={saveGuest} onRemove={removeTraveller} onAdd={addTraveller} /> : null}
         {step === "document" ? <DocumentStep session={session} lang={lang} captures={captures} unreadable={unreadable} mismatch={mismatch} busyGuestId={busyGuestId} onImage={captureImage} onMrz={captureMrz} /> : null}
@@ -994,11 +1148,11 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
             <ConsentCard session={session} lang={lang} busy={busy} onConsent={saveConsent} />
           </>
         ) : null}
-        {step === "signature" ? <SignatureStep session={session} lang={lang} preparing={preparing} busyGuestId={busyGuestId} onSign={sign} /> : null}
+        {step === "signature" ? <SignatureStep session={session} lang={lang} preparing={preparing} busyGuestId={busyGuestId} kiosk={isKiosk} deferred={deferredSignatures} onSign={sign} onDefer={deferSignature} /> : null}
         {step === "payment" ? <PaymentStep session={session} lang={lang} outcome={payment} busy={busy} onPay={pay} onRefresh={async () => apply(await getCheckIn())} /> : null}
-        {step === "arrival" ? <ArrivalStep session={session} lang={lang} kiosk={isKiosk} busy={busy} otp={otp} onSavePreferences={savePreferences} onRequestOtp={askOtp} onVerifyOtp={checkOtp} onArrive={doArrive} inlineError={arrivalError} /> : null}
+        {step === "arrival" ? <ArrivalStep session={session} lang={lang} kiosk={isKiosk} busy={busy} otp={otp} onSavePreferences={savePreferences} onRequestOtp={askOtp} onVerifyOtp={checkOtp} onArrive={() => doArrive()} inlineError={arrivalError} /> : null}
 
-        <div className="gp-wizard-nav">
+        <nav className="gp-wizard-nav" aria-label={t(lang, "wizardEyebrow")}>
           <button type="button" className="gp-button gp-button-ghost" onClick={goPrev} disabled={busy || !prevStep(step)}>
             {t(lang, "back")}
           </button>
@@ -1007,7 +1161,7 @@ export function CheckInWizardPage({ lang, onLangChange, onBack, onArrived, kiosk
               {t(lang, "next")}
             </button>
           ) : null}
-        </div>
+        </nav>
 
         {/* Tanda CHK · corrector REV3-10: chat con el recepcionista IA también desde el asistente (no en el kiosco). */}
         {!isKiosk ? <ChatWidget lang={lang} propertyName={session.reservation?.propertyName} /> : null}

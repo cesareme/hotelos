@@ -22,13 +22,22 @@
 //   POST /guest-portal/check-in/arrive                        llegada → habitación + llave
 //   POST /guest-portal/check-in/kiosk/claim                   código de emparejamiento → deviceToken
 //   POST /guest-portal/chat                                   bot del huésped (W4-D)
+// Tanda L7 · lote L7-06 (estancia y salida; tipos en stay/stay.ts, contrato L7-02):
+//   GET  /guest-portal/stay                                   etapa, reserva, check-in, folio REAL, facturas, info, peticiones, encuesta
+//   POST /guest-portal/stay/requests                          salida exprés · salida tardía · factura por correo · consigna → SRQ-<8>
+//   POST /guest-portal/stay/payment-link                      enlace de pago honesto (link_sent | at_reception | settled | no_folio)
+//   GET  /guest-portal/invoices/:id/pdf                       PDF de una factura emitida de la reserva (token por cabecera, nunca en la URL)
+// Tanda L7 · lote L7-08 (encuesta post-estancia; tipos en stay/stay.ts, contrato L7-04 §19.7):
+//   GET  /guest-portal/survey                                 cuestionario (Survey post_stay o por defecto), answered/answeredAt, available, stage
+//   POST /guest-portal/survey                                 { score 0-10, answers? } → 201 { responseId, surveyId, score, answeredAt }; 409 SURVEY_ALREADY_ANSWERED | SURVEY_NOT_AVAILABLE
 // Cabeceras: `x-guest-token` siempre que hay sesión; `x-kiosk-token` solo en modo
 // kiosco (setKioskToken). Sin VITE_GUEST_API_BASE todo sigue con stubs en memoria.
 
-import { BRAND } from "../config/brand";
 import { resolveGuestPropertyId } from "../config/guest-config";
 import { normalizeMrzText } from "../checkin/wizard";
 import type { WizardGuest, WizardPolicy, WizardSession } from "../checkin/wizard";
+import { invoiceFilename } from "../stay/stay";
+import type { StayInvoice, StayPaymentLinkResponse, StayRequestInput, StayRequestResult, StayView, SurveySubmitInput, SurveySubmitResult, SurveyView } from "../stay/stay";
 
 export type ReservationSummary = {
   id: string;
@@ -80,6 +89,12 @@ export type GuestSession = {
   // Short-lived guest bearer token returned by the real API. Sent on every
   // subsequent request via the `x-guest-token` header.
   token?: string;
+  /**
+   * Corrector L7-REV-01: `survey` = sesión del enlace de la encuesta (30 días),
+   * que el API SOLO admite en GET|POST /guest-portal/survey. El Router monta
+   * únicamente SurveyPage y el resto del portal pide el código de reserva.
+   */
+  scope?: "survey";
 };
 
 const baseUrl = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_GUEST_API_BASE ?? "").replace(/\/$/, "");
@@ -142,10 +157,13 @@ export function isApiError(error: unknown, code?: string): error is ApiError {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Tanda L7 · L7-06: `Content-Type: application/json` SOLO cuando hay cuerpo.
+  // Con la cabecera y sin cuerpo (DELETE …/guests/:id, «Quitar» viajero) Fastify
+  // respondía 400 «Body cannot be empty» antes de llegar a la ruta.
   const response = await fetch(`${baseUrl}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(init?.body !== undefined && init?.body !== null ? { "Content-Type": "application/json" } : {}),
       Accept: "application/json",
       ...(init?.headers ?? {})
     }
@@ -218,7 +236,7 @@ export async function signIn(payload: SignInPayload): Promise<GuestSession> {
 // guest token and verifying it against GET /guest-portal/reservation. A valid
 // token yields a full GuestSession; an invalid/expired token returns null so
 // the caller can show the sign-in form with a friendly "link expired" message.
-export async function signInWithToken(token: string): Promise<GuestSession | null> {
+export async function signInWithToken(token: string, options: { /** `survey`: enlace de la encuesta → se verifica contra GET /guest-portal/survey (la sesión `survey` no puede leer la reserva). */ scope?: "survey" } = {}): Promise<GuestSession | null> {
   const trimmed = token.trim();
   if (!trimmed) return null;
 
@@ -237,6 +255,18 @@ export async function signInWithToken(token: string): Promise<GuestSession | nul
 
   setGuestToken(trimmed);
   try {
+    if (options.scope === "survey") {
+      // Corrector L7-REV-01: el enlace de la encuesta abre una sesión acotada; el API devuelve la
+      // cabecera mínima de la reserva (código, hotel) y el ámbito real de la sesión.
+      const view = await request<SurveyView>(SURVEY_PATH, { headers: guestHeaders() });
+      return {
+        reservationId: view.reservation.reservationId,
+        reservationCode: view.reservation.reservationCode,
+        email: "",
+        token: trimmed,
+        ...(view.sessionPurpose === "survey" ? { scope: "survey" as const } : {})
+      };
+    }
     const raw = await request<Record<string, unknown>>("/guest-portal/reservation", {
       headers: guestHeaders()
     });
@@ -368,29 +398,211 @@ export async function submitServiceRequest(reservationId: string, payload: Servi
   });
 }
 
-// ---- Invoice download (stub) ---------------------------------------------
-export async function downloadInvoice(reservationId: string): Promise<void> {
-  // No real endpoint yet. We generate a tiny client-side text "invoice"
-  // and trigger a download so the UI demonstrates the flow.
-  const content = [
-    `${BRAND.name} — Provisional invoice`,
-    "================================",
-    `Reservation: ${reservationId}`,
-    `Issued:      ${new Date().toISOString().slice(0, 10)}`,
-    "",
-    "A full PDF invoice will replace this file once the",
-    "/reservations/:id/invoice endpoint is implemented.",
-    ""
-  ].join("\n");
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+// ===========================================================================
+// Tanda L7 · L7-06 — estancia y salida (folio real, facturas, peticiones, pago honesto)
+// ===========================================================================
+//
+// Contrato de L7-02 (docs/api-contracts.md «Portal del huésped · estancia y
+// salida»; tipos espejo en stay/stay.ts). El antiguo `downloadInvoice` (un .txt
+// generado en el navegador) se retira: la factura es el PDF real del API o no es.
+// Sin API (`!baseUrl`) los stubs son de demostración y la UI lo dice (demoNoApi).
+
+const STAY_PATH = "/guest-portal/stay";
+
+export type { StayInvoice, StayPaymentLinkResponse, StayRequestInput, StayRequestResult, StayView } from "../stay/stay";
+
+let stubStayState: StayView | null = null;
+
+function ensureStubStay(): StayView {
+  if (stubStayState) return stubStayState;
+  const reservation = stubReservation("res_demo_001");
+  const session = ensureStubSession();
+  const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString();
+  stubStayState = {
+    stage: "in_house",
+    today: new Date().toISOString().slice(0, 10),
+    reservation: {
+      reservationId: reservation.id,
+      reservationCode: reservation.reservationCode,
+      propertyId: reservation.propertyId,
+      propertyName: reservation.propertyName,
+      propertyTimezone: "Europe/Madrid",
+      status: "checked_in",
+      arrivalDate: day(-1).slice(0, 10),
+      departureDate: day(2).slice(0, 10),
+      roomType: reservation.roomType,
+      assignedRoomNumber: reservation.roomNumber ?? null,
+      eta: null,
+      primaryGuest: { firstName: "Maria", surname1Initial: "L." },
+      guestCount: reservation.guests,
+      balanceDue: 186,
+      currency: reservation.currency
+    },
+    checkIn: { status: session.status, keyIssued: false },
+    folio: {
+      status: "balance_due",
+      balanceDue: 186,
+      currency: "EUR",
+      charges: [
+        { description: "Alojamiento (demo)", quantity: 2, total: 240, postedAt: day(-1) },
+        { description: "Desayuno (demo)", quantity: 2, total: 36, postedAt: day(0) }
+      ],
+      payments: [{ amount: 90, method: "card", status: "captured", createdAt: day(-1) }]
+    },
+    invoices: [],
+    info: { wifiName: "HotelDemo-Huespedes", wifiPassword: "demo1234", breakfastHours: "07:30–10:30", checkOutTime: "12:00", receptionPhone: null, address: "Calle Demo 1, 28001 Madrid" },
+    requests: [],
+    survey: { invited: false, answered: false }
+  };
+  return stubStayState;
+}
+
+/** Vista completa de la estancia (GET /guest-portal/stay). Sin API: estancia de demostración en memoria. */
+export async function getStay(): Promise<StayView> {
+  if (!baseUrl) {
+    await delay(200);
+    return structuredClone(ensureStubStay());
+  }
+  return request<StayView>(STAY_PATH, { headers: guestHeaders() });
+}
+
+/** Petición de salida (POST /guest-portal/stay/requests → 201 { id, ticketNumber: "SRQ-<8>", kind, status: "open" }; 409 STAY_CLOSED). */
+export async function requestStayAction(input: StayRequestInput): Promise<StayRequestResult> {
+  if (!baseUrl) {
+    await delay(300);
+    const stay = ensureStubStay();
+    const stamp = Date.now().toString(36).toUpperCase().slice(-8).padStart(8, "0");
+    const id = `srq_demo_${stamp.toLowerCase()}`;
+    stay.requests.unshift({ id, kind: input.kind, status: "open", createdAt: new Date().toISOString() });
+    return { id, ticketNumber: `SRQ-${stamp}`, kind: input.kind, status: "open" };
+  }
+  return request<StayRequestResult>(`${STAY_PATH}/requests`, { method: "POST", headers: guestHeaders(), body: JSON.stringify(input) });
+}
+
+/**
+ * Enlace de pago del saldo del folio (POST /guest-portal/stay/payment-link).
+ * Misma forma que `requestPaymentLink` del pre-check-in; el API nunca marca un
+ * pago como hecho. Sin API: «se cobra en recepción» (no hay PSP de demostración).
+ */
+export async function requestStayPaymentLink(input: { returnUrl?: string; clientRequestId?: string } = {}): Promise<StayPaymentLinkResponse> {
+  if (!baseUrl) {
+    await delay(300);
+    const stay = ensureStubStay();
+    if (stay.folio.status === "no_folio") return { status: "no_folio", paymentStatus: "none" };
+    if (stay.folio.charges.length === 0) return { status: "no_charges", paymentStatus: "none" };
+    if (stay.folio.balanceDue <= 0) return { status: "settled", paymentStatus: "paid" };
+    return { status: "at_reception", paymentStatus: "at_reception", reason: "DEMO_SIN_API" };
+  }
+  return request<StayPaymentLinkResponse>(`${STAY_PATH}/payment-link`, { method: "POST", headers: guestHeaders(), body: JSON.stringify(input) });
+}
+
+/**
+ * PDF de una factura emitida de la reserva (GET /guest-portal/invoices/:id/pdf).
+ * El token viaja SOLO en la cabecera (el API admite `?token=` en GET, pero así no
+ * acaba en el historial ni en los logs). 404 si la factura no es de la reserva.
+ */
+export async function invoicePdfBlob(invoiceId: string): Promise<{ blob: Blob; filename: string }> {
+  if (!baseUrl) {
+    await delay(200);
+    throw new ApiError("Sin API no hay facturas que descargar (demostración).", 404, { code: "DEMO_NO_API" });
+  }
+  const response = await fetch(`${baseUrl}/guest-portal/invoices/${encodeURIComponent(invoiceId)}/pdf`, {
+    headers: { Accept: "application/pdf", ...guestHeaders() }
+  });
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    let details: Record<string, unknown> | null = null;
+    try {
+      const body = (await response.json()) as { message?: string; details?: Record<string, unknown> };
+      if (body.message) message = body.message;
+      if (body.details && typeof body.details === "object") details = body.details;
+    } catch {
+      // cuerpo no JSON
+    }
+    throw new ApiError(message, response.status, details);
+  }
+  const blob = await response.blob();
+  return { blob, filename: invoiceFilename(response.headers.get("content-disposition"), invoiceId) };
+}
+
+/** Descarga (o abre) el PDF de la factura en el navegador; devuelve el nombre del fichero. */
+export async function saveInvoicePdf(invoice: Pick<StayInvoice, "id">): Promise<string> {
+  const { blob, filename } = await invoicePdfBlob(invoice.id);
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `invoice-${reservationId}.txt`;
+  anchor.download = filename;
+  anchor.rel = "noopener";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return filename;
+}
+
+// ---- Encuesta post-estancia (Tanda L7 · L7-08) ----------------------------------
+//
+// Contrato de L7-04 (docs/api-contracts.md «Encuesta post-estancia»; tipos
+// espejo en stay/stay.ts). El enlace del correo es `/?survey=1&token=…&property=…`
+// (App.tsx wantsSurvey). Sin API: cuestionario por defecto en memoria, una sola
+// respuesta (como el API) y la UI avisa de que es una demostración (demoNoApi).
+
+const SURVEY_PATH = "/guest-portal/survey";
+
+export type { SurveyQuestion, SurveySubmitInput, SurveySubmitResult, SurveyView } from "../stay/stay";
+
+let stubSurveyState: SurveyView | null = null;
+
+function ensureStubSurvey(): SurveyView {
+  if (stubSurveyState) return stubSurveyState;
+  stubSurveyState = {
+    // Mismo cuestionario que DEFAULT_GUEST_SURVEY_QUESTIONS (guest-portal-types.ts); `id` null hasta el primer envío, como el API.
+    survey: {
+      id: null,
+      name: "Encuesta post-estancia (demo)",
+      questions: [
+        { key: "nps", type: "nps", label: "¿Recomendarías el hotel a un amigo o familiar? (0 = nada probable · 10 = seguro)", required: true },
+        { key: "comment", type: "text", label: "¿Qué podríamos mejorar?", required: false }
+      ]
+    },
+    answered: false,
+    answeredAt: null,
+    available: true,
+    stage: "post_stay",
+    reservationStatus: "checked_out",
+    reservation: { reservationId: "res_demo_001", reservationCode: "RES-2026-00042", propertyId: "prop_demo", propertyName: "Hotel de demostración" },
+    sessionPurpose: "sign_in"
+  };
+  return stubSurveyState;
+}
+
+/** Cuestionario y estado de la encuesta (GET /guest-portal/survey). Sin API: demostración en memoria. */
+export async function getSurvey(): Promise<SurveyView> {
+  if (!baseUrl) {
+    await delay(200);
+    return structuredClone(ensureStubSurvey());
+  }
+  return request<SurveyView>(SURVEY_PATH, { headers: guestHeaders() });
+}
+
+/**
+ * Envía la respuesta (POST /guest-portal/survey → 201). El API garantiza una
+ * respuesta por reserva (409 SURVEY_ALREADY_ANSWERED) y solo en post_stay
+ * (409 SURVEY_NOT_AVAILABLE); el token viaja SOLO en la cabecera.
+ */
+export async function submitSurvey(input: SurveySubmitInput): Promise<SurveySubmitResult> {
+  if (!baseUrl) {
+    await delay(300);
+    const survey = ensureStubSurvey();
+    if (survey.answered) throw new ApiError("Ya has respondido a esta encuesta.", 409, { code: "SURVEY_ALREADY_ANSWERED", answeredAt: survey.answeredAt });
+    const answeredAt = new Date().toISOString();
+    survey.answered = true;
+    survey.answeredAt = answeredAt;
+    survey.available = false;
+    survey.survey.id = survey.survey.id ?? "survey_demo";
+    return { responseId: "resp_demo", surveyId: survey.survey.id, score: input.score, answeredAt };
+  }
+  return request<SurveySubmitResult>(SURVEY_PATH, { method: "POST", headers: guestHeaders(), body: JSON.stringify(input) });
 }
 
 // ===========================================================================
@@ -508,7 +720,7 @@ export type SignatureResponse = {
 };
 
 export type PaymentLinkResponse =
-  | { status: "settled" | "no_folio"; paymentStatus: string }
+  | { status: "settled" | "no_folio" | "no_charges"; paymentStatus: string }
   | { status: "at_reception"; paymentStatus: "at_reception"; reason: string; details?: unknown }
   | { status: "link_sent"; paymentStatus: "link_sent"; link: { redirect: { method: "GET"; url: string } | { method: "POST"; url: string; fields: Record<string, string> }; idempotent: boolean; intent?: unknown } };
 
@@ -878,6 +1090,23 @@ export async function arrive(method?: string | null): Promise<ArriveResponse> {
     return { reservationId: session.reservationId, sessionId: session.id, actor: kioskToken ? "kiosk" : "guest", room: { id: "room_demo_432", number: "432", floor: "4" }, reassigned: false, key: { serialNumber: "demo000000000000000000ff", qr: "hotelos://unlock?serial=demo", validFrom: session.checkedInAt, validUntil: new Date(Date.now() + 3 * 86_400_000).toISOString(), wallet: { apple: { signedByApple: false, pass: null }, google: null } }, ses: { status: "queued", submissions: [], warnings: [] }, welcome: { status: "simulated", channel: "email" }, checkedInAt: session.checkedInAt, warnings: [] };
   }
   return request<ArriveResponse>(`${CHECKIN_PATH}/arrive`, { method: "POST", headers: guestHeaders(), body: JSON.stringify(method ? { verification: { method } } : {}) });
+}
+
+/** 200 de POST /guest-portal/check-in/handoff (corrector L7-REV-05): la sesión queda `handed_off` en el SERVIDOR y este es el ticket que lee recepción. */
+export type HandoffResponse = { sessionId: string; reservationId: string; status: "handed_off"; handoffKind: string; ticket: string; kioskDeviceId: string | null; idempotent: boolean };
+
+/**
+ * «Firmar en recepción» (kiosco o móvil): deriva la sesión al mostrador en el
+ * servidor. Sin API: derivación de demostración con un ticket fijo.
+ */
+export async function handoffCheckIn(kind: "signature" = "signature"): Promise<HandoffResponse> {
+  if (!baseUrl) {
+    await delay(300);
+    const session = ensureStubSession();
+    session.status = "handed_off";
+    return { sessionId: session.id, reservationId: session.reservationId, status: "handed_off", handoffKind: "signature_pending", ticket: "K-0001", kioskDeviceId: kioskToken ? "kiosk_demo" : null, idempotent: false };
+  }
+  return request<HandoffResponse>(`${CHECKIN_PATH}/handoff`, { method: "POST", headers: guestHeaders(), body: JSON.stringify({ kind }) });
 }
 
 // ---- Kiosk -------------------------------------------------------------------------

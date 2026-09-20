@@ -264,6 +264,64 @@ describe("W4-C · pre-check-in en el kiosco (x-kiosk-token) y tenencia", () => {
     assert.ok(done.body.guests.every((guest: Record<string, any>) => typeof guest.guestRegisterRecordId === "string"));
   });
 
+  it("corrector L7-REV-05: «Firmar en recepción» desde el kiosco → POST /guest-portal/check-in/handoff deriva la sesión en el servidor (handed_off · signature_pending · ticket K-nnnn · kioskDeviceId · auditoría · cola de Mi día); segunda llamada idempotente; recepción la resuelve", async () => {
+    const before = await prisma.checkInSession.findUniqueOrThrow({ where: { id: sessionId } });
+    assert.equal(before.status, "ready_for_arrival");
+    const res = await kioskCall("POST", "/guest-portal/check-in/handoff", { kind: "signature" });
+    assert.equal(res.status, 200, res.raw.slice(0, 400));
+    assert.equal(res.body.sessionId, sessionId);
+    assert.equal(res.body.status, "handed_off");
+    assert.equal(res.body.handoffKind, "signature_pending");
+    assert.match(String(res.body.ticket), /^K-\d{4}$/);
+    assert.equal(res.body.kioskDeviceId, deviceId);
+    assert.equal(res.body.idempotent, false);
+    const ticket = res.body.ticket as string;
+
+    const row = await prisma.checkInSession.findUniqueOrThrow({ where: { id: sessionId } });
+    assert.equal(row.status, "handed_off");
+    assert.equal(row.handoffKind, "signature_pending");
+    assert.equal(row.handoffReason, `Firma en recepción · ticket ${ticket}`);
+    assert.equal(row.kioskDeviceId, deviceId);
+    assert.ok(row.arrivedAt, "en el kiosco el huésped ya está en el hotel");
+
+    // Recepción lo ve: vista de la reserva y cola de Mi día con el ticket en el contexto.
+    const staff = await call("GET", `/reservations/${reservationId}/check-in`, { headers: receptionist.headers });
+    assert.equal(staff.status, 200, staff.raw.slice(0, 300));
+    assert.equal(staff.body.status, "handed_off");
+    assert.equal(staff.body.handoffKind, "signature_pending");
+    assert.equal(staff.body.handoffReason, `Firma en recepción · ticket ${ticket}`);
+    const queue = await call("GET", `/dashboards/front-desk-queue?propertyId=${A.propertyA}`, { headers: receptionist.headers });
+    assert.equal(queue.status, 200, queue.raw.slice(0, 300));
+    const item = (queue.body.items as Array<{ id: string; kind: string; context: string; priority: string }>).find((entry) => entry.id === `signature_pending_${reservationId}`);
+    assert.ok(item, `ítem signature_pending en la cola (hay: ${(queue.body.items as Array<{ id: string }>).map((entry) => entry.id).join(", ")})`);
+    assert.equal(item!.kind, "signature_pending");
+    assert.equal(item!.priority, "today");
+    assert.match(item!.context, new RegExp(`Derivado desde el kiosco.*ticket ${ticket}`));
+
+    await flushAuditQueues();
+    const audit = await prisma.auditEvent.findFirst({ where: { action: "CheckInHandedOff", entityType: "checkin_session", entityId: sessionId } });
+    assert.ok(audit, "auditoría CheckInHandedOff");
+    assert.equal(audit!.actorUserId, `kiosk:${deviceId}`);
+    assert.equal((audit!.afterJson as { ticket: string }).ticket, ticket);
+
+    // Segunda pulsación: mismo ticket, sin escribir.
+    const again = await kioskCall("POST", "/guest-portal/check-in/handoff", { kind: "signature" });
+    assert.equal(again.status, 200, again.raw.slice(0, 300));
+    assert.equal(again.body.ticket, ticket);
+    assert.equal(again.body.idempotent, true);
+    const badKind = await kioskCall("POST", "/guest-portal/check-in/handoff", { kind: "otra" });
+    assert.equal(badKind.status, 400);
+    const anonymous = await call("POST", "/guest-portal/check-in/handoff", { payload: { kind: "signature" }, env: GUEST_ENV });
+    assert.equal(anonymous.status, 401);
+
+    // Recepción resuelve la derivación: los viajeros están completos → ready_for_arrival (la prueba de llegada sigue).
+    const resolved = await call("POST", `/reservations/${reservationId}/check-in/resolve-handoff`, { headers: receptionist.headers, payload: { note: "firma recogida en el mostrador" } });
+    assert.equal(resolved.status, 200, resolved.raw.slice(0, 400));
+    assert.equal(resolved.body.resolvedTo, "ready_for_arrival");
+    assert.equal(resolved.body.handoffKind, null);
+    assert.equal((await prisma.checkInSession.findUniqueOrThrow({ where: { id: sessionId } })).status, "ready_for_arrival");
+  });
+
   it("token de kiosco de otra propiedad: el API lo ignora (firma touch_portal, actor guest); token de huésped de otra propiedad → 401", async () => {
     // Firma con el kiosco de B sobre la sesión de A: el actor sigue siendo el huésped (touch_portal), nunca touch_kiosk.
     const signed = await guestCall("POST", `/guest-portal/check-in/guests/${primaryCheckInGuestId}/signature`, { pngBase64: PNG_B64, strokeMeta: STROKE }, { "x-kiosk-token": foreignDeviceToken });

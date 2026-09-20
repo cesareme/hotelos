@@ -27,6 +27,7 @@
 //  14.  minor_without_guardian · sesión handed_off (menor sin adulto) → urgente
 //  15.  room_not_ready         · sesión handed_off (habitación no lista al llegar) → urgente
 //  16.  payment_failed         · sesión handed_off (pago rechazado / sin PSP) → hoy
+//  16b. signature_pending      · sesión handed_off (firma pedida en el mostrador desde el kiosco/móvil) → hoy
 //  17.  ses_rejected           · parte SES rechazado hoy → hoy
 //  18.  assignment_suggested   · llegada de MAÑANA sin habitación con sugerencia
 //                                pendiente (lote de las 18:00) → confirmar en un clic
@@ -84,7 +85,9 @@ export type FrontDeskQueueKind =
   | "minor_without_guardian"
   | "room_not_ready"
   | "payment_failed"
-  | "ses_rejected";
+  | "ses_rejected"
+  // Corrector L7-REV-05: «Firmar en recepción» desde el kiosco (handoffKind signature_pending).
+  | "signature_pending";
 
 export type FrontDeskQueueActionKind =
   | "open_reservation"           // navega al detalle de la reserva
@@ -173,18 +176,24 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SELF_CHECKIN_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /** `CheckInSession.handoffKind` → kind de cola (diseño §4d). Kinds no listados (group_arrival, walk_in…) no generan ítem en este lote. */
-const HANDOFF_QUEUE_KIND: Record<string, Extract<FrontDeskQueueKind, "identity_review" | "minor_without_guardian" | "room_not_ready" | "payment_failed">> = {
+const HANDOFF_QUEUE_KIND: Record<string, Extract<FrontDeskQueueKind, "identity_review" | "minor_without_guardian" | "room_not_ready" | "payment_failed" | "signature_pending">> = {
   identity_review: "identity_review",
   identity_mismatch: "identity_review",
   minor_without_guardian: "minor_without_guardian",
   room_not_ready: "room_not_ready",
-  payment_failed: "payment_failed"
+  payment_failed: "payment_failed",
+  signature_pending: "signature_pending"
 };
 
 const HANDOFF_COPY: Record<
-  "identity_review" | "minor_without_guardian" | "room_not_ready" | "payment_failed",
+  "identity_review" | "minor_without_guardian" | "room_not_ready" | "payment_failed" | "signature_pending",
   { priority: FrontDeskQueuePriority; title: string; recommendation: string }
 > = {
+  signature_pending: {
+    priority: "today",
+    title: "Firma en recepción",
+    recommendation: "El huésped pidió firmar en el mostrador (kiosco o móvil): recoge la firma con el pad del cajón de check-in y cierra la llegada."
+  },
   identity_review: {
     priority: "urgent",
     title: "Revisar identidad",
@@ -282,7 +291,9 @@ const KIND_ORDER: FrontDeskQueueKind[] = [
   "ses_rejected",
   "assignment_suggested",
   "precheckin_ready",
-  "self_checkin_done"
+  "self_checkin_done",
+  // Corrector L7-REV-05 (al final: el orden previo no cambia).
+  "signature_pending"
 ];
 
 /** Todos los kinds están en KIND_ORDER (`counts` los cubre todos). */

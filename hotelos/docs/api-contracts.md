@@ -645,10 +645,11 @@ producción el portal es same-origin tras Caddy.
 | `POST /guest-portal/check-in/guests/:id/mrz` | `{ lines: string \| string[] (2-3 líneas ≤ 44) }` | `MrzApplyResult { guest, missing[], capture { id, source: "mrz_reader", format, checks, needsReview, fields (no PII) }, warnings[] }`; 400 `MRZ_CHECKSUM_FAILED`; marca `identityVerificationMethod mrz_checksum` sin `identityVerifiedAt`. Corrector REV3-05 (§4d): si el nombre del documento no coincide con ningún viajero de la reserva, los campos NO se aplican, `capture.needsReview = ["identity_mismatch"]` y `warnings` lo dice (recepción coteja) |
 | `POST /guest-portal/check-in/guests/:id/document` (bodyLimit 8 MB) | `{ imageDataUrl?: "data:image/…;base64,…", mrzLines?, documentType? }` (uno de los dos) | `{ capture: DocumentCaptureResult & { captureId, persisted, warnings[] }, guest, session }`; 400 `DOCUMENT_UNREADABLE { captureId, needsReview, warnings }` cuando ni MRZ válida ni visión; 413 si la imagen supera `CHECKIN_DOCUMENT_MAX_BYTES`; nombre distinto del titular/acompañantes → aviso + `identity_mismatch` en `needsReview` y el viajero no se actualiza |
 | `POST /guest-portal/check-in/guests/:id/signature` | `{ pngBase64, svg?, strokeMeta: { points, durationMs, bbox } }` | 201 `SignGuestResult { signatureId, guestRegisterRecordId, checkInGuestId, sha256, pdfSha256, signedAt, retentionUntil, method: touch_portal\|touch_kiosk, guestRegisterStatus, checkInGuestStatus }`; 409 `SIGNATURE_NOT_REQUIRED` (< 14 años), 409 `GUEST_REGISTER_INCOMPLETE { missing }`, 413 `SIGNATURE_TOO_LARGE { maxBytes }` |
-| `POST /guest-portal/check-in/payment-link` | `{ returnUrl?, clientRequestId? }` | `{ status: "no_folio" \| "settled" \| "link_sent" \| "at_reception", paymentStatus, link? }` (`link_sent` 202, 200 si idempotente); `PSP_NOT_CONFIGURED` del PSP se convierte en `at_reception` con `details`; auditoría `CheckInPaymentStatusChanged` |
+| `POST /guest-portal/check-in/payment-link` | `{ returnUrl?, clientRequestId? }` (`returnUrl` SOLO `http(s)://`, corrector REV-L7-08) | `{ status: "no_folio" \| "no_charges" \| "settled" \| "link_sent" \| "at_reception", paymentStatus, link? }` (`link_sent` 202, 200 si idempotente); `no_charges` = folio SIN líneas (corrector L7-REV-03: no persiste `paymentStatus paid` sobre una cuenta vacía; `paymentStatus` = el de la sesión); `PSP_NOT_CONFIGURED` del PSP se convierte en `at_reception` con `details`; auditoría `CheckInPaymentStatusChanged` |
 | `POST /guest-portal/check-in/complete` | — | sesión `ready_for_arrival` + parte por viajero + evento `CheckInPreArrivalCompleted`; 409 `CHECKIN_INCOMPLETE { missing: { checkInGuestId, ordinal, isPrimary, fields[] }[] }` |
 | `POST /guest-portal/check-in/otp/request` · `…/otp/verify` | `{ channel: "email" \| "phone" }` · `{ code }` | `{ channel, method, expiresAt, simulated, debugCode? }` (solo fuera de producción con `HOTELOS_ALLOW_DEMO_AUTH=true`) · `VerifyOtpResult { sessionId, checkInGuestId, method, verifiedAt, policyAllowed, guestStatus, guestRegisterRecordId }` (corrector SEC-10); 409 `OTP_METHOD_NOT_ALLOWED { method, allowedMethods }`, 409 `OTP_INVALID { reason }`, 429 `OTP_RATE_LIMITED` (reenvío antes de 60 s o `CHECKIN_OTP_MAX_ATTEMPTS`) |
 | `POST /guest-portal/check-in/arrive` | `{ verification?: { method? } }` | `CompleteCheckInResult { reservationId, sessionId, actor: guest\|kiosk, room { id, number, floor }, reassigned, key { status, … }, ses { status: queued\|partial\|warning, submissions[], warnings[] }, welcome { status: sent\|simulated\|failed\|skipped, channel, deliveryId? }, checkedInAt, warnings[] }`; 409 `IDENTITY_NOT_VERIFIED { reason }`, `GUEST_REGISTER_INCOMPLETE { missing[].reason: signature\|legacy_signature\|guest_register_record }`, `CHECK_IN_DATE_OUT_OF_RANGE`, `BALANCE_DUE { required, paid, balanceDue, depositPolicy, paymentStatus, handoffKind? }` (corrector REV3-02: `at_reception` —sin PSP— solo vale con `allowPayAtReception`; si no, la sesión pasa a `handed_off` con `handoffKind: payment_failed` para que recepción cobre y cierre desde el cajón), `ROOM_NOT_READY { etaReady, handoffKind: room_not_ready }` (la sesión queda `arrived`; una habitación con RoomBlock que solape la estancia cuenta como no lista, corrector REV3-01), `CHECKIN_ALREADY_DONE` |
+| `POST /guest-portal/check-in/handoff` (token del huésped; con `x-kiosk-token` el kiosco queda como origen; corrector L7-REV-05) | `{ kind: "signature" }` (`.strict()`) | `GuestHandoffResult { sessionId, reservationId, status: "handed_off", handoffKind: "signature_pending", ticket: "K-nnnn", kioskDeviceId, idempotent }`: «Firmar en recepción» deriva la sesión en el SERVIDOR — `handed_off`, `handoffKind signature_pending`, `handoffReason «Firma en recepción · ticket K-nnnn»`, `kioskDeviceId` (+ `arrivedAt` en el kiosco), auditoría `CheckInHandedOff` (actor `kiosk:<id>` o el contexto de servicio del huésped) — y aparece en `GET /dashboards/front-desk-queue` como `kind signature_pending` (prioridad `today`, ticket en `context`) y en `GET /reservations/:id/check-in`. El ticket es determinista por sesión (`handoffTicketFor`, FNV-1a): la tablet SOLO pinta el que devuelve esta ruta (antes lo calculaba el cliente sin que el servidor supiera nada). Segunda llamada con la sesión ya derivada por el mismo motivo → mismo ticket, `idempotent: true`, sin escribir. Recepción resuelve con `POST /reservations/:id/check-in/resolve-handoff`. 409 `CHECKIN_SESSION_CLOSED { status }` con la sesión `checked_in` \| `expired` \| `cancelled`; 400 `VALIDATION_ERROR`; 401 sin token |
 | `POST /guest-portal/check-in/kiosk/claim` (10/min por IP) | `{ code }` (8 dígitos) | `{ deviceToken, device: KioskDeviceDto, capabilities }` una sola vez; 409 `KIOSK_PAIRING_INVALID`; exige el módulo en la propiedad del kiosco |
 | `POST /guest-portal/chat` (30/min por IP) | `{ text (≤ 4.000), conversationId?, language? }` | `GuestBotResult { conversationId, messageId, reply, intent, confidence, mode: rules\|llm, action: answered\|updated\|pending_confirmation\|handoff\|identify\|duplicate\|disabled, toolCallId, disclosureShown, identified, language, duplicate }`; no abre sesión de check-in; el `propertyId` sale del token verificado |
 
@@ -731,6 +732,125 @@ Auditoría (`audit_events.action`): `CheckInSessionCreated`, `CheckInInvited`, `
   `isCheckInSessionMissing`, `normalizeMrzInput`). Portal (`apps/guest-web/src/api/client.ts`): `/guest-portal/check-in*`
   y `/guest-portal/chat`; rutas `/checkin` o `?checkin=1` abren el asistente, `?kiosk=1&device=<id>` el modo kiosco
   (sesión en `sessionStorage`, nunca `localStorage`).
+
+## Portal del huésped · estancia y salida (Tanda L7 · 2026-09-20)
+
+Lote L7-02 (recon L7 §19.1-19.6). Módulo `apps/api/src/modules/guest-portal/`: `guest-stay.service.ts` (vista, PDF,
+peticiones, enlace de pago; dependencias inyectables `GuestStayDeps`), `guest-portal.routes.ts`
+(`registerGuestPortalRoutes(app)`, registrado en `server.ts` tras `registerCheckinRoutes`) y
+`route-permissions.partial.ts` (4 entradas `permissions: [], riskLevel: "public"`). Tipos wire en
+`packages/shared/src/guest-portal-types.ts` (`GuestStayView`, `GuestStayStage`, `GuestStayRequestInput/Result`,
+`GuestStayPaymentLinkResponse`, `GuestSessionCheckDto`, `GUEST_STAY_REQUEST_KINDS`, `GUEST_PORTAL_ERROR_CODES`).
+
+**Autenticación**: el token opaco de `GuestPortalSession` ES la credencial — cabecera `x-guest-token`; `?token=` se admite
+ÚNICAMENTE en `GET /guest-portal/invoices/:id/pdf` (el enlace de descarga no puede llevar cabeceras; corrector
+L7-REV-09: `GET /guest-portal/stay` y `GET /guest-portal/survey` con `?token=` → 401, así el token no queda en el
+historial ni en el Referer). Prefijos `/guest-portal/stay`, `/guest-portal/invoices` y `/guest-portal/survey` (L7-04) en
+`PUBLIC_PREFIXES` (`lib/auth-context.ts`): el hook de personal deja pasar sin JWT y cada handler llama a
+`verifyGuestToken`; sin token, caducado o revocado → 401 `{ message, details: { code: "GUEST_SESSION_INVALID" } }`
+(también en el legado `GET /guest-portal/reservation`, `POST …/pre-check-in` y `POST …/service-request`). El
+`reservationId` y el `propertyId` salen SIEMPRE de la sesión verificada, nunca del cliente. Sin gate de módulo (como
+`GET /guest-portal/reservation`; las rutas `/guest-portal/check-in*` siguen exigiendo `guest_self_service`).
+
+**Ámbito de la sesión (corrector L7-REV-01)**: `guest_portal_sessions.purpose` (migración
+`20260920210000_guest_portal_session_purpose`, `TEXT NOT NULL DEFAULT 'sign_in'`; `GUEST_SESSION_PURPOSES` en
+`guest-portal-types.ts`) = `sign_in` (código + correo, 24 h) · `invitation` (enlace del check-in en línea, hasta la salida
++ 1 d) · `survey` (enlace de la encuesta post-estancia, 30 d). `verifyGuestToken(token, { purposes })` solo admite por
+defecto `sign_in` + `invitation` (`GUEST_PORTAL_FULL_ACCESS`): una sesión `survey` presentada a `/stay`, `/reservation`,
+`/stay/requests`, `/stay/payment-link`, `/invoices/:id/pdf`, `/check-in*`, `/chat`, `/service-request`… responde 401
+`GUEST_SESSION_INVALID`; las ÚNICAS rutas que la aceptan son `GET|POST /guest-portal/survey` (`GUEST_PORTAL_ANY_PURPOSE`).
+`VerifiedGuestSession.purpose` viaja al servicio y `GuestSurveyView.sessionPurpose` al portal, que con `survey` monta solo
+la encuesta y ofrece «Entrar en el portal con mi código».
+
+| Método y ruta (huésped) | Cuerpo / consulta | Respuesta · errores |
+|---|---|---|
+| `GET /guest-portal/stay` | — | `GuestStayView { stage, today, reservation, checkIn, folio, invoices[], info, requests[], survey }`. `stage` por la fecha LOCAL de `Property.timezone` (`today`, YYYY-MM-DD) y el estado: `pre_arrival` (confirmada, hoy < llegada) · `arrival_day` (confirmada, llegada ≤ hoy < salida, sin check-in) · `in_house` (checked_in, hoy < salida) · `departure_day` (checked_in, hoy ≥ salida) · `post_stay` (checked_out, o confirmada con la salida pasada) · `cancelled` (cancelled \| no_show). `reservation` = proyección de `GET /guest-portal/reservation` (titular = `primaryGuest { firstName, surname1Initial }`; nunca acompañantes). `checkIn { status: CheckInSession.status, keyIssued }` (`keyIssued` = `GuestPortalAction` `mobile_key` activa) o `null` sin sesión. `folio { status: no_folio \| settled \| balance_due, balanceDue, currency, charges[{ description, quantity, total, postedAt }], payments[{ amount, method, status, createdAt }] }` = folio principal REAL (`findReservationFolio`; sin folio, `balanceDue 0` y `currency null`). `invoices[{ id, number, issuedAt, total, currency }]` = `Invoice.reservationId` de la reserva con `status issued` (los borradores no salen). `info { wifiName, wifiPassword, breakfastHours, checkOutTime, receptionPhone, address }` (todo `string \| null`): wifi y desayuno vía `extractWelcomeFaqDetails`, hora de salida y teléfono por las mismas claves que el bot (`checkOutTime` / `checkout_time` / `checkOutHours` / `checkout` / `checkOut`; `receptionPhone` / `reception_phone` / `phone` / `phoneNumber` / `telefono` / `reception`) de `PropertyAiSetting.configurationJson.faq` (editable con `PATCH /backoffice/properties/:propertyId/ai-settings`), `address` = `Property.address`, CP + municipio, provincia; lo no configurado es `null`, nunca inventado. `requests[{ id, kind: ServiceRequest.requestType, status, createdAt }]` (últimas 50 de la reserva). `survey { invited, answered }` = `notification_deliveries.notificationId = post_stay_survey:<reservationId>` / `survey_responses.reservationId` (L7-04). 401 `GUEST_SESSION_INVALID` |
+| `GET /guest-portal/invoices/:id/pdf` (`?download=1` → `attachment`) | — | `application/pdf` (`renderInvoicePdf`, mismo documento que `GET /invoices/:id/pdf` de personal; `Content-Disposition inline; filename="FAC-…pdf"`, `Cache-Control private, no-store`) SOLO si `Invoice.reservationId` = reserva de la sesión, misma propiedad, no borrada y `status ≠ draft`; en cualquier otro caso 404 «Factura no encontrada.» (opaco); 401 sin token |
+| `POST /guest-portal/stay/requests` | `{ kind: express_checkout \| late_checkout \| invoice_email \| luggage, note?: ≤ 500, preferredTime?: "HH:MM" }` (zod `.strict()`) | 201 `{ id, ticketNumber: "SRQ-<8>", kind, status: "open" }`; crea `ServiceRequest { requestType = kind, status open, assignedDepartment "front_office", reservationId, guestId (titular de la sesión) }` + evento de dominio `GuestCheckoutRequested { reservationId, reservationCode, ticketNumber, kind, note, preferredTime }` (`ServiceRequest` no tiene columna de descripción: la nota solo va al evento, como `GuestServiceRequested`); recepción la ve en `GET /reservations/:id/activity` (kind `service_request`, título «Salida exprés» / «Salida tardía» / «Factura por correo» / «Consigna de equipaje», departamento «Recepción») y la cierra con `PATCH /service-requests/:id`. 400 `VALIDATION_ERROR`; 409 `STAY_CLOSED { status }` si la reserva está `cancelled` \| `no_show`; 404 «Reserva no encontrada.». **Por etapa (corrector L7-REV-02 / REV-L7-04)**: `GUEST_STAY_REQUEST_KINDS_BY_STAGE` (`guest-portal-types.ts`, espejo `stay.ts checkOutOptions`): `pre_arrival` / `arrival_day` → `late_checkout \| luggage`; `in_house` / `departure_day` → las cuatro; `post_stay` → solo `invoice_email`; `cancelled` → ninguna. Fuera de la lista: reserva `checked_out` → 409 `STAY_CLOSED { status: "checked_out", stage, kind }` («tras la salida solo se admite la factura por correo»); resto → 409 `STAY_REQUEST_NOT_ALLOWED { stage, kind, allowed[] }`. La etapa se calcula con la fecha local de `Property.timezone` (misma `stageOf` que la vista) |
+| `POST /guest-portal/stay/payment-link` | `{ returnUrl?, clientRequestId? }` (`.strict()`; `returnUrl` SOLO `http(s)://`, corrector REV-L7-08: `javascript:` / `data:` → 400) | Misma forma que `PaymentLinkResponse` del portal y que `POST /guest-portal/check-in/payment-link`: `{ status: "no_folio", paymentStatus: "none" }` · `{ status: "no_charges", paymentStatus: "none" }` (folio principal SIN líneas, corrector L7-REV-03: una cuenta vacía nunca es «pagada») · `{ status: "settled", paymentStatus: "paid" }` (con cargos y saldo ≤ 0,005) · `{ status: "link_sent", paymentStatus: "link_sent", link: PaymentLinkResponse }` (202; 200 si `idempotent`; `createPaymentLink` con `paymentLinkServiceContext` = SOLO `payment.capture`, actor `guest:<reservationId>`, `clientRequestId` por defecto `guest-portal:<reservationId>:<saldo>`) · sin PSP → 200 `{ status: "at_reception", paymentStatus: "at_reception", reason: "PSP_NOT_CONFIGURED", details }` («se cobra en recepción»). NUNCA registra un pago ni toca `CheckInSession.paymentStatus` (eso es del pre-check-in) |
+
+**Legado verificado (19.6 · D8)**: `GET /guest-portal/session/:token` (manifiesto público; sigue fuera de
+`PUBLIC_PREFIXES`, es decir, con sesión de personal) devolvía `{ status: "active" }` para CUALQUIER token. Ahora
+verifica con `verifyGuestToken`: 401 `GUEST_SESSION_INVALID` si no vale; si vale `GuestSessionCheckDto { token: "[redacted]",
+status: "active", reservationId }` (el token nunca vuelve en claro). `…/:token/folio` y `…/:token/pay` se conservan sin
+cambios (ya verificaban). El token viaja en el path: el log de peticiones lo redacta (`redactTokenInUrl` cubre `?token=`
+y `/guest-portal/session/<token>`, corrector REV-L7-07); el portal usa las rutas nuevas por cabecera.
+
+**Copy en español** (`modules/pms/guest-activity.service.ts`, `GET /reservations/:id/activity`): «Conversación por
+web/WhatsApp/correo/SMS · huésped esperando respuesta», «(sin mensajes todavía)», remitente «Huésped / Personal /
+Asistente», departamentos «Chat / Limpieza / Mantenimiento / Recepción / Restauración / Conserjería», tareas y
+peticiones con vocabulario traducido (valor desconocido → `cap()`); 404 «Reserva no encontrada.».
+
+**Tests**: `apps/api/src/modules/guest-portal/__tests__/guest-stay.test.mts` (etapa por fechas locales y estado con
+reloj inyectado, folio, info desde la FAQ, vista sin PII, peticiones y 409 STAY_CLOSED con dobles; 21 casos) y
+`tests/integration/guest-stay.test.mts` (tenant aislado `org_l2_*` + STRICT_ENV: 200/401, PDF propio por cabecera y
+`?token=` / 404 ajeno-borrador-desconocido, petición → `service_requests` + `/activity` en español + 400/409,
+`at_reception` sin pagos ni intents, legado 19.6, invariantes de Faranda; 11 casos). Corrector L7-REV (2026-09-20):
+`guest-stay.test.mts` 28 casos (peticiones por etapa, `no_charges`, `returnUrl`), `tests/integration/guest-stay.test.mts`
+14 casos (checked_out 409/201, `STAY_REQUEST_NOT_ALLOWED`, `no_charges`, `?token=` solo en el PDF, `/service-request` 409).
+
+### Recorrido del huésped en recepción (lote L7-07 · corrector L7-REV-04)
+
+| Método y ruta (personal) | Cuerpo / consulta | Respuesta · errores |
+|---|---|---|
+| `GET /reservations/:id/guest-journey` (`pms.reservation.read`, low; `journey-route-permissions.partial.ts`; `assertEntityAccess reservation` → 404 opaco «Reserva no encontrada.» también fuera del ámbito) | — | `GuestJourneyView { reservationId, checkIn: GuestJourneyCheckInDto \| null, notifications[], key, requests[], survey, portalSessions }` (wire type en `packages/shared/src/guest-portal-types.ts`; el API lo sirve con la vista precisa de `checkin-session.service.ts` y `apps/admin-web/src/services/guestJourneyApi.ts` lo importa de `@hotelos/shared`). `checkIn` = `toSessionView` (sesión + `policy` + `steps[{ key, status }]`, viajeros con nombre y 3 últimos caracteres del documento; `null` sin sesión). `notifications[{ id, kind: checkin_invitation \| checkin_reminder \| welcome \| post_stay_survey, templateCode, channel, status: pending \| sent \| failed, simulated, recipient, sentAt, failedAt, createdAt, error }]` en orden cronológico (≤ 50): `recipient` SIEMPRE enmascarado (`a***@dominio` / `***123`), nunca asunto, cuerpo ni payload; `simulated: true` = `status sent` + `errorMessage «SIMULADO…»` (sin proveedor); `error` solo con `status failed`. Se seleccionan por `notificationId`: `checkin_invitation:<gps>` / `checkin_reminder:<gps>` de TODAS las sesiones del portal de la reserva (igualdad), `post_stay_survey:<reservationId>` por IGUALDAD exacta (corrector REV-L7-01: `res_07` ya no hereda la invitación de `res_07p`) y `welcome:<reservationId>:` como único prefijo. `key` = `GuestJourneyKeyDto { issued: true, serial, status, validFrom, validUntil, issuedAt, signedByApple }` de la `GuestPortalAction mobile_key` activa (sin `qrPayload` ni hash del secreto) o `null`. `requests[{ id, kind: ServiceRequest.requestType, status, department, createdAt }]` (≤ 50, más reciente primero). `survey { invitedAt, answeredAt, score }` (última entrega `post_stay_survey` exacta; `score` = columna o `responsesJson.score \| nps \| rating`). `portalSessions { active, lastCreatedAt }` (activas y no caducadas; cuenta también la de la encuesta). Solo lectura. 404 «Reserva no encontrada.» |
+
+**Tests**: `apps/api/src/modules/guest-portal/__tests__/guest-journey.test.mts` (13 casos; `r1` / `r1x` no se mezclan) y
+`tests/integration/guest-journey.test.mts` (5 casos).
+
+### Encuesta post-estancia (lote L7-04 · recon §19.7 · REPUTACION-REVIEWS §6.4 · T8 decisión 14)
+
+**Migración** `20260920190000_portal_huesped_l7` (aditiva, reversible con `DROP COLUMN`; sin índices ni enums):
+`property_checkin_policies.post_stay_survey_enabled boolean NOT NULL DEFAULT false` y `post_stay_survey_delay_hours
+integer NOT NULL DEFAULT 24`. `surveys` / `survey_responses` no cambian: una respuesta por reserva se garantiza en código.
+**Política** (`GET|PUT /properties/:propertyId/check-in/policy`, `PropertyCheckInPolicyDto` + `PolicyPutSchema`):
+`postStaySurveyEnabled` (defecto `false`; `true` en `prop_chk` por `db:seed:checkin`) y `postStaySurveyDelayHours`
+(entero 0-72, defecto 24 = horas desde las 00:00, hora local del tick, del día de salida; el tope de 72 h garantiza que la
+ventana de 3 días del paso nunca quede vacía). **Plantilla de sistema** `post_stay_survey` (`notifications/system-templates.ts`;
+email es/en, whatsapp es, sms es; variables `guestFirstName`, `propertyName`, `surveyUrl`; texto plano, marca solo en
+el pie, sin enlace al asistente; una fila `NotificationTemplate` del hotel con el mismo código la sustituye).
+
+**Paso del tick** (`guest-portal/post-stay-survey.service.ts · runPostStaySurveyStep(deps, clock)`, invocado como paso
+5 e INDEPENDIENTE de `runTickWork` en `checkin/checkin-jobs.ts`, con su propio try/catch; resumen
+`summary.postStaySurvey = { invited, skipped, failed }` y los fallos por reserva en `failed[]` con `step:
+"post_stay_survey"`): propiedades con `postStaySurveyEnabled` → reservas `checked_out` no borradas con `departureDate` en
+`[hoy − 3 d, día local de (ahora − delayHours)]` → titular (`ReservationGuest.isPrimary`, o `bookerEmail`) con correo y
+consentimiento (`CheckInSession.consentJson.gdprAt`, o `Guest.gdprConsentFlags.marketing !== false` y
+`Guest.marketingConsent !== false`) → `GuestPortalSession` de 30 días (`issueGuestPortalSession`, `guestId` = titular,
+solo el hash en la fila) → `dispatch` por **correo** con `notificationId post_stay_survey:<reservationId>` y `redact:
+{ variables: ["surveyUrl"], values: [token] }` (el token NUNCA se persiste en `notification_deliveries`). Enlace
+`${GUEST_WEB_BASE_URL}/?survey=1&token=…&property=<propertyId>`. Idempotente: comprobación previa de la entrega +
+idempotencia del dispatcher → `skipped already_invited`; otros motivos: `no_recipient`, `consent_refused`,
+`session_not_issued`, `template_not_found`, `<error del proveedor>`. Sin `EMAIL_PROVIDER` la entrega queda `sent` +
+`errorMessage "SIMULADO…"` (nunca un envío ficticio; en producción sin proveedor → `failed`). Auditoría
+`PostStaySurveyInvited` (entityType `reservation`, actor `system:checkin:post_stay_survey` o el usuario de la ruta manual;
+destinatario enmascarado, sin token). Actor sin dinero ni override (CHECKIN_SERVICE_PERMISSIONS no se usa: el paso escribe
+solo sesión + entrega + auditoría).
+
+| Método y ruta | Cuerpo / consulta | Respuesta · errores |
+|---|---|---|
+| `POST /reservations/:id/post-stay/survey-invite` (personal, `pms.reservation.modify`, medium; `assertEntityAccess reservation`) | — | 200 `PostStaySurveyInviteResult { reservationId, status: invited \| skipped \| failed, reason, dispatched, simulated, channel: "email" \| null, recipient (enmascarado), deliveryId, surveyUrl? }` = el mismo paso con la reserva forzada (ignora la política y la ventana). `surveyUrl` SOLO cuando `simulated` (sin proveedor alguien tiene que hacer llegar el enlace; el tick nunca lo devuelve). Segunda llamada → `skipped already_invited` con el mismo `deliveryId`. 409 `RESERVATION_NOT_CHECKED_OUT { status }`; 404 «Reserva no encontrada.» |
+| `GET /guest-portal/survey` (token del portal SOLO por `x-guest-token`; admite también la sesión `survey` del enlace) | — | `GuestSurveyView { survey: { id: Survey.id \| null, name, questions[{ key, type: nps \| text \| scale, label, required }] }, answered, answeredAt, available, stage, reservationStatus, reservation: { reservationId, reservationCode, propertyId, propertyName }, sessionPurpose }` (la cabecera mínima sin PII existe porque la sesión `survey` no puede leer `GET /guest-portal/reservation`; `sessionPurpose` = ámbito de la sesión que pregunta). `survey` = la `Survey` `surveyType post_stay` activa más antigua de la propiedad (las `{ id, text }` del editor se normalizan; malformadas o vacías → cuestionario por defecto `nps` + `comment`, `id null` hasta el primer POST). `available` solo con la reserva `checked_out` (stage `post_stay`) y sin respuesta previa (corrector REV-L7-02: una `confirmed` con la salida pasada —no-show sin marcar— es `post_stay` por fecha pero `available false`, misma regla que `survey-invite`). 401 `GUEST_SESSION_INVALID` |
+| `POST /guest-portal/survey` (solo cabecera) | `{ score: entero 0-10, answers?: Record<clave ≤ 60, texto ≤ 2000 \| número> (≤ 20 claves) }` (zod `.strict()`) | 201 `GuestSurveySubmitResult { responseId, surveyId, score, answeredAt }`: crea la `Survey` por defecto si la propiedad no tiene ninguna `post_stay` activa y una `SurveyResponse { surveyId, reservationId, guestId (titular de la sesión), score (columna: regla NPS de `dashboards/surveys.service.ts`), responsesJson: { ...answers, score, source: "guest_portal" } }` (el dashboard lee `comment`); auditoría `SurveyResponseReceived` con `answerKeys` (nunca el texto libre). 409 `SURVEY_ALREADY_ANSWERED { responseId, answeredAt }`; 409 `SURVEY_NOT_AVAILABLE { stage, status }` fuera de `post_stay` o con la reserva sin `checked_out` («La encuesta es solo para estancias con salida registrada.»); 400 `VALIDATION_ERROR`; 401 sin token o con `?token=` |
+
+`GET /guest-portal/stay` (L7-02) sigue informando `survey { invited, answered }` con el mismo `notificationId`. Tipos wire en
+`packages/shared/src/guest-portal-types.ts` (`GuestSurveyView`, `GuestSurveyQuestion`, `GuestSurveySubmitInput/Result`,
+`PostStaySurveyInviteResult`, `DEFAULT_GUEST_SURVEY_QUESTIONS`; códigos `SURVEY_ALREADY_ANSWERED`, `SURVEY_NOT_AVAILABLE`,
+`RESERVATION_NOT_CHECKED_OUT` en `GUEST_PORTAL_ERROR_CODES`). Seed `db:seed:checkin`: política de `prop_chk` con la
+encuesta activa (24 h) y `Survey` fija `chk_survey_post_stay`; `--reset` borra solo las respuestas de las encuestas de
+`prop_chk`. Fuera del lote (REPUTACION §6.4): el caso `survey_detractor` (≤ 6) no se crea todavía.
+
+**Tests**: `apps/api/src/modules/guest-portal/__tests__/post-stay-survey.test.mts` (ventana/consentimiento/enlace/preguntas
+puras, ámbito por política y ventana, entrega simulada con token redactado, idempotencia por notificationId, sin correo /
+consentimiento negado, fallos, modo forzado, GET/POST del portal con dobles; 17 casos),
+`checkin/__tests__/checkin-jobs.test.mts` (paso 5 cableado: reloj/zona, resumen, fallos, lock; 17 casos),
+`notifications/__tests__/checkin-templates.test.mts` (`post_stay_survey`; 14 casos), `tests/seed-checkin-contract.test.mjs`
+(política + Survey de prop_chk; 14 casos) y `tests/integration/guest-survey.test.mts` (tenant aislado: política por API,
+invite 409/404/200 SIMULADO con token redactado y visible en `GET /notifications/deliveries`, idempotencia, GET/POST del
+portal 201 → 409, validación, `SURVEY_NOT_AVAILABLE`, NPS en `/dashboards/surveys`, paso del tick sobre Postgres acotado
+al tenant, token caducado 401, invariantes de Faranda; 11 casos). Corrector L7-REV: `post-stay-survey.test.mts` 18 casos
+(`surveyOpenFor`, sesión `purpose: "survey"`), `guest-survey.test.mts` 13 casos (ámbito `survey` → 401 en el resto del
+portal, nunca se alojó → 409, `reservation` + `sessionPurpose` en la vista).
 
 ## Tanda L2 · Persistencia y API (2026-09-18)
 

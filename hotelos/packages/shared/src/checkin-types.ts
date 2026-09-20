@@ -318,6 +318,10 @@ export interface PropertyCheckInPolicyDto {
   welcomeChannelOrder: CheckInChannel[];
   guestConsentText: string | null;
   aiDisclosureText: string | null;
+  /** Tanda L7 (L7-04): el tick del check-in invita a la encuesta post-estancia a las reservas checked_out (opt-in por propiedad). */
+  postStaySurveyEnabled: boolean;
+  /** Horas desde las 00:00 (hora local del tick) del día de salida hasta la invitación (0-72; 24 = el día siguiente). */
+  postStaySurveyDelayHours: number;
   updatedAt: string;
 }
 
