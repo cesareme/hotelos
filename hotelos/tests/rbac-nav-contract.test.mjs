@@ -319,7 +319,14 @@ function parseManifestEntries(source) {
   }));
 }
 
-/** Manifiesto en orden real: los partials se hacen spread al principio de routePermissionManifest. */
+/**
+ * Manifiesto en orden real: los partials se hacen spread al principio de
+ * routePermissionManifest. Se leen TODOS los `*route-permissions.partial.ts`
+ * (como tests/api-route-permissions-contract) y un partial que solo hace
+ * spreads de otros (modules/real-estate/route-permissions.partial.ts →
+ * `<lote>-route-permissions.partial.ts`, ACT-REV-07) se resuelve recursivamente
+ * en el mismo orden.
+ */
 function loadManifest() {
   const apiSrc = new URL("../apps/api/src/", import.meta.url);
   const main = readFileSync(new URL("security/route-permissions.ts", apiSrc), "utf8");
@@ -327,17 +334,22 @@ function loadManifest() {
     .flatMap((mod) => {
       try {
         return readdirSync(new URL(`modules/${mod}/`, apiSrc))
-          .filter((name) => name === "route-permissions.partial.ts")
-          .map(() => ({ mod, source: readFileSync(new URL(`modules/${mod}/route-permissions.partial.ts`, apiSrc), "utf8") }));
+          .filter((name) => name.endsWith("route-permissions.partial.ts"))
+          .map((name) => ({ mod, name, source: readFileSync(new URL(`modules/${mod}/${name}`, apiSrc), "utf8") }));
       } catch {
         return [];
       }
     });
-  const spreadOrder = [...main.matchAll(/^\s*\.\.\.(\w+),/gm)].map((m) => m[1]);
-  const ordered = spreadOrder
-    .map((name) => partials.find((partial) => partial.source.includes(`export const ${name}`)))
-    .filter(Boolean);
-  return [...ordered.flatMap((partial) => parseManifestEntries(partial.source)), ...parseManifestEntries(main)];
+  const spreadsOf = (source) => [...source.matchAll(/^\s*\.\.\.(\w+),?\s*$/gm)].map((m) => m[1]);
+  const entriesOfExport = (name, seen = new Set()) => {
+    if (seen.has(name)) return [];
+    seen.add(name);
+    const partial = partials.find((candidate) => candidate.source.includes(`export const ${name}`));
+    if (!partial) return [];
+    const own = parseManifestEntries(partial.source);
+    return own.length > 0 ? own : spreadsOf(partial.source).flatMap((inner) => entriesOfExport(inner, seen));
+  };
+  return [...spreadsOf(main).flatMap((name) => entriesOfExport(name)), ...parseManifestEntries(main)];
 }
 
 /** Parser CSV RFC 4180 mínimo (comillas dobles, saltos de línea dentro de comillas). */

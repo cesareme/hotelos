@@ -215,11 +215,13 @@ export const NO_ROLE_HOME = "/hoy";
  * §10.2 for the six new tokens). URLs are the ones of the tree;
  * tests/nav-tree-contract.test.mjs checks every home exists there.
  *   - `administracion` → the supplier-bill inbox of Facturación y cobros;
- *   - `rrhh` → Nóminas; `activos` → Cumplimiento › Centro de cumplimiento
- *     (obligaciones, licencias e inspecciones del inmueble) until Finanzas ›
- *     Activo inmobiliario exists (§10.2 named Proveedores y gastos ›
- *     Inmovilizado, but `asset_manager` holds no `payables.read` and the base
- *     screen of that item would answer 403, so the token is not on that row);
+ *   - `rrhh` → Nóminas; `activos` → Finanzas › Activo inmobiliario
+ *     (Tanda ACT · F4: ficha del inmueble, documentación, tributos, obras,
+ *     inspecciones y seguros, grupo; `asset_manager` holds `real_estate.read`,
+ *     and until that item existed the token landed on Cumplimiento › Centro de
+ *     cumplimiento — §10.2 named Proveedores y gastos › Inmovilizado, but
+ *     `asset_manager` holds no `payables.read` and the base screen of that item
+ *     would answer 403, so the token is not on that row);
  *     `auditoria` → Sistema (Auditoría); `sistemas` → Usuarios y roles: none of
  *     the last four sees Mi día, so they land on their own screen;
  *   - `propiedad` → the owner tab of Mi día (`/hoy/propietario`).
@@ -249,7 +251,7 @@ export function roleHome(token: RoleToken | null | undefined, options: RoleHomeO
     case "rrhh":
       return "/finanzas/nominas";
     case "activos":
-      return "/cumplimiento/centro";
+      return "/finanzas/activo-inmobiliario";
     case "auditoria":
       return "/configuracion/sistema";
     case "sistemas":

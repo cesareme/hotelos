@@ -137,6 +137,9 @@ import { startDocumentsRetentionJob } from "./modules/documents/documents-retent
 import { runDocumentPipeline } from "./modules/documents/pipeline.service.js";
 import { describeDocumentStorageHealth, getDocumentsUploadBodyLimit } from "./modules/documents/documents.config.js";
 import { setDocumentsAiPort } from "./modules/documents/documents-ai.port.js";
+// Activo inmobiliario (Tanda ACT): agregador modules/real-estate/real-estate.register.ts
+// (core L1; L2-L6 añaden sus *.routes.ts allí); permisos en modules/real-estate/*route-permissions.partial.ts.
+import { registerRealEstateRoutes } from "./modules/real-estate/real-estate.register.js";
 import { createAiCoreDocumentsPort } from "./modules/documents/documents-ai.core-adapter.js";
 import { isLlmConfigured } from "./lib/llm.js";
 import { createShutdownController } from "./lib/shutdown.js";
@@ -2960,6 +2963,9 @@ export async function buildApiServer() {
   registerNightAuditRoutes(app);
   registerPayablesRoutes(app);
   registerFixedAssetsRoutes(app);
+  // Activo inmobiliario (Tanda ACT): ficha, unidades, cargas, valoraciones y tenencia bajo
+  // /properties/:propertyId/real-estate/* (guardia global de tenencia); tributos, documentos, obras, inspecciones y grupo en sus lotes.
+  registerRealEstateRoutes(app);
   registerTreasuryRoutes(app);
   registerFinancialStatementsRoutes(app);
   // Estructura societaria (Tanda 6b · L2): GET /organizations/me/structure,

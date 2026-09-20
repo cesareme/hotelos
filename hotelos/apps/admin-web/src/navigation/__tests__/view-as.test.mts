@@ -75,7 +75,8 @@ describe("view-as · applyViewAs (the gate every consumer reads)", () => {
     const palette = flatMenuEntries(menuCategories(simulated.tokens, ALL_MODULES, { devMode: true }), { includeTabs: true });
     assert.equal(countMenu(menuCategories(simulated.tokens, ALL_MODULES, { devMode: true })).items, 8);
     // Tanda 5: 64 · Tanda 6 (Contabilidad, Proveedores y gastos): 66 · Tanda 6b (Estructura societaria): 67 · Tanda 8a (Pendientes de aprobación): 68 · fusión TL (Hoy › Live Timeline): 69 · Tanda T9 (Operaciones › Digitalizar): 70.
-    assert.equal(countMenu(menuCategories(ADMIN.tokens, ALL_MODULES, { devMode: false })).items, 70);
+    // Tanda ACT (Finanzas › Activo inmobiliario): 71.
+    assert.equal(countMenu(menuCategories(ADMIN.tokens, ALL_MODULES, { devMode: false })).items, 71);
     assert.ok(palette.every((entry) => entry.categoryKey !== "desarrollo"), "no «Desarrollo» while simulating a hotel role");
     assert.ok(palette.every((entry) => entry.categoryKey !== "finanzas" && entry.categoryKey !== "configuracion"));
   });

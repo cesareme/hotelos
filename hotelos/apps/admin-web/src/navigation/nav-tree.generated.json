@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 294,
+      "csvRows": 300,
       "categories": 9,
-      "items": 70,
-      "tabs": 104,
+      "items": 71,
+      "tabs": 109,
       "devOnly": 21,
       "retired": 72,
       "aliases": 25,
@@ -1536,9 +1536,9 @@
         },
         {
           "screenKey": "PayrollScreen",
-          "label": "Nóminas",
+          "label": "RRHH y nóminas",
           "url": "/finanzas/nominas",
-          "baseTab": null,
+          "baseTab": "Nóminas",
           "roles": [
             "finanzas",
             "direccion",
@@ -1548,6 +1548,87 @@
           ],
           "modulesAny": [],
           "tabs": []
+        },
+        {
+          "screenKey": "RealEstateAssetScreen",
+          "label": "Activo inmobiliario",
+          "url": "/finanzas/activo-inmobiliario",
+          "baseTab": "Ficha",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin",
+            "activos",
+            "auditoria"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "RealEstateDocumentsScreen",
+              "label": "Documentación",
+              "url": "/finanzas/activo-inmobiliario/documentacion",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "activos",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "RealEstateTaxesScreen",
+              "label": "Tributos",
+              "url": "/finanzas/activo-inmobiliario/tributos",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "activos",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "RealEstateWorksScreen",
+              "label": "Obras",
+              "url": "/finanzas/activo-inmobiliario/obras",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "activos",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "RealEstateInspectionsScreen",
+              "label": "Inspecciones y seguros",
+              "url": "/finanzas/activo-inmobiliario/inspecciones",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "activos",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "RealEstateGroupScreen",
+              "label": "Grupo",
+              "url": "/finanzas/activo-inmobiliario/grupo",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "activos",
+                "auditoria"
+              ],
+              "modulesAny": []
+            }
+          ]
         }
       ]
     },

@@ -489,3 +489,92 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda ACT · Activo inmobiliario, 2026-09-20; rama `tanda-act` sobre a069906,
+worktree `~/anfitorio-demo-wt-act/hotelos`, BD `hotelos_act`; informe
+`docs/audits/TANDA-ACT-ACTIVOS-2026-09-20.md` §1-§12; revisado (2 revisores + refutador + corrector) y
+commiteado en la rama por el integrador ACT-INT, sin push ni fusión):
+- entregables: módulo `apps/api/src/modules/real-estate/*` (32 ficheros · 5.808 líneas + 14 suites puras · 2.715;
+  diseño `docs/design/ASSET-MANAGEMENT-INMOBILIARIO.md` con las notas «Estado tras la implementación» §7/§9, runbook
+  `docs/runbooks/activo-inmobiliario.md`, contrato `docs/api-contracts.md` «Activo inmobiliario (Tanda ACT · 2026-09-20)»):
+  **42 rutas en 6 partials** (`core-` 12 · `taxes-` 9 · `documents-` 6 · `works-` 4 · `inspections-` 7 · `group-` 4;
+  agregador `route-permissions.partial.ts` solo spreads; manifiesto 1.031 → **1.073**, cargado con tsx) bajo
+  `/properties/:propertyId/real-estate*`, `/organizations/:organizationId/real-estate/{overview,calendar,export}` y
+  `/capex-projects/:id/{approve,work,capitalize}`, todas registradas por `real-estate.register.ts` desde `server.ts`
+  (`real-estate-core` cruza las 42 entradas de los partials con `app.hasRoute`; las suites ya no cablean rutas de
+  reserva); **0 claves RBAC nuevas** (las 4 de T8a: `real_estate.read | manage | documents.manage`,
+  `property_tax.manage`; catálogo 254, `rbac:sync --dry-run` +0 / 0 stale); ficha con unidades registrales, cargas,
+  valoraciones (sin asiento), tenencia (una vigente; al activarla propone el `taxpayer` de los IBI) y **KPIs y alertas
+  completos** (= vista de grupo = `/alerts`); tributos con recibos previstos por `installmentsJson` o calendario municipal
+  (Madrid 28079; resto LGT 62.3) y **asiento 631 propuesto en borrador** (`createJournalEntryDraft`,
+  `PropertyTaxReceipt.journalEntryId`) que contabiliza `accountant` — un asiento contabilizado no se desenlaza (409
+  `RECEIPT_ENTRY_EXISTS`), no hay segundo 631 por recibo, pagar con borrador lo regenera y con asiento contabilizado
+  propone el asiento de pago D 475 / H 57x, `pagado → recurrido` permitido y los recurridos siguen en el motor de alertas;
+  documentos con fichero sobre el almacén de T9 (`inline | disk | s3`, sha256, magic bytes, versiones, `legalHold`, sin
+  `DocumentFile`; `cdeState wip` solo lo ve quien lo subió, `solo_propiedad` solo `real_estate.manage` / `owner`); obras
+  con **aprobación por `POST /capex-projects/:id/approve`** (`asset.capex.approve`), `PATCH` heredado con máquina
+  CAPEX_WORK, licencia, ICIO, ejecución por prefijos 21x del diario y capitalización sin asiento con fecha de fin de obra;
+  inspecciones y pólizas con máquinas de estado, sucesora automática y `ComplianceItem` sincronizado; motor de alertas
+  90 / 30 / 7 calculado en cada lectura; vista de grupo, calendario anual (etiquetas en español, periodos previstos con
+  `entityType property_tax`) y CSV (BOM, `;`, CRLF, `csvCell` sin fórmulas); `REAL_ESTATE_ERROR_CODES` 18; NIF
+  enmascarados en la auditoría de tenencias / unidades / cargas
+- esquema: **10 modelos** (`RealEstateAsset`, `RealEstateUnit`, `RealEstateCharge`, `RealEstateValuation`,
+  `RealEstateTenure`, `PropertyTax`, `PropertyTaxReceipt`, `RealEstateDocument`, `RealEstateInspection`,
+  `RealEstateInsurance`) **+ 12 columnas** en `capex_projects`, migración aditiva y reversible
+  `20260920170000_activo_inmobiliario` (SQL verbatim de `migrate diff`: 10 `CREATE TABLE`, 12 `ADD COLUMN`, 16 índices, 9
+  FK en cascada, 0 enums, 0 `DROP`; tablas 296 → 306, enums 46); `migrate status` 25/25 «up to date» · `db:drift:check`
+  «No difference detected.» · `check-migrations-vs-schema` OK
+- front Cocoa 22: ítem **Finanzas › Activo inmobiliario** (`/finanzas/activo-inmobiliario`, core, orden 9, roles
+  `finanzas|direccion|admin|activos|auditoria`; `roleHome("activos")` cambia de `/cumplimiento/centro`) con 6 pantallas
+  `screens/realEstate/*` (Ficha · Documentación · Tributos · Obras · Inspecciones y seguros · Grupo; 7 ficheros · 6.515
+  líneas + 7 suites · 2.377) y tab host `screens/tabs/finanzas/ActivoInmobiliarioTabs.tsx`, cliente
+  `services/realEstateApi.ts` (42 funciones + `approve` y cuerpo opcional de capitalizar), 0 `style={}` nuevos (techo 647
+  sin cambio), 6 filas en `pilots/tanda5-nav-tree.csv:295-300`, `nav-tree.generated.json` 71 ítems · 109 pestañas · 203 URLs
+- seed `db:seed:real-estate` (tenant aislado `org_act` / `le_act` / `prop_act_a` propietaria + `prop_act_b` arrendataria de
+  industria, usuarios `activos | contabilidad | direccion | recepcion@act.test`, contraseña `Act-Demo-2026!` o
+  `ACT_DEMO_PASSWORD`, `--dry-run` / `--reset`, `assertDemoTarget` con `org_act` en `DEMO_ORG_IDS`; 2 fichas · 4 tributos
+  · 5 recibos · 11 documentos · 4 inspecciones · 2 pólizas · 1 obra con asiento posted 212/572; Norte 7 alertas, Sur 2;
+  OCA de ascensor con base «RD 355/2024 art. 11.4.a»); resto conocido: el asiento n.º 2 que contabilizó F4 quedó huérfano
+  tras el `--reset` (informe §9.1 #15: enlazarlo al IBI PAC-01 o anularlo); Faranda solo lectura en toda la tanda (0
+  escrituras; suites con tenants `org_l2_*` y limpieza, 0 residuales)
+- ronda de revisión (20/09 13:20-14:56, informe §7): **12 hallazgos confirmados** (6 altos: rutas de documentos sin
+  registrar, `PATCH /capex-projects/:id` sin máquina, 631 duplicable al desenlazar, borrador H 475 de un recibo pagado,
+  aprobación de obras imposible por HTTP, ficha sin KPIs ni alertas; 6 medios: `taxpayer` del IBI, recurridos fuera del
+  motor, `pagado` final, `cdeState wip`, suites que cableaban rutas, `solo_propiedad` sin aplicar) **+ 11 menores, todos
+  corregidos con test** (51 ficheros del corrector; api unit 3.738 → 3.753, integración 1.048 → 1.060), **1 refutado**
+  (alta de ficha sin tributos: decisión de arquitectura documentada) y 3 sin corregir con motivo (instancia huérfana
+  inexistente, 403 de primera carga no reproducido, `pnpm-lock.yaml` intocable)
+- puerta completa final (20/09 14:56, `NAV_TREE_CSV=… bash scripts/gates.sh --json`, BD `hotelos_act`,
+  `scratchpad/ACT/gates-final.json`): **13/14** · typecheck:all 15 PASS · 0 FAIL · 1 SKIP (apps/guest-web) · api unit
+  3.753 (3.752 pass · 0 fail · 1 skip; base 3.569, +184) · admin-web unit 2.111 (2.110 · 0 · 1; base 2.014, +97) ·
+  ai-core 119/119 · worker 34/34 · contratos raíz 789 (787 · 0 · 2; base 765, +24) · integración **1.060 · 1.052 pass ·
+  0 fail · 8 skip** (las 6 suites `real-estate-*` incluidas: 77 tests) · discoverability 203 URLs · 0 huérfanas ·
+  route-access 15 tokens × 203 URLs · cocoa waves §6 al día (inventario 252 pantallas · 175 puntos, techo 647 sin cambio)
+  · rbac:sync dry-run OK (+0 claves · 0 stale) · migrate 25/25 + drift «No difference detected.» · admin-web build OK
+  (3,1 s); **`nav-tree --check` en rojo por causa externa**: el CSV compartido `pilots/tanda5-nav-tree.csv` lleva 4 filas
+  del carril RRHH (302-305, 71 ítems · 113 pestañas) sin pantalla en este worktree — contra una copia sin ellas «up to date
+  (71 · 109 · 205)»; regenerar en main al fusionar con `tanda-rrhh` (esperado 71 · 113 · 207). Línea base del carril
+  (`gates-base.json`) 12/12, puerta completa pre-revisión (`gates-full.json`) 14/14, cada ola 12/12 salvo la 5 (11/12:
+  pantallas huérfanas hasta F4); ningún skip nuevo ni test debilitado (tests existentes editados: 3 pines de
+  `DEMO_ORG_IDS` / seeds guardados + `refresh-demo-dataset` + `api-reference` (+1 `it`, literal de capitalizar pinado) +
+  7 recuentos de navegación por el ítem y las 5 pestañas + `rbac-nav-contract` que ya lee `*route-permissions.partial.ts`
+  + `ledger-engine` (+1 `it` de `csvCell`); 14 asserts eliminados = 14 re-anclados)
+- verificación en runtime tras la corrección (ACT-INT, instancia propia `:3925` PID 37752 parada por PID, solo lectura,
+  `scratchpad/ACT/smoke-int.out`; la de escritura en navegador la dejaron F4 y el revisor funcional en `:5195`):
+  `activos@act.test` → ficha con `annualTaxBurden` 32.340,00 · `documentsValidPct` 87,50 · `inspectionsOnTimePct` 66,67
+  · 7 alertas (2 altas) · 3 tributos = fila del grupo; documentos 200 (9; `?category=licencias` 1); `POST …/approve` 403
+  «requiere: asset.capex.approve»; calendario «Pagado el 15/06/2026 · IBI 2026 (PAC-01)»; CSV con bytes `EF BB BF`;
+  `propose-entry` sobre el PAC-01 del demo → 409 `RECEIPT_ENTRY_EXISTS` apuntando al asiento huérfano;
+  `contabilidad@act.test` no ve el contrato `solo_propiedad` de Sur (1 documento frente a 2) y recibe 403
+  `property_tax.manage` al crear tributos; `recepcion@act.test` 403 `real_estate.read`; 0 respuestas 5xx
+- pendientes con dueño (informe §9): orquestador — docs desalineadas (runbook §11 `:469-470` aún dice «cableado
+  pendiente» de tres cosas ya cerradas y §10 `:442` `dev -- --port`; `api-contracts:842` «1031 entradas» → 1.073; diseño
+  §8 con 7 pestañas), asiento huérfano del demo, **hook pre-commit que git no encuentra** (`core.hooksPath=.husky` se
+  resuelve contra la raíz del worktree; el hook vive en `hotelos/.husky` → ACT-INT lo ejecutó a mano), `export` de
+  `real-estate.schemas` en `schemas/index.ts`, comentario `installmentsJson`, `PROPERTY_TAX_INACTIVE` fuera del
+  catálogo, tipos duplicados del front (`RECEIPT_TRANSITIONS`, calendario, respuestas compuestas), `DEMO_PROPERTY_IDS`,
+  `pnpm-lock.yaml` (+64 / −25 preexistente, excluido del commit: `git checkout --` para limpiar), regenerar
+  `nav-tree.generated.json` en main; deuda funcional — `SafetyCheck` / mantenimiento, previstos en tesorería, fila FF&E
+  de USALI, resumen diario, OCR, `PATCH /capex-projects/:id` sin `supervisorAuthorizationId` (`server.ts:6260`),
+  comentario desfasado de `assets.service.ts:39-43 / :418-424`, datos reales de Faranda (catastral NULL ×8, titularidad,
+  ordenanzas, pólizas, prefijos 21x, parámetros del asesor, almacén y umbrales: solo César, informe §10)

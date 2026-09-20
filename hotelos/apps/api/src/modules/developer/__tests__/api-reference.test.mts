@@ -161,6 +161,24 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.equal(describeEndpoint("GET", "/properties/:propertyId/documents/dispatch-batches/:batchId/sheet"), "Obtener la hoja de remesa de la valija.");
   });
 
+  // Activo inmobiliario (Tanda ACT · puerta de ola 3): recibos, calendario tributario, obra, inspecciones y seguros leen en español.
+  it("Tanda ACT: las rutas del activo inmobiliario leen en español", () => {
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/real-estate/taxes/:taxId/receipts"), "Crear o registrar un recibo del impuesto.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/real-estate/taxes/:taxId/receipts/generate"), "Generar los recibos previstos del impuesto (idempotente).");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/real-estate/receipts"), "Listar recibos.");
+    assert.equal(describeEndpoint("PATCH", "/properties/:propertyId/real-estate/receipts/:receiptId"), "Actualizar el recibo.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/real-estate/receipts/:receiptId/propose-entry"), "Proponer el asiento contable en borrador del recibo.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/real-estate/tax-calendar"), "Obtener el calendario tributario.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/real-estate/works"), "Listar obras.");
+    assert.equal(describeEndpoint("PATCH", "/capex-projects/:id/work"), "Actualizar la obra del proyecto de inversión.");
+    assert.equal(describeEndpoint("POST", "/capex-projects/:id/approve"), "Aprobar el proyecto de inversión (nunca quien lo propuso).");
+    // ACT-REV-06: pinado literal; capitalizar no propone asiento (works.service.ts, api-contracts, diseño §7).
+    assert.equal(describeEndpoint("POST", "/capex-projects/:id/capitalize"), "Capitalizar el proyecto de inversión (alta en el registro de inmovilizado; sin asiento).");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/real-estate/inspections"), "Listar inspecciones.");
+    assert.equal(describeEndpoint("PATCH", "/properties/:propertyId/real-estate/inspections/:inspectionId"), "Actualizar la inspección.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/real-estate/insurances"), "Crear o registrar un seguro.");
+  });
+
   it("Tanda CHK: el check-in automatizado y los kioscos leen en español", () => {
     assert.equal(describeEndpoint("GET", "/guest-portal/check-in"), "Obtener la sesión de check-in en línea del huésped.");
     assert.match(describeEndpoint("PATCH", "/guest-portal/check-in"), /^Actualizar la sesión de check-in en línea del huésped/);

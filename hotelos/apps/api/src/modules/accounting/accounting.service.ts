@@ -1132,10 +1132,15 @@ export async function aggregateAccountBalances(input: AggregateBalancesInput): P
 /** `;` separated, comma decimals, UTF-8 BOM; columns fecha;asiento;cuenta;concepto;debe;haber;documento;nif;base;iva. */
 export const JOURNAL_CSV_HEADER = ["fecha", "asiento", "cuenta", "concepto", "debe", "haber", "documento", "nif", "base", "iva"] as const;
 
-function csvCell(value: string | number | null | undefined): string {
+/** Texto que una hoja de cálculo interpretaría como fórmula (inyección CSV/DDE); misma regla que real-estate/export.service.ts (ACT-REV-05). */
+const CSV_FORMULA_PREFIX = /^[=+\-@\t\r]/;
+
+export function csvCell(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return "";
-  const text = String(value);
-  return /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
+  if (typeof value === "number") return String(value);
+  const neutralized = CSV_FORMULA_PREFIX.test(value);
+  const text = neutralized ? `'${value}` : value;
+  return neutralized || /[;"\n\r]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
 }
 
 function csvMoney(value: MoneyString | null | undefined): string {

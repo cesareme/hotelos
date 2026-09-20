@@ -32,21 +32,22 @@ const EXPECTED: Record<Exclude<RoleToken, "publico">, { items: number; categorie
   // Tanda 8a (RBAC): Hoy › Pendientes de aprobación and the six department tokens (design §5.1);
   // counts computed over nav-tree.generated.json (node scripts/check-route-access.mjs prints them).
   // Tanda T9 (Documentos, 2026-09-20): Operaciones › Digitalizar (core) adds 1 item for direccion, recepcion, pisos, mantenimiento, fnb, administracion and admin.
-  direccion: { items: 70, categories: 9 },
+  // Tanda ACT (2026-09-20): Finanzas › Activo inmobiliario (core; finanzas, direccion, admin, activos, auditoria) adds 1 item and 5 tabs.
+  direccion: { items: 71, categories: 9 },
   recepcion: { items: 25, categories: 9 },
   pisos: { items: 8, categories: 3 },
   mantenimiento: { items: 11, categories: 3 },
   revenue: { items: 22, categories: 5 },
-  finanzas: { items: 33, categories: 6 },
+  finanzas: { items: 34, categories: 6 },
   comercial: { items: 15, categories: 5 },
   fnb: { items: 8, categories: 2 },
   administracion: { items: 14, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
   rrhh: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
   propiedad: { items: 6, categories: 3 },
-  activos: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
-  auditoria: { items: 66, categories: 9 },
+  activos: { items: 5, categories: 4 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests); Tanda ACT: + Finanzas › Activo inmobiliario
+  auditoria: { items: 67, categories: 9 },
   sistemas: { items: 5, categories: 2 },
-  admin: { items: 70, categories: 9 }
+  admin: { items: 71, categories: 9 }
 };
 
 function screenKeys(categories: readonly MenuCategory[]): string[] {
@@ -108,8 +109,8 @@ describe("Sidebar menu · module gates (§6)", () => {
   it("Faranda's six modules hide the six module-gated items for dirección (61 visible)", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES);
     const counts = countMenu(categories);
-    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another; fusión TL: Live Timeline (core) another; Tanda T9: Digitalizar (core) another.
-    assert.equal(counts.items, 64);
+    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another; fusión TL: Live Timeline (core) another; Tanda T9: Digitalizar (core) another; Tanda ACT: Activo inmobiliario (core) another.
+    assert.equal(counts.items, 65);
     assert.equal(counts.locked, 0);
     const keys = new Set(screenKeys(categories));
     for (const hidden of ["WorkforceDashboard", "SafetyDashboard", "ProcurementDashboard", "CrmDashboard", "ReputationDashboard", "AnalyticsCenterDashboard"]) {
@@ -122,7 +123,7 @@ describe("Sidebar menu · module gates (§6)", () => {
   it("with modules.enable the same six items are painted locked with «Activar módulo»", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES, { canEnableModules: true });
     const counts = countMenu(categories);
-    assert.equal(counts.items, 70); // Tanda T9: + Operaciones › Digitalizar (core)
+    assert.equal(counts.items, 71); // Tanda T9: + Operaciones › Digitalizar (core); Tanda ACT: + Finanzas › Activo inmobiliario (core)
     assert.equal(counts.locked, 6);
     const crm = categories.flatMap((category) => category.items).find((item) => item.screenKey === "CrmDashboard");
     assert.ok(crm);
@@ -171,7 +172,8 @@ describe("Sidebar menu · no role, dev group, active item and landing", () => {
     // Corrector 8a (FX-06): the makers of RRHH (payroll), gestión del activo (CAPEX) and administración de hotel see the state of their own requests in the inbox.
     // Fusión TL (2026-09-19): Hoy › Live Timeline (LiveTimeline) is the first entry for every token.
     assert.deepEqual(keysOf("rrhh"), ["ApprovalsInbox", "LiveTimeline", "PayrollScreen", "WorkforceDashboard"]);
-    assert.deepEqual(keysOf("activos"), ["ApprovalsInbox", "ComplianceCenter", "LiveTimeline", "StructureScreen"]);
+    // Tanda ACT · F4: gestión del activo also sees Finanzas › Activo inmobiliario (RealEstateAssetScreen).
+    assert.deepEqual(keysOf("activos"), ["ApprovalsInbox", "ComplianceCenter", "LiveTimeline", "RealEstateAssetScreen", "StructureScreen"]);
     assert.deepEqual(keysOf("sistemas"), ["AuditLogViewer", "LiveTimeline", "ModuleManager", "NotificationsScreen", "UserRoleManager"]);
     assert.deepEqual(keysOf("propiedad"), ["FrontDeskDashboard", "PortfolioDashboard", "ReportingCenter", "TrialBalanceScreen"].concat(["ApprovalsInbox", "LiveTimeline"]).sort());
     assert.deepEqual(keysOf("administracion"), [

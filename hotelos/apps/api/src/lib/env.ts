@@ -890,6 +890,19 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     tags: ["dev-only", "dangerous"],
     doc: "seed-checkin (Tanda CHK, lote W1-D): con NODE_ENV=production el seed aborta (crea usuarios con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente."
   },
+  ACT_DEMO_PASSWORD: {
+    section: "Seeds",
+    format: "string",
+    tags: ["dev-only"],
+    doc: "seed-real-estate (Tanda ACT, lote L7): contraseña de los cuatro usuarios *@act.test del tenant aislado org_act (prop_act_a / prop_act_b); sin ella, «Act-Demo-2026!». Debe cumplir la política de contraseñas del API. Nunca en producción."
+  },
+  SEED_ACT_ALLOW_PRODUCTION: {
+    section: "Seeds",
+    format: "enum",
+    values: ["1"],
+    tags: ["dev-only", "dangerous"],
+    doc: "seed-real-estate (Tanda ACT, lote L7): con NODE_ENV=production el seed aborta (crea usuarios con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente."
+  },
   RBAC_DEMO_PASSWORD: {
     section: "Seeds",
     format: "string",

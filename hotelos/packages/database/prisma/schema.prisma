@@ -5205,8 +5205,26 @@ model CapexProject {
   ownerApprovedBy String?   @map("owner_approved_by")
   /// Tanda 8a (SoD dinámica): proposer ≠ approver (asset.capex.approve).
   createdByUserId String?   @map("created_by_user_id")
+  /// Tanda ACT · obra sobre el activo inmobiliario (todas opcionales; nadie las escribe hasta ACT-L3).
+  realEstateAssetId        String?   @map("real_estate_asset_id")
+  /// reforma · ampliacion · mantenimiento_mayor · pip · eficiencia_energetica · accesibilidad
+  workKind                 String?   @map("work_kind")
+  licenceRequired          Boolean   @default(false) @map("licence_required")
+  /// RealEstateDocument.id (licencia / proyecto / certificado final de obra); sin FK.
+  licenceDocumentId        String?   @map("licence_document_id")
+  licenceGrantedAt         DateTime? @map("licence_granted_at") @db.Date
+  icioAmount               Decimal?  @map("icio_amount") @db.Decimal(14, 2)
+  projectDocumentId        String?   @map("project_document_id")
+  completionDocumentId     String?   @map("completion_document_id")
+  /// Prefijos de cuenta (21x/23x por centro) separados por coma cuya ejecución se lee del diario de Sage.
+  executionAccountPrefixes String?   @map("execution_account_prefixes")
+  executedAmountLedger     Decimal?  @map("executed_amount_ledger") @db.Decimal(14, 2)
+  /// FixedAsset.id creado al capitalizar; sin FK.
+  capitalizedFixedAssetId  String?   @map("capitalized_fixed_asset_id")
+  capitalizedAt            DateTime? @map("capitalized_at") @db.Date
 
   @@index([propertyId, status])
+  @@index([realEstateAssetId, status])
   @@map("capex_projects")
 }
 
@@ -7278,4 +7296,407 @@ model LedgerReconciliation {
 
   @@index([organizationId, periodFrom, periodTo, createdAt])
   @@map("ledger_reconciliations")
+}
+
+/// Tanda ACT · activo inmobiliario
+/// Ficha del inmueble (1:1 con Property) y raíz de unidades registrales/catastrales, valoraciones, tenencias, tributos, documentos, inspecciones y seguros.
+/// Catálogos como String documentados con `///` (sin enums nuevos); importes Decimal(14,2); fechas @db.Date; sin FK a Property/Organization (solo ids, como CapexProject).
+model RealEstateAsset {
+  id                   String    @id @default(cuid())
+  organizationId       String    @map("organization_id")
+  legalEntityId        String?   @map("legal_entity_id")
+  /// Centro (Property.id); una ficha por centro.
+  propertyId           String    @map("property_id")
+  name                 String
+  yearBuilt            Int?      @map("year_built")
+  yearLastRefurbished  Int?      @map("year_last_refurbished")
+  builtSurfaceM2       Decimal?  @map("built_surface_m2") @db.Decimal(12, 2)
+  plotSurfaceM2        Decimal?  @map("plot_surface_m2") @db.Decimal(12, 2)
+  floorsAbove          Int?      @map("floors_above")
+  floorsBelow          Int?      @map("floors_below")
+  roomsCount           Int?      @map("rooms_count")
+  /// none · catalogado · bic
+  protectionLevel      String    @default("none") @map("protection_level")
+  /// A-G
+  energyRating         String?   @map("energy_rating")
+  energyCertValidUntil DateTime? @map("energy_cert_valid_until") @db.Date
+  cadastralValueTotal  Decimal?  @map("cadastral_value_total") @db.Decimal(14, 2)
+  cadastralValueYear   Int?      @map("cadastral_value_year")
+  referenceValue       Decimal?  @map("reference_value") @db.Decimal(14, 2)
+  /// Caché de la última RealEstateValuation.
+  lastValuationValue   Decimal?  @map("last_valuation_value") @db.Decimal(14, 2)
+  lastValuationAt      DateTime? @map("last_valuation_at") @db.Date
+  /// Caché del kind de la RealEstateTenure vigente.
+  currentTenureKind    String?   @map("current_tenure_kind")
+  /// active · sold · closed
+  status               String    @default("active")
+  notes                String?
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  units       RealEstateUnit[]
+  valuations  RealEstateValuation[]
+  tenures     RealEstateTenure[]
+  taxes       PropertyTax[]
+  documents   RealEstateDocument[]
+  inspections RealEstateInspection[]
+  insurances  RealEstateInsurance[]
+
+  @@unique([propertyId])
+  @@index([organizationId, status])
+  @@map("real_estate_assets")
+}
+
+/// Tanda ACT · unidad registral / catastral del inmueble (finca registral, referencia catastral, local).
+model RealEstateUnit {
+  id                     String    @id @default(cuid())
+  /// Desnormalizado: lo exige el índice único [organizationId, cadastralReference].
+  organizationId         String    @map("organization_id")
+  assetId                String    @map("asset_id")
+  /// finca_registral · referencia_catastral · local
+  kind                   String    @default("finca_registral")
+  registryOffice         String?   @map("registry_office")
+  registryFincaNumber    String?   @map("registry_finca_number")
+  registryTomo           String?   @map("registry_tomo")
+  registryLibro          String?   @map("registry_libro")
+  registryFolio          String?   @map("registry_folio")
+  /// CRU / IDUFIR.
+  cru                    String?
+  /// 20 caracteres [0-9A-Z]; validada en servidor. NULL no colisiona en el índice único.
+  cadastralReference     String?   @map("cadastral_reference")
+  /// hotelero · oficina · aparcamiento · local
+  useCode                String?   @map("use_code")
+  surfaceM2              Decimal?  @map("surface_m2") @db.Decimal(12, 2)
+  cadastralValueLand     Decimal?  @map("cadastral_value_land") @db.Decimal(14, 2)
+  cadastralValueBuilding Decimal?  @map("cadastral_value_building") @db.Decimal(14, 2)
+  /// pleno_dominio · usufructo · superficie · concesion · arrendamiento
+  titleKind              String    @default("pleno_dominio") @map("title_kind")
+  titleHolderTaxId       String?   @map("title_holder_tax_id")
+  titleHolderName        String?   @map("title_holder_name")
+  titleDeedDate          DateTime? @map("title_deed_date") @db.Date
+  notary                 String?
+  /// FixedAsset.id (210/211); sin FK.
+  fixedAssetId           String?   @map("fixed_asset_id")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  asset   RealEstateAsset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  charges RealEstateCharge[]
+
+  @@unique([organizationId, cadastralReference])
+  @@index([assetId])
+  @@map("real_estate_units")
+}
+
+/// Tanda ACT · carga registral sobre una unidad (hipoteca, embargo, servidumbre…).
+model RealEstateCharge {
+  id                String    @id @default(cuid())
+  unitId            String    @map("unit_id")
+  /// hipoteca · embargo · servidumbre · afeccion_fiscal · opcion · arrendamiento_inscrito · otra
+  kind              String
+  holderName        String?   @map("holder_name")
+  holderTaxId       String?   @map("holder_tax_id")
+  amount            Decimal?  @db.Decimal(14, 2)
+  outstandingAmount Decimal?  @map("outstanding_amount") @db.Decimal(14, 2)
+  registeredAt      DateTime? @map("registered_at") @db.Date
+  expiresAt         DateTime? @map("expires_at") @db.Date
+  cancelledAt       DateTime? @map("cancelled_at") @db.Date
+  /// RealEstateDocument.id; sin FK.
+  documentId        String?   @map("document_id")
+  note              String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  unit RealEstateUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+
+  @@index([unitId, cancelledAt])
+  @@map("real_estate_charges")
+}
+
+/// Tanda ACT · valoración del inmueble (tasación, notificación catastral, interna…); registro manual sin asiento.
+model RealEstateValuation {
+  id           String    @id @default(cuid())
+  assetId      String    @map("asset_id")
+  /// eco_805 · rics · interna · notificacion_catastral · seguro
+  kind         String
+  /// hipotecaria · contable · venta · seguro · ibi
+  purpose      String?
+  valuedAt     DateTime  @map("valued_at") @db.Date
+  value        Decimal   @db.Decimal(14, 2)
+  valuePerRoom Decimal?  @map("value_per_room") @db.Decimal(14, 2)
+  capRatePct   Decimal?  @map("cap_rate_pct") @db.Decimal(6, 2)
+  method       String?
+  appraiser    String?
+  /// RealEstateDocument.id; sin FK.
+  documentId   String?   @map("document_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  asset RealEstateAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, valuedAt])
+  @@map("real_estate_valuations")
+}
+
+/// Tanda ACT · tenencia del inmueble (propiedad, arrendamiento, gestión, franquicia…); una sola `vigente` por activo (comprobación en servicio).
+model RealEstateTenure {
+  id                     String    @id @default(cuid())
+  assetId                String    @map("asset_id")
+  /// propiedad · arrendamiento_local · arrendamiento_industria · gestion · franquicia · usufructo · concesion
+  kind                   String
+  counterpartyName       String?   @map("counterparty_name")
+  counterpartyTaxId      String?   @map("counterparty_tax_id")
+  /// → IRNR (216/296).
+  counterpartyNonResident Boolean  @default(false) @map("counterparty_non_resident")
+  startDate              DateTime  @map("start_date") @db.Date
+  endDate                DateTime? @map("end_date") @db.Date
+  noticeMonths           Int?      @map("notice_months")
+  /// tacita · expresa · ninguna
+  renewal                String    @default("tacita")
+  /// fija · variable · mixta · minimo_garantizado
+  rentKind               String?   @map("rent_kind")
+  rentMonthly            Decimal?  @map("rent_monthly") @db.Decimal(14, 2)
+  rentVariablePct        Decimal?  @map("rent_variable_pct") @db.Decimal(6, 2)
+  /// gor · gop
+  rentVariableBase       String?   @map("rent_variable_base")
+  /// ipc · pct_fijo · ninguno
+  rentReviewIndex        String?   @map("rent_review_index")
+  rentReviewMonth        Int?      @map("rent_review_month")
+  /// Fianza (→ 260).
+  depositAmount          Decimal?  @map("deposit_amount") @db.Decimal(14, 2)
+  /// Alquiler de hotel sujeto y no exento por defecto.
+  vatApplies             Boolean   @default(true) @map("vat_applies")
+  withholdingApplies     Boolean   @default(false) @map("withholding_applies")
+  withholdingRatePct     Decimal?  @map("withholding_rate_pct") @db.Decimal(6, 2)
+  /// propietario · arrendatario
+  ibiPayer               String    @default("propietario") @map("ibi_payer")
+  /// propietario · arrendatario
+  insurancePayer         String    @default("propietario") @map("insurance_payer")
+  /// propietario · arrendatario · compartido
+  capexResponsibility    String    @default("propietario") @map("capex_responsibility")
+  /// Reserva FF&E (HMA), % sobre ingresos.
+  ffeReservePct          Decimal?  @map("ffe_reserve_pct") @db.Decimal(6, 2)
+  brandName              String?   @map("brand_name")
+  /// borrador · vigente · vencido · resuelto
+  status                 String    @default("borrador")
+  /// RealEstateDocument.id; sin FK.
+  documentId             String?   @map("document_id")
+  notes                  String?
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  asset RealEstateAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, status])
+  @@map("real_estate_tenures")
+}
+
+/// Tanda ACT · tributo/tasa sobre el inmueble (IBI, IAE, residuos, vados, terrazas, ICIO, plusvalía…); el asiento 631 se propone en borrador solo si taxpayer = sociedad.
+model PropertyTax {
+  id                   String    @id @default(cuid())
+  organizationId       String    @map("organization_id")
+  propertyId           String    @map("property_id")
+  assetId              String    @map("asset_id")
+  /// RealEstateUnit.id; sin FK.
+  unitId               String?   @map("unit_id")
+  /// ibi · iae · residuos · vados · terrazas · ocupacion_via_publica · icio · plusvalia · otro_local
+  kind                 String
+  /// sociedad · propietario_tercero · arrendatario
+  taxpayer             String    @default("sociedad")
+  authorityName        String    @map("authority_name")
+  /// De Property.ineMunicipalityCode.
+  ineMunicipalityCode  String?   @map("ine_municipality_code")
+  /// Nº fijo / referencia del recibo.
+  fiscalReference      String?   @map("fiscal_reference")
+  /// Valor catastral, base liquidable o cuota de tarifa.
+  taxBase              Decimal?  @map("tax_base") @db.Decimal(14, 2)
+  ratePct              Decimal?  @map("rate_pct") @db.Decimal(8, 4)
+  expectedAnnualAmount Decimal?  @map("expected_annual_amount") @db.Decimal(14, 2)
+  /// anual · semestral · trimestral · mensual · unico
+  periodicity          String    @default("anual")
+  /// Periodo voluntario, `MM-DD`.
+  voluntaryFrom        String?   @map("voluntary_from")
+  voluntaryTo          String?   @map("voluntary_to")
+  directDebit          Boolean   @default(false) @map("direct_debit")
+  directDebitBonusPct  Decimal?  @map("direct_debit_bonus_pct") @db.Decimal(6, 2)
+  /// Plazos (PAC): [{ label, dueOn (MM-DD), pct }].
+  installmentsJson     Json?     @map("installments_json")
+  /// 631 por defecto; icio → capitalizable y cuenta 21x del proyecto.
+  accountCode          String    @default("631") @map("account_code")
+  capitalizable        Boolean   @default(false)
+  legalBasis           String?   @map("legal_basis")
+  /// activo · baja
+  status               String    @default("activo")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  asset    RealEstateAsset      @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  receipts PropertyTaxReceipt[]
+
+  @@index([propertyId, kind, status])
+  @@map("property_taxes")
+}
+
+/// Tanda ACT · recibo/liquidación de un tributo por ejercicio y periodo; `journalEntryId` = asiento (borrador o contabilizado) propuesto para el 631.
+model PropertyTaxReceipt {
+  id              String    @id @default(cuid())
+  taxId           String    @map("tax_id")
+  fiscalYear      Int       @map("fiscal_year")
+  /// anual · 1/2 · PAC-03 …
+  period          String    @default("anual")
+  issuedAt        DateTime? @map("issued_at") @db.Date
+  dueFrom         DateTime? @map("due_from") @db.Date
+  dueTo           DateTime? @map("due_to") @db.Date
+  amount          Decimal   @default(0) @db.Decimal(14, 2)
+  surchargeAmount Decimal   @default(0) @map("surcharge_amount") @db.Decimal(14, 2)
+  /// previsto · recibido · domiciliado · pagado · recurrido · vencido
+  status          String    @default("previsto")
+  paidAt          DateTime? @map("paid_at") @db.Date
+  /// cash · card · bank (como ExpensePaidWith).
+  paidWith        String?   @map("paid_with")
+  /// JournalEntry.id; sin FK.
+  journalEntryId  String?   @map("journal_entry_id")
+  /// CapexProject.id (ICIO); sin FK.
+  capexProjectId  String?   @map("capex_project_id")
+  /// RealEstateDocument.id (recibo); sin FK.
+  documentId      String?   @map("document_id")
+  appealRef       String?   @map("appeal_ref")
+  notes           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  tax PropertyTax @relation(fields: [taxId], references: [id], onDelete: Cascade)
+
+  @@unique([taxId, fiscalYear, period])
+  @@index([journalEntryId])
+  @@map("property_tax_receipts")
+}
+
+/// Tanda ACT · documento del inmueble (escrituras, planos, licencias, pólizas, actas, recibos…) con vigencia y versiones. Fichero en el almacén de T9 (`storageKey` = clave `org/<id>/prop/<id>/doc/<id>/<sha256>.<ext>`) o `inline`; no crea DocumentFile.
+model RealEstateDocument {
+  id                        String    @id @default(cuid())
+  organizationId            String    @map("organization_id")
+  propertyId                String    @map("property_id")
+  assetId                   String    @map("asset_id")
+  /// legal · planos · proyectos · licencias · seguros · inspecciones · contratos · tributos · valoraciones · otros
+  category                  String
+  /// escritura · nota_simple · certificacion_catastral · plano_planta · … · tasacion · iee_ite · otro
+  kind                      String
+  title                     String
+  issuerName                String?   @map("issuer_name")
+  issueDate                 DateTime? @map("issue_date") @db.Date
+  validFrom                 DateTime? @map("valid_from") @db.Date
+  validUntil                DateTime? @map("valid_until") @db.Date
+  renewalDays               Int?      @map("renewal_days")
+  version                   Int       @default(1)
+  /// RealEstateDocument.id de la versión anterior / posterior; sin FK.
+  supersedesId              String?   @map("supersedes_id")
+  supersededById            String?   @map("superseded_by_id")
+  /// wip · compartido · publicado · archivado (ISO 19650).
+  cdeState                  String    @default("publicado") @map("cde_state")
+  /// interno · solo_propiedad
+  confidentiality           String    @default("interno")
+  /// unit · tenure · tax_receipt · inspection · insurance · capex_project · fixed_asset
+  linkedEntityType          String?   @map("linked_entity_type")
+  linkedEntityId            String?   @map("linked_entity_id")
+  /// ComplianceRequirement.code; sin FK.
+  complianceRequirementCode String?   @map("compliance_requirement_code")
+  fileName                  String?   @map("file_name")
+  mimeType                  String?   @map("mime_type")
+  sizeBytes                 Int?      @map("size_bytes")
+  sha256                    String?
+  /// inline · disk · s3
+  storageKind               String    @default("inline") @map("storage_kind")
+  storageKey                String?   @unique @map("storage_key")
+  /// Base64 cuando storageKind = inline.
+  inline                    String?
+  encrypted                 Boolean   @default(false)
+  uploadedBy                String?   @map("uploaded_by")
+  retentionUntil            DateTime? @map("retention_until") @db.Date
+  legalHold                 Boolean   @default(false) @map("legal_hold")
+  deletedAt                 DateTime? @map("deleted_at")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  asset RealEstateAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, category, validUntil])
+  @@index([propertyId, deletedAt])
+  @@map("real_estate_documents")
+}
+
+/// Tanda ACT · inspección obligatoria de la finca (OCA BT/ascensor/PCI, RITE, gas, legionela, piscina, IEE/ITE, CEE, simulacro…).
+model RealEstateInspection {
+  id                        String    @id @default(cuid())
+  organizationId            String    @map("organization_id")
+  propertyId                String    @map("property_id")
+  assetId                   String    @map("asset_id")
+  /// oca_bt · oca_ascensor · oca_pci · rite · gas · equipos_presion · legionella · piscina · iee_ite · cee · simulacro · otra
+  kind                      String
+  legalBasis                String?   @map("legal_basis")
+  periodicityMonths         Int?      @map("periodicity_months")
+  /// RAE del ascensor, cuadro BT, caldera…
+  installationRef           String?   @map("installation_ref")
+  /// Asset.id (técnico); sin FK.
+  technicalAssetId          String?   @map("technical_asset_id")
+  providerName              String?   @map("provider_name")
+  /// Supplier.id; sin FK.
+  supplierId                String?   @map("supplier_id")
+  scheduledAt               DateTime? @map("scheduled_at") @db.Date
+  performedAt               DateTime? @map("performed_at") @db.Date
+  /// favorable · condicionada · negativa · pendiente
+  result                    String?
+  /// [{ severity, text, dueAt, fixedAt }]
+  defectsJson               Json?     @map("defects_json")
+  correctionDueAt           DateTime? @map("correction_due_at") @db.Date
+  correctedAt               DateTime? @map("corrected_at") @db.Date
+  /// = performedAt + periodicidad, editable.
+  nextDueAt                 DateTime? @map("next_due_at") @db.Date
+  /// RealEstateDocument.id (acta); sin FK.
+  documentId                String?   @map("document_id")
+  /// ComplianceRequirement.code; sin FK.
+  complianceRequirementCode String?   @map("compliance_requirement_code")
+  /// programada · realizada · con_defectos · cerrada
+  status                    String    @default("programada")
+  notes                     String?
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  asset RealEstateAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, kind, nextDueAt])
+  @@map("real_estate_inspections")
+}
+
+/// Tanda ACT · póliza de seguro del inmueble (RC, multirriesgo, pérdida de beneficios, decenal…).
+model RealEstateInsurance {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  propertyId     String    @map("property_id")
+  assetId        String    @map("asset_id")
+  /// rc · multirriesgo · perdida_beneficios · decenal · todo_riesgo_construccion · otro
+  kind           String
+  insurerName    String    @map("insurer_name")
+  policyNumber   String    @map("policy_number")
+  brokerName     String?   @map("broker_name")
+  /// sociedad · propietario_tercero
+  policyholder   String    @default("sociedad")
+  insuredSum     Decimal?  @map("insured_sum") @db.Decimal(14, 2)
+  deductible     Decimal?  @db.Decimal(14, 2)
+  premiumAnnual  Decimal?  @map("premium_annual") @db.Decimal(14, 2)
+  validFrom      DateTime  @map("valid_from") @db.Date
+  validUntil     DateTime  @map("valid_until") @db.Date
+  autoRenew      Boolean   @default(true) @map("auto_renew")
+  noticeDays     Int       @default(60) @map("notice_days")
+  mandatoryBasis String?   @map("mandatory_basis")
+  /// RealEstateDocument.id (póliza); sin FK.
+  documentId     String?   @map("document_id")
+  /// vigente · vencida · cancelada
+  status         String    @default("vigente")
+  notes          String?
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  asset RealEstateAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId, validUntil])
+  @@map("real_estate_insurances")
 }

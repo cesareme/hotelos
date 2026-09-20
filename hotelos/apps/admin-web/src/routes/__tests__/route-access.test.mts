@@ -106,7 +106,7 @@ describe("resolveLocation · role gate ⇔ canSee for every URL × every token",
       ["administracion", "/finanzas/facturacion"],
       ["rrhh", "/finanzas/nominas"],
       ["propiedad", "/hoy/propietario"],
-      ["activos", "/cumplimiento/centro"],
+      ["activos", "/finanzas/activo-inmobiliario"], // Tanda ACT · F4
       ["auditoria", "/configuracion/sistema"],
       ["sistemas", "/configuracion/usuarios"]
     ];

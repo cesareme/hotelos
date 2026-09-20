@@ -145,6 +145,7 @@ const ITEM_NARRATION: Record<string, string> = {
   SupplierBillsScreen: "Facturas de proveedores por líneas, gastos menores, directorio de proveedores e inmovilizado con su amortización mensual.",
   CommissionsScreen: "Comisiones que cobra cada canal de venta y su devengo automático al facturar.",
   PayrollScreen: "Contratos y periodos de nómina para exportar a la gestoría.",
+  RealEstateAssetScreen: "La finca de cada centro: unidades registrales y catastrales, cargas y tenencia vigente, valoraciones, documentación con vigencia, tributos (IBI, IAE, tasas) con su asiento propuesto, obras capitalizables, inspecciones y pólizas, y la vista del grupo.",
   // Cumplimiento
   ComplianceInbox: "Tu lista de tareas legales: envíos rechazados, plazos a punto de vencer y certificados que caducan, en un solo sitio.",
   ComplianceCenter: "El estado de todas las obligaciones legales del alojamiento (VeriFactu, partes de viajeros, protección de datos) con un asistente que explica cada una.",
