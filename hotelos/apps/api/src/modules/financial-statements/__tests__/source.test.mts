@@ -25,6 +25,58 @@ describe("ledgerEntryCounts (statements) / ledgerEntryIsBooked (diario)", () => 
   });
 });
 
+describe("modo opening_in_period (apertura importada dentro del periodo)", () => {
+  const opening = (s: MemorySource, date: string, propertyId: string | null = null) =>
+    s.post({ date, kind: "opening", propertyId, lines: [{ code: "572", debit: "5000.00" }, { code: "129", credit: "1000.00" }, { code: "100", credit: "4000.00" }] });
+  const closing = (s: MemorySource, date: string, propertyId: string | null = null) =>
+    s.post({ date, kind: "closing", propertyId, lines: [{ code: "572", credit: "5000.00" }, { code: "129", debit: "1000.00" }, { code: "100", debit: "4000.00" }] });
+  const codesOf = async (s: MemorySource, from: string, to: string, propertyId: string | null = null) =>
+    (await s.accountBalances({ organizationId: "org_t", propertyId, mode: "opening_in_period", from, to })).map((r) => `${r.code} ${r.debit.toFixed(2)}/${r.credit.toFixed(2)}`);
+
+  it("includes an opening dated `from` that no closing precedes (first entry of an imported ledger)", async () => {
+    const s = new MemorySource("org_t");
+    opening(s, "2027-01-01");
+    s.post({ date: "2027-06-30", lines: [{ code: "129", debit: "1000.00" }, { code: "113", credit: "1000.00" }] });
+    assert.deepEqual(await codesOf(s, "2027-01-01", "2027-12-31"), ["100 0.00/4000.00", "129 0.00/1000.00", "572 5000.00/0.00"]);
+    // Outside the range, or a movements read: never.
+    assert.deepEqual(await codesOf(s, "2027-01-02", "2027-12-31"), []);
+    assert.deepEqual((await s.accountBalances({ organizationId: "org_t", mode: "movements", from: "2027-01-01", to: "2027-12-31" })).map((r) => r.code), ["113", "129"]);
+  });
+
+  it("excludes an opening whose closing is dated from − 1 (balance_at(from − 1) already holds those balances)", async () => {
+    const s = new MemorySource("org_t");
+    closing(s, "2027-12-31");
+    opening(s, "2028-01-01");
+    assert.deepEqual(await codesOf(s, "2028-01-01", "2028-12-31"), []);
+  });
+
+  it("excludes an opening whose closing is inside the range before it, and includes one whose closing is already in balance_at(from − 1)", async () => {
+    const straddle = new MemorySource("org_t");
+    closing(straddle, "2027-12-31");
+    opening(straddle, "2028-01-01");
+    assert.deepEqual(await codesOf(straddle, "2027-07-01", "2028-06-30"), []);
+    const early = new MemorySource("org_t");
+    closing(early, "2027-12-30"); // dated before from − 1: balance_at(2027-12-31) includes it, the balances are zero
+    opening(early, "2028-01-01");
+    assert.equal((await codesOf(early, "2028-01-01", "2028-12-31")).length, 3);
+  });
+
+  it("pairs the opening with the closing of the same property (null = null) and ignores a draft closing", async () => {
+    const s = new MemorySource("org_t");
+    closing(s, "2027-12-31", "prop_a");
+    opening(s, "2028-01-01", "prop_a");
+    opening(s, "2028-01-01", null);
+    assert.deepEqual(await codesOf(s, "2028-01-01", "2028-12-31", "prop_a"), []);
+    assert.equal((await codesOf(s, "2028-01-01", "2028-12-31", null)).length, 3); // organisation-wide: the society-level opening has no closing
+    assert.equal((await s.accountBalances({ organizationId: "org_t", unassignedOnly: true, mode: "opening_in_period", from: "2028-01-01", to: "2028-12-31" })).length, 3);
+    const d = new MemorySource("org_t");
+    d.post({ date: "2027-12-31", kind: "closing", status: "draft", lines: [{ code: "572", credit: "1.00" }, { code: "100", debit: "1.00" }] });
+    opening(d, "2028-01-01");
+    assert.equal((await codesOf(d, "2028-01-01", "2028-12-31")).length, 3);
+    await assert.rejects(() => s.accountBalances({ organizationId: "org_t", mode: "opening_in_period", to: "2028-12-31" }), /requires from/);
+  });
+});
+
 describe("MemorySource.reverse mirrors reverseJournalEntry", () => {
   it("swaps the sides, flags the original and drops the pair from the balances but not from the diario", async () => {
     const s = new MemorySource("org_t");

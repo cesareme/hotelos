@@ -38,9 +38,10 @@ describe("shouldShowSetupBanner (BackOfficeLayout · Tanda L5 lote C)", () => {
     assert.equal(shouldShowSetupBanner(readiness(), true), false);
   });
 
-  it("names the pending count in Spanish, singular and plural", () => {
-    assert.equal(setupBannerMessage(1), "Faltan 1 comprobación para poner la propiedad en marcha.");
+  it("names the pending count in Spanish with verb and noun agreeing (FIX-1 · F9): «Falta 1 comprobación», «Faltan 3 comprobaciones»", () => {
+    assert.equal(setupBannerMessage(1), "Falta 1 comprobación para poner la propiedad en marcha.");
     assert.equal(setupBannerMessage(3), "Faltan 3 comprobaciones para poner la propiedad en marcha.");
+    assert.equal(setupBannerMessage(2), "Faltan 2 comprobaciones para poner la propiedad en marcha.");
   });
 });
 
@@ -52,6 +53,6 @@ describe("BackOfficeLayout · the banner renders through the pure rule", () => {
     assert.match(layout, /const message = setupBannerMessage\(pending\);/);
     assert.match(layout, /aria-label="Puesta en marcha pendiente"/);
     assert.match(layout, /Ver qué falta/);
-    assert.doesNotMatch(layout, /Faltan \$\{pending\}/, "the message text lives in setup-banner.ts only");
+    assert.doesNotMatch(layout, /Faltan? \$\{pending\}/, "the message text lives in setup-banner.ts only");
   });
 });

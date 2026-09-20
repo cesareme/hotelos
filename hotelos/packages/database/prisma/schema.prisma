@@ -156,6 +156,19 @@ enum VatPeriodicity {
   monthly
 }
 
+/// FIX-1 · F2: régimen de IVA de una fila de los libros (RD 1619/2012 / Modelo 303).
+/// interior (régimen general, casillas 01-09 / 28-31) · isp (inversión del sujeto pasivo: autofactura
+/// emitida 12/13 y cuota soportada 38/39) · aib (adquisición intracomunitaria: 10/11 y 36/37) ·
+/// importacion (DUA, tipo F5: 32/33) · exento_no_sujeto (0 % exenta / no sujeta por localización: 120).
+/// null = sin clasificar (filas anteriores a F2 y escritores nativos): el 303 las trata como interior.
+enum VatBookRegime {
+  interior
+  isp
+  aib
+  importacion
+  exento_no_sujeto
+}
+
 /// general · redeme (devolución mensual, periodicidad mensual obligatoria) · recargo (recargo de equivalencia).
 enum VatRegime {
   general
@@ -4045,6 +4058,10 @@ model VatSettings {
   prorrataPct    Decimal?       @map("prorrata_pct") @db.Decimal(5, 2)
   /// Figura principal: IVA | IGIC | IPSI.
   taxFigure      String         @default("IVA") @map("tax_figure")
+  /// FIX-1 · F3 (B-2): saldo inicial a compensar (casilla 110) arrastrado de periodos anteriores a la primera liquidación de ehotelOS; ≥ 0.
+  openingCompensation       Decimal @default(0) @map("opening_compensation") @db.Decimal(12, 2)
+  /// Código del periodo (2025-Q1 · 2025-01) desde el que aplica el saldo inicial; null = no aplica.
+  openingCompensationPeriod String? @map("opening_compensation_period")
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
 
@@ -4079,12 +4096,16 @@ model VatBookEntry {
   period           String
   /// false si la cuota soportada no es deducible (ticket sin NIF, prorrata 0…): la cuota va a gasto.
   deductible       Boolean           @default(true)
+  /// FIX-1 · F2: régimen de la operación (interior · isp · aib · importacion · exento_no_sujeto); null = sin clasificar.
+  /// Lo fija el importador de Sage (clave de operación / calificación / tipo F5) o POST /fiscal/vat-books/reclassify.
+  regime           VatBookRegime?    @map("regime")
   createdAt        DateTime          @default(now()) @map("created_at")
 
   @@unique([organizationId, book, sourceType, sourceId, rate])
   @@index([organizationId, book, period])
   @@index([organizationId, book, date])
   @@index([organizationId, counterpartyNif, period])
+  @@index([organizationId, book, regime])
   @@map("vat_book_entries")
 }
 

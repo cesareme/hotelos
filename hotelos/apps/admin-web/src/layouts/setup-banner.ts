@@ -15,7 +15,11 @@ export function shouldShowSetupBanner(readiness: PropertyReadiness | null | unde
   return readiness.status === "blocked" && (readiness.blockingCount ?? 0) > 0;
 }
 
-/** Texto del banner para `pending` comprobaciones bloqueantes (shouldShowSetupBanner garantiza pending > 0). */
+/**
+ * Texto del banner para `pending` comprobaciones bloqueantes (shouldShowSetupBanner
+ * garantiza pending > 0). Verbo y sustantivo concuerdan (FIX-1 · F9): «Falta 1
+ * comprobación», «Faltan 3 comprobaciones».
+ */
 export function setupBannerMessage(pending: number): string {
-  return `Faltan ${pending} ${pending === 1 ? "comprobación" : "comprobaciones"} para poner la propiedad en marcha.`;
+  return `${pending === 1 ? "Falta" : "Faltan"} ${pending} ${pending === 1 ? "comprobación" : "comprobaciones"} para poner la propiedad en marcha.`;
 }

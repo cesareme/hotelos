@@ -190,6 +190,25 @@ export type CanonicalVatRow = {
   rectificativa: boolean;
   /** recibidas: cuota deducible (null = toda). */
   cuota_deducible: MoneyString | null;
+  /**
+   * FIX-1 · F2 (columnas OPCIONALES, fuera de CANONICAL_COLUMNS): «Clave de Operación» del formato AEAT
+   * («01» régimen general, «09» adquisición intracomunitaria en recibidas…) y «Calificación de la
+   * Operación» («S1», «S2», «N1»…). Alimentan `regimeOfVatRow` (ledger-import.posting.ts); null si faltan.
+   */
+  clave_operacion: string | null;
+  calificacion: string | null;
+  /**
+   * FIX-1 (corrector, columna OPCIONAL fuera de CANONICAL_COLUMNS): «Inversión del Sujeto Pasivo» del libro AEAT
+   * de recibidas, normalizada a «S» / «N»; null si la columna falta o la celda está vacía. Con «S» la fila es
+   * `isp` en `regimeOfVatRow` antes que la clave (servicios de terceros países, art. 84.Uno.2.º LIVA).
+   */
+  inversion_sujeto_pasivo: "S" | "N" | null;
+  /**
+   * FIX-1 · F4 (B-8, columna OPCIONAL fuera de CANONICAL_COLUMNS): «Número Recepción» del formato AEAT en
+   * recibidas. Entra en el `sourceId` de la fila (`ledgerImportVatBookSourceId`, tras el NIF); si falta, el
+   * sourceId lleva la fecha de expedición. null si no viene.
+   */
+  numero_recepcion: string | null;
 };
 
 export type CanonicalRowOf<K extends LedgerImportKind> = K extends "journal" | "fiscal_years"
@@ -367,7 +386,14 @@ export function canonicalSynonymsFor(kind: LedgerImportKind): HeaderSynonyms {
     out.diario = [];
     out.contrapartida = [];
   }
-  if (kind === "vat_books") out.cuota_deducible = [];
+  if (kind === "vat_books") {
+    // Columnas opcionales del libro (no están en CANONICAL_COLUMNS: la detección canonical_csv exige la cabecera literal).
+    out.cuota_deducible = [];
+    out.clave_operacion = [];
+    out.calificacion = [];
+    out.inversion_sujeto_pasivo = [];
+    out.numero_recepcion = [];
+  }
   return out;
 }
 
@@ -453,14 +479,26 @@ export function cellCode(raw: string | undefined): string | null {
   return numeric ? numeric[1]! : text;
 }
 
-/** Tipo impositivo → "21" / "10" / "0" (acepta «21», «21,00», «21 %», «0.21»). */
+/**
+ * Tipo impositivo → "21" / "10" / "7.5" / "0" (acepta «21», «21,00», «21 %», «0.21», «7,5», «0.075»).
+ * FIX-1 · F4 (B-7): conserva hasta dos decimales (`VatBookEntry.rate` es Decimal(5,2)) sin ceros
+ * finales: «7,50 %» → "7.5"; antes se redondeaba a entero (7,5 → 8).
+ */
 export function parseRateCode(raw: string | undefined): string | null {
-  const text = cellText(raw)?.replace(/%/g, "").trim();
+  const text = cellText(raw)?.replace(/[%\s]/g, "").replace(",", ".");
   if (!text) return null;
-  const value = parseSignedAmount(text, "auto");
-  if (value === null || value.isNegative()) return null;
-  const percent = value.lessThan(1) && !value.isZero() ? value.times(100) : value;
-  return String(percent.toDecimalPlaces(0).toNumber());
+  const match = /^\+?(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match) return null;
+  let whole = match[1]!;
+  let fraction = match[2] ?? "";
+  if (/^0*$/.test(whole) && !/^0*$/.test(fraction)) {
+    // Fracción («0.21», «0,075») → tanto por ciento moviendo la coma sobre el texto (money() redondea a dos
+    // decimales y 0,075 quedaría en 0,08 → 8).
+    const digits = fraction.padEnd(2, "0");
+    whole = digits.slice(0, 2);
+    fraction = digits.slice(2);
+  }
+  return money(`${whole}.${fraction || "0"}`).toString();
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,6 +1106,21 @@ function truthy(raw: string | undefined): boolean {
   return text === "si" || text === "s" || text === "x" || text === "1" || text === "true" || text === "r" || text === "rectificativa";
 }
 
+/** «S» / «SI» / «X» / «1» / «TRUE» → «S»; cualquier otro texto («N», «NO», «0»…) → «N»; vacío → null (FIX-1, corrector). */
+export function normalizeInversionSujetoPasivo(raw: string | null | undefined): "S" | "N" | null {
+  const text = raw?.trim() ?? "";
+  if (text === "") return null;
+  return truthy(text) ? "S" : "N";
+}
+
+/** «1» / «01» / «9» / «09» → dos dígitos («01», «09»); otros textos se conservan en mayúsculas; vacío → null. */
+export function normalizeClaveOperacion(raw: string | null | undefined): string | null {
+  const text = raw?.trim() ?? "";
+  if (text === "") return null;
+  if (/^\d{1,2}$/.test(text)) return text.padStart(2, "0");
+  return text.toUpperCase();
+}
+
 export function parseVatTable(table: ParsedTable, options: VatTableOptions): TableParseResult<CanonicalVatRow> {
   const match = matchColumns(table.header, options.synonyms);
   const warnings = [...table.warnings, ...match.warnings];
@@ -1108,6 +1161,10 @@ export function parseVatTable(table: ParsedTable, options: VatTableOptions): Tab
     const tipoRectificativa = cellText(get(row, col("tipo_rectificativa")));
     const tipoFactura = cellText(get(row, col("tipo_factura")))?.toUpperCase() ?? null;
     const rectificativa = truthy(get(row, col("rectificativa"))) || (tipoRectificativa !== null) || (tipoFactura !== null && /^R[1-5]$/.test(tipoFactura));
+    const claveOperacion = normalizeClaveOperacion(cellText(get(row, col("clave_operacion"))));
+    const calificacion = cellText(get(row, col("calificacion")))?.toUpperCase() ?? null;
+    const inversionSujetoPasivo = normalizeInversionSujetoPasivo(cellText(get(row, col("inversion_sujeto_pasivo"))));
+    const numeroRecepcion = cellCode(get(row, col("numero_recepcion")));
     const ejercicioRaw = cellCode(get(row, col("ejercicio"))) ?? options.fiscalYearCode ?? fecha.slice(0, 4);
     rows.push({
       line: row.line,
@@ -1131,7 +1188,11 @@ export function parseVatTable(table: ParsedTable, options: VatTableOptions): Tab
       retencion: retencion ? retencion.toFixed(2) : null,
       tipo_factura: tipoFactura,
       rectificativa,
-      cuota_deducible: deducible ? deducible.toFixed(2) : null
+      cuota_deducible: deducible ? deducible.toFixed(2) : null,
+      clave_operacion: claveOperacion,
+      calificacion,
+      inversion_sujeto_pasivo: inversionSujetoPasivo,
+      numero_recepcion: numeroRecepcion
     });
   }
   if (errors.length > 0) throw invalidFileError(errors);
@@ -1327,7 +1388,11 @@ export function normalizeRows<K extends LedgerImportKind>(kind: K, rows: readonl
         total: money2(row.total),
         cuota_recargo: money2OrNull(row.cuota_recargo),
         retencion: money2OrNull(row.retencion),
-        cuota_deducible: money2OrNull(row.cuota_deducible)
+        cuota_deducible: money2OrNull(row.cuota_deducible),
+        clave_operacion: normalizeClaveOperacion(row.clave_operacion ?? null),
+        calificacion: trimOrNull(row.calificacion ?? null)?.toUpperCase() ?? null,
+        inversion_sujeto_pasivo: normalizeInversionSujetoPasivo(row.inversion_sujeto_pasivo ?? null),
+        numero_recepcion: trimOrNull(row.numero_recepcion ?? null)
       }));
       out.sort((a, b) => (a.libro < b.libro ? -1 : a.libro > b.libro ? 1 : 0) || (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0) || ((a.serie ?? "") < (b.serie ?? "") ? -1 : (a.serie ?? "") > (b.serie ?? "") ? 1 : 0) || compareCodes(a.numero, b.numero) || compareCodes(a.tipo_iva, b.tipo_iva));
       return out as CanonicalRowOf<K>[];
@@ -1342,12 +1407,19 @@ export function normalizeRows<K extends LedgerImportKind>(kind: K, rows: readonl
  * dan el mismo hash.
  */
 const HASH_EXCLUDED_FIELDS = new Set(["line", "orden", "diario", "contrapartida"]);
+/**
+ * FIX-1 · F2 / F4: columnas opcionales del libro añadidas después de las cargas reales; cuando vienen vacías no
+ * entran en el hash, así el mismo fichero de antes de F2 / F4 sigue dando el mismo `contentHash` (duplicados).
+ */
+const HASH_OPTIONAL_WHEN_NULL_FIELDS = new Set(["clave_operacion", "calificacion", "inversion_sujeto_pasivo", "numero_recepcion"]);
 
 function hashProjection(row: CanonicalRow): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(row).sort()) {
     if (HASH_EXCLUDED_FIELDS.has(key)) continue;
-    out[key] = (row as Record<string, unknown>)[key];
+    const value = (row as Record<string, unknown>)[key];
+    if (value === null && HASH_OPTIONAL_WHEN_NULL_FIELDS.has(key)) continue;
+    out[key] = value;
   }
   return out;
 }

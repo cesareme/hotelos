@@ -274,10 +274,17 @@ export type ModuleComparison = {
   both: PermissionKey[];
 };
 
-/** Keys of two templates grouped by module of §4.3: what only A has, only B, both. Modules where neither has a key are dropped. */
-export function compareTemplates(a: readonly PermissionKey[], b: readonly PermissionKey[]): ModuleComparison[] {
-  const setA = new Set(a);
-  const setB = new Set(b);
+/**
+ * Keys of two templates grouped by module of §4.3: what only A has, only B,
+ * both. Modules where neither has a key are dropped. A side without keys
+ * (`undefined`: a template the served catalogue does not know) counts as
+ * empty instead of throwing «b is not iterable» (FIX-1 · F6).
+ */
+export function compareTemplates(a: readonly PermissionKey[] | undefined, b: readonly PermissionKey[] | undefined): ModuleComparison[] {
+  const listA = a ?? [];
+  const listB = b ?? [];
+  const setA = new Set(listA);
+  const setB = new Set(listB);
   const byModule = new Map<ModuleCode, ModuleComparison>();
   const bucket = (module: ModuleCode) => {
     let entry = byModule.get(module);
@@ -287,7 +294,7 @@ export function compareTemplates(a: readonly PermissionKey[], b: readonly Permis
     }
     return entry;
   };
-  for (const key of [...new Set([...a, ...b])].sort()) {
+  for (const key of [...new Set([...listA, ...listB])].sort()) {
     const entry = bucket(moduleOfPermission(key));
     if (setA.has(key) && setB.has(key)) entry.both.push(key);
     else if (setA.has(key)) entry.onlyA.push(key);
@@ -296,13 +303,14 @@ export function compareTemplates(a: readonly PermissionKey[], b: readonly Permis
   return MODULE_ORDER.filter((module) => byModule.has(module)).map((module) => byModule.get(module)!);
 }
 
-export type RoleLike = { id: string; name: string; permissions: readonly PermissionKey[] };
+/** A role with its keys; `permissions` missing or undefined counts as no keys (FIX-1 · F6). */
+export type RoleLike = { id: string; name: string; permissions?: readonly PermissionKey[] };
 
 /** Groups of roles whose permission sets are identical (quarterly review, §5.4); singletons are dropped. */
 export function identicalRoles<T extends RoleLike>(roles: readonly T[]): Array<{ roles: T[]; permissionCount: number }> {
   const groups = new Map<string, T[]>();
   for (const role of roles) {
-    const signature = [...new Set(role.permissions)].sort().join("|");
+    const signature = [...new Set(role.permissions ?? [])].sort().join("|");
     const list = groups.get(signature) ?? [];
     list.push(role);
     groups.set(signature, list);

@@ -717,6 +717,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/reports/properties/:propertyId/reservations", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/reports/properties/:propertyId/billing", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "POST", path: "/reports/properties/:propertyId/export", permissions: ["analytics.export"], riskLevel: "high" },
+  // Corrector FIX-1 (SEC-06): high like the POST that generates it — the demo fallback without token never serves the file.
+  { method: "GET", path: "/reports/exports/:exportId/download", permissions: ["analytics.export"], riskLevel: "high" },
   { method: "GET", path: "/organizations/:organizationId/accounts", permissions: ["accounting.journal.post"], riskLevel: "medium" },
   { method: "GET", path: "/organizations/:organizationId/journal-entries", permissions: ["accounting.journal.post"], riskLevel: "medium" },
   { method: "POST", path: "/journal-entries/drafts", permissions: ["accounting.journal.post"], riskLevel: "high" },

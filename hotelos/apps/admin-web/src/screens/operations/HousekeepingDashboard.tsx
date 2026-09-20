@@ -27,6 +27,7 @@ import {
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
 import { useTabHost } from "../tabs/TabHost";
+import { nextTaskAction } from "./housekeeping-task-actions";
 import { number, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS, newLabel } from "../../content/actions";
 import { roomStatus } from "../../content/status-dictionary";
@@ -279,7 +280,7 @@ export function HousekeepingDashboard() {
                 {item.tasks.length > 0 ? (
                   <ul className="c22-section__list" aria-label={`Tareas de la habitación ${item.room.number}`}>
                     {item.tasks.map((t) => {
-                      const next = t.status === "in_progress" ? { status: "done", label: ACTIONS.complete } : { status: "in_progress", label: "Empezar" };
+                      const next = nextTaskAction(t.status);
                       return (
                         <li key={t.id}>
                           <span className="cocoa-row" data-gap="1" style={taskLabelStyle}>
@@ -295,7 +296,7 @@ export function HousekeepingDashboard() {
                               tone="neutral"
                               size="small"
                               disabled={busy}
-                              onClick={() => void run(() => updateHousekeepingTask(t.id, { status: next.status }), `Tarea ${next.label.toLowerCase()}.`)}
+                              onClick={() => void run(() => updateHousekeepingTask(t.id, { status: next.status }), next.done)}
                             >
                               {next.label}
                             </CocoaButton>

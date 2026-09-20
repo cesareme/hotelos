@@ -188,15 +188,16 @@ function canRetryQueue(record: GuestRegisterRecord): boolean {
 // at 160 px — the API returns the stored number as is and one record carried
 // an 83-character token that widened the column to 667 px (table 1610 px);
 // a real «PASSPORT AB1234567» measures ≈ 130 px and the tooltip keeps the
-// full value. The cuid of the reservation (216 px, not truncated: a cuid
-// differs by its tail), the creation time and the retention date wait for the
+// full value. The reservation column (the RES-… code the API resolves, or the
+// cuid — 216 px, not truncated: a cuid differs by its tail — when a record has
+// no code; FIX-1 · F9), the creation time and the retention date wait for the
 // desktop tier, so a 1024 laptop (wrapper 734 px) keeps guest · document ·
 // status · actions (≈ 643 px) without a horizontal scroller.
 const COLUMNS: CocoaTableColumn<GuestRegisterRecord>[] = [
   { key: "guest", label: "Huésped", minWidth: 180, render: (r) => [r.firstName, r.surname1, r.surname2].filter(Boolean).join(" ") || "—" },
   { key: "document", label: "Documento", fit: true, truncate: 160, hideOnNarrow: true, render: (r) => (r.documentType ? `${r.documentType} ${r.documentNumber ?? ""}` : "—") },
   { key: "status", label: "Estado", fit: true, render: (r) => <CocoaBadge tone={STATUS_TONE[r.status] ?? "info"}>{STATUS_LABEL[r.status] ?? r.status}</CocoaBadge> },
-  { key: "reservationId", label: "Reserva", fit: true, showFrom: "desktop", render: (r) => <span className="cocoa-mono">{r.reservationId}</span> },
+  { key: "reservation", label: "Reserva", fit: true, showFrom: "desktop", render: (r) => <span className="cocoa-mono">{r.reservationCode ?? r.reservationId}</span> },
   { key: "createdAt", label: "Creado", fit: true, showFrom: "desktop", render: (r) => dateTime(r.createdAt) },
   { key: "retentionUntil", label: "Conservar hasta", fit: true, showFrom: "desktop", render: (r) => date(r.retentionUntil) }
 ];
@@ -417,7 +418,12 @@ export function GuestRegisterSettingsScreen() {
           }
         >
           <CocoaFormRow columns={3}>
-            <CocoaField label="Identificador de la reserva" required error={fieldErrors.reservationId}>
+            <CocoaField
+              label="Identificador de la reserva"
+              required
+              help="Identificador interno de la reserva (el de la dirección /recepcion/reservas/<id>); el código RES-… aparece en la tabla."
+              error={fieldErrors.reservationId}
+            >
               <CocoaInput value={form.reservationId} onChange={(v) => set("reservationId", v)} placeholder="res_…" disabled={busy} />
             </CocoaField>
             <CocoaField label="Nombre" required error={fieldErrors.firstName}>

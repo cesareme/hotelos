@@ -79,6 +79,10 @@ import {
 } from "./ses-submission.service.js";
 
 type GuestRegisterRow = Awaited<ReturnType<typeof prisma.guestRegisterRecord.findUniqueOrThrow>>;
+/** Fila con el código de la reserva resuelto aparte (FIX-1 · F9): GuestRegisterRecord no tiene relación Prisma con Reservation. */
+type GuestRegisterRowWithReservation = GuestRegisterRow & { reservation?: { code: string } | null };
+/** Forma API de un parte: el `GuestRegisterRecord` de siempre más el código RES-… de la reserva cuando se resolvió. */
+export type GuestRegisterRecordApi = GuestRegisterRecord & { reservationCode?: string };
 type GuestRegisterStatus = GuestRegisterRow["status"];
 type AuthoritySubmissionRow = Awaited<ReturnType<typeof prisma.authoritySubmission.findUniqueOrThrow>>;
 type AuthorityBatchRow = Awaited<ReturnType<typeof prisma.authoritySubmissionBatch.findUniqueOrThrow>>;
@@ -127,12 +131,17 @@ function trimmed(value: string | null | undefined): string | undefined {
 
 // ───────────────────────────────────────────── mappers
 
-/** Prisma row → API shape (the `GuestRegisterRecord` type every consumer already reads). */
-export function toGuestRegisterApi(row: GuestRegisterRow): GuestRegisterRecord {
+/**
+ * Prisma row → API shape (the `GuestRegisterRecord` type every consumer already
+ * reads). `reservationCode` (FIX-1 · F9) sale de `row.reservation.code` cuando
+ * el lector lo adjuntó (listGuestRegisterRecords); sin él, no viaja.
+ */
+export function toGuestRegisterApi(row: GuestRegisterRowWithReservation): GuestRegisterRecordApi {
   return {
     id: row.id,
     propertyId: row.propertyId,
     reservationId: row.reservationId ?? undefined,
+    reservationCode: row.reservation?.code ?? undefined,
     guestId: row.guestId ?? undefined,
     recordType: row.recordType as GuestRegisterRecord["recordType"],
     status: row.status,
@@ -635,13 +644,25 @@ export async function ensureReservationGuestRegisterRecords(input: {
 
 // ───────────────────────────────────────────── guest register: reads
 
-export async function listGuestRegisterRecords(propertyId: string): Promise<GuestRegisterRecord[]> {
+export async function listGuestRegisterRecords(propertyId: string): Promise<GuestRegisterRecordApi[]> {
   const rows = await prisma.guestRegisterRecord.findMany({
     where: { propertyId },
     orderBy: { createdAt: "desc" },
     take: 200
   });
-  return rows.map(toGuestRegisterApi);
+  // Código RES-… de cada reserva (FIX-1 · F9): sin relación Prisma, una sola
+  // consulta por los ids distintos de la página; la pantalla pinta
+  // `reservationCode ?? reservationId`.
+  const reservationIds = Array.from(new Set(rows.map((row) => row.reservationId).filter((id): id is string => Boolean(id))));
+  const reservations =
+    reservationIds.length === 0
+      ? []
+      : await prisma.reservation.findMany({ where: { id: { in: reservationIds } }, select: { id: true, code: true } });
+  const codeById = new Map(reservations.map((r) => [r.id, r.code] as const));
+  return rows.map((row) => {
+    const code = row.reservationId ? codeById.get(row.reservationId) : undefined;
+    return toGuestRegisterApi(code ? { ...row, reservation: { code } } : row);
+  });
 }
 
 export async function listReservationGuestRegisterRecords(reservationId: string): Promise<GuestRegisterRecord[]> {

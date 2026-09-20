@@ -134,6 +134,40 @@ describe("users-rbac · comparator and identical roles (§5.4)", () => {
     assert.deepEqual(order, [...order].sort((a, b) => a - b), "modules in §4.3 order");
   });
 
+  it("compareTemplates tolera plantillas sin claves", () => {
+    // FIX-1 · F6: a template the served catalogue does not know (a stale compiled
+    // permissions.js shadowing the source) threw «b is not iterable»; an undefined
+    // side now counts as empty and the rows come from the other side only.
+    const size = new Set(ROLE_PERMISSION_MAP.receptionist).size;
+    const onlyLeft = compareTemplates(ROLE_PERMISSION_MAP.receptionist, undefined);
+    assert.ok(onlyLeft.length > 0);
+    assert.equal(onlyLeft.reduce((sum, row) => sum + row.onlyA.length, 0), size);
+    assert.ok(onlyLeft.every((row) => row.both.length === 0 && row.onlyB.length === 0), "nothing on the B side");
+    const onlyRight = compareTemplates(undefined, ROLE_PERMISSION_MAP.receptionist);
+    assert.ok(onlyRight.length > 0);
+    assert.equal(onlyRight.reduce((sum, row) => sum + row.onlyB.length, 0), size);
+    assert.ok(onlyRight.every((row) => row.both.length === 0 && row.onlyA.length === 0), "nothing on the A side");
+    assert.deepEqual(compareTemplates(undefined, undefined), []);
+    assert.deepEqual(compareTemplates([], undefined), []);
+    const twins = identicalRoles([
+      { id: "a", name: "A", permissions: undefined },
+      { id: "b", name: "B", permissions: [] },
+      { id: "c", name: "C", permissions: ["x.read"] }
+    ]);
+    assert.equal(twins.length, 1, "undefined and [] share the empty signature");
+    assert.deepEqual(twins[0].roles.map((role) => role.id), ["a", "b"]);
+    assert.equal(twins[0].permissionCount, 0);
+  });
+
+  it("todas las OFFERABLE_TEMPLATES tienen claves en ROLE_PERMISSION_MAP", () => {
+    assert.ok(OFFERABLE_TEMPLATES.length >= 2, "the drawer opens on the first two offerable templates");
+    for (const key of OFFERABLE_TEMPLATES) {
+      assert.ok(Array.isArray(ROLE_PERMISSION_MAP[key]), `${key}: sin claves en ROLE_PERMISSION_MAP`);
+      assert.ok(ROLE_PERMISSION_MAP[key].length > 0, `${key}: plantilla sin ninguna clave`);
+    }
+    assert.ok(Array.isArray(ROLE_PERMISSION_MAP.receptionist) && Array.isArray(ROLE_PERMISSION_MAP.front_office_manager), "fallback pair of the drawer");
+  });
+
   it("finds roles with identical key sets and drops singletons", () => {
     const twins = identicalRoles([
       { id: "a", name: "A", permissions: ["x.read", "y.read"] },

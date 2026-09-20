@@ -17,6 +17,8 @@
  *   · reverse sin ai.high_risk.confirm → 403; con permisos → 200 e idempotente (segunda llamada alreadyReversed);
  *   · sin token → 401 en preview / create / reverse (RBAC estricto);
  *   · contentBase64 de 29 MiB (< bodyLimit 30 MiB) → 400 VALIDATION_ERROR por el máximo de 28 MiB del esquema; cuerpo de 31 MiB → 413.
+ *   · FIX-1 · F11: lote third_parties sintético → GET /third-parties 200 con lote por fila, orden (rol, código), nombre retenido en 465 / «EMPLEADO»,
+ *     paginación por cursor, q por NIF / cuenta, 400 de validación; usuario sin accounting.read → 403; sin token → 401.
  * Faranda y org_123 NUNCA se escriben (recuentos idénticos antes y después). Desde el repo:
  *   cd apps/api && node --env-file-if-exists=../../.env --import tsx --test "../../tests/integration/ledger-import-routes.test.mts"
  */
@@ -602,5 +604,164 @@ describe("L3 · RBAC estricto y límites de cuerpo", () => {
     const createTooLarge = await request<ErrorBody>("POST", BASE, s, { kind: "journal", contentBase64: "A".repeat(31 * MIB) });
     assert.equal(createTooLarge.status, 413, createTooLarge.text.slice(0, 300));
     assert.equal(await prisma.ledgerImport.count({ where: { organizationId: ORG } }), 2, "solo los dos lotes de la suite");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX-1 · F11 (E-05): directorio de solo lectura de los terceros importados
+// ---------------------------------------------------------------------------
+
+type ThirdPartyRow = { id: string; sourceCode: string; role: string; sourceAccount: string | null; taxId: string | null; countryCode: string; name: string | null; supplierId: string | null; updatedAt: string; lote: { importId: string; fileName: string | null; createdAt: string } | null };
+type ThirdPartyPage = { rows: ThirdPartyRow[]; total: number; nextCursor: string | null };
+
+const TP = `${BASE}/third-parties`;
+const NO_READ_EMAIL = `contable.lr.sinlectura.${RUN}@example.com`;
+/** Nombres INVENTADOS: dos sociedades, un cliente, una subcuenta 465 (personal) y un «EMPLEADO nnnn»; el directorio nunca devuelve estos dos últimos nombres. */
+const PERSONAL_NAME = "Nombre Inventado De Persona";
+const MASKED_NAME = "EMPLEADO 0000901";
+const THIRD_PARTIES_CSV = csv("codigo;rol;cuenta;nif;pais;nombre", [
+  ["42", "supplier", "4000000042", NIF_SUMINISTROS, "ES", "Suministros Eléctricos del Noroeste SL"],
+  ["7", "supplier", "4100000007", NIF_LAVANDERIA, "ES", "Lavandería Industrial del Cantábrico SL"],
+  ["123", "customer", "4300000123", NIF_VIAJES, "ES", "Viajes Cantábrico SL"],
+  ["900", "supplier", "4650000900", "", "ES", PERSONAL_NAME],
+  ["901", "supplier", "4100000901", "", "ES", MASKED_NAME]
+]);
+let importThirdParties = "";
+
+/** Lo que había antes del lote de terceros (el lote `plan` de la suite ya dio de alta los terceros con NIF de las cuentas 400 / 410 / 430, sin entrada `third_parties` → `lote: null`). */
+let baseline = { total: 0, customers: 0, lots: 0 };
+const OWN_CODES = ["42", "7", "123", "900", "901"];
+
+describe("L3 · FIX-1 · F11 · GET /accounting/ledger-imports/third-parties (terceros importados)", () => {
+  it("POST lote third_parties sintético → 201 posted (5 terceros, 0 suppliers); GET third-parties → 200 total +5 en orden (rol, código), lote en las filas del lote (null en las del plan) y nombre retenido en 465 / «EMPLEADO»", async (t) => {
+    const s = needsSession(t);
+    if (!s) return;
+    const before = await request<ThirdPartyPage>("GET", TP, s);
+    assert.equal(before.status, 200, before.text.slice(0, 500));
+    baseline = { total: before.body!.total, customers: before.body!.rows.filter((row) => row.role === "customer").length, lots: await prisma.ledgerImport.count({ where: { organizationId: ORG } }) };
+    assert.equal(baseline.total, await prisma.ledgerThirdParty.count({ where: { organizationId: ORG } }));
+    assert.ok(before.body!.rows.every((row) => row.lote === null), "los terceros del lote plan no tienen entrada third_parties");
+    for (const code of OWN_CODES) assert.ok(!before.body!.rows.some((row) => row.sourceCode === code), `código ${code} aún no existe`);
+
+    const created = await request<CreateResult>("POST", BASE, s, { kind: "third_parties", fileName: "terceros-lr.csv", content: THIRD_PARTIES_CSV });
+    assert.equal(created.status, 201, created.text.slice(0, 500));
+    assert.equal(created.body?.import.kind, "third_parties");
+    assert.equal(created.body?.import.status, "posted");
+    assert.equal(created.body?.created, 5);
+    importThirdParties = created.body!.import.id;
+    assert.equal(await prisma.ledgerThirdParty.count({ where: { organizationId: ORG } }), baseline.total + 5);
+    assert.equal(await prisma.supplier.count({ where: { organizationId: ORG } }), 0, "sin createSuppliers no se crean proveedores");
+
+    const res = await request<ThirdPartyPage>("GET", TP, s);
+    assert.equal(res.status, 200, res.text.slice(0, 500));
+    assert.equal(res.body?.total, baseline.total + 5);
+    assert.equal(res.headers["x-total-count"], String(baseline.total + 5));
+    assert.equal(res.headers["x-next-cursor"], undefined, "una sola página");
+    assert.equal(res.body?.nextCursor, null);
+    assert.equal(res.body?.rows.length, baseline.total + 5);
+    const keys = res.body!.rows.map((row) => [row.role, row.sourceCode] as const);
+    for (let i = 1; i < keys.length; i++) {
+      const [prevRole, prevCode] = keys[i - 1]!;
+      const [role, code] = keys[i]!;
+      assert.ok(prevRole < role || (prevRole === role && prevCode < code), `orden (rol, código) en ${prevRole}:${prevCode} → ${role}:${code}`);
+    }
+    const own = res.body!.rows.filter((row) => OWN_CODES.includes(row.sourceCode));
+    assert.equal(own.length, 5);
+    for (const row of own) {
+      assert.ok(row.lote, `lote de ${row.sourceCode}`);
+      assert.equal(row.lote?.importId, importThirdParties);
+      assert.equal(row.lote?.fileName, "terceros-lr.csv");
+      assert.match(row.lote?.createdAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+      assert.match(row.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+      assert.equal(row.countryCode, "ES");
+      assert.equal(row.supplierId, null);
+    }
+    assert.ok(res.body!.rows.filter((row) => !OWN_CODES.includes(row.sourceCode)).every((row) => row.lote === null), "las filas del plan siguen sin lote");
+    const byCode = new Map(own.map((row) => [row.sourceCode, row]));
+    assert.equal(byCode.get("42")?.role, "supplier");
+    assert.equal(byCode.get("42")?.name, "Suministros Eléctricos del Noroeste SL");
+    assert.equal(byCode.get("42")?.taxId, NIF_SUMINISTROS);
+    assert.equal(byCode.get("42")?.sourceAccount, "4000000042");
+    assert.equal(byCode.get("123")?.role, "customer");
+    assert.equal(byCode.get("123")?.name, "Viajes Cantábrico SL");
+    assert.equal(byCode.get("900")?.name, null, "subcuenta 465: sin nombre");
+    assert.equal(byCode.get("901")?.name, null, "«EMPLEADO nnnn»: sin nombre");
+    assert.ok(!res.text.includes(PERSONAL_NAME) && !res.text.includes(MASKED_NAME), "la respuesta no lleva los nombres retenidos");
+  });
+
+  it("paginación por cursor: limit=2 → 2 filas y X-Next-Cursor; las páginas siguientes no repiten y cubren el total; cursor inválido, limit=0, role fuera del catálogo y clave extra → 400", async (t) => {
+    const s = needsSession(t);
+    if (!s) return;
+    const total = baseline.total + 5;
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const url = cursor ? `${TP}?limit=2&cursor=${encodeURIComponent(cursor)}` : `${TP}?limit=2`;
+      const res: Response<ThirdPartyPage> = await request<ThirdPartyPage>("GET", url, s);
+      assert.equal(res.status, 200, res.text.slice(0, 400));
+      assert.equal(res.body?.total, total, "total del filtro en cada página");
+      assert.ok((res.body?.rows.length ?? 0) <= 2);
+      seen.push(...res.body!.rows.map((row) => row.id));
+      cursor = res.body?.nextCursor ?? null;
+      if (cursor) assert.equal(res.headers["x-next-cursor"], cursor);
+      pages += 1;
+    } while (cursor && pages < 50);
+    assert.equal(pages, Math.ceil(total / 2), "páginas de 2");
+    assert.equal(new Set(seen).size, total, "sin repeticiones");
+    assert.equal(seen.length, total);
+    const bad = await request<ErrorBody>("GET", `${TP}?cursor=no-es-un-cursor`, s);
+    assert.equal(bad.status, 400, bad.text.slice(0, 300));
+    assert.match(bad.body?.message ?? "", /cursor de paginación no es válido/);
+    const zero = await request<ErrorBody>("GET", `${TP}?limit=0`, s);
+    assert.equal(zero.status, 400, zero.text.slice(0, 300));
+    const role = await request<ErrorBody>("GET", `${TP}?role=proveedor`, s);
+    assert.equal(role.status, 400, role.text.slice(0, 300));
+    assert.equal(role.body?.details?.code, "VALIDATION_ERROR");
+    assert.match(role.body?.message ?? "", /^query no válido: role: valor no admitido 'proveedor'; valores válidos: customer \| supplier$/);
+    const extra = await request<ErrorBody>("GET", `${TP}?nombre=x`, s);
+    assert.equal(extra.status, 400, extra.text.slice(0, 300));
+  });
+
+  it("q por NIF en minúsculas + role=supplier → solo filas con ese NIF (incluida la 42); q por cuenta «43» → solo clientes de la 43 (incluida la 123); role=customer → clientes +1; q sin coincidencias → total 0; q de 81 caracteres → 400", async (t) => {
+    const s = needsSession(t);
+    if (!s) return;
+    const byNif = await request<ThirdPartyPage>("GET", `${TP}?q=${encodeURIComponent(NIF_SUMINISTROS.toLowerCase())}&role=supplier`, s);
+    assert.equal(byNif.status, 200, byNif.text.slice(0, 400));
+    assert.ok((byNif.body?.total ?? 0) >= 1);
+    assert.equal(byNif.headers["x-total-count"], String(byNif.body?.total));
+    assert.ok(byNif.body!.rows.every((row) => row.taxId === NIF_SUMINISTROS && row.role === "supplier"), "solo el NIF buscado, solo proveedores");
+    assert.ok(byNif.body!.rows.some((row) => row.sourceCode === "42"));
+    const byAccount = await request<ThirdPartyPage>("GET", `${TP}?q=43`, s);
+    assert.equal(byAccount.status, 200);
+    assert.ok(byAccount.body!.rows.every((row) => row.role === "customer" && (row.sourceAccount ?? "").startsWith("43")), "cuenta 43…: clientes");
+    assert.ok(byAccount.body!.rows.some((row) => row.sourceCode === "123"));
+    const byRole = await request<ThirdPartyPage>("GET", `${TP}?role=customer`, s);
+    assert.equal(byRole.body?.total, baseline.customers + 1);
+    assert.ok(byRole.body!.rows.every((row) => row.role === "customer"));
+    const none = await request<ThirdPartyPage>("GET", `${TP}?q=zzz-sin-coincidencia`, s);
+    assert.equal(none.status, 200);
+    assert.equal(none.body?.total, 0);
+    assert.deepEqual(none.body?.rows, []);
+    const tooLong = await request<ErrorBody>("GET", `${TP}?q=${"a".repeat(81)}`, s);
+    assert.equal(tooLong.status, 400, tooLong.text.slice(0, 300));
+    assert.match(tooLong.body?.message ?? "", /q no puede superar 80 caracteres/);
+  });
+
+  it("usuario sin accounting.read → 403; sin token en RBAC estricto → 401", async (t) => {
+    const s = needsSession(t);
+    if (!s) return;
+    const noRead = await createUser(NO_READ_EMAIL, "Contable LR sin lectura", ["accounting.journal.post"]);
+    if (!noRead) {
+      t.skip(NO_SESSION);
+      return;
+    }
+    const forbidden = await request<ErrorBody>("GET", TP, noRead);
+    assert.equal(forbidden.status, 403, forbidden.text.slice(0, 300));
+    await withEnv(STRICT_ENV, async () => {
+      const anonymous = await request<ErrorBody>("GET", TP, {});
+      assert.equal(anonymous.status, 401, anonymous.text.slice(0, 200));
+    });
+    assert.equal(await prisma.ledgerImport.count({ where: { organizationId: ORG } }), baseline.lots + 1, "los lotes anteriores y el de terceros");
   });
 });

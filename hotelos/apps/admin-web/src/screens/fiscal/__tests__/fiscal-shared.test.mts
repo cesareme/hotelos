@@ -17,13 +17,20 @@ import {
   formatDetalleCell,
   formatTotal,
   groupBoxesBySection,
+  initialPeriodPicker,
   isFiscalYearClosed,
   isZeroBox,
   kpiLabel,
   matchesVatBookSearch,
   modelPeriodKind,
+  formatOpeningPeriod,
+  openingCompensationDraft,
+  parseOpeningPeriod,
+  parseOpeningAmount,
   periodCodeOf,
   periodHasEnded,
+  quarterMonthOptions,
+  regimeRowLabel,
   resultadoCaption,
   settlementEntryLabel,
   submissionStatusLabel,
@@ -235,5 +242,82 @@ describe("fiscal-shared · libros", () => {
     assert.ok(csv.startsWith("﻿Libro;Fecha;Serie;Número;NIF;Nombre;Base;Tipo (%)"));
     const line = csv.split("\r\n")[1];
     assert.match(line, /^Facturas emitidas;2026-07-12;FAC-2026;FAC-2026-000001;;"Bar ""El Puerto""; SL";10,33;21,00;2,17;12,50;0,00;;;IVA;Sí;Factura;inv_1;2026-Q3;prop_1$/);
+  });
+});
+
+
+describe("initialPeriodPicker (FIX-1 · F3, E-04)", () => {
+  const now = "2026-09-19";
+
+  it("opens on the last period with materialised books: a quarter sets its last month, a month its quarter", () => {
+    assert.deepEqual(initialPeriodPicker("2026-Q2", now), { year: "2026", quarter: "2", month: "06" });
+    assert.deepEqual(initialPeriodPicker("2025-q4", now), { year: "2025", quarter: "4", month: "12" });
+    assert.deepEqual(initialPeriodPicker("2026-05", now), { year: "2026", quarter: "2", month: "05" });
+    assert.deepEqual(initialPeriodPicker("2026-01", now), { year: "2026", quarter: "1", month: "01" });
+  });
+
+  it("falls back to the current quarter and month without books or with an unreadable code", () => {
+    assert.deepEqual(initialPeriodPicker(null, now), { year: "2026", quarter: "3", month: "09" });
+    assert.deepEqual(initialPeriodPicker("2026", now), { year: "2026", quarter: "3", month: "09" }, "a year is not a settlement period");
+    assert.deepEqual(initialPeriodPicker("garbage", "2027-02-10"), { year: "2027", quarter: "1", month: "02" });
+  });
+
+  it("quarterMonthOptions offers the whole quarter first and its three months", () => {
+    assert.deepEqual(quarterMonthOptions("1").map((option) => option.value), ["", "01", "02", "03"]);
+    assert.deepEqual(quarterMonthOptions("4").map((option) => [option.value, option.label]), [["", "— trimestre completo —"], ["10", "Octubre"], ["11", "Noviembre"], ["12", "Diciembre"]]);
+    assert.deepEqual(quarterMonthOptions("x").map((option) => option.value), ["", "01", "02", "03"], "an unreadable quarter → the first one");
+  });
+
+  it("regimeRowLabel translates the F2 regime of a book row and paints «—» for an unclassified row", () => {
+    assert.equal(regimeRowLabel("interior"), "Interior");
+    assert.equal(regimeRowLabel("isp"), "ISP");
+    assert.equal(regimeRowLabel("aib"), "AIB");
+    assert.equal(regimeRowLabel("importacion"), "Importación");
+    assert.equal(regimeRowLabel("exento_no_sujeto"), "Exenta / no sujeta");
+    assert.equal(regimeRowLabel(null), "—");
+    assert.equal(regimeRowLabel(undefined), "—");
+  });
+});
+
+
+describe("openingCompensationDraft (FIX-1 · F3, B-2)", () => {
+  it("reads Spanish and plain amounts, empty = 0, anything else NaN", () => {
+    assert.equal(parseOpeningAmount("42.024,03"), 42024.03);
+    assert.equal(parseOpeningAmount("42024,03"), 42024.03);
+    assert.equal(parseOpeningAmount("1184.07"), 1184.07);
+    assert.equal(parseOpeningAmount(" 100 "), 100);
+    assert.equal(parseOpeningAmount(""), 0);
+    assert.ok(Number.isNaN(parseOpeningAmount("-5")));
+    assert.ok(Number.isNaN(parseOpeningAmount("abc")));
+    assert.ok(Number.isNaN(parseOpeningAmount("1.2.3")));
+  });
+
+  it("validates the pair: an amount needs a settlement period, the period is typed as «1T 2025» / «2025-01» (its code is accepted too), both empty is fine", () => {
+    assert.deepEqual(openingCompensationDraft("42.024,03", " 1t 2025 "), { amount: 42024.03, period: "2025-Q1", amountError: undefined, periodError: undefined });
+    assert.deepEqual(openingCompensationDraft("42.024,03", " 2025-q1 "), { amount: 42024.03, period: "2025-Q1", amountError: undefined, periodError: undefined });
+    assert.deepEqual(openingCompensationDraft("", ""), { amount: 0, period: null, amountError: undefined, periodError: undefined });
+    assert.equal(openingCompensationDraft("10", "").periodError, "Indica el periodo desde el que aplica el saldo (p. ej. 1T 2025).");
+    assert.equal(openingCompensationDraft("10", "2025").periodError, "Formato 1T 2025 (trimestre) o 2025-01 (mes).");
+    assert.equal(openingCompensationDraft("10", "2025-13").periodError, "Formato 1T 2025 (trimestre) o 2025-01 (mes).");
+    assert.deepEqual([openingCompensationDraft("10", "5T 2025").period, openingCompensationDraft("10", "5T 2025").periodError], ["5T 2025", "Formato 1T 2025 (trimestre) o 2025-01 (mes)."], "an unreadable period is kept as typed so the form stays dirty and invalid");
+    assert.equal(openingCompensationDraft("0", "2025-02").periodError, undefined, "a period without amount is allowed (clears nothing)");
+    assert.equal(openingCompensationDraft("abc", "2025-Q1").amountError, "Indica un importe mayor o igual que 0 (p. ej. 42024,03).");
+  });
+
+  it("parseOpeningPeriod / formatOpeningPeriod: the field speaks the notation of the fiscal screens («1T 2025»), the API its settlement code", () => {
+    assert.equal(parseOpeningPeriod("1T 2025"), "2025-Q1");
+    assert.equal(parseOpeningPeriod(" 1t2025 "), "2025-Q1");
+    assert.equal(parseOpeningPeriod("4T-2025"), "2025-Q4");
+    assert.equal(parseOpeningPeriod("2025-3T"), "2025-Q3");
+    assert.equal(parseOpeningPeriod("2025 2T"), "2025-Q2");
+    assert.equal(parseOpeningPeriod("2025-Q2"), "2025-Q2");
+    assert.equal(parseOpeningPeriod("2025-01"), "2025-01");
+    assert.equal(parseOpeningPeriod("01/2025"), "2025-01");
+    for (const bad of ["", "5T 2025", "2025", "2025-13", "13/2025", "T1 2025", "1T 25"]) assert.equal(parseOpeningPeriod(bad), null, `«${bad}»`);
+    assert.equal(formatOpeningPeriod("2025-Q1"), "1T 2025");
+    assert.equal(formatOpeningPeriod("2025-01"), "2025-01");
+    assert.equal(formatOpeningPeriod(null), "");
+    assert.equal(formatOpeningPeriod(undefined), "");
+    for (const code of ["2025-Q1", "2025-Q4", "2025-12"]) assert.equal(parseOpeningPeriod(formatOpeningPeriod(code)), code, "format ∘ parse is the identity on codes");
   });
 });

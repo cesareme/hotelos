@@ -1,7 +1,7 @@
 // Finanzas › Contabilidad › Importar desde Sage 200 —
 // /finanzas/contabilidad/importar-sage200 (Tanda 7c · L4; design
 // docs/design/FINANZAS-IMPORTACION-SAGE200.md §7.4), hosted in ContabilidadTabs,
-// born without inline styles (Cocoa 22 contract). Three views on a segmented
+// born without inline styles (Cocoa 22 contract). Four views on a segmented
 // control:
 //
 //   Importar        a five-step wizard (Fichero · Cuentas · Analítica · Revisión ·
@@ -42,6 +42,12 @@
 //   Lotes           the lots with «Ver» (drawer with the entries), «Contabilizar»
 //                   (draft) and «Revertir» (posted; destructive dialog with a
 //                   reason of 3..500 characters); «Autor» is a name, never an id.
+//   Terceros        (FIX-1 · F11 / E-05) read-only directory of the imported third
+//                   parties (GET …/third-parties): search box (code · NIF · Sage
+//                   account · name, debounced) + role filter, compact table (Código ·
+//                   NIF · Cuenta Sage · Rol · Nombre · Lote) paged by cursor with
+//                   «Cargar más»; «Nombre» is «—» for personal accounts (465 / 460 /
+//                   555) and names carrying the word EMPLEADO — the API never sends those.
 //
 // Gates over the real grants (canDo(useNavGate())): read
 // accounting.reports.read or accounting.read; import accounting.journal.post;
@@ -69,6 +75,8 @@ import type {
   LedgerImportRecord,
   LedgerReconciliationDto,
   LedgerReconciliationRow,
+  LedgerThirdPartyDto,
+  LedgerThirdPartyPage,
   LedgerUnassignedPolicy
 } from "@hotelos/shared";
 import {
@@ -81,6 +89,7 @@ import {
   CocoaDrawer,
   CocoaField,
   CocoaFileInput,
+  CocoaFormRow,
   CocoaGrid,
   CocoaInput,
   CocoaKpi,
@@ -93,6 +102,7 @@ import {
   CocoaSelect,
   CocoaSpan,
   CocoaStat,
+  CocoaState,
   CocoaSwitch,
   CocoaTable,
   openTabPath,
@@ -119,6 +129,7 @@ import {
   getLedgerImport,
   getReconciliation,
   ledgerImportErrorMessage,
+  listLedgerThirdParties,
   postLedgerImport,
   previewLedgerImport,
   putAccountMap,
@@ -140,6 +151,10 @@ import {
   LOT_STATUS_FILTER_OPTIONS,
   REVERSAL_REASON_MAX,
   REVERSAL_REASON_MIN,
+  THIRD_PARTY_PAGE_LIMIT,
+  THIRD_PARTY_QUERY_MAX,
+  THIRD_PARTY_ROLE_FILTER_OPTIONS,
+  THIRD_PARTY_SEARCH_DEBOUNCE_MS,
   accountActionOptions,
   accountOriginTone,
   accountRowIssue,
@@ -180,6 +195,7 @@ import {
   isImportKind,
   isImportView,
   isReversalReasonValid,
+  isThirdPartyRole,
   isUnassignedPolicy,
   isUsaliDepartment,
   isValidAccountCode,
@@ -209,6 +225,9 @@ import {
   stepTone,
   stepsForKind,
   suggestedAccountLabel,
+  thirdPartyEmptyMessage,
+  thirdPartyLotLabel,
+  thirdPartyRoleLabel,
   unassignedPolicyOptions,
   unbalancedLine,
   usaliDepartmentOptions,
@@ -217,7 +236,8 @@ import {
   type ImportStepKey,
   type ImportView,
   type MonthRow,
-  type PropertyRow
+  type PropertyRow,
+  type ThirdPartyRoleFilter
 } from "./sage200-import-helpers";
 import { BRAND } from "../../config/brand";
 
@@ -288,6 +308,16 @@ const ENTRY_COLUMNS: CocoaTableColumn<LedgerImportEntryDto>[] = [
   { key: "lines", label: "Apuntes", fit: true, align: "right", hideOnNarrow: true, render: (row) => number(row.lineCount) },
   { key: "debit", label: "Debe", align: "right", render: (row) => money(row.debit) },
   { key: "warnings", label: "Avisos", truncate: 320, showFrom: "tablet", render: (row) => (row.warnings.length > 0 ? row.warnings.join(" · ") : EMPTY) }
+];
+
+/** Columns of «Terceros» (FIX-1 · F11): identifiers in mono; «Nombre» is EMPTY when the API withholds it (personal accounts, masked employees); «Lote» = file · date of the last third_parties lot. */
+const THIRD_PARTY_COLUMNS: CocoaTableColumn<LedgerThirdPartyDto>[] = [
+  { key: "sourceCode", label: "Código", fit: true, render: (row) => <span className="cocoa-mono">{row.sourceCode}</span> },
+  { key: "taxId", label: "NIF", fit: true, render: (row) => (row.taxId ? <span className="cocoa-mono">{row.taxId}</span> : EMPTY) },
+  { key: "sourceAccount", label: "Cuenta Sage", fit: true, render: (row) => (row.sourceAccount ? <span className="cocoa-mono">{row.sourceAccount}</span> : EMPTY) },
+  { key: "role", label: "Rol", fit: true, render: (row) => thirdPartyRoleLabel(row.role) },
+  { key: "name", label: "Nombre", truncate: 280, render: (row) => row.name ?? EMPTY },
+  { key: "lote", label: "Lote", truncate: 240, showFrom: "tablet", render: (row) => thirdPartyLotLabel(row.lote) }
 ];
 
 /** Columns of «Lotes»; «Autor» names the actor (own name, «Sistema · proceso», «otro usuario»), never a raw id. */
@@ -392,6 +422,15 @@ export function Sage200ImportScreen() {
   const [reversing, setReversing] = useState(false);
   const [reverseError, setReverseError] = useState<string | null>(null);
 
+  // ---- third parties view (FIX-1 · F11) ----
+  const [tpQuery, setTpQuery] = useState("");
+  const [tpRole, setTpRole] = useState<ThirdPartyRoleFilter>("");
+  const [tpPage, setTpPage] = useState<LedgerThirdPartyPage | null>(null);
+  const [tpLoading, setTpLoading] = useState(false);
+  const [tpLoadingMore, setTpLoadingMore] = useState(false);
+  const [tpError, setTpError] = useState<string | null>(null);
+  const [tpNonce, setTpNonce] = useState(0);
+
   const lots = useApiData<LedgerImportRecord[]>(canRead ? LEDGER_IMPORTS_PATH : null, { query: { kind: lotKind || undefined, status: lotStatus || undefined, limit: LIST_LIMIT } });
   const lotRows = useMemo(() => toArray<LedgerImportRecord>(lots.data), [lots.data]);
   const reconciliations = useApiData<LedgerReconciliationDto[]>(canRead ? `${LEDGER_IMPORTS_PATH}/reconciliation` : null, { query: { propertyId: finance.propertyId, limit: RECON_LIST_LIMIT } });
@@ -432,6 +471,46 @@ export function Sage200ImportScreen() {
     }
     stepContentRef.current?.focus();
   }, [stepKey]);
+
+  // ---- third parties: first page whenever the view opens or a filter changes (search debounced); «Cargar más» appends by cursor ----
+  useEffect(() => {
+    if (view !== "terceros" || !canRead) return undefined;
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      setTpLoading(true);
+      setTpError(null);
+      listLedgerThirdParties({ q: tpQuery.trim() || undefined, role: tpRole || undefined, limit: THIRD_PARTY_PAGE_LIMIT })
+        .then((page) => {
+          if (!alive) return;
+          setTpPage(page);
+          setTpLoading(false);
+        })
+        .catch((err: unknown) => {
+          if (!alive) return;
+          setTpError(ledgerImportErrorMessage(err, "No se pudieron cargar los terceros importados."));
+          setTpLoading(false);
+        });
+    }, THIRD_PARTY_SEARCH_DEBOUNCE_MS);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [view, canRead, tpQuery, tpRole, tpNonce]);
+
+  async function loadMoreThirdParties() {
+    const cursor = tpPage?.nextCursor;
+    if (!cursor || tpLoadingMore) return;
+    setTpLoadingMore(true);
+    setTpError(null);
+    try {
+      const next = await listLedgerThirdParties({ q: tpQuery.trim() || undefined, role: tpRole || undefined, limit: THIRD_PARTY_PAGE_LIMIT, cursor });
+      setTpPage((current) => (current && current.nextCursor === cursor ? { rows: [...current.rows, ...next.rows], total: next.total, nextCursor: next.nextCursor } : current));
+    } catch (err: unknown) {
+      setTpError(ledgerImportErrorMessage(err, "No se pudieron cargar más terceros."));
+    } finally {
+      setTpLoadingMore(false);
+    }
+  }
 
   // ---- derived: steps of the kind, analytics mapping, bodies ----
   const steps = useMemo(() => stepsForKind(kind, preview?.unmappedAccounts.length ?? 0), [kind, preview]);
@@ -1745,6 +1824,53 @@ export function Sage200ImportScreen() {
     );
   }
 
+  function renderThirdPartiesView() {
+    const rows = tpPage?.rows ?? [];
+    const filtered = tpQuery.trim() !== "" || tpRole !== "";
+    return (
+      <div className="cocoa-stack" data-gap="4">
+        <CocoaFormRow columns={2} aria-label="Filtros del directorio de terceros">
+          <CocoaField label="Buscar" help="Código Sage, NIF, cuenta Sage (empieza por) o nombre.">
+            <CocoaInput value={tpQuery} onChange={setTpQuery} placeholder="Código, NIF, cuenta o nombre" inputMode="search" maxLength={THIRD_PARTY_QUERY_MAX} aria-label="Buscar terceros por código, NIF, cuenta o nombre" />
+          </CocoaField>
+          <CocoaField label="Rol">
+            <CocoaSelect value={tpRole} onChange={(value) => setTpRole(isThirdPartyRole(value) ? value : "")} options={[...THIRD_PARTY_ROLE_FILTER_OPTIONS]} aria-label="Filtrar terceros por rol" />
+          </CocoaField>
+        </CocoaFormRow>
+        <CocoaSection
+          title="Terceros importados"
+          padding="none"
+          meta={tpPage ? plural(tpPage.total, "tercero", "terceros") : undefined}
+          action={
+            <CocoaButton variant="plain" tone="neutral" size="small" loading={tpLoading} onClick={() => setTpNonce((n) => n + 1)}>
+              {ACTIONS.refresh}
+            </CocoaButton>
+          }
+          footer={
+            tpPage?.nextCursor ? (
+              <div className="cocoa-row" data-gap="2">
+                <CocoaButton variant="bordered" tone="neutral" size="small" loading={tpLoadingMore} disabled={tpLoading} onClick={() => void loadMoreThirdParties()}>
+                  Cargar más
+                </CocoaButton>
+                <span className="cocoa-caption">{`Se muestran ${number(rows.length)} de ${number(tpPage.total)}.`}</span>
+              </div>
+            ) : undefined
+          }
+        >
+          {tpError ? (
+            <CocoaState kind="error" title="No se pudieron cargar los terceros" message={tpError} onRetry={() => setTpNonce((n) => n + 1)} inline />
+          ) : tpPage === null || (tpLoading && rows.length === 0) ? (
+            <CocoaState kind="loading" title="Cargando los terceros importados…" inline />
+          ) : rows.length === 0 ? (
+            <CocoaState kind="empty" title="Sin terceros" message={thirdPartyEmptyMessage(filtered)} inline />
+          ) : (
+            <CocoaTable columns={THIRD_PARTY_COLUMNS} rows={rows} rowKey="id" density="compact" virtualize maxHeight={TABLE_MAX_HEIGHT} caption="Terceros importados desde Sage 200" aria-label="Terceros importados desde Sage 200" />
+          )}
+        </CocoaSection>
+      </div>
+    );
+  }
+
   const lotRecord = lotDetail?.import ?? null;
 
   return (
@@ -1769,7 +1895,7 @@ export function Sage200ImportScreen() {
       ) : null}
       <CocoaSegmentedControl aria-label="Vista de la importación desde Sage 200" value={view} onChange={(value) => setView(isImportView(value) ? value : "importar")} options={VIEW_OPTIONS} panelId="sage200-import-panel" />
       <div id="sage200-import-panel" role="tabpanel" aria-label={viewLabel} className="cocoa-stack" data-gap="4">
-        {view === "importar" ? renderImportView() : view === "reconciliacion" ? renderReconciliationView() : renderLotsView()}
+        {view === "importar" ? renderImportView() : view === "reconciliacion" ? renderReconciliationView() : view === "lotes" ? renderLotsView() : renderThirdPartiesView()}
       </div>
 
       <CocoaDrawer open={lotDetail !== null} onClose={() => setLotDetail(null)} title={lotRecord ? `Lote ${importFileLabel(lotRecord)}` : "Lote"} subtitle={lotRecord ? `${importKindLabel(lotRecord.kind)} · ${periodRangeLabel(lotRecord.periodFrom, lotRecord.periodTo)} · ${importStatusLabel(lotRecord.status)} · ${importAuthorLabel(lotRecord.createdBy, session)}` : undefined} side="right" size="lg">

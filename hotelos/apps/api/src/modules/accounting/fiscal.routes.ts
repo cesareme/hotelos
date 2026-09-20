@@ -10,8 +10,10 @@
 //   GET  /fiscal/vat-settings                 · PUT /fiscal/vat-settings
 //   GET  /fiscal/regime?year=                  (Tanda 6b · R8: régimen de la sociedad y propuesta al cierre)
 //   GET  /fiscal/vat-books?book=&period=|from=&to=[&propertyId=]
+//   GET  /fiscal/vat-books/periods             (FIX-1 · F3: periods with materialised rows + `latest`)
 //   POST /fiscal/vat-books/rebuild            { period | from,to [, propertyId] }
-//   GET  /fiscal/models/:modelo?period=|year=  (303 · 390 · 347 · 111 · 115 · 180)
+//   POST /fiscal/vat-books/reclassify         { period | from,to [, apply=false, includeZeroRate=false] }  (FIX-1 · F2)
+//   GET  /fiscal/models/:modelo?period=|year=  (303 · 390 · 347 · 111 · 115 · 180; 303: `&informativo=1` monthly view of a quarterly sociedad)
 //   GET  /fiscal/models/:modelo/pdf            (same query; application/pdf)
 //   GET  /fiscal/vat-settlement?period=        (preview of the entry)
 //   POST /fiscal/vat-settlement                { period [, entryDate] }
@@ -41,7 +43,8 @@ import { buildModelo180 } from "./modelo-180.service.js";
 import { buildModelo303 } from "./modelo-303.service.js";
 import { buildModelo347 } from "./modelo-347.service.js";
 import { buildFiscalRegimeReport, buildModelo390 } from "./modelo-390.service.js";
-import { VAT_BOOK_PAGE_LIMIT, getVatSettings, listVatBook, parseFiscalPeriod, rebuildVatBooks, updateVatSettings } from "./vat-books.service.js";
+import { VAT_BOOK_PAGE_LIMIT, getVatSettings, listVatBook, listVatBookPeriods, parseFiscalPeriod, rebuildVatBooks, updateVatSettings } from "./vat-books.service.js";
+import { reclassifyVatBooks } from "./vat-books-reclassify.service.js";
 import { previewVatSettlement, reverseVatSettlement, settleVatPeriod, type LedgerEngine } from "./vat-settlement.service.js";
 
 export type FiscalRouteDeps = {
@@ -58,7 +61,10 @@ const vatSettingsPatchSchema = z
     periodicity: z.enum(["quarterly", "monthly"]).optional(),
     regime: z.enum(["general", "redeme", "recargo"]).optional(),
     prorrataPct: z.number().min(0).max(100).nullable().optional(),
-    taxFigure: z.enum(["IVA", "IGIC", "IPSI"]).optional()
+    taxFigure: z.enum(["IVA", "IGIC", "IPSI"]).optional(),
+    // FIX-1 · F3 (B-2): saldo inicial a compensar (casilla 110) y periodo desde el que aplica (2025-Q1 · 2025-01).
+    openingCompensation: z.number().min(0).optional(),
+    openingCompensationPeriod: z.string().max(10).nullable().optional()
   })
   .strict();
 
@@ -89,6 +95,17 @@ const rebuildBodySchema = z
   })
   .strict();
 
+// FIX-1 · F2: reclasificación de régimen de las filas sage200 sin régimen (dry-run por defecto).
+const reclassifyBodySchema = z
+  .object({
+    period: z.string().min(4).max(10).optional(),
+    from: isoDay.optional(),
+    to: isoDay.optional(),
+    apply: z.boolean().optional().default(false),
+    includeZeroRate: z.boolean().optional().default(false)
+  })
+  .strict();
+
 const modelQuerySchema = z
   .object({
     period: z.string().min(4).max(10).optional(),
@@ -96,7 +113,9 @@ const modelQuerySchema = z
     propertyId: z.string().min(1).optional(),
     fromDate: isoDay.optional(),
     toDate: isoDay.optional(),
-    periodType: z.enum(["monthly", "quarterly"]).optional()
+    periodType: z.enum(["monthly", "quarterly"]).optional(),
+    // FIX-1 · F3 (E-02): 303 only — a month of a quarterly sociedad as an informative view (no compensation, not filable).
+    informativo: z.enum(["1", "0"]).optional()
   })
   .strict();
 
@@ -135,7 +154,7 @@ export async function buildFiscalModel(modelo: string, query: z.output<typeof mo
   const propertyId = query.propertyId ?? null;
   switch (code) {
     case "303":
-      return buildModelo303({ context, propertyId, period: query.period, fromDate: query.fromDate, toDate: query.toDate, periodType: query.periodType });
+      return buildModelo303({ context, propertyId, period: query.period, fromDate: query.fromDate, toDate: query.toDate, periodType: query.periodType, informativo: query.informativo === "1" });
     case "111":
       return buildModelo111({ context, propertyId, period: query.period, fromDate: query.fromDate, toDate: query.toDate, periodType: query.periodType });
     case "115":
@@ -181,6 +200,9 @@ export function registerFiscalRoutes(app: FastifyInstance, deps: FiscalRouteDeps
     return book;
   });
 
+  // FIX-1 · F3 (E-04): the periods with materialised book rows — the default period of the 303 and the books screens.
+  app.get("/fiscal/vat-books/periods", async (request) => listVatBookPeriods(request.userContext.organizationId));
+
   app.post("/fiscal/vat-books/rebuild", async (request) => {
     const b = parseOr400(rebuildBodySchema, body(request), "body");
     let from = b.from;
@@ -192,6 +214,16 @@ export function registerFiscalRoutes(app: FastifyInstance, deps: FiscalRouteDeps
     }
     if (!from || !to) throw new BadRequestError("Indica period (2026-Q3 · 2026-09 · 2026) o from y to (YYYY-MM-DD).");
     return rebuildVatBooks({ context: request.userContext, from, to, propertyId: b.propertyId ?? null, correlationId: createId("corr") });
+  });
+
+  app.post("/fiscal/vat-books/reclassify", async (request) => {
+    const b = parseOr400(reclassifyBodySchema, body(request), "body");
+    if (!b.period && !(b.from && b.to)) {
+      const error = new BadRequestError("Indica period (2025 · 2025-Q3 · 2025-09) o from y to (YYYY-MM-DD).");
+      error.details = { code: "VALIDATION_ERROR", issues: [{ path: "period", message: "period o from+to son obligatorios." }] };
+      throw error;
+    }
+    return reclassifyVatBooks({ context: request.userContext, period: b.period, from: b.from, to: b.to, apply: b.apply, includeZeroRate: b.includeZeroRate, correlationId: createId("corr") });
   });
 
   app.get("/fiscal/models/:modelo", async (request) => {

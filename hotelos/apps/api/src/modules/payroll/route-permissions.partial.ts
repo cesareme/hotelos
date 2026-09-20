@@ -1,5 +1,7 @@
 // Coste de personal importado · Tanda 6c · L3 · entradas de permisos de las
-// rutas /payroll/cost-imports* y /payroll/cost-report (cost-import.routes.ts).
+// rutas /payroll/cost-imports* y /payroll/cost-report (cost-import.routes.ts)
+// y, desde FIX-1 · F10, de las fichas de personal /payroll/staff-profiles
+// (staff-profiles.routes.ts).
 //
 // Entradas fusionadas en routePermissionManifest (security/route-permissions.ts,
 // `...payrollRoutePermissions`); los contratos (tests/api-route-permissions-
@@ -28,5 +30,8 @@ export const payrollRoutePermissions: ApiRoutePermission[] = [
   { method: "GET", path: "/payroll/cost-imports/:id", permissions: ["payroll.read"], riskLevel: "medium" },
   { method: "POST", path: "/payroll/cost-imports/:id/post", permissions: ["payroll.manage"], riskLevel: "high" },
   { method: "POST", path: "/payroll/cost-imports/:id/reverse", permissions: ["payroll.manage"], riskLevel: "critical" },
-  { method: "GET", path: "/payroll/cost-report", permissions: ["payroll.read"], riskLevel: "medium" }
+  { method: "GET", path: "/payroll/cost-report", permissions: ["payroll.read"], riskLevel: "medium" },
+  // Fichas de personal (FIX-1 · F10, staff-profiles.routes.ts): lectura payroll.read; alta payroll.manage (high: sin fallback demo sin token).
+  { method: "GET", path: "/payroll/staff-profiles", permissions: ["payroll.read"], riskLevel: "medium" },
+  { method: "POST", path: "/payroll/staff-profiles", permissions: ["payroll.manage"], riskLevel: "high" }
 ];

@@ -434,3 +434,118 @@ describe("L2-08 · mobile-keys: emisión, verificación y revocación de la llav
     assert.equal((await prisma.guestPortalAction.findUnique({ where: { id: `mkey_${serialNumber}` } }))?.status, "revoked");
   });
 });
+
+// ---------------------------------------------------------------------------
+// webhooks (routes/webhooks.routes.ts · FIX-1 F7): una suscripción creada sin
+// developerAppId cuelga de la propiedad activa (antes propertyId null +
+// `app_<org>` sintético → 404 en PATCH / DELETE / entregas); las filas
+// antiguas con esa forma se resuelven por el sufijo del developerAppId.
+// ---------------------------------------------------------------------------
+
+describe("L2-08 · webhooks: suscripciones con ámbito de propiedad / organización (FIX-1 · F7)", () => {
+  const WEBHOOK_404 = "Suscripción de webhook no encontrada.";
+  const targetUrl = `https://example.invalid/ehotelos/l2-${RUN}`;
+  let subscriptionId = "";
+  let legacyId = "";
+  let appIdB = "";
+  // Sistemas de B (plantilla admin, CON developer.manage_webhooks): el 404 de
+  // los casos cruzados sale del guard de tenencia, nunca del gate de permisos.
+  let systemsB: Session;
+
+  before(async () => {
+    systemsB = await withEnv(STRICT_ENV, () => loginOrThrow(app, B.users.systems.email, B.password, "l2-08-plat-systems-b"));
+  });
+
+  after(async () => {
+    const ids = [subscriptionId, legacyId].filter(Boolean);
+    if (ids.length) {
+      await prisma.webhookDelivery.deleteMany({ where: { webhookSubscriptionId: { in: ids } } });
+      await prisma.webhookSubscription.deleteMany({ where: { id: { in: ids } } });
+    }
+    if (appIdB) await prisma.developerApp.deleteMany({ where: { id: appIdB } });
+  });
+
+  it("(1) POST /webhooks/subscriptions sin propertyId (sistemas, developer.manage_webhooks) cuelga de la propiedad activa; PATCH y entregas responden 200", async () => {
+    const created = await call("POST", "/webhooks/subscriptions", systems, { propertyId: A.propertyA, payload: { targetUrl, eventTypes: ["reservation.created"] } });
+    assert.equal(created.status, 200, created.raw.slice(0, 300));
+    subscriptionId = created.body.id;
+    assert.match(String(created.body.secret), /^whsec_/, "el secret viaja una sola vez, al crear");
+    const row = await prisma.webhookSubscription.findUnique({ where: { id: subscriptionId } });
+    assert.ok(row, "la suscripción existe en Prisma");
+    assert.equal(row.propertyId, A.propertyA, "cuelga de la propiedad activa del creador");
+    assert.equal(row.developerAppId, `app_${A.organizationId}`, "developerAppId sintético como hasta ahora");
+
+    const paused = await call("PATCH", `/webhooks/subscriptions/${subscriptionId}`, systems, { payload: { active: false } });
+    assert.equal(paused.status, 200, paused.raw.slice(0, 300));
+    assert.equal(paused.body.active, false);
+    const deliveries = await call("GET", `/webhooks/subscriptions/${subscriptionId}/deliveries`, systems);
+    assert.equal(deliveries.status, 200, deliveries.raw.slice(0, 300));
+    assert.deepEqual(deliveries.body.items, []);
+    const list = await call("GET", `/webhooks/subscriptions?propertyId=${A.propertyA}`, systems);
+    assert.equal(list.status, 200, list.raw.slice(0, 300));
+    assert.ok(
+      list.body.items.some((item: { id: string; secretMasked: string | null }) => item.id === subscriptionId && String(item.secretMasked).startsWith("whsec_")),
+      "la lista devuelve la fila con el secret enmascarado"
+    );
+  });
+
+  it("(1b) fila heredada (propertyId null, developerAppId `app_<org>` sin fila en developer_apps): la organización la resuelve por el sufijo sin reescribirla", async () => {
+    const legacy = await prisma.webhookSubscription.create({
+      data: { developerAppId: `app_${A.organizationId}`, propertyId: null, eventTypes: ["invoice.issued"], targetUrl: `${targetUrl}-legacy`, secretRef: "whsec_l2legacy", active: true },
+      select: { id: true }
+    });
+    legacyId = legacy.id;
+    const paused = await call("PATCH", `/webhooks/subscriptions/${legacyId}`, systems, { payload: { active: false } });
+    assert.equal(paused.status, 200, paused.raw.slice(0, 300));
+    const deliveries = await call("GET", `/webhooks/subscriptions/${legacyId}/deliveries`, systems);
+    assert.equal(deliveries.status, 200, deliveries.raw.slice(0, 300));
+    expect404(await call("PATCH", `/webhooks/subscriptions/${legacyId}`, systemsB, { payload: { active: true } }), WEBHOOK_404);
+    const row = await prisma.webhookSubscription.findUnique({ where: { id: legacyId } });
+    assert.equal(row?.active, false, "B no la reactiva");
+    assert.equal(row?.propertyId, null, "la fila heredada no se reescribe");
+  });
+
+  it("(2) 403 sin clave: recepción no crea suscripciones; 400 con developerAppId de otra organización (sin fila nueva)", async () => {
+    expect403(await call("POST", "/webhooks/subscriptions", reception, { propertyId: A.propertyA, payload: { targetUrl, eventTypes: ["reservation.created"] } }), "developer.manage_webhooks");
+    const appB = await prisma.developerApp.create({
+      data: { organizationId: B.organizationId, name: `App B ${RUN}`, appType: "server", clientId: `cli_l2_${RUN}`, scopes: ["webhooks.subscribe"] },
+      select: { id: true }
+    });
+    appIdB = appB.id;
+    const foreign = await call("POST", "/webhooks/subscriptions", systems, { propertyId: A.propertyA, payload: { targetUrl, eventTypes: ["reservation.created"], developerAppId: appIdB } });
+    assert.equal(foreign.status, 400, foreign.raw.slice(0, 300));
+    assert.equal(foreign.body?.message, "La aplicación indicada no pertenece a esta organización.");
+    assert.equal(await prisma.webhookSubscription.count({ where: { developerAppId: appIdB } }), 0, "nada se escribe con la app ajena");
+    const own = await call("POST", "/webhooks/subscriptions", systemsB, { propertyId: B.propertyA, payload: { targetUrl, eventTypes: ["reservation.created"], developerAppId: appIdB } });
+    assert.equal(own.status, 200, own.raw.slice(0, 300));
+    const ownRow = await prisma.webhookSubscription.findUnique({ where: { id: own.body.id } });
+    assert.equal(ownRow?.developerAppId, appIdB, "la app de la propia organización sí se acepta");
+    await prisma.webhookSubscription.delete({ where: { id: own.body.id } });
+  });
+
+  it("(2b) GET /webhooks/subscriptions sin propertyId lista solo las suscripciones de la organización del actor (corrector FIX-1 · SEC-02)", async () => {
+    const ids = (reply: Reply): string[] => (reply.body.items as Array<{ id: string }>).map((item) => item.id);
+    // Sin `?propertyId=` en la query (el ámbito activo viaja en la cabecera): el servicio filtra solo por organización.
+    const listA = await call("GET", "/webhooks/subscriptions", systems, { propertyId: A.propertyA });
+    assert.equal(listA.status, 200, listA.raw.slice(0, 300));
+    assert.ok(ids(listA).includes(subscriptionId), "A ve su suscripción (propiedad de A)");
+    assert.ok(ids(listA).includes(legacyId), "A ve la fila heredada (app_<org> sintético)");
+    const listB = await call("GET", "/webhooks/subscriptions", systemsB, { propertyId: B.propertyA });
+    assert.equal(listB.status, 200, listB.raw.slice(0, 300));
+    assert.ok(!ids(listB).includes(subscriptionId) && !ids(listB).includes(legacyId), "B no ve ninguna fila de A sin propertyId (antes: where = {} devolvía todas las organizaciones)");
+    const listBProperty = await call("GET", `/webhooks/subscriptions?propertyId=${A.propertyA}`, systemsB, { propertyId: B.propertyA });
+    assert.ok(listBProperty.status === 404 || (listBProperty.status === 200 && ids(listBProperty).every((id) => id !== subscriptionId && id !== legacyId)), `ni pidiendo la propiedad de A: ${listBProperty.status} ${listBProperty.raw.slice(0, 200)}`);
+  });
+
+  it("(3) 404 opaco: la organización B (sistemas, con la clave) no ve la suscripción de A en PATCH / entregas / DELETE; A la borra y la fila desaparece", async () => {
+    expect404(await call("PATCH", `/webhooks/subscriptions/${subscriptionId}`, systemsB, { payload: { active: true } }), WEBHOOK_404);
+    expect404(await call("GET", `/webhooks/subscriptions/${subscriptionId}/deliveries`, systemsB), WEBHOOK_404);
+    expect404(await call("DELETE", `/webhooks/subscriptions/${subscriptionId}`, systemsB), WEBHOOK_404);
+    assert.ok(await prisma.webhookSubscription.findUnique({ where: { id: subscriptionId } }), "B no borra la fila de A");
+    const deleted = await call("DELETE", `/webhooks/subscriptions/${subscriptionId}`, systems);
+    assert.equal(deleted.status, 200, deleted.raw.slice(0, 300));
+    assert.deepEqual(deleted.body, { ok: true, id: subscriptionId });
+    assert.equal(await prisma.webhookSubscription.findUnique({ where: { id: subscriptionId } }), null);
+    subscriptionId = "";
+  });
+});

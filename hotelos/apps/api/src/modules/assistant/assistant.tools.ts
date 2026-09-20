@@ -284,7 +284,11 @@ export type ToolDefinition = {
   description: string;
   /**
    * Spanish keywords that, if seen in the user's question, trigger this tool.
-   * Used by the deterministic router. The LLM picks by `description` + `name`.
+   * Used by the deterministic router (see `keywordMatchesQuestion`: one-token
+   * keywords match as substring, multi-token keywords when all their tokens
+   * appear as whole words in any order). Never add a keyword made of a single
+   * generic word («hoy», «ahora», «hotel»): it would route every question.
+   * The LLM picks by `description` + `name`.
    */
   keywords: string[];
   run: (ctx: ToolContext) => Promise<ToolResult>;
@@ -294,13 +298,16 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
   {
     name: "get_arrivals_today",
     description: "Lista las reservas que llegan hoy (estado confirmada o ya en check-in).",
-    keywords: ["llegadas hoy", "llegan hoy", "arrivals today", "check-in hoy", "entradas hoy"],
+    // Corrector FIX-1 (F8-TODAY-ROUTING-OVERREACH): sin la keyword de un solo token «llegadas» — enrutaba «¿Qué
+    // llegadas hay mañana?» a los datos de hoy; las variantes llevan «hoy» o preguntan por la cantidad, y el router
+    // descarta las herramientas «de hoy» cuando la pregunta nombra otra fecha (`mentionsAnotherDate`).
+    keywords: ["llegadas hoy", "llegan hoy", "cuantas llegadas", "arrivals today", "check-in hoy", "entradas hoy"],
     run: getArrivalsToday
   },
   {
     name: "get_departures_today",
     description: "Lista las reservas que salen hoy (estado en estancia o salida).",
-    keywords: ["salidas hoy", "salen hoy", "departures today", "check-out hoy"],
+    keywords: ["salidas hoy", "salen hoy", "cuantas salidas", "departures today", "check-out hoy"],
     run: getDeparturesToday
   },
   {
@@ -347,17 +354,61 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
   }
 ];
 
+/**
+ * Normaliza texto para el router determinista: minúsculas, sin acentos, sin
+ * signos `¿?¡!.,;:` y con los espacios colapsados. Los guiones se conservan
+ * («check-in», «in-house» son un solo token).
+ */
+function normalizeForRouting(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[¿?¡!.,;:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenize(text: string): string[] {
+  return normalizeForRouting(text).split(" ").filter((t) => t.length > 0);
+}
+
+/**
+ * Una keyword coincide con la pregunta cuando:
+ *   - tiene un solo token (p. ej. «ocupación», «in-house»): aparece como
+ *     subcadena del texto normalizado (cubre plurales y derivados);
+ *   - tiene varios tokens (p. ej. «llegadas hoy»): TODOS sus tokens aparecen
+ *     como palabras completas en la pregunta, en cualquier orden
+ *     («¿Cuántas llegadas tengo hoy?» → {llegadas, hoy} ⊂ pregunta).
+ */
+export function keywordMatchesQuestion(keyword: string, question: string): boolean {
+  const kwTokens = tokenize(keyword);
+  if (kwTokens.length === 0) return false;
+  if (kwTokens.length === 1) return normalizeForRouting(question).includes(kwTokens[0]);
+  const qTokens = new Set(tokenize(question));
+  return kwTokens.every((t) => qTokens.has(t));
+}
+
+/** Tokens (normalizados) que sitúan la pregunta en otra fecha que hoy: mañana, ayer, semana, mes, fin de semana, próximo, pasado, días de la semana o una fecha dd/mm. */
+const OTHER_DATE_TOKENS: ReadonlySet<string> = new Set(["manana", "ayer", "anteayer", "semana", "mes", "proximo", "proxima", "proximos", "proximas", "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo", "tomorrow", "yesterday", "week", "month"]);
+
+/**
+ * Corrector FIX-1 (F8): true cuando la pregunta nombra otra fecha que hoy («mañana», «la semana que viene», «el
+ * 24/12»…); las herramientas «de hoy» (`*_today`) no se enrutan entonces. «hoy» presente no anula la exclusión
+ * («llegadas de hoy y de mañana» tampoco es una pregunta de hoy). Pura.
+ */
+export function mentionsAnotherDate(question: string): boolean {
+  const tokens = tokenize(question);
+  if (tokens.some((token) => OTHER_DATE_TOKENS.has(token))) return true;
+  return /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/.test(question);
+}
+
 export function findToolsByKeyword(question: string): ToolDefinition[] {
-  const q = question.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   const matches = new Set<ToolDefinition>();
+  const anotherDate = mentionsAnotherDate(question);
   for (const tool of ASSISTANT_TOOLS) {
-    for (const kw of tool.keywords) {
-      const norm = kw.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-      if (q.includes(norm)) {
-        matches.add(tool);
-        break;
-      }
-    }
+    if (anotherDate && tool.name.endsWith("_today")) continue;
+    if (tool.keywords.some((kw) => keywordMatchesQuestion(kw, question))) matches.add(tool);
   }
   return Array.from(matches);
 }

@@ -50,6 +50,7 @@ import { Prisma } from "@prisma/client";
 import { BRAND } from "../../lib/brand.js";
 import { prisma } from "@hotelos/database";
 import { parseTaxBreakdown, VERIFACTU_EXCLUDED_BY_SII_MOTIVO } from "@hotelos/compliance";
+import { SAGE_NO_CENTRE_AVISO } from "@hotelos/shared";
 import type {
   FiscalDeclaranteBadge,
   FiscalModelCode,
@@ -57,6 +58,8 @@ import type {
   FiscalPeriodType,
   FiscalRegimeSummary,
   VatBookName,
+  VatBookPeriodsResponse,
+  VatBookRegimeCode,
   VatBookResponse,
   VatBookRowDto,
   VatBookSourceTypeCode,
@@ -270,7 +273,15 @@ export function periodsOfYear(year: number, periodicity: VatPeriodicityCode): Fi
 
 type VatSettingsClient = Pick<Prisma.TransactionClient, "vatSettings">;
 
-const DEFAULT_SETTINGS = { periodicity: "quarterly" as VatPeriodicityCode, regime: "general" as VatRegimeCode, prorrataPct: null as number | null, taxFigure: "IVA" as const };
+const DEFAULT_SETTINGS = {
+  periodicity: "quarterly" as VatPeriodicityCode,
+  regime: "general" as VatRegimeCode,
+  prorrataPct: null as number | null,
+  taxFigure: "IVA" as const,
+  // FIX-1 · F3 (B-2): no opening balance to offset until the sociedad saves one.
+  openingCompensation: 0,
+  openingCompensationPeriod: null as string | null
+};
 
 // ── Régimen del sujeto pasivo (Tanda 6b · L5 · design §5.2 R8) ──────────────
 //
@@ -379,7 +390,9 @@ function pendingBadge(persistedPeriodicity: VatPeriodicityCode): FiscalDeclarant
   );
 }
 
-function settingsDto(organizationId: string, row: { periodicity: string; regime: string; prorrataPct: Prisma.Decimal | null; taxFigure: string } | null, identity: LegalIdentity | null): VatSettingsDto {
+type VatSettingsRow = { periodicity: string; regime: string; prorrataPct: Prisma.Decimal | null; taxFigure: string; openingCompensation: Prisma.Decimal; openingCompensationPeriod: string | null };
+
+function settingsDto(organizationId: string, row: VatSettingsRow | null, identity: LegalIdentity | null): VatSettingsDto {
   const persistedPeriodicity: VatPeriodicityCode = row?.periodicity === "monthly" ? "monthly" : "quarterly";
   const sociedad = identity ? declaranteBadge(identity, persistedPeriodicity) : pendingBadge(persistedPeriodicity);
   if (!row) return { organizationId, ...DEFAULT_SETTINGS, periodicity: sociedad.regimen.periodicity, persisted: false, sociedad };
@@ -390,6 +403,8 @@ function settingsDto(organizationId: string, row: { periodicity: string; regime:
     regime: row.regime === "redeme" || row.regime === "recargo" ? row.regime : "general",
     prorrataPct: row.prorrataPct === null ? null : toWire(row.prorrataPct),
     taxFigure: figure,
+    openingCompensation: toWire(money(row.openingCompensation)),
+    openingCompensationPeriod: row.openingCompensationPeriod,
     persisted: true,
     sociedad
   };
@@ -414,13 +429,41 @@ export async function ensureVatSettings(organizationId: string, client: VatSetti
   return settingsDto(organizationId, created, identity);
 }
 
-export type VatSettingsPatch = Partial<Pick<VatSettingsDto, "periodicity" | "regime" | "prorrataPct" | "taxFigure">>;
+export type VatSettingsPatch = Partial<Pick<VatSettingsDto, "periodicity" | "regime" | "prorrataPct" | "taxFigure" | "openingCompensation" | "openingCompensationPeriod">>;
+
+/**
+ * FIX-1 · F3 (B-2): the opening balance to offset (casilla 110) and the period it applies from.
+ * Pure: `undefined` keeps the stored value; the amount must be ≥ 0 and the period a settlement
+ * code (`2025-Q1` · `2025-01`, normalised) or null; an amount > 0 needs a period. Throws 400.
+ */
+export function resolveOpeningCompensationPatch(
+  patch: Pick<VatSettingsPatch, "openingCompensation" | "openingCompensationPeriod">,
+  current: Pick<VatSettingsDto, "openingCompensation" | "openingCompensationPeriod">
+): { openingCompensation: Prisma.Decimal; openingCompensationPeriod: string | null } {
+  const amount = patch.openingCompensation === undefined ? new Prisma.Decimal(current.openingCompensation) : new Prisma.Decimal(patch.openingCompensation);
+  if (!amount.isFinite() || amount.lessThan(0)) {
+    const error = new BadRequestError("El saldo inicial a compensar (casilla 110) debe ser un importe mayor o igual que 0.");
+    error.details = { code: "OPENING_COMPENSATION_INVALID" };
+    throw error;
+  }
+  let period: string | null;
+  if (patch.openingCompensationPeriod === undefined) period = current.openingCompensationPeriod;
+  else if (patch.openingCompensationPeriod === null || patch.openingCompensationPeriod.trim() === "") period = null;
+  else period = parseFiscalPeriod(patch.openingCompensationPeriod, ["quarterly", "monthly"]).code;
+  if (amount.greaterThan(0) && period === null) {
+    const error = new BadRequestError("Indica el periodo desde el que aplica el saldo inicial a compensar (p. ej. 2025-Q1).");
+    error.details = { code: "OPENING_COMPENSATION_PERIOD_REQUIRED" };
+    throw error;
+  }
+  return { openingCompensation: round2(amount), openingCompensationPeriod: period };
+}
 
 export async function updateVatSettings(input: { context: UserContext; patch: VatSettingsPatch; correlationId?: string }): Promise<VatSettingsDto> {
   requirePermissions(input.context, ["accounting.configure"]);
   const organizationId = input.context.organizationId;
   const before = await ensureVatSettings(organizationId);
   const regimen = before.sociedad.regimen;
+  const opening = resolveOpeningCompensationPatch(input.patch, before);
   // The stored periodicity is the default (never the forced effective one: the regime is not written back).
   const periodicity = input.patch.periodicity ?? regimen.persistedPeriodicity;
   const regime = input.patch.regime ?? before.regime;
@@ -444,7 +487,8 @@ export async function updateVatSettings(input: { context: UserContext; patch: Va
       periodicity,
       regime,
       ...(input.patch.prorrataPct !== undefined ? { prorrataPct: input.patch.prorrataPct === null ? null : new Prisma.Decimal(input.patch.prorrataPct) } : {}),
-      ...(input.patch.taxFigure ? { taxFigure: input.patch.taxFigure } : {})
+      ...(input.patch.taxFigure ? { taxFigure: input.patch.taxFigure } : {}),
+      ...(input.patch.openingCompensation !== undefined || input.patch.openingCompensationPeriod !== undefined ? opening : {})
     }
   });
   const after = await getVatSettings(organizationId);
@@ -487,6 +531,8 @@ export type VatBookRow = {
   sourceId: string;
   period: string;
   deductible: boolean;
+  /** FIX-1 · F2: régimen de la operación (null = sin clasificar; los escritores nativos escriben null). */
+  regime: VatBookRegimeCode | null;
 };
 
 export function toVatBookRowDto(row: VatBookRow): VatBookRowDto {
@@ -510,7 +556,8 @@ export function toVatBookRowDto(row: VatBookRow): VatBookRowDto {
     sourceId: row.sourceId,
     period: row.period,
     deductible: row.deductible,
-    propertyId: row.propertyId
+    propertyId: row.propertyId,
+    regime: row.regime
   };
 }
 
@@ -536,6 +583,7 @@ type PersistedVatRow = {
   sourceId: string;
   period: string;
   deductible: boolean;
+  regime: string | null;
 };
 
 export function fromPersistedRow(row: PersistedVatRow): VatBookRow {
@@ -560,7 +608,8 @@ export function fromPersistedRow(row: PersistedVatRow): VatBookRow {
     sourceType: row.sourceType as VatBookSourceTypeCode,
     sourceId: row.sourceId,
     period: row.period,
-    deductible: row.deductible
+    deductible: row.deductible,
+    regime: (row.regime as VatBookRegimeCode | null) ?? null
   };
 }
 
@@ -590,7 +639,8 @@ export function toVatBookCreateInput(row: VatBookRow): Prisma.VatBookEntryCreate
     sourceType: row.sourceType,
     sourceId: row.sourceId,
     period: row.period,
-    deductible: row.deductible
+    deductible: row.deductible,
+    regime: row.regime
   };
 }
 
@@ -813,7 +863,8 @@ export function vatRowsFromInvoice(input: {
       sourceType,
       sourceId,
       period: periodCodeForDate(day, input.periodicity),
-      deductible: true
+      deductible: true,
+      regime: null
     });
   }
   if (sourceType === "invoice" && !normalizeNif(invoice.customerTaxId) && kind === "issue") {
@@ -874,7 +925,8 @@ export function vatRowsFromSupplierBill(input: { bill: SupplierBillForBooks; org
     sourceType: "supplier_bill" as const,
     sourceId: bill.id,
     period: periodCodeForDate(day, input.periodicity),
-    deductible: Boolean(nif)
+    deductible: Boolean(nif),
+    regime: null as VatBookRegimeCode | null
   };
   const grouped = new Map<string, VatBookRow>();
   if (bill.lines.length > 0) {
@@ -961,7 +1013,8 @@ export function vatRowsFromExpense(input: { expense: ExpenseForBooks; organizati
         sourceType: "expense",
         sourceId: kind === "cancellation" ? cancellationSourceId(expense.id) : expense.id,
         period: periodCodeForDate(day, input.periodicity),
-        deductible
+        deductible,
+        regime: null
       }
     ],
     avisos
@@ -1234,6 +1287,37 @@ export async function loadVatBookRows(input: { organizationId: string; from: str
   return { origen, rows, avisos };
 }
 
+// ── Periods with materialised rows (FIX-1 · F3, E-04) ───────────────────────
+
+export type VatBookPeriodRow = { period: string; rows: number; lastDate: string | null };
+
+/**
+ * Pure: the periods newest first (by the date of their newest row, then by
+ * code) and the code of the newest one — the default period of the 303 and
+ * the books screens («último periodo con libros materializados»).
+ */
+export function latestPeriodOf(rows: readonly VatBookPeriodRow[]): { periods: VatBookPeriodRow[]; latest: string | null } {
+  const periods = [...rows].sort((a, b) => (b.lastDate ?? "").localeCompare(a.lastDate ?? "") || b.period.localeCompare(a.period));
+  return { periods, latest: periods[0]?.period ?? null };
+}
+
+/** GET /fiscal/vat-books/periods: one groupBy over the organisation's book rows (never the rows themselves). Read-only. */
+export async function listVatBookPeriods(organizationId: string): Promise<VatBookPeriodsResponse> {
+  const groups = await prisma.vatBookEntry.groupBy({ by: ["period"], where: { organizationId }, _count: { _all: true }, _max: { date: true } });
+  const { periods, latest } = latestPeriodOf(groups.map((group) => ({ period: group.period, rows: group._count._all, lastDate: group._max.date ? dateColumnDay(group._max.date) : null })));
+  return { organizationId, periods, latest };
+}
+
+/**
+ * FIX-1 · F3 (E-03): rows imported from Sage 200 carry no centre (`propertyId`
+ * null, the lots have no delegation), so a centre view of a Sage period is
+ * empty for that reason — not because the centre had no operations. Count
+ * of such rows in the range (0 → the emptiness is real). Read-only.
+ */
+export async function countSageRowsWithoutCentre(organizationId: string, from: string, to: string): Promise<number> {
+  return prisma.vatBookEntry.count({ where: { organizationId, sourceType: "sage200", propertyId: null, date: { gte: dateColumn(from), lte: dateColumn(to) } } });
+}
+
 // ── Writers for the other lots (same transaction as the document) ───────────
 
 type WriterClient = Prisma.TransactionClient;
@@ -1429,6 +1513,8 @@ export async function listVatBook(input: { context: UserContext; book: VatBookNa
   }
   const loaded = await loadVatBookRows({ organizationId, from: periodo.from, to: periodo.to, propertyId: input.propertyId, periodicity: settings.periodicity, taxFigure: settings.taxFigure, books: [input.book] });
   const avisos = [...loaded.avisos];
+  // FIX-1 · F3 (E-03): a centre view over a Sage period is empty because the imported rows carry no centre.
+  if (input.propertyId && loaded.rows.length === 0 && (await countSageRowsWithoutCentre(organizationId, periodo.from, periodo.to)) > 0) avisos.push(SAGE_NO_CENTRE_AVISO);
   if (loaded.rows.length > limit) {
     avisos.push(`El libro calculado desde los documentos tiene ${loaded.rows.length} filas y se muestran las primeras ${limit}: materialízalo con POST /fiscal/vat-books/rebuild para paginarlo.`);
   }

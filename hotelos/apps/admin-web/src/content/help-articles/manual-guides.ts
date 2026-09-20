@@ -135,7 +135,7 @@ Guía «20 · Administración y contabilidad», fichero docs/manual/20-administr
 
 ## Qué cubre
 - «1. Nóminas: la pantalla»
-- «2. Contratos: «Nuevo contrato»»
+- «2. Contratos: «Nueva ficha» y «Nuevo contrato»»
 - «3. Periodos: abrir, calcular, exportar y pagar»
 - «4. Importar el coste de personal (informe agregado de RRHH)»
 - «5. Informe de coste por departamento y centro»

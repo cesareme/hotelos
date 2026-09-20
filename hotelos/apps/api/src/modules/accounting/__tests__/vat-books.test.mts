@@ -11,6 +11,7 @@ import {
   VAT_BOOK_SUPERSEDED_SUFFIX,
   cancellationSourceId,
   fiscalPeriodForDate,
+  fromPersistedRow,
   inferRate,
   invoiceSeries,
   invoiceSourceType,
@@ -24,6 +25,7 @@ import {
   summarizeVatRows,
   supersededSourceId,
   taxGroupsFromLines,
+  toVatBookCreateInput,
   toVatBookRowDto,
   vatBookDocumentId,
   vatRowsFromExpense,
@@ -149,6 +151,8 @@ describe("rows from invoices", () => {
     const dto = toVatBookRowDto(ten);
     assert.equal(dto.total, 110);
     assert.equal(dto.rate, 10);
+    assert.equal(ten.regime, null, "los escritores nativos no clasifican (FIX-1 · F2)");
+    assert.equal(dto.regime, null);
   });
 
   it("falls back to the gross lines when the invoice has no breakdown (legacy)", () => {
@@ -291,5 +295,61 @@ describe("sourceId convention of the counter-rows (Tanda L3-C)", () => {
     assert.equal(vatRowsFromInvoice({ invoice: invoice(), organizationId: "org_test", periodicity: "quarterly", kind: "superseded" }).rows.length, 0);
     assert.equal(vatRowsFromInvoice({ invoice: invoice({ status: "draft", issuedAt: null }), organizationId: "org_test", periodicity: "quarterly", kind: "superseded", supersededAt: new Date() }).rows.length, 0);
     assert.equal(vatRowsFromInvoice({ invoice: invoice(), organizationId: "org_test", periodicity: "quarterly", kind: "cancellation" }).rows.length, 0);
+  });
+});
+
+describe("régimen de la fila (FIX-1 · F2)", () => {
+  it("VatBookRow → DTO y createMany conservan regime; los escritores nativos escriben null; la fila persistida vuelve con su régimen", () => {
+    const bill: SupplierBillForBooks = {
+      id: "bill_f2",
+      propertyId: "prop_1",
+      supplierName: "Proveedor UE",
+      supplierTaxId: "DE123456789",
+      invoiceNumber: "F-1",
+      issueDate: new Date("2026-05-20T00:00:00.000Z"),
+      postedAt: null,
+      createdAt: new Date(),
+      baseTotal: D("100.00"),
+      taxTotal: D("21.00"),
+      total: D("121.00"),
+      retentionAmount: D("0"),
+      status: "posted",
+      lines: [{ base: D("100.00"), taxRate: D("21.00"), quota: D("21.00"), retention: D("0"), investmentGood: false }]
+    };
+    const base = vatRowsFromSupplierBill({ bill, organizationId: "org_test", periodicity: "quarterly" }).rows[0]!;
+    assert.equal(base.regime, null);
+    assert.equal(toVatBookCreateInput(base).regime, null);
+    const isp = { ...base, regime: "isp" as const };
+    assert.equal(toVatBookRowDto(isp).regime, "isp");
+    assert.equal(toVatBookCreateInput(isp).regime, "isp");
+    const persisted = {
+      id: "vbe_1",
+      organizationId: "org_test",
+      propertyId: null,
+      book: "recibidas",
+      date: new Date("2026-05-20T00:00:00.000Z"),
+      series: null,
+      number: "F-1",
+      counterpartyNif: "DE123456789",
+      counterpartyName: "Proveedor UE",
+      base: D("100.00"),
+      rate: D("21.00"),
+      quota: D("21.00"),
+      total: D("121.00"),
+      retention: D("0.00"),
+      taxFigure: "IVA",
+      surchargeRate: null,
+      surchargeQuota: null,
+      sourceType: "sage200",
+      sourceId: "1:2026::F-1:DE123456789",
+      period: "2026-Q2",
+      deductible: true,
+      regime: "aib" as string | null
+    };
+    assert.equal(fromPersistedRow(persisted).regime, "aib");
+    assert.equal(fromPersistedRow({ ...persisted, regime: null }).regime, null, "sin clasificar");
+    assert.equal(toVatBookRowDto(fromPersistedRow(persisted)).regime, "aib");
+    const expense = { id: "exp_f2", propertyId: null, date: new Date("2026-05-02T00:00:00.000Z"), supplierName: "Ferretería", supplierNif: "B12345674", concept: "Tornillos", base: D("10.00"), taxRate: D("21.00"), quota: D("2.10"), total: D("12.10"), vatDeductible: true, cancelledAt: null };
+    assert.equal(vatRowsFromExpense({ expense, organizationId: "org_test", periodicity: "quarterly" }).rows[0]!.regime, null);
   });
 });

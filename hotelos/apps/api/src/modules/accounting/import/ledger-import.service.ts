@@ -1650,7 +1650,7 @@ async function postPlannedEntriesInTx(tx: Prisma.TransactionClient, importRow: I
     const nextOpening = postedByKind.get(nextCode)?.get("opening")?.[0]?.id ?? (await importedOpeningOf(tx, organizationId, nextCode));
     // Los asientos de cierre importados antes de que existiera el ejercicio quedan enlazados a él (guardas de reopenFiscalYear / closeFiscalYear).
     if (previous) await tx.journalEntry.updateMany({ where: { organizationId, fiscalYearCode: code, fiscalYearId: null, sourceType: { in: [...IMPORTED_SOURCE_TYPES] }, status: "posted" }, data: { fiscalYearId: year.id } });
-    const closed = await markFiscalYearClosedFromImport(tx, { fiscalYearId: year.id, closingEntryId: closingId, openingEntryId: nextOpening, netResult: netResult.toFixed(2), importId: importRow.id });
+    const closed = await markFiscalYearClosedFromImport(tx, { fiscalYearId: year.id, closingEntryId: closingId, openingEntryId: nextOpening, netResult: netResult.toFixed(2), importId: importRow.id, closedBy: input.createdBy ?? null });
     yearIds.set(code, { id: year.id, status: "closed" });
     outcome.closedYears.push({ fiscalYearId: closed.fiscalYearId, code: closed.code });
     outcome.warnings.push(`Ejercicio ${code} marcado cerrado con el cierre importado${ownClosing ? "" : " por un lote anterior"} (${closed.closedPeriods} periodo(s) cerrados por importación).`);

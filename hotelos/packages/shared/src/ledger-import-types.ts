@@ -237,14 +237,20 @@ export function ledgerImportBalanceSourceId(key: { companyCode: string; fiscalYe
 }
 
 /**
- * `VatBookEntry.sourceId` de una fila importada: `<empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:R]`
- * (R = rectificativa). En el libro de RECIBIDAS el número es el del PROVEEDOR (dos proveedores
- * numeran «1», «2»… a la vez), así que la clave lleva además su NIF (`counterpartyNif`); en
- * emitidas la serie + número propios ya son únicos y no se añade.
+ * `VatBookEntry.sourceId` de una fila importada:
+ * `<empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:<recepción>][:R]` (R = rectificativa).
+ * En el libro de RECIBIDAS el número es el del PROVEEDOR (dos proveedores numeran «1», «2»… a la
+ * vez), así que la clave lleva además su NIF (`counterpartyNif`); en emitidas la serie + número
+ * propios ya son únicos y no se añade. FIX-1 · F4 (B-8): un mismo proveedor puede repetir su
+ * número en fechas distintas (Sage las distingue por el número de recepción), así que en
+ * recibidas la clave lleva también `reception` (número de recepción o, si el libro no lo trae,
+ * la fecha ISO de expedición) y el número del proveedor queda íntegro en `number`. Las filas
+ * cargadas antes de F4 conservan su sourceId (sin migración).
  */
-export function ledgerImportVatBookSourceId(key: { companyCode: string; fiscalYear: string; series: string; number: string; rectification?: boolean; counterpartyNif?: string | null }): string {
+export function ledgerImportVatBookSourceId(key: { companyCode: string; fiscalYear: string; series: string; number: string; rectification?: boolean; counterpartyNif?: string | null; reception?: string | null }): string {
   const parts = [key.companyCode, key.fiscalYear, key.series, key.number];
   if (key.counterpartyNif) parts.push(key.counterpartyNif);
+  if (key.reception) parts.push(key.reception);
   if (key.rectification) parts.push("R");
   return parts.join(LEDGER_IMPORT_SOURCE_ID_SEPARATOR);
 }
@@ -824,6 +830,60 @@ export type LedgerImportPostBody = {
 export type LedgerImportReverseBody = {
   /** 3..500 caracteres. */
   reason: string;
+};
+
+// ---------------------------------------------------------------------------
+// Terceros importados (`GET /accounting/ledger-imports/third-parties`, FIX-1 · F11 / E-05)
+// ---------------------------------------------------------------------------
+
+/** Longitud máxima de `q` (código, NIF, cuenta Sage o nombre). */
+export const LEDGER_THIRD_PARTY_QUERY_MAX = 80;
+export const LEDGER_THIRD_PARTY_LIST_DEFAULT_LIMIT = 50;
+export const LEDGER_THIRD_PARTY_LIST_MAX_LIMIT = 200;
+/** Prefijos de subcuenta Sage cuyo titular es una persona (remuneraciones 465, anticipos 460, partidas pendientes 555): el directorio nunca devuelve su nombre. */
+export const LEDGER_THIRD_PARTY_PERSONAL_ACCOUNT_PREFIXES = ["465", "460", "555"] as const;
+
+/** Lote `third_parties` que dio de alta o actualizó por última vez el tercero (entrada de ledger_import_entries); null si solo lo escribió un lote de libros de IVA. */
+export type LedgerThirdPartyLotRef = {
+  importId: string;
+  fileName: string | null;
+  createdAt: string;
+};
+
+export type LedgerThirdPartyDto = {
+  id: string;
+  /** CodigoCliente / CodigoProveedor de Sage. */
+  sourceCode: string;
+  role: LedgerThirdPartyRole;
+  /** Subcuenta Sage del tercero. */
+  sourceAccount: string | null;
+  taxId: string | null;
+  countryCode: string;
+  /**
+   * Nombre del tercero SOLO si el NIF acredita una sociedad (CIF de persona jurídica o NIF-IVA extranjero con prefijo de
+   * país); null con DNI / NIE / pasaporte / sin NIF, si la subcuenta empieza por 465 / 460 / 555 o si el nombre lleva la
+   * palabra EMPLEADO («EMPLEADO nnnn», «<palabra> EMPLEADO nnnn»): nunca el nombre de una persona (corrector FIX-1).
+   */
+  name: string | null;
+  supplierId: string | null;
+  updatedAt: string;
+  lote: LedgerThirdPartyLotRef | null;
+};
+
+/** Página por cursor (rol, código, id): `rows` de la página, `total` del filtro y `nextCursor` (null en la última). */
+export type LedgerThirdPartyPage = {
+  rows: LedgerThirdPartyDto[];
+  total: number;
+  nextCursor: string | null;
+};
+
+export type LedgerThirdPartyListQuery = {
+  /** Búsqueda (≤ LEDGER_THIRD_PARTY_QUERY_MAX): código Sage o nombre (sin distinguir mayúsculas), NIF (contiene) o cuenta Sage (empieza por). */
+  q?: string;
+  role?: LedgerThirdPartyRole;
+  /** 1..LEDGER_THIRD_PARTY_LIST_MAX_LIMIT (por defecto LEDGER_THIRD_PARTY_LIST_DEFAULT_LIMIT); se recorta sin error. */
+  limit?: number;
+  cursor?: string;
 };
 
 // ---------------------------------------------------------------------------

@@ -12,12 +12,14 @@ import {
   exportOperationalReport,
   fetchBillingReport,
   fetchReportCatalog,
-  fetchReservationReport
+  fetchReportExportFile,
+  fetchReservationReport,
+  type ReportExportResult
 } from "../../services/pmsCommerceApi";
 import { navigateTo } from "../../lib/navigate";
-import { money, number, plural } from "../../lib/format";
+import { money, number, plural, time } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
-import { uniqueByFolio } from "./reporting-center-rows";
+import { downloadReportExport, exportStatusMessage, saveBlobAs, uniqueByFolio } from "./reporting-center-rows";
 import {
   CocoaBadge,
   CocoaButton,
@@ -90,15 +92,11 @@ type ReportCatalog = {
   reports: ReportCatalogItem[];
 };
 
-type ExportResult = {
-  export: { downloadUrl: string };
-};
-
 type ReportState = {
   catalog?: ReportCatalog;
   reservation?: ReservationReport;
   billing?: BillingReport;
-  exportResult?: ExportResult;
+  exportResult?: ReportExportResult;
 };
 
 const REPORT_TYPE_LABELS: Record<string, string> = {
@@ -124,12 +122,6 @@ const subStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-caption)",
   fontWeight: "var(--cocoa-fw-regular)" as CSSProperties["fontWeight"],
   color: "var(--cocoa-label-secondary)"
-};
-
-// Download link of a finished export (a real anchor: the browser handles the URL).
-const linkStyle: CSSProperties = {
-  color: "var(--cocoa-accent)",
-  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"]
 };
 
 const RESERVATION_COLUMNS: CocoaTableColumn<ReservationReportRow>[] = [
@@ -163,6 +155,7 @@ export function ReportingCenterScreen() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -191,17 +184,34 @@ export function ReportingCenterScreen() {
     setExporting(true);
     setStatus("Creando exportación…");
     try {
-      const result = (await exportOperationalReport(PROPERTY_ID, {
+      const result = await exportOperationalReport(PROPERTY_ID, {
         reportType,
         format,
         query: { fromDate: "2026-05-01", toDate: "2026-05-31" }
-      })) as ExportResult;
+      });
       setReports((current) => ({ ...current, exportResult: result }));
-      setStatus(`Exportación lista: ${result.export.downloadUrl}`);
+      // The response carries the file body: download it right away (F5) and
+      // keep the authenticated link for a second download until it expires.
+      downloadReportExport(result);
+      setStatus(exportStatusMessage(result));
     } catch (e) {
       setStatus(e instanceof Error ? `Error: ${e.message}` : "No se pudo generar la exportación.");
     } finally {
       setExporting(false);
+    }
+  }
+
+  // Second download through GET /reports/exports/:id/download (15 min TTL in the API).
+  async function handleDownloadAgain(result: ReportExportResult) {
+    setDownloading(true);
+    try {
+      const file = await fetchReportExportFile(result.export.downloadUrl);
+      saveBlobAs(file.blob, result.export.filename);
+      setStatus(exportStatusMessage(result));
+    } catch (e) {
+      setStatus(e instanceof Error ? `Error: ${e.message}` : "No se pudo descargar la exportación.");
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -299,9 +309,20 @@ export function ReportingCenterScreen() {
             </CocoaFormRow>
             {reports.exportResult ? (
               <CocoaCallout tone="success" title="Exportación lista">
-                <a href={reports.exportResult.export.downloadUrl} target="_blank" rel="noopener noreferrer" style={linkStyle}>
-                  Descargar exportación
-                </a>
+                <div className="cocoa-stack" data-gap="2">
+                  <span>{`${reports.exportResult.export.filename} · disponible hasta las ${time(reports.exportResult.export.expiresAt)}`}</span>
+                  <div className="cocoa-row" data-gap="2">
+                    <CocoaButton
+                      variant="bordered"
+                      tone="neutral"
+                      size="small"
+                      onClick={() => void handleDownloadAgain(reports.exportResult as ReportExportResult)}
+                      loading={downloading}
+                    >
+                      Descargar exportación
+                    </CocoaButton>
+                  </div>
+                </div>
               </CocoaCallout>
             ) : null}
           </CocoaSection>

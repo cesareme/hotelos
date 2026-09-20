@@ -35,6 +35,8 @@ import type {
   LedgerReconciliationDto,
   LedgerReconciliationRow,
   LedgerReconciliationStatus,
+  LedgerThirdPartyLotRef,
+  LedgerThirdPartyRole,
   LedgerUnassignedPolicy,
   LedgerUsaliCostCentreCode,
   UsaliDepartmentKey
@@ -45,19 +47,65 @@ import { actorLabel, type ActorSession } from "./actor-label";
 import { BRAND } from "../../config/brand";
 
 // ---------------------------------------------------------------------------
-// Views of the screen (Importar · Reconciliación · Lotes)
+// Views of the screen (Importar · Reconciliación · Lotes · Terceros)
 // ---------------------------------------------------------------------------
 
-export type ImportView = "importar" | "reconciliacion" | "lotes";
+export type ImportView = "importar" | "reconciliacion" | "lotes" | "terceros";
 
 export const IMPORT_VIEWS: readonly { value: ImportView; label: string }[] = [
   { value: "importar", label: "Importar" },
   { value: "reconciliacion", label: "Reconciliación" },
-  { value: "lotes", label: "Lotes" }
+  { value: "lotes", label: "Lotes" },
+  { value: "terceros", label: "Terceros" }
 ];
 
 export function isImportView(value: string): value is ImportView {
   return IMPORT_VIEWS.some((view) => view.value === value);
+}
+
+// ---------------------------------------------------------------------------
+// Terceros importados (FIX-1 · F11 / E-05): read-only directory inside the screen
+// ---------------------------------------------------------------------------
+
+/** Rows per page of the directory (the API caps at 200). */
+export const THIRD_PARTY_PAGE_LIMIT = 50;
+/** Mirror of LEDGER_THIRD_PARTY_QUERY_MAX. */
+export const THIRD_PARTY_QUERY_MAX = 80;
+/** Debounce of the search box before GET third-parties. */
+export const THIRD_PARTY_SEARCH_DEBOUNCE_MS = 300;
+
+/** "" = every role (the filter select). */
+export type ThirdPartyRoleFilter = "" | LedgerThirdPartyRole;
+
+/** Mirror of LEDGER_THIRD_PARTY_ROLE_LABELS_ES. */
+export const THIRD_PARTY_ROLE_LABELS: Readonly<Record<LedgerThirdPartyRole, string>> = Object.freeze({
+  customer: "Cliente",
+  supplier: "Proveedor"
+});
+
+export const THIRD_PARTY_ROLE_FILTER_OPTIONS: readonly CocoaSelectOption[] = [
+  { value: "", label: "Todos" },
+  { value: "customer", label: "Clientes" },
+  { value: "supplier", label: "Proveedores" }
+];
+
+export function isThirdPartyRole(value: string): value is LedgerThirdPartyRole {
+  return value === "customer" || value === "supplier";
+}
+
+export function thirdPartyRoleLabel(role: LedgerThirdPartyRole): string {
+  return THIRD_PARTY_ROLE_LABELS[role];
+}
+
+/** «terceros-2026-09.xlsx · 18/09/2026» (file name, or the lot id when it has none); EMPTY when only a VAT-books lot wrote the row. */
+export function thirdPartyLotLabel(lote: LedgerThirdPartyLotRef | null): string {
+  if (!lote) return EMPTY;
+  return `${lote.fileName ?? lote.importId} · ${date(lote.createdAt)}`;
+}
+
+/** Empty-state sentence of the directory: filtered → «Ningún tercero…», otherwise how to feed it. */
+export function thirdPartyEmptyMessage(filtered: boolean): string {
+  return filtered ? "Ningún tercero coincide con la búsqueda." : "Todavía no hay terceros importados desde Sage 200: importa un lote «Clientes y proveedores» o un libro de IVA.";
 }
 
 // ---------------------------------------------------------------------------

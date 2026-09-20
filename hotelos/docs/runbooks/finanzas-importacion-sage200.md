@@ -182,6 +182,10 @@ opcional y cada sinónimo nuevo lleva su test con datos inventados.
   ni `Identificación`): `numero` = `Número` (expedidas) o `(Serie-Número)` (recibidas; si falta,
   `REC-<Número Recepción>`), `nif` = `Identificación`, base / cuota / total vacíos → `0,00`, fecha
   de expedición inválida → `Fecha Operación`, abonos `F1` con base negativa → `rectificativa = si`.
+  Desde FIX-1 · F4 el `sourceId` de recibidas lleva el número de recepción (columna opcional
+  `numero_recepcion`) o la fecha, así que el preprocesado ya no necesita renumerar «/R2» / «REC-»
+  para separar dos facturas del mismo proveedor con el mismo número: el número de Sage se conserva
+  íntegro en `number` (§2.5).
 - **Delegaciones / Departamentos (rowsets ADO) → mapa analítico**: sin nombres útiles en las delegaciones; la
   tabla delegación → hotel se deriva del diario (sexta cifra dominante de las líneas 6/7 y títulos de subcuenta) y
   se pasa en `mapping.json` (`analytics.entries`); departamento → centro de coste USALI solo en 64x.
@@ -224,7 +228,7 @@ de ejemplo ficticia). Cabeceras **literales** (diseño §4.3):
 | `balances` | `empresa;ejercicio;periodo;cuenta;titulo;delegacion;apertura_debe;apertura_haber;debe;haber;saldo_deudor;saldo_acreedor` |
 | `plan` | `cuenta;titulo;nif;pais;longitud` |
 | `third_parties` | `codigo;rol;cuenta;nif;pais;nombre` (`rol` = `cliente` / `proveedor`) |
-| `vat_books` | mismas columnas del `journal` con el bloque factura (`serie;factura;fecha_factura;nif;nombre;base_iva;tipo_iva;cuota_iva;tipo_factura` E / R) o las hojas AEAT de §2.5 |
+| `vat_books` | `libro;empresa;ejercicio;fecha;fecha_operacion;serie;numero;nif;nombre;pais;base;tipo_iva;cuota;total;tipo_recargo;cuota_recargo;tipo_retencion;retencion;tipo_factura;rectificativa` + columnas **opcionales** `clave_operacion;calificacion;cuota_deducible` (o las hojas AEAT de §2.5) |
 | analítica (maestros, opcional dentro del mapa analítico) | `dimension;codigo;nombre` |
 
 Ejemplo de diario canónico (un asiento de gasto en RA con IVA soportado y proveedor ficticio):
@@ -256,6 +260,23 @@ codigo;rol;cuenta;nif;pais;nombre
 `canonical_json`: `{ "system": "sage200", "company": "1", "kind": "journal", "rows": [ { …misma
 clave por columna… } ] }`.
 
+**Columnas opcionales del libro `vat_books` (FIX-1 · F2).** No están en la plantilla ni en la
+cabecera obligatoria (la detección `canonical_csv` sigue exigiendo la cabecera literal; una
+cabecera ⊇ la canónica se detecta igual) y pueden añadirse al final en cualquier orden:
+
+| Columna | Significado | Valores |
+| --- | --- | --- |
+| `clave_operacion` | «Clave de Operación» del formato AEAT (§2.5): tipo de operación de la fila | `01` régimen general · `09` adquisición intracomunitaria de bienes / servicios (recibidas) · otras claves AEAT se conservan tal cual (`1` → `01`) |
+| `calificacion` | «Calificación de la Operación» (emitidas): sujeción de la operación | `S1` sujeta no exenta · `S2` sujeta con inversión del sujeto pasivo · `N1` / `N2` no sujeta (mayúsculas) |
+| `inversion_sujeto_pasivo` | «Inversión del Sujeto Pasivo» del libro AEAT de recibidas (corrector FIX-1): con `S` la fila es `isp` en `regimeOfVatRow`, antes que la clave | `S` / `N` (también `SI`, `X`, `1`; cualquier otro texto → `N`; vacía → null) |
+| `cuota_deducible` | Recibidas: cuota deducible; `0,00` con cuota > 0 marca la fila como no deducible | importe |
+| `numero_recepcion` | Recibidas: «Número Recepción» del formato AEAT (FIX-1 · F4); entra en el `sourceId` de la fila tras el NIF (§2.5); si falta, el `sourceId` lleva la fecha de expedición | texto o número (`45.0` → `45`) |
+
+Las cinco son `null` cuando faltan; vacías no cambian el `contentHash` del fichero (un libro
+cargado antes de F2 / F4 sigue siendo el mismo lote). En el JSON canónico se admiten como texto o número.
+`tipo_iva` (y `tipo_recargo` / `tipo_retencion`) conservan hasta dos decimales sin ceros finales
+(`parseRateCode`: «7,5», «7,50 %» y «0.075» → `7.5`; «21,00» → `21`; FIX-1 · F4, B-7).
+
 ### 2.5 · Libro Registro de IVA «Formato Libros AEAT»
 
 Hojas `EXPEDIDAS_INGRESOS` y `RECIBIDAS_GASTOS` con las cabeceras del `LSIJ.xlsx` de la AEAT
@@ -264,9 +285,15 @@ nombre del destinatario / expedidor, clave de operación, base, tipo, cuota, rec
 deducible…). El lector usa `readXlsxTable` y localiza la **cabecera por contenido** (la primera
 fila que contiene `Serie` y `Número`), no por número de fila; importes `Decimal(12,2)`; fechas
 `dd/mm/yyyy`. Cada fila produce una `VatBookEntry` `sourceType sage200` con `sourceId
-<empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:R]` (en **recibidas** el número es el
-del proveedor —dos proveedores numeran «1», «2»… a la vez— y la clave lleva su NIF; en emitidas
-la serie + número propios ya son únicos), `period` recalculado con `periodCodeForDate` según la
+<empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:<recepción>][:R]` (en **recibidas** el
+número es el del proveedor —dos proveedores numeran «1», «2»… a la vez— y la clave lleva su NIF
+y, desde FIX-1 · F4 (B-8), la **recepción**: el «Número Recepción» del libro AEAT / la columna
+opcional `numero_recepcion` del canónico o, si falta, la fecha ISO de expedición, porque un mismo
+proveedor repite su número en fechas distintas; el número de Sage queda **íntegro** en `number`,
+sin renumerar «/R2» ni «REC-». Dos filas con el mismo NIF, número, fecha y tipo se siguen sumando
+con el aviso «repetida». En emitidas la serie + número propios ya son únicos y no se añade nada),
+`rate` `Decimal(5,2)` con el tipo del libro tal cual (7,5 % → 7,50; antes se redondeaba a 8),
+`period` recalculado con `periodCodeForDate` según la
 periodicidad de `vat_settings` (nunca se toma del Excel) y `counterpartyNif` /
 `counterpartyName` (alimentan el 347). **Modo sombra (§5.1):** una emitida cuya serie + número
 es una factura de ehotelOS, o una recibida ya contabilizada en ehotelOS (NIF + número del
@@ -274,9 +301,44 @@ proveedor, `SupplierBill` posted / paid), no se importa (`nativeSkipped[]` en la
 `skipped_native` en el lote): su fila del libro ya la materializa el propio documento y el
 303 / 347 / 390 no la cuenta dos veces. Dos lotes `vat_books` con alguna fila en común solapan
 (409 `LEDGER_IMPORT_OVERLAP { overlaps }`; `replace` revierte entero el anterior) y el reverso
-de un lote solo borra las filas que ningún otro lote vivo haya vuelto a escribir. Si el Excel real de Sage no replica el
+de un lote solo borra las filas que ningún otro lote vivo haya vuelto a escribir. **Las filas
+cargadas antes de F4 conservan su `sourceId` antiguo (sin recepción; no hay migración ni recarga):**
+un libro ya cargado que se vuelva a importar corregido no casa fila a fila con el lote antiguo
+(la clave nueva lleva la recepción / fecha), así que el solape no lo detecta y las facturas
+saldrían dos veces: revierte antes el lote antiguo (`POST /accounting/ledger-imports/:id/reverse`)
+y carga después el nuevo; el mismo fichero sin cambios sigue siendo 409 `LEDGER_IMPORT_DUPLICATE`
+(el hash no incluye la columna vacía). Si el Excel real de Sage no replica el
 diseño AEAT (hueco 6 del diseño §10.3), el libro entra por el bloque IVA del CSV IME (§2.3) o
 por el canónico.
+
+**Régimen de la fila al importar (FIX-1 · F2, hallazgos B-1 / B-4 del informe de carga).** Cada
+`VatBookEntry` lleva `regime` (`interior` · `isp` · `aib` · `importacion` · `exento_no_sujeto` ·
+`null` = sin clasificar) y el importador lo fija con la regla pura `regimeOfVatRow`
+(`ledger-import.posting.ts`) a partir de «Clave de Operación», «Calificación de la Operación»,
+«Tipo de Factura» e «Inversión del Sujeto Pasivo» del formato AEAT (o de las columnas
+opcionales `clave_operacion` / `calificacion` / `inversion_sujeto_pasivo` del canónico, §2.4);
+corrector FIX-1 (F2-IMPORT-ISP-DEFAULT, F2-IMPORT-NO-ISP-RECIBIDAS): sin clave ni calificación
+NUNCA se decide (antes toda emitida sin NIF de un libro sin esas columnas —una venta simplificada
+F2— salía `isp`):
+
+| Libro | Datos de la fila | `regime` | Casillas del 303 |
+| --- | --- | --- | --- |
+| recibidas | tipo de factura `F5` (DUA) | `importacion` | 32/33 |
+| recibidas | «Inversión del Sujeto Pasivo» = `S` (antes que la clave; CH / CO de la carga real) | `isp` | 28/29 (30/31 bienes de inversión), devengo 12/13 |
+| recibidas | clave `09` | `aib` | 36/37 (38/39 bienes de inversión) |
+| recibidas | clave `01` | `interior` | 28/29 (30/31 bienes de inversión) |
+| emitidas | clave `09` (autofactura) | `isp` | 12/13 |
+| emitidas | clave `01` con calificación (`S1`, `S2`, `N1`…) | `interior` | 01-09 |
+| emitidas | clave `01` sin calificación **con** NIF | `interior` | 01-09 |
+| emitidas | clave `01` sin calificación **sin** NIF (forma de las autofacturas de Sage y de las ventas a particulares) | `null` | la decide `POST /fiscal/vat-books/reclassify` (§7.1) |
+| cualquiera | sin clave ni calificación, u otra combinación | `null` | como interior (igual que antes de F2), con el aviso de 0 % «sin casilla» |
+
+`exento_no_sujeto` (casilla 120) no lo asigna el importador: lo fija la reclasificación (§7.1,
+regla 3 con `includeZeroRate`). El 303 usa el régimen para repartir casillas (10-13, 32-39,
+120; la 27 incluye 11 + 13 y la 45 incluye 33 + 37 + 39, así la 46 y la 71 no cambian) y el
+390 / `GET /fiscal/regime` excluyen del volumen de operaciones (casilla 108) las bases de las
+autofacturas `isp` / `aib` (art. 121 LIVA; casilla informativa `AUTOFACTURAS_ISP_AIB_EXCLUIDAS`).
+Los escritores nativos (facturas, facturas recibidas, gastos) escriben `regime = null`.
 
 ### 2.6 · Normalización y `contentHash`
 
@@ -308,6 +370,50 @@ Secuencia recomendada para CELUISMA (según la necesidad 6 de §1.1): `plan` →
 que Sage generó al cerrar 2025) → `journal` 2026 enero-julio → `vat_books` 2026 → reconciliación
 por mes → cierre de periodos en ehotelOS (§5.3). Los ejercicios anteriores a 2025 solo con
 `balances` (paso 6).
+
+### 3.1 · Terceros importados (consulta) — FIX-1 · F11 (informe E-05)
+
+Los pasos 4 y 5 escriben `ledger_third_parties` (un tercero por `(sistema, rol, código Sage)`,
+con subcuenta, NIF, país y nombre; `supplier_id` solo con `options.createSuppliers`), pero hasta
+FIX-1 nadie lo leía: Proveedores › directorio quedaba vacío tras una carga real. La consulta vive
+**dentro** de Finanzas › Contabilidad › Importar desde Sage 200 (pestaña «Terceros», sin ruta
+nueva) sobre `GET /accounting/ledger-imports/third-parties` (`accounting.reports.read` efectiva;
+`apps/api/src/modules/accounting/import/ledger-third-parties.service.ts`):
+
+| Parámetro | Significado |
+| --- | --- |
+| `q` (≤ 80) | código Sage o nombre (sin distinguir mayúsculas), NIF (contiene, en mayúsculas) o subcuenta Sage (empieza por) |
+| `role` | `customer` \| `supplier`; sin él, ambos |
+| `limit` · `cursor` | página keyset ordenada por (rol, código Sage, id): `limit` 1..200 (50 por defecto, recortado sin error), `cursor` opaco del `nextCursor` anterior (400 si no es válido); cabeceras `X-Total-Count` / `X-Next-Cursor` |
+
+Cuerpo `{ rows, total, nextCursor }` con, por fila, `sourceCode`, `role`, `sourceAccount`,
+`taxId`, `countryCode`, `name`, `supplierId`, `updatedAt` y `lote` = `{ importId, fileName,
+createdAt }` del lote `third_parties` más reciente que escribió ese tercero (se recupera de
+`ledger_import_entries` con `source_fiscal_year = 'terceros'`, `source_period` = rol y
+`source_entry_number` = código; `null` si solo lo escribió un lote `vat_books`, que no deja
+entrada por tercero). Regla de nombres (corrector FIX-1, F11-EMPLOYEE-NAMES-STILL-EXPOSED):
+`name` viaja **solo** si el NIF acredita una sociedad (`isLegalEntityTaxId`: CIF español de
+persona jurídica —letras A-H, J, N, P-S, U, V, W—, con o sin prefijo `ES`, o NIF-IVA
+extranjero con prefijo de país de la UE / EEE / GB / CH y ≥ 5 caracteres detrás), la subcuenta
+**no** empieza por 465 / 460 / 555 y el nombre no lleva la palabra `EMPLEADO` (al principio,
+«EMPLEADO nnnn», o tras un resto de nombre, «<palabra> EMPLEADO nnnn»); en otro caso es `null`
+y la pantalla pinta «—». Un DNI, un NIE, un pasaporte, un identificador numérico o la ausencia
+de NIF son personas físicas o desconocidos y nunca muestran nombre, sin diccionario de
+personas: sobre la carga real quedan con nombre 1.412 clientes y 3.038 proveedores con CIF más
+38 + 1.238 con NIF-IVA extranjero reconocido, y quedan ocultos 9.527 clientes y 475 proveedores
+con DNI / NIE (huéspedes y empleados, incluidas las 37 filas del plan `remask-pii` de F12: 26
+DNI, 1 NIE, 9 pasaportes y 1 CIF —esta última sale con nombre hasta el apply de F12—), 5.946
+con otros identificadores y 110 sin NIF. Los proveedores y clientes sociedad sí se ven; un
+autónomo (DNI) no. La pantalla: buscador («Código,
+NIF, cuenta o nombre», con retardo de 300 ms) + selector de rol (Todos · Clientes · Proveedores),
+tabla compacta (Código · NIF · Cuenta Sage · Rol · Nombre · Lote «fichero · fecha»), «N terceros»
+y «Cargar más» mientras el API devuelva `nextCursor`. Solo lectura: no hay alta, edición ni
+vínculo con `suppliers` desde aquí.
+
+Verificación sobre la carga real (2026-09-19, API local de la tanda): `GET
+/accounting/ledger-imports/third-parties?role=supplier&limit=20` → 200 con `X-Total-Count` =
+número de proveedores de Faranda en `ledger_third_parties` y `lote` relleno en los del lote
+`third_parties`; los de las subcuentas 465 llegan con `name: null`.
 
 ## 4 · Mapa de cuentas y mapa analítico
 
@@ -452,9 +558,15 @@ TPV» del 31/12 entre 430 y 572) puede aparecer en `closingDetected[]`. Por eso 
 revisa en **cada lote mensual** y nunca se contabiliza un mes con un asiento normal detectado como
 regularización / cierre / apertura: marcaría el ejercicio cerrado antes del cierre real (formato
 real confirmado 2026-09-18). Tras contabilizarlos, `markFiscalYearClosedFromImport({
-fiscalYearId, closingEntryId, openingEntryId, netResult })` deja `fiscal_years.status = closed`
+fiscalYearId, closingEntryId, openingEntryId, netResult, closedBy })` deja `fiscal_years.status = closed`
 **sin** generar asientos propios (`closeFiscalYear` produciría regularización, cierre y apertura
-duplicados). Ejercicios sin cierre importado siguen `open` con todos sus periodos `closed`.
+duplicados) y cierra los periodos del ejercicio que seguían abiertos con `closing_notes`
+«cerrado por importación <importId>» y `closed_by` = **usuario que lanza la importación**
+(`createdBy` del lote) o **`import:<importId>`** cuando no hay actor (CLI / sistema) — FIX-1 · F4
+(A-04); el reverso del lote los reabre y deja `closed_by` null. Los periodos de Faranda cerrados
+por los lotes anteriores a F4 tienen `closed_by` NULL (solo `closing_notes`) y así quedan hasta
+una futura recarga: no se recarga nada por esto. Ejercicios sin cierre importado siguen `open`
+con todos sus periodos `closed`.
 
 **Reabrir un ejercicio cerrado por importación.** `reopenFiscalYear` **sí** alcanzaría esos
 asientos (busca por `fiscalYearId` + `entryKind regularization | closing`, que el motor rellena
@@ -615,7 +727,74 @@ cerrados de ehotelOS (`ignoreClosedPeriod`, auditado con el motivo; por HTTP `al
 precedida del motivo de `--allow-closed` si lo hay; `--entity` solo si la organización tuviera
 más de una sociedad.
 
-**Las mismas operaciones por API** (15 rutas del partial `accounting (ledger-import)`; claves
+### 7.1 · Reclasificar el régimen de los libros ya cargados (`POST /fiscal/vat-books/reclassify`, FIX-1 · F2)
+
+Los lotes `vat_books` cargados antes de F2 tienen todas las filas con `regime = null` (el
+Excel de Sage llegó sin clave de operación en el canónico), así que el 303 lleva las
+autofacturas ISP/AIB a 07/09 y 28/29 y el volumen de operaciones del 390 / `regime` las suma
+(B-1: 6.151.982,84 € en 2025 y propuesta «gran empresa» falsa). Sin recargar nada, la acción de
+producto reclasifica **solo** filas `sourceType sage200` con `regime` null de la organización del
+usuario y del periodo pedido (nunca filas nativas, nunca el libro de bienes de inversión, nunca
+una clasificación previa):
+
+```bash
+# dry-run (por defecto): recuentos por regla, sin escribir
+curl -s -X POST http://127.0.0.1:3000/fiscal/vat-books/reclassify -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" -d '{"period":"2025"}'
+# apply: escribe en una transacción y audita VAT_BOOKS_RECLASSIFIED (recuentos, nunca textos ni NIF)
+curl -s -X POST … -d '{"period":"2025","apply":true}'
+# regla 3 (ventas al 0 % con NIF extranjero → 120) solo si se confirma expresamente
+curl -s -X POST … -d '{"period":"2026","apply":true,"includeZeroRate":true}'
+```
+
+Cuerpo `.strict()` `{ period? ("2025" · "2025-Q3" · "2025-09"), from?, to? (ejercicio, trimestre o
+mes natural), apply? = false, includeZeroRate? = false }`; permiso `accounting.configure`
+(`riskLevel high`, el mismo que el rebuild). Reglas (puras y testadas en
+`vat-books-reclassify.test.mts` con filas inventadas):
+
+1. **Autofacturas intracomunitarias** (`pairAutofacturas`, corrector FIX-1
+   F2-RECLASSIFY-RULE1-AMOUNT-PAIRING): una emitida sin NIF, con cuota ≠ 0 y con nombre (la
+   autofactura de Sage lleva como destinatario el **nombre del proveedor extranjero**) se
+   empareja 1:1 —mismo `period`, mismo nombre normalizado (mayúsculas sin diacríticos, solo
+   letras y dígitos), misma base y misma cuota al céntimo, orden estable por fecha e id— con una
+   recibida **con NIF extranjero** (presente y no español; `ES…` cuenta como español). Si el NIF
+   de la recibida lleva prefijo de país con NIF-IVA de la UE (`EU_VAT_PREFIXES`: DE, FR, NL,
+   PT, IE… y XI), **las dos caras pasan a `aib`** (10/11 y 36/37). Una recibida solo empareja
+   una vez; una recibida sin NIF nunca es pareja (antes el emparejamiento solo por importe
+   casaba tickets sin NIF y ventas a particulares, y etiquetaba toda recibida `aib`: en 1T 2025
+   las 76 parejas eran 66 clave 09 + 10 con «Inversión del Sujeto Pasivo» = S).
+2. **DUA** (`isDuaImport`): recibida sin NIF cuyo número es un MRN (`^\d{2}[A-Z]{2}[0-9A-Z]{14,16}$`)
+   o tiene ≥ 14 dígitos → `importacion` (32/33).
+3. **Ventas al 0 % con NIF extranjero** (`isZeroRateForeign`) → `exento_no_sujeto` (120), **solo**
+   con `includeZeroRate: true` (AR 2/3/4/10 del informe, pregunta B-4).
+4. **Autofacturas con inversión del sujeto pasivo**: la misma pareja de la regla 1 cuando el NIF
+   de la recibida es extranjero **no** intracomunitario (CH, GB, US, CO… o sin prefijo de país):
+   **las dos caras pasan a `isp`** (12/13 y 28/29 —la ISP soportada se deduce en 28/29 como en el
+   formulario oficial, corrector SEC-08—).
+
+La respuesta (dry-run y apply, mismo objeto) trae `candidatas` (emitidas / recibidas leídas),
+`reglas[]` siempre en el orden 1, 2, 3, 4 (`regla`, `regimen`, `filas` = `filasEmitidas` +
+`filasRecibidas` —las dos caras en las reglas 1 y 4—, `parejas` en la 1 y la 4, `base` y `cuota`
+de UNA cara —la emitida—, ≤ 5 `ids` de ejemplo y `porPeriodo` cuyas `filas` suman lo mismo que
+`filas`; corrector F2-RULE-DTO-COUNTS), `sinPareja` (emitidas sin NIF que ninguna recibida
+empareja: ventas a particulares de las series 102-107 / OPERA / AB o autofacturas huérfanas),
+`recibidasSinNifNoClasificadas` (tickets sin NIF y DUA con número no reconocible),
+`actualizadas` (0 en dry-run) y `avisos`.
+Dry-run de referencia sobre la carga real (2026-09-19, BD local, antes del apply, reglas del
+corrector): regla 1 (`aib`) en 2025 = 244 parejas (66 · 63 · 55 · 60 por trimestre; cuota
+15.131,93 · 17.171,66 · 60.967,71 · 23.335,45 €) y en 2026 = 129 (57 · 72; 11.424,43 ·
+31.483,53 €); regla 4 (`isp`) en 2025 = 66 parejas (10 · 15 · 14 · 27; 176,99 · 544,81 ·
+648,09 · 1.219,99 €) y en 2026 = 48 (25 · 23; 689,93 · 679,24 €) —en 1T 2025 las 66 + 10
+parejas coinciden una a una con las 66 recibidas clave 09 y las 10 con «Inversión del Sujeto
+Pasivo» = S del libro real; el emparejamiento anterior solo por importe daba las mismas 310
+parejas de 2025 pero todas `aib`—; sin pareja 2025 = 2.064 emitidas (46.607,98 €: ventas a
+particulares y series sin NIF); regla 2 = 9 filas en 1T25 (9.906,29 €), 6 en 2T25 (18.222,23 €)
+y 10 en 1T26 (34.679,15 €); regla 3 = 656.000 € (1T26) + 132.000 € (2T26). El 303, el 390 y
+`GET /fiscal/regime` no cambian hasta el apply; tras él el volumen 2025 baja ≈ 586.855,53 € y
+la propuesta de régimen vuelve a «general». Hay un tope de 200.000 filas candidatas por
+ejecución (400 `RECLASSIFY_TOO_MANY_ROWS`: acota el periodo).
+
+**Las mismas operaciones por API** (16 rutas del partial `accounting (ledger-import)`; claves
 efectivas y riesgo en `finanzas-contabilidad.md` §13; cuerpos `.strict()` en
 `schemas/ledger-import.schemas.ts`; DTOs en `packages/shared/src/ledger-import-types.ts`):
 
@@ -631,6 +810,7 @@ efectivas y riesgo en `finanzas-contabilidad.md` §13; cuerpos `.strict()` en
 | Mapa analítico | `GET /accounting/ledger-imports/analytics-map` · `PUT /accounting/ledger-imports/analytics-map` | `accounting.reports.read` · `accounting.configure` |
 | Reconciliar (escribe solo `ledger_reconciliations`) | `POST /accounting/ledger-imports/reconciliation` | `accounting.journal.post` |
 | Historial, detalle y CSV de reconciliaciones | `GET /accounting/ledger-imports/reconciliation` · `GET /accounting/ledger-imports/reconciliation/:id` · `GET /accounting/ledger-imports/reconciliation/:id/csv` | `accounting.reports.read` |
+| Directorio de terceros importados (`?q=&role=&limit=&cursor=`, §3.1; FIX-1 · F11) | `GET /accounting/ledger-imports/third-parties` | `accounting.reports.read` |
 
 ## 8 · SQL de verificación (solo lectura)
 
@@ -772,6 +952,20 @@ los libros importados + nativos.
   periodo 9 · diario 0») y en `ledger_import_entries.sourceEntryNumber`, y se ve en el diario, en
   el mayor y en el detalle del asiento. Un ejercicio con asientos nativos previos queda
   intercalado (la preview avisa con `existingNativeEntries`).
+- **Tipos de IVA con decimales (7,5 %, 5,2 % de recargo…) (FIX-1 · F4, B-7).** `parseRateCode`
+  conserva hasta dos decimales sin ceros finales: «7,5», «7,50 %» y «0.075» → `7.5`, «21,00» →
+  `21`. En el libro, `VatBookEntry.rate` es `Decimal(5,2)` (7,50) y la fila con 7,5 no se funde con
+  la de 21 de la misma factura; en el diario, `taxRateCode` = `7.5` (el cotejo del 303 acepta
+  `^\d+(\.\d+)?$` y agrupa por tipo con `rateKey`). Antes se redondeaba a entero (7,5 → 8 en el
+  libro y en el apunte). La subcuenta de `map_by_rate` sigue siendo de dos cifras (`472.08`): para
+  esos tipos usa un `map` explícito a la 472 / 477 genérica (§1.2). Ambigüedad heredada: un
+  valor menor que 1 se lee como fracción («0,21» → 21), así que un recargo de equivalencia del
+  0,5 % escrito «0,5» sale como 50 %: revisa esa fila en la preview (5,2 / 1,4 / 1,75 no tienen
+  el problema).
+- **Recibidas con el mismo número de proveedor en dos fechas (FIX-1 · F4, B-8).** Ya no se
+  funden ni hace falta renumerar: el `sourceId` lleva el número de recepción (`numero_recepcion`)
+  o la fecha (§2.5). Las filas cargadas antes de F4 conservan su clave antigua: para reimportar
+  un libro ya cargado, revierte primero el lote antiguo.
 - **«409 `FISCAL_YEAR_CLOSED_FROM_IMPORT`» al reabrir un ejercicio.** El cierre vino de un lote
   importado: reabrir = revertir ese lote (§5.4). El mismo 409 responde
   `POST /accounting/fiscal-years/:id/close` cuando el ejercicio sigue `open` pero ya tiene la

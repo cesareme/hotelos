@@ -1,7 +1,9 @@
 // In-memory FinancialStatementsSource for the unit tests: a tiny ledger with
 // the SAME period semantics as the SQL implementation (balance_at excludes the
 // closing dated at the cut-off; movements exclude regularization / closing /
-// opening; reversed pairs are left out through the shared `ledgerEntryCounts`
+// opening; opening_in_period returns the openings dated inside the range
+// without a booked closing of the same property in [from − 1, opening date);
+// reversed pairs are left out through the shared `ledgerEntryCounts`
 // rule while the diario keeps both halves — hallazgo t6#2), accounts typed
 // from the «PGC Pymes hotelero» template, and fixed PMS occupancy facts.
 // `reverse()` mirrors accounting.service.reverseJournalEntry (sides swapped,
@@ -11,6 +13,7 @@ import { Prisma } from "@prisma/client";
 import { accountGroup, isPostableCode, templateAccount, templateUsaliFor, type AccountKind } from "../../accounting/chart-of-accounts.service.js";
 import type { LegalIdentityDto } from "@hotelos/shared";
 import {
+  addDays,
   compareAccountBalanceRows,
   ledgerEntryCounts,
   ledgerEntryIsBooked,
@@ -218,6 +221,20 @@ export class MemorySource implements FinancialStatementsSource {
         if (e.date > query.to) return false;
         if (e.kind === "closing" && e.date === query.to) return false;
         return true;
+      }
+      if (query.mode === "opening_in_period") {
+        if (!query.from) throw new Error("opening_in_period query requires from");
+        if (e.kind !== "opening" || e.date < query.from || e.date > query.to) return false;
+        // Same guard as the SQL: no booked closing of the same property (null = null) dated in [from − 1, opening date).
+        const closingFrom = addDays(query.from, -1);
+        return !this.entries.some(
+          (c) =>
+            c.kind === "closing" &&
+            ledgerEntryCounts({ status: c.status ?? "posted", reversedById: c.reversedById ?? null, reversalOfId: c.reversalOfId ?? null }) &&
+            (c.propertyId ?? null) === (e.propertyId ?? null) &&
+            c.date >= closingFrom &&
+            c.date < e.date
+        );
       }
       if (e.date < (query.from ?? "0000-00-00") || e.date > query.to) return false;
       return e.kind !== "regularization" && e.kind !== "closing" && e.kind !== "opening";

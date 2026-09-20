@@ -626,10 +626,11 @@ describe("importación desde Sage 200 · organización aislada (sociedad + HA + 
     assert.deepEqual([result.import.status, result.created, result.skipped], ["posted", 2, 1]);
     assert.deepEqual(result.entries.filter((entry) => entry.status === "skipped_native").map((entry) => [entry.sourceChannel, entry.sourceType, entry.sourceId]), [["emitidas", "invoice", nativeInvoiceId]]);
     const rows = await prisma.vatBookEntry.findMany({ where: { organizationId: ORG, sourceType: "sage200" }, orderBy: [{ book: "asc" }, { number: "asc" }] });
-    // C6: en recibidas la clave lleva el NIF del proveedor (el número es el suyo, no el nuestro).
+    // C6: en recibidas la clave lleva el NIF del proveedor (el número es el suyo, no el nuestro) y, desde FIX-1 · F4 (B-8),
+    // la fecha de recepción (sin `fecha_recepcion` en el CSV, la de expedición: 2026-09-03) para distinguir reenvíos del mismo número.
     assert.deepEqual(rows.map((row) => [row.book, row.sourceId, row.period, row.rate.toFixed(2), row.total.toFixed(2), row.counterpartyNif]), [
       ["emitidas", "1:2026:FAC-2026:000016", "2026-Q3", "10.00", "550.00", NIF_VIAJES],
-      ["recibidas", `1:2026:F:778:${NIF_SUMINISTROS}`, "2026-Q3", "21.00", "302.50", NIF_SUMINISTROS]
+      ["recibidas", `1:2026:F:778:${NIF_SUMINISTROS}:2026-09-03`, "2026-Q3", "21.00", "302.50", NIF_SUMINISTROS]
     ]);
     const rebuilt = await vatBooks.rebuildVatBooks({ context, from: "2026-07-01", to: "2026-09-30", correlationId: CORR });
     assert.ok(rebuilt);
@@ -647,7 +648,7 @@ describe("importación desde Sage 200 · organización aislada (sociedad + HA + 
     assert.deepEqual([replaced.import.status, replaced.created], ["posted", 2]);
     assert.equal((await prisma.ledgerImport.findUnique({ where: { id: importVat } }))?.status, "reversed");
     const afterReplace = await prisma.vatBookEntry.findMany({ where: { organizationId: ORG, sourceType: "sage200" }, orderBy: [{ book: "asc" }, { number: "asc" }] });
-    assert.deepEqual(afterReplace.map((row) => [row.sourceId, row.total.toFixed(2)]), [["1:2026:FAC-2026:000016", "660.00"], [`1:2026:F:778:${NIF_SUMINISTROS}`, "302.50"]]);
+    assert.deepEqual(afterReplace.map((row) => [row.sourceId, row.total.toFixed(2)]), [["1:2026:FAC-2026:000016", "660.00"], [`1:2026:F:778:${NIF_SUMINISTROS}:2026-09-03`, "302.50"]]);
     // Revertir el lote antiguo (ya revertido por replace) es idempotente y NO toca las filas del lote nuevo.
     const again = await ledgerImport.reverseLedgerImport({ context, importId: importVat, reason: "ya sustituido", correlationId: CORR });
     assert.equal(again.alreadyReversed, true);

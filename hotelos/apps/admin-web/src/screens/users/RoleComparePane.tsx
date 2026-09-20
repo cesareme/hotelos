@@ -6,6 +6,10 @@
 // hold, what only the second holds. Below, «roles con permisos idénticos»
 // (`identicalRoles`): the roles of the organisation whose key sets coincide,
 // the quarterly review OPERA / Mews recommend. Cocoa 22: zero inline style.
+// Hardened (FIX-1 · F6): the defaults come from OFFERABLE_TEMPLATES and a
+// template key the served catalogue lacks resolves to no keys, so the drawer
+// never throws («b is not iterable» when a stale compiled permissions.js
+// shadowed the source; guard: tests/shared-source-shadow-contract.test.mjs).
 
 import { useMemo, useState } from "react";
 import { ROLE_PERMISSION_MAP, ROLE_TEMPLATE_LABELS_ES, type PermissionKey, type RoleKey } from "@hotelos/shared";
@@ -34,10 +38,10 @@ function keysCell(keys: readonly PermissionKey[]) {
 }
 
 export function RoleComparePane(props: RoleComparePaneProps) {
-  const [a, setA] = useState<RoleKey>(props.initialA ?? "receptionist");
-  const [b, setB] = useState<RoleKey>(props.initialB ?? "front_office_manager");
-  const comparison = useMemo(() => compareTemplates(ROLE_PERMISSION_MAP[a], ROLE_PERMISSION_MAP[b]), [a, b]);
-  const twins = useMemo(() => identicalRoles(props.roles.filter((role) => role.permissions.length > 0)), [props.roles]);
+  const [a, setA] = useState<RoleKey>(props.initialA ?? OFFERABLE_TEMPLATES[0] ?? "receptionist");
+  const [b, setB] = useState<RoleKey>(props.initialB ?? OFFERABLE_TEMPLATES[1] ?? OFFERABLE_TEMPLATES[0] ?? "front_office_manager");
+  const comparison = useMemo(() => compareTemplates(ROLE_PERMISSION_MAP[a] ?? [], ROLE_PERMISSION_MAP[b] ?? []), [a, b]);
+  const twins = useMemo(() => identicalRoles(props.roles.filter((role) => (role.permissions ?? []).length > 0)), [props.roles]);
   const totals = useMemo(
     () => ({
       onlyA: comparison.reduce((sum, row) => sum + row.onlyA.length, 0),
@@ -57,10 +61,10 @@ export function RoleComparePane(props: RoleComparePaneProps) {
   return (
     <div className="cocoa-stack" data-gap="4">
       <CocoaFormRow columns={2} role="group" aria-label="Plantillas a comparar">
-        <CocoaField label="Plantilla A" help={`${ROLE_PERMISSION_MAP[a].length} claves · rango ${rankOfTemplate(a) ?? "—"}`}>
+        <CocoaField label="Plantilla A" help={`${(ROLE_PERMISSION_MAP[a] ?? []).length} claves · rango ${rankOfTemplate(a) ?? "—"}`}>
           <CocoaSelect value={a} onChange={(value) => setA(value as RoleKey)} options={TEMPLATE_OPTIONS} />
         </CocoaField>
-        <CocoaField label="Plantilla B" help={`${ROLE_PERMISSION_MAP[b].length} claves · rango ${rankOfTemplate(b) ?? "—"}`}>
+        <CocoaField label="Plantilla B" help={`${(ROLE_PERMISSION_MAP[b] ?? []).length} claves · rango ${rankOfTemplate(b) ?? "—"}`}>
           <CocoaSelect value={b} onChange={(value) => setB(value as RoleKey)} options={TEMPLATE_OPTIONS} />
         </CocoaField>
       </CocoaFormRow>

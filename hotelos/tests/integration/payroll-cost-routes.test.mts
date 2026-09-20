@@ -11,6 +11,15 @@
  *   · GET /payroll/cost-imports → 200 array; GET /payroll/cost-imports/no-existe → 404;
  *   · POST /payroll/cost-imports/no-existe/reverse → 404 opaco (sin eco del id);
  *   · sin token → 401 en preview (RBAC estricto); rango > 24 meses → 400.
+ * FIX-1 · F10 (fichas de personal, tenant AISLADO `org_sp_<run>` creado aquí y borrado en `after`,
+ * usuario real por /auth/login con payroll.read + payroll.manage y otro solo con payroll.read):
+ *   · POST /payroll/staff-profiles → 201 con la persona y el departamento resueltos y auditoría
+ *     STAFF_PROFILE_CREATED sin nombre ni correo; el mismo (userId, propertyId) → 409 STAFF_PROFILE_EXISTS;
+ *   · userId de OTRA organización → 404 «Usuario no encontrado.»; departamento de otro centro → 400
+ *     STAFF_PROFILE_DEPARTMENT_MISMATCH; clave extra / coste negativo → 400 VALIDATION_ERROR;
+ *   · GET /payroll/staff-profiles?propertyId= → 200 con la ficha; centro ajeno → 404 opaco;
+ *   · POST /payroll/contracts con el id nuevo → 200 (antes: 404 «Perfil de empleado no encontrado.»);
+ *   · solo payroll.read → 403 en el alta; sin token → 401 (RBAC estricto).
  * Sin credenciales válidas los casos se saltan con aviso. Desde el repo:
  *   cd apps/api && node --import tsx --test "../../tests/integration/payroll-cost-routes.test.mts"
  */
@@ -29,6 +38,8 @@ process.env.ENCRYPTION_KEY ??= "integration-test-enckey-32chars-min-aaaa";
 delete process.env.STRUCTURE_ENABLED;
 
 const { buildApiServer } = await import("../../apps/api/src/server.js");
+const { prisma, hashPassword } = await import("@hotelos/database");
+const { flushAuditQueues } = await import("../../apps/api/src/modules/audit/audit.service.js");
 
 type ApiApp = Awaited<ReturnType<typeof buildApiServer>>;
 type Headers = Record<string, string>;
@@ -87,10 +98,19 @@ before(async () => {
   await app.ready();
   session = await login(app, process.env.INTEGRATION_LOGIN_EMAIL ?? "reception@example.com", process.env.INTEGRATION_LOGIN_PASSWORD ?? "hotelos-demo");
   if (session) profile = (await request<Profile>(app, "GET", "/users/me", session.headers)).body;
+  // FIX-1 · F10: tenant aislado de las fichas de personal (se crea con el API ya levantado; un
+  // segundo `before` de raíz no espera al primero en node:test).
+  await spSetup();
 });
 
 after(async () => {
-  await app.close();
+  try {
+    await flushAuditQueues();
+    await spCleanup();
+  } finally {
+    await app.close();
+    await prisma.$disconnect();
+  }
 });
 
 const NO_SESSION = "INTEGRATION_LOGIN_EMAIL / _PASSWORD no configurados o login fallido — casos con sesión no ejercitados";
@@ -222,5 +242,213 @@ describe("L3 · lotes: listado y 404 opacos", () => {
     const post = await request<ErrorBody>(app, "POST", "/payroll/cost-imports/no-existe/post", s.headers, {});
     assert.equal(post.status, 404);
     assert.equal(post.body?.message, res.body?.message, "detalle, post y reverse comparten el mensaje neutro");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX-1 · F10 · fichas de personal — tenant AISLADO (nunca org_123 ni Faranda)
+// ---------------------------------------------------------------------------
+
+const RUN = Date.now().toString(36);
+const SP_ORG = `org_sp_${RUN}`;
+const SP_ORG2 = `org_sp2_${RUN}`;
+const SP_HA = `prop_sp_ha_${RUN}`;
+const SP_HB = `prop_sp_hb_${RUN}`;
+const SP_P2 = `prop_sp2_${RUN}`;
+const SP_PASSWORD = `Sp-${RUN}-Secreta-123`;
+const SP_RRHH_EMAIL = `rrhh.sp.${RUN}@example.com`;
+const SP_READER_EMAIL = `lector.sp.${RUN}@example.com`;
+const SP_PERSON_EMAIL = `persona.sp.${RUN}@example.com`;
+const SP_FOREIGN_EMAIL = `ajena.sp.${RUN}@example.com`;
+const spRoleIds: string[] = [];
+const spUserIds: string[] = [];
+let spRrhh: Headers | null = null;
+let spReader: Headers | null = null;
+let spPersonId = "";
+let spForeignUserId = "";
+let spDepartmentHa = "";
+let spDepartmentHb = "";
+let spProfileId = "";
+
+type StaffProfileBody = { id: string; propertyId: string; userId: string; employeeCode: string | null; departmentId: string | null; departmentName: string | null; employmentType: string | null; hourlyCost: string | null; active: boolean; userFullName: string | null; userEmail: string | null };
+
+async function spLogin(email: string): Promise<Headers | null> {
+  const res = await app.inject({ method: "POST", url: "/auth/login", payload: { email, password: SP_PASSWORD, deviceId: "integration-staff-profiles" } });
+  if (res.statusCode !== 200) return null;
+  return { Authorization: `Bearer ${(JSON.parse(res.body) as { token: string }).token}` };
+}
+
+/** Usuario real con un rol ad hoc (claves del catálogo) asignado a HA y HB; devuelve la cabecera de sesión o null. */
+async function spCreateUser(email: string, fullName: string, keys: readonly string[]): Promise<{ id: string; headers: Headers | null }> {
+  const user = await prisma.user.create({ data: { organizationId: SP_ORG, email, fullName, status: "active", passwordHash: hashPassword(SP_PASSWORD), passwordChangedAt: new Date(), mustChangePassword: false }, select: { id: true } });
+  spUserIds.push(user.id);
+  if (keys.length === 0) return { id: user.id, headers: null };
+  const permissions = await prisma.permission.findMany({ where: { key: { in: [...keys] } }, select: { id: true } });
+  if (permissions.length !== keys.length) return { id: user.id, headers: null };
+  const role = await prisma.role.create({ data: { organizationId: SP_ORG, name: `${fullName} ${RUN}`, templateKey: null }, select: { id: true } });
+  spRoleIds.push(role.id);
+  await prisma.rolePermission.createMany({ data: permissions.map((permission) => ({ roleId: role.id, permissionId: permission.id })) });
+  await prisma.userPropertyRole.createMany({ data: [SP_HA, SP_HB].map((propertyId) => ({ userId: user.id, propertyId, roleId: role.id })) });
+  return { id: user.id, headers: await spLogin(email) };
+}
+
+async function spCleanup(): Promise<void> {
+  await prisma.employmentContract.deleteMany({ where: { organizationId: SP_ORG } });
+  await prisma.staffProfile.deleteMany({ where: { propertyId: { in: [SP_HA, SP_HB, SP_P2] } } });
+  await prisma.department.deleteMany({ where: { propertyId: { in: [SP_HA, SP_HB, SP_P2] } } });
+  if (spUserIds.length || spForeignUserId) {
+    const ids = [...spUserIds, ...(spForeignUserId ? [spForeignUserId] : [])];
+    await prisma.session.deleteMany({ where: { userId: { in: ids } } });
+    await prisma.device.deleteMany({ where: { userId: { in: ids } } });
+    await prisma.userPropertyRole.deleteMany({ where: { userId: { in: ids } } });
+    await prisma.user.deleteMany({ where: { id: { in: ids } } });
+  }
+  if (spRoleIds.length) {
+    await prisma.rolePermission.deleteMany({ where: { roleId: { in: spRoleIds } } });
+    await prisma.role.deleteMany({ where: { id: { in: spRoleIds } } });
+  }
+  await prisma.property.deleteMany({ where: { organizationId: { in: [SP_ORG, SP_ORG2] } } });
+  await prisma.organization.deleteMany({ where: { id: { in: [SP_ORG, SP_ORG2] } } });
+}
+
+async function spSetup(): Promise<void> {
+  await prisma.organization.create({ data: { id: SP_ORG, name: "SP Fichas Test", country: "ES" } });
+  await prisma.organization.create({ data: { id: SP_ORG2, name: "SP Otra Organización Test", country: "ES" } });
+  await prisma.property.create({ data: { id: SP_HA, organizationId: SP_ORG, kind: "hotel", code: "SPA", name: "Hotel Fichas Alfa" } });
+  await prisma.property.create({ data: { id: SP_HB, organizationId: SP_ORG, kind: "hotel", code: "SPB", name: "Hotel Fichas Beta" } });
+  await prisma.property.create({ data: { id: SP_P2, organizationId: SP_ORG2, kind: "hotel", code: "SP2", name: "Hotel Ajeno" } });
+  spDepartmentHa = (await prisma.department.create({ data: { propertyId: SP_HA, name: "Recepción", code: "REC" }, select: { id: true } })).id;
+  spDepartmentHb = (await prisma.department.create({ data: { propertyId: SP_HB, name: "Pisos", code: "HK" }, select: { id: true } })).id;
+  const rrhh = await spCreateUser(SP_RRHH_EMAIL, "RRHH SP", ["payroll.read", "payroll.manage"]);
+  spRrhh = rrhh.headers;
+  const reader = await spCreateUser(SP_READER_EMAIL, "Lector SP", ["payroll.read"]);
+  spReader = reader.headers;
+  spPersonId = (await spCreateUser(SP_PERSON_EMAIL, "Persona SP", [])).id;
+  const foreign = await prisma.user.create({ data: { organizationId: SP_ORG2, email: SP_FOREIGN_EMAIL, fullName: "Persona Ajena SP", status: "active", passwordHash: hashPassword(SP_PASSWORD), passwordChangedAt: new Date(), mustChangePassword: false }, select: { id: true } });
+  spForeignUserId = foreign.id;
+}
+
+const SP_NO_SESSION = "no se pudo crear la sesión real del tenant aislado (catálogo de permisos incompleto o login fallido): caso no ejercitado";
+function spNeeds(t: { skip: (reason: string) => void }, headers: Headers | null): Headers | null {
+  if (!headers) {
+    t.skip(SP_NO_SESSION);
+    return null;
+  }
+  return headers;
+}
+
+describe("FIX-1 · F10 · POST /payroll/staff-profiles (tenant aislado)", () => {
+  it("alta → 201 con persona y departamento resueltos, coste «12,5» → «12.50» y auditoría STAFF_PROFILE_CREATED sin datos personales", async (t) => {
+    const s = spNeeds(t, spRrhh);
+    if (!s) return;
+    const res = await request<StaffProfileBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HA, userId: spPersonId, employeeCode: "EMP-SP-001", departmentId: spDepartmentHa, employmentType: "indefinido", hourlyCost: "12,5" });
+    assert.equal(res.status, 201, res.text.slice(0, 400));
+    assert.ok(res.body);
+    spProfileId = res.body.id;
+    assert.equal(res.body.propertyId, SP_HA);
+    assert.equal(res.body.userId, spPersonId);
+    assert.equal(res.body.employeeCode, "EMP-SP-001");
+    assert.equal(res.body.departmentId, spDepartmentHa);
+    assert.equal(res.body.departmentName, "Recepción");
+    assert.equal(res.body.employmentType, "indefinido");
+    assert.equal(res.body.hourlyCost, "12.50");
+    assert.equal(res.body.active, true);
+    assert.equal(res.body.userFullName, "Persona SP");
+    assert.equal(res.body.userEmail, SP_PERSON_EMAIL);
+    const row = await prisma.staffProfile.findUnique({ where: { id: spProfileId } });
+    assert.ok(row, "fila en staff_profiles");
+    assert.equal(String(row.hourlyCost), "12.5");
+    await flushAuditQueues();
+    const audit = await prisma.auditEvent.findFirst({ where: { organizationId: SP_ORG, action: "STAFF_PROFILE_CREATED", entityId: spProfileId }, orderBy: { createdAt: "desc" } });
+    assert.ok(audit, "evento STAFF_PROFILE_CREATED persistido");
+    assert.equal(audit.propertyId, SP_HA);
+    const after = JSON.stringify(audit.afterJson);
+    assert.match(after, /EMP-SP-001/);
+    assert.doesNotMatch(after, /Persona SP|persona\.sp\.|12\.50/, "afterJson sin nombre, correo ni coste");
+  });
+
+  it("mismo (userId, propertyId) activo → 409 STAFF_PROFILE_EXISTS; otro centro de la misma organización → 201", async (t) => {
+    const s = spNeeds(t, spRrhh);
+    if (!s || !spProfileId) return t.skip("sin ficha creada en el caso anterior");
+    const dup = await request<ErrorBody & { details?: { staffProfileId?: string } }>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HA, userId: spPersonId });
+    assert.equal(dup.status, 409, dup.text.slice(0, 300));
+    assert.equal(dup.body?.details?.code, "STAFF_PROFILE_EXISTS");
+    assert.equal(dup.body?.details?.staffProfileId, spProfileId);
+    assert.equal(await prisma.staffProfile.count({ where: { propertyId: SP_HA } }), 1);
+    const other = await request<StaffProfileBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HB, userId: spPersonId, employeeCode: "EMP-SP-002" });
+    assert.equal(other.status, 201, other.text.slice(0, 300));
+    assert.equal(other.body?.propertyId, SP_HB);
+  });
+
+  it("userId de OTRA organización → 404 «Usuario no encontrado.»; departamento de otro centro → 400 STAFF_PROFILE_DEPARTMENT_MISMATCH; clave extra / coste negativo → 400 VALIDATION_ERROR; centro ajeno → 404 opaco", async (t) => {
+    const s = spNeeds(t, spRrhh);
+    if (!s) return;
+    const foreignUser = await request<ErrorBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HA, userId: spForeignUserId });
+    assert.equal(foreignUser.status, 404, foreignUser.text.slice(0, 300));
+    assert.equal(foreignUser.body?.message, "Usuario no encontrado.");
+    const dept = await request<ErrorBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HA, userId: spUserIds[1], departmentId: spDepartmentHb });
+    assert.equal(dept.status, 400, dept.text.slice(0, 300));
+    assert.equal(dept.body?.details?.code, "STAFF_PROFILE_DEPARTMENT_MISMATCH");
+    const extra = await request<ErrorBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HA, userId: spUserIds[1], nombre: "x" });
+    assert.equal(extra.status, 400);
+    assert.equal(extra.body?.details?.code, "VALIDATION_ERROR");
+    assert.match(extra.body?.message ?? "", /^body no válido: clave no admitida: 'nombre'$/);
+    const negative = await request<ErrorBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HA, userId: spUserIds[1], hourlyCost: -1 });
+    assert.equal(negative.status, 400);
+    assert.match(negative.body?.message ?? "", /hourlyCost debe ser un importe mayor o igual que 0/);
+    const foreignProperty = await request<ErrorBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_P2, userId: spUserIds[1] });
+    assert.equal(foreignProperty.status, 404, foreignProperty.text.slice(0, 300));
+    assert.equal(foreignProperty.body?.message, "Propiedad no encontrada.");
+    assert.ok(!foreignProperty.text.includes(SP_P2), "el 404 nunca repite el id");
+    assert.equal(await prisma.staffProfile.count({ where: { propertyId: { in: [SP_HA, SP_P2] } } }), 1, "nada escrito por los rechazos");
+  });
+
+  it("solo payroll.read → 403 en el alta y 200 en la lectura; sin token → 401 (RBAC estricto)", async (t) => {
+    const s = spNeeds(t, spReader);
+    if (!s) return;
+    const forbidden = await request<ErrorBody>(app, "POST", "/payroll/staff-profiles", s, { propertyId: SP_HA, userId: spUserIds[1] });
+    assert.equal(forbidden.status, 403, forbidden.text.slice(0, 300));
+    const list = await request<StaffProfileBody[]>(app, "GET", `/payroll/staff-profiles?propertyId=${SP_HA}`, s);
+    assert.equal(list.status, 200, list.text.slice(0, 300));
+    await withEnv(STRICT_ENV, async () => {
+      const res = await request<ErrorBody>(app, "POST", "/payroll/staff-profiles", {}, { propertyId: SP_HA, userId: spUserIds[1] });
+      assert.equal(res.status, 401, res.text.slice(0, 200));
+    });
+  });
+});
+
+describe("FIX-1 · F10 · GET /payroll/staff-profiles y POST /payroll/contracts con la ficha nueva", () => {
+  it("GET ?propertyId= → 200 con la ficha (persona y departamento); sin propertyId → los dos centros; centro ajeno → 404 opaco; clave extra → 400", async (t) => {
+    const s = spNeeds(t, spRrhh);
+    if (!s || !spProfileId) return t.skip("sin ficha creada");
+    const ha = await request<StaffProfileBody[]>(app, "GET", `/payroll/staff-profiles?propertyId=${SP_HA}`, s);
+    assert.equal(ha.status, 200, ha.text.slice(0, 300));
+    assert.ok(Array.isArray(ha.body));
+    assert.deepEqual(ha.body?.map((row) => row.id), [spProfileId]);
+    assert.equal(ha.body?.[0]?.userFullName, "Persona SP");
+    assert.equal(ha.body?.[0]?.departmentName, "Recepción");
+    const all = await request<StaffProfileBody[]>(app, "GET", "/payroll/staff-profiles", s);
+    assert.equal(all.status, 200, all.text.slice(0, 300));
+    assert.deepEqual(all.body?.map((row) => row.propertyId).sort(), [SP_HA, SP_HB].sort());
+    const foreign = await request<ErrorBody>(app, "GET", `/payroll/staff-profiles?propertyId=${SP_P2}`, s);
+    assert.equal(foreign.status, 404, foreign.text.slice(0, 300));
+    const extra = await request<ErrorBody>(app, "GET", `/payroll/staff-profiles?propertyId=${SP_HA}&organizationId=${SP_ORG}`, s);
+    assert.equal(extra.status, 400);
+    assert.match(extra.body?.message ?? "", /^query no válido: clave no admitida: 'organizationId'$/);
+  });
+
+  it("POST /payroll/contracts con el staffProfileId nuevo → 200 (antes 404 «Perfil de empleado no encontrado.»); id inexistente → 404", async (t) => {
+    const s = spNeeds(t, spRrhh);
+    if (!s || !spProfileId) return t.skip("sin ficha creada");
+    const res = await request<{ id: string; staffProfileId: string; propertyId?: string; organizationId: string; active: boolean; grossSalary: number }>(app, "POST", "/payroll/contracts", s, { staffProfileId: spProfileId, contractType: "indefinido", startDate: "2026-09-01", grossSalary: "1800", payCount: 14, irpfRatePct: 15 });
+    assert.equal(res.status, 200, res.text.slice(0, 400));
+    assert.equal(res.body?.staffProfileId, spProfileId);
+    assert.equal(res.body?.propertyId, SP_HA);
+    assert.equal(res.body?.organizationId, SP_ORG);
+    assert.equal(res.body?.active, true);
+    assert.equal(res.body?.grossSalary, 1800);
+    const missing = await request<ErrorBody>(app, "POST", "/payroll/contracts", s, { staffProfileId: "sp_no_existe", contractType: "indefinido", startDate: "2026-09-01", grossSalary: "1800" });
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body?.message, "Perfil de empleado no encontrado.");
   });
 });

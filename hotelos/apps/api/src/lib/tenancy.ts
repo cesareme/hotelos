@@ -593,7 +593,14 @@ const RESOLVERS = {
       });
       if (!row) return null;
       if (row.propertyId) return { propertyId: row.propertyId };
-      return RESOLVERS.developerApp.resolve(row.developerAppId, request);
+      const viaApp = await RESOLVERS.developerApp.resolve(row.developerAppId, request);
+      if (viaApp) return viaApp;
+      // FIX-1 (F7): rows created without a property carry the synthetic
+      // `app_<organizationId>` of webhooks.service.ts (no developer_apps row):
+      // the organisation is the suffix. Covers the rows already in the
+      // database without rewriting them.
+      const synthetic = /^app_(.+)$/.exec(row.developerAppId);
+      return synthetic ? { organizationId: synthetic[1] } : null;
     }
   } satisfies Resolver,
   webhookDelivery: viaParent(

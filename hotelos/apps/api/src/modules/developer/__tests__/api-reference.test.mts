@@ -114,6 +114,12 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.equal(describeEndpoint("POST", "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/submit"), "Enviar el lote.");
     assert.equal(describeEndpoint("POST", "/properties/:propertyId/mapper/apply"), "Aplicar el mapeador.");
     assert.equal(describeEndpoint("POST", "/ai/confirmations/:confirmationId/execute"), "Ejecutar la confirmación.");
+    // FIX-1 (F2 · F5 · F10 · F11): las rutas nuevas de la tanda leen en español.
+    assert.equal(describeEndpoint("POST", "/fiscal/vat-books/reclassify"), "Reclasificar los libros de IVA.");
+    assert.equal(describeEndpoint("GET", "/reports/exports/:exportId/download"), "Descargar la exportación.");
+    assert.equal(describeEndpoint("GET", "/payroll/staff-profiles"), "Listar fichas de personal.");
+    assert.equal(describeEndpoint("POST", "/payroll/staff-profiles"), "Crear o registrar una ficha de personal.");
+    assert.equal(describeEndpoint("GET", "/accounting/ledger-imports/third-parties"), "Listar terceros.");
     // No description of the manifest echoes a raw (untranslated) segment of its own path any more,
     // except «marketplace» and «OAuth», which are Spanish usage.
     const echo = routePermissionManifest.filter((route) => {

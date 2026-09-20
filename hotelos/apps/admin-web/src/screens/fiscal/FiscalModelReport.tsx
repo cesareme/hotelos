@@ -21,15 +21,24 @@
 // `report.sociedad`; a centre can still be picked as «Desglose por centro»
 // (informative partial view, «no liquidable»); `presentacion.noSePresenta` and
 // the SII / gran empresa regime paint a warning callout.
+//
+// FIX-1 · F3: the 303 opens on the last period with materialised books (GET
+// /fiscal/vat-books/periods → `initialPeriodPicker`, E-04); a quarterly
+// sociedad can read one month of the quarter as an INFORMATIVE view («Mes
+// (vista informativa)» → `informativo=1`, callout, E-02); a centre breakdown
+// over a Sage period (rows without centre) paints the `SAGE_NO_CENTRE_AVISO`
+// callout and an empty state instead of zeros (E-03); the settlement entries
+// imported from Sage are listed under «Liquidaciones históricas» (B-2).
 
-import { useMemo, useState } from "react";
-import type { FiscalBox, FiscalLedgerCrossCheck, FiscalModelCode, FiscalModelReport as FiscalModelReportDto, VatBookName, VatPeriodicityCode } from "@hotelos/shared";
+import { useEffect, useMemo, useState } from "react";
+import { SAGE_NO_CENTRE_AVISO, type FiscalBox, type FiscalHistoricalSettlementDto, type FiscalLedgerCrossCheck, type FiscalModelCode, type FiscalModelReport as FiscalModelReportDto, type VatBookName, type VatPeriodicityCode } from "@hotelos/shared";
 import { useToast } from "../../components/Toast";
+import { BRAND } from "../../config/brand";
 import { ACTIONS, UI_STATES } from "../../content/actions";
 import { date, money, number, percent, plural } from "../../lib/format";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { FinanceDeclaranteBadge, FinanceRegimeCallout, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
-import { downloadFiscalModelPdf, getFiscalModel, getVatSettings, type FiscalModelParams } from "../../services/fiscalApi";
+import { downloadFiscalModelPdf, getFiscalModel, getVatBookPeriods, getVatSettings, type FiscalModelParams } from "../../services/fiscalApi";
 import { centreNameFor, centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   CocoaBadge,
@@ -70,15 +79,18 @@ import {
   formatTotal,
   generatedAtLabel,
   groupBoxesBySection,
+  initialPeriodPicker,
   isCounterKey,
   isZeroBox,
   kpiLabel,
   modelPeriodKind,
   periodCodeOf,
+  quarterMonthOptions,
   resultadoCaption,
   saveDownload,
   settlementEntryLabel,
-  yearOptions
+  yearOptions,
+  type PeriodPickerState
 } from "./fiscal-shared";
 import { useFiscalResource } from "./useFiscalResource";
 
@@ -135,6 +147,14 @@ const DIFF_COLUMNS: CocoaTableColumn<LedgerDifference>[] = [
 /** «Desglose por centro»: the whole declaration (default) or the informative partial view of one centre. */
 const DECLARATION_OPTION = { value: "", label: "Declaración de la sociedad" };
 
+/** FIX-1 · F3: settlement entries imported from Sage 200 inside the period (`fuentes.liquidacionesHistoricas`). */
+const HISTORICAL_COLUMNS: CocoaTableColumn<FiscalHistoricalSettlementDto>[] = [
+  { key: "entryNumber", label: "Asiento", width: "12ch", render: (row) => <strong>{row.entryNumber !== null ? `${row.fiscalYearCode ? `${row.fiscalYearCode}/` : ""}${row.entryNumber}` : row.journalEntryId}</strong> },
+  { key: "entryDate", label: "Fecha", width: "11ch", render: (row) => date(row.entryDate, "short") },
+  { key: "description", label: "Concepto", render: (row) => row.description ?? "—" },
+  { key: "resultado", label: "Resultado", align: "right", width: "14ch", render: (row) => <strong>{money(row.resultado)}</strong> }
+];
+
 /** Columns of the `detalle[]` table from the keys of its first row (390 per period, 347 per third party, 180 per lessor, 111 per row). */
 export function detalleColumns(rows: readonly DetalleRow[]): CocoaTableColumn<KeyedDetalleRow>[] {
   const first = rows[0];
@@ -172,21 +192,40 @@ export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreen
   const settingsPending = kind === "settlement" && settings.data === null && settings.error === null;
 
   const years = useMemo(() => yearOptions(), []);
-  const [year, setYear] = useState(() => years[0]?.value ?? String(new Date().getUTCFullYear()));
-  const [quarter, setQuarter] = useState(() => currentQuarter());
-  const [month, setMonth] = useState(() => currentMonth());
+  // FIX-1 · F3 (E-04): the 303 opens on the last period with materialised books; the other models on today's. The
+  // pickers stay unset (skeleton) until the periods answer — or fail, which falls back to today.
+  const periods = useFiscalResource(kind === "settlement" ? "vat-book-periods" : null, getVatBookPeriods);
+  const periodsPending = kind === "settlement" && periods.data === null && periods.error === null;
+  const [picker, setPicker] = useState<PeriodPickerState | null>(() => (kind === "settlement" ? null : initialPeriodPicker(null)));
+  useEffect(() => {
+    if (picker === null && !periodsPending) setPicker(initialPeriodPicker(periods.data?.latest ?? null));
+  }, [picker, periodsPending, periods.data]);
+  const year = picker?.year ?? years[0]?.value ?? String(new Date().getUTCFullYear());
+  const quarter = picker?.quarter ?? currentQuarter();
+  const month = picker?.month ?? currentMonth();
+  const patchPicker = (patch: Partial<PeriodPickerState>) => setPicker((current) => ({ ...(current ?? initialPeriodPicker(null)), ...patch }));
+  // FIX-1 · F3 (E-02): one month of the picked quarter read as an informative view of a quarterly 303 ("" = the whole quarter).
+  const [informativeMonth, setInformativeMonth] = useState("");
+  const setYear = (value: string) => patchPicker({ year: value });
+  const setQuarter = (value: string) => {
+    patchPicker({ quarter: value });
+    setInformativeMonth("");
+  };
+  const setMonth = (value: string) => patchPicker({ month: value });
   // Informative breakdown of one centre («vista parcial, no liquidable»); "" = the declaration of the sociedad.
   const [breakdown, setBreakdown] = useState("");
   const [hideZero, setHideZero] = useState(false);
   const [allAvisos, setAllAvisos] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
-  const period = periodCodeOf({ kind: pickerKind, year, quarter, month });
+  const monthlyView = kind === "settlement" && pickerKind === "quarterly" && informativeMonth !== "";
+  const period = monthlyView ? periodCodeOf({ kind: "monthly", year, month: informativeMonth }) : periodCodeOf({ kind: pickerKind, year, quarter, month });
   const propertyId = breakdown || undefined;
   const breakdownOptions = useMemo(() => [DECLARATION_OPTION, ...centreSelectOptions(finance.structure, finance.active).map((option) => ({ ...option, label: `Desglose · ${option.label}` }))], [finance.structure, finance.active]);
+  const monthOptions = useMemo(() => quarterMonthOptions(quarter), [quarter]);
   const params: FiscalModelParams = kind === "annual" ? { year, propertyId } : { period, propertyId };
-  const key = settingsPending ? null : `${modelo}|${period}|${propertyId ?? ""}`;
-  const report = useFiscalResource<FiscalModelReportDto>(key, () => getFiscalModel(modelo, params));
+  const key = settingsPending || picker === null ? null : `${modelo}|${period}|${propertyId ?? ""}|${monthlyView ? "informativo" : ""}`;
+  const report = useFiscalResource<FiscalModelReportDto>(key, () => getFiscalModel(modelo, params, { informativo: monthlyView }));
   const data = report.data;
   const sociedad = data?.sociedad ?? settings.data?.sociedad ?? null;
   const errorText = report.error ? fiscalErrorText(report.error, "No hemos podido cargar este informe. Inténtalo de nuevo.") : null;
@@ -209,6 +248,7 @@ export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreen
     <>
       <FinanceDeclaranteBadge sociedad={sociedad} />
       {pickerKind === "quarterly" ? <CocoaSelect size="small" inline aria-label="Trimestre" value={quarter} onChange={setQuarter} options={[...QUARTER_OPTIONS]} /> : null}
+      {kind === "settlement" && pickerKind === "quarterly" ? <CocoaSelect size="small" inline aria-label="Mes (vista informativa)" value={informativeMonth} onChange={setInformativeMonth} options={monthOptions} /> : null}
       {pickerKind === "monthly" ? <CocoaSelect size="small" inline aria-label="Mes" value={month} onChange={setMonth} options={[...MONTH_OPTIONS]} /> : null}
       <CocoaSelect size="small" inline aria-label="Ejercicio" value={year} onChange={setYear} options={years} />
       <FinanceScopeSelector scope={finance} />
@@ -228,7 +268,7 @@ export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreen
       title={title}
       subtitle={subtitle}
       actions={actions}
-      state={report.loading || settingsPending ? "loading" : "ready"}
+      state={report.loading || settingsPending || picker === null ? "loading" : "ready"}
       skeleton={<ReportSkeleton />}
       commands={[
         { id: `modelo-${modelo}-refresh`, label: `Actualizar el Modelo ${modelo}`, run: report.refresh },
@@ -279,9 +319,16 @@ function ReportBody({ report, hideZero, onToggleZero, allAvisos, onToggleAvisos,
   const detalle = useMemo<KeyedDetalleRow[]>(() => report.detalle.map((row, index) => ({ ...row, rowId: String(index) })), [report.detalle]);
   const detalleCols = useMemo(() => detalleColumns(report.detalle), [report.detalle]);
   const avisos = allAvisos ? report.avisos : report.avisos.slice(0, AVISOS_PREVIEW);
+  // FIX-1 · F3 (E-03): a centre breakdown over a Sage period has no rows with centre — say so instead of painting zeros.
+  const noCentreBreakdown = Boolean(report.propertyId) && report.avisos.includes(SAGE_NO_CENTRE_AVISO);
 
   return (
     <>
+      {report.fuentes.informativo ? (
+        <CocoaCallout tone="info" title="Vista mensual informativa">
+          Vista mensual informativa: la sociedad liquida por trimestres y este mes no es presentable. Las casillas 110 y 78 van a cero y el resultado es el del mes sin compensación; el Modelo 303 se presenta por el trimestre completo.
+        </CocoaCallout>
+      ) : null}
       {report.presentacion.noSePresenta ? (
         <CocoaCallout tone="warning" title={`El Modelo ${report.modelo} no se presenta`} role="status">
           {report.presentacion.noSePresenta.motivo} Las cifras se muestran a título informativo.
@@ -292,13 +339,19 @@ function ReportBody({ report, hideZero, onToggleZero, allAvisos, onToggleAvisos,
         </CocoaCallout>
       )}
       <FinanceRegimeCallout regimen={report.sociedad.regimen} />
-      {report.propertyId ? (
+      {noCentreBreakdown ? (
+        <CocoaCallout tone="info" title="Desglose por centro no disponible para lotes Sage sin delegación">
+          Las filas del periodo importadas de Sage 200 no llevan centro, así que el desglose de {propertyName} no puede calcularse: consulta la declaración de la sociedad {report.sociedad.legalName}
+          {report.sociedad.taxId ? ` (${report.sociedad.taxId})` : ""}.
+        </CocoaCallout>
+      ) : report.propertyId ? (
         <CocoaCallout tone="warning" title="Desglose por centro: vista parcial, no liquidable">
           Los importes de {propertyName} no se presentan por sí solos: el modelo lo presenta la sociedad {report.sociedad.legalName}
           {report.sociedad.taxId ? ` (${report.sociedad.taxId})` : ""} por todos sus centros.
         </CocoaCallout>
       ) : null}
 
+      {noCentreBreakdown ? null : (
       <CocoaKpiStrip stagger aria-label={`Totales del Modelo ${report.modelo}`}>
         {kpis.map((key) => (
           <CocoaKpi
@@ -312,9 +365,15 @@ function ReportBody({ report, hideZero, onToggleZero, allAvisos, onToggleAvisos,
         {diario ? <CocoaKpi label="Cotejo con el diario" value={diario.cuadra ? "Cuadra" : "No cuadra"} status={diario.cuadra ? "ok" : "critical"} polarity="neutral" deltaLabel={plural(diario.apuntes, "apunte", "apuntes")} /> : null}
         <CocoaKpi label="Avisos" value={number(report.avisos.length, { maximumFractionDigits: 0 })} status={report.avisos.length > 0 ? "warning" : "ok"} polarity="neutral" deltaLabel={unnumbered > 0 ? `${number(unnumbered, { maximumFractionDigits: 0 })} sin casilla` : undefined} />
       </CocoaKpiStrip>
+      )}
 
       <CocoaGrid align="start" aria-label="Casillas, declarante y fuentes">
         <CocoaSpan cols={8} min={480}>
+          {noCentreBreakdown ? (
+            <CocoaSection title="Casillas" padding="md">
+              <CocoaState kind="empty" illustration="box" title="Desglose por centro no disponible" message="Las filas importadas de Sage 200 no llevan centro: no hay casillas que desglosar para este centro en el periodo. Elige «Declaración de la sociedad» para ver el modelo completo." />
+            </CocoaSection>
+          ) : (
           <div className="cocoa-stack" data-gap="3">
             <div className="cocoa-row" data-gap="2" data-justify="between">
               <span>
@@ -338,6 +397,7 @@ function ReportBody({ report, hideZero, onToggleZero, allAvisos, onToggleAvisos,
               );
             })}
           </div>
+          )}
         </CocoaSpan>
 
         <CocoaSpan cols={4} min={320}>
@@ -489,6 +549,18 @@ function SourcesSection({ report }: { report: FiscalModelReportDto }) {
                 ) : null}
               </>
             )}
+          </div>
+        ) : null}
+
+        {fuentes.liquidacionesHistoricas && fuentes.liquidacionesHistoricas.length > 0 ? (
+          <div className="cocoa-stack" data-gap="2" aria-label="Liquidaciones históricas (importadas de Sage)">
+            <div className="cocoa-row" data-gap="2" data-justify="between">
+              <span>Liquidaciones históricas (importadas de Sage)</span>
+              <CocoaBadge tone="neutral" variant="outline" uppercase={false} title={`Asientos de liquidación importados de Sage 200 (patrón 4750/4700 junto a 477/472): se muestran, ${BRAND.name} no los contabiliza.`}>
+                {plural(fuentes.liquidacionesHistoricas.length, "asiento", "asientos")}
+              </CocoaBadge>
+            </div>
+            <CocoaTable columns={HISTORICAL_COLUMNS} rows={fuentes.liquidacionesHistoricas} rowKey="journalEntryId" density="compact" caption="Liquidaciones históricas importadas de Sage" aria-label="Liquidaciones históricas importadas de Sage" />
           </div>
         ) : null}
 

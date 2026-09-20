@@ -34,13 +34,26 @@
 // months there (FU-05), the range pickers show a loading badge while a new
 // range arrives (FU-07), and the KPI captions say what they measure (FU-03,
 // FU-11).
+//
+// FIX-1 · F10 (RRHH): the screen now creates the StaffProfile the contracts
+// hang from. «Nueva ficha» (header action + palette) opens the drawer «Nueva
+// ficha de personal» (Persona from GET /rbac/users of the centre, código de
+// empleado, departamento from GET /backoffice/properties/:id/departments when
+// the caller holds property.configure — otherwise optional and empty —,
+// modalidad, coste hora; rules in staff-profile-form.ts) → POST
+// /payroll/staff-profiles → toast «Ficha creada.», the list of fichas is
+// reloaded and the new one is preselected in «Nuevo contrato», whose employee
+// field is now a CocoaSelect of fichas (label `employeeCode ?? userFullName`)
+// instead of the raw id typed by hand. The «Empleado» columns of contracts and
+// slips paint the same label through a Map by staffProfileId.
 
 import { useId, useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import type { PayrollCostGroup } from "@hotelos/shared";
+import type { PayrollCostGroup, RbacUserRowDto } from "@hotelos/shared";
 import { getActiveOrganizationId } from "../../services/activeProperty";
 import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
-import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
+import { centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
+import { listUsersInScope } from "../../services/rbacApi";
 import { payrollCostImportListQuery, payrollCostReportQuery } from "../../services/finance-contracts";
 import { useNavGate } from "../../navigation/useEnabledModules";
 import { canDo } from "../accounting/accounting-ui";
@@ -50,8 +63,10 @@ import {
   calculatePayrollPeriod,
   createPayrollContract,
   createPayrollPeriod,
+  createStaffProfile,
   deactivatePayrollContract,
   exportPayrollPeriod,
+  listPropertyDepartments,
   payPayrollPeriod,
   payrollErrorMessage,
   postPayrollCostImport,
@@ -65,7 +80,9 @@ import {
   type PayrollExportResult,
   type PayrollPayFrequency,
   type PayrollPeriodRecord,
-  type PayrollSlipRecord
+  type PayrollSlipRecord,
+  type PropertyDepartmentRecord,
+  type StaffProfileRecord
 } from "../../services/payrollApi";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
@@ -124,6 +141,19 @@ import {
   toggleExpanded,
   type CostMatrixRow
 } from "./payroll-cost-helpers";
+import {
+  EMPTY_STAFF_PROFILE_FORM,
+  STAFF_EMPLOYMENT_TYPE_OPTIONS,
+  departmentOptions,
+  employeeLabel,
+  isStaffProfileFormValid,
+  personOptions,
+  staffProfileLabelMap,
+  staffProfileOptions,
+  toStaffProfileBody,
+  validateStaffProfileForm,
+  type StaffProfileFormValues
+} from "./staff-profile-form";
 
 type View = "contracts" | "periods" | "slips" | "cost";
 
@@ -188,37 +218,40 @@ function periodBadge(period: PayrollPeriodRecord) {
   );
 }
 
-const CONTRACT_COLUMNS: CocoaTableColumn<PayrollContractRecord>[] = [
-  {
-    key: "staffProfileId",
-    label: "Empleado",
-    render: (c) => (
-      <>
-        <strong>{c.staffProfileId}</strong>
-        {c.socialSecurityCategory ? <span style={captionStyle}>{c.socialSecurityCategory}</span> : null}
-      </>
-    )
-  },
-  { key: "contractType", label: "Modalidad", render: (c) => PAYROLL_CONTRACT_TYPE_LABELS_ES[c.contractType as PayrollContractType] ?? c.contractType },
-  { key: "grossSalary", label: "Bruto mensual", align: "right", render: (c) => money(c.grossSalary) },
-  { key: "payCount", label: "Pagas", align: "right", hideOnNarrow: true, render: (c) => number(c.payCount) },
-  { key: "irpfRatePct", label: "IRPF", align: "right", hideOnNarrow: true, render: (c) => (c.irpfRatePct === undefined ? <span style={secondaryStyle}>automático</span> : percent(c.irpfRatePct)) },
-  {
-    key: "dates",
-    label: "Vigencia",
-    hideOnNarrow: true,
-    render: (c) => (c.endDate ? dateRange(c.startDate, c.endDate, { style: "short" }) : `desde ${date(c.startDate, "short")}`)
-  },
-  {
-    key: "active",
-    label: "Estado",
-    render: (c) => (
-      <CocoaBadge tone={c.active ? "success" : "neutral"} size="small">
-        {c.active ? STATUS_LABELS.active : STATUS_LABELS.inactive}
-      </CocoaBadge>
-    )
-  }
-];
+// FIX-1 · F10: the «Empleado» cell reads the ficha label (employeeCode ?? userFullName) from the Map by staffProfileId; a row whose ficha is unknown keeps the id.
+function contractColumns(labels: ReadonlyMap<string, string>): CocoaTableColumn<PayrollContractRecord>[] {
+  return [
+    {
+      key: "staffProfileId",
+      label: "Empleado",
+      render: (c) => (
+        <>
+          <strong>{employeeLabel(labels, c.staffProfileId)}</strong>
+          {c.socialSecurityCategory ? <span style={captionStyle}>{c.socialSecurityCategory}</span> : null}
+        </>
+      )
+    },
+    { key: "contractType", label: "Modalidad", render: (c) => PAYROLL_CONTRACT_TYPE_LABELS_ES[c.contractType as PayrollContractType] ?? c.contractType },
+    { key: "grossSalary", label: "Bruto mensual", align: "right", render: (c) => money(c.grossSalary) },
+    { key: "payCount", label: "Pagas", align: "right", hideOnNarrow: true, render: (c) => number(c.payCount) },
+    { key: "irpfRatePct", label: "IRPF", align: "right", hideOnNarrow: true, render: (c) => (c.irpfRatePct === undefined ? <span style={secondaryStyle}>automático</span> : percent(c.irpfRatePct)) },
+    {
+      key: "dates",
+      label: "Vigencia",
+      hideOnNarrow: true,
+      render: (c) => (c.endDate ? dateRange(c.startDate, c.endDate, { style: "short" }) : `desde ${date(c.startDate, "short")}`)
+    },
+    {
+      key: "active",
+      label: "Estado",
+      render: (c) => (
+        <CocoaBadge tone={c.active ? "success" : "neutral"} size="small">
+          {c.active ? STATUS_LABELS.active : STATUS_LABELS.inactive}
+        </CocoaBadge>
+      )
+    }
+  ];
+}
 
 const PERIOD_COLUMNS: CocoaTableColumn<PayrollPeriodRecord>[] = [
   {
@@ -238,24 +271,26 @@ const PERIOD_COLUMNS: CocoaTableColumn<PayrollPeriodRecord>[] = [
   { key: "totalNet", label: "Neto", align: "right", render: (p) => <strong>{money(p.totalNet)}</strong> }
 ];
 
-const SLIP_COLUMNS: CocoaTableColumn<PayrollSlipRecord>[] = [
-  { key: "staffProfileId", label: "Empleado", render: (s) => <strong>{s.staffProfileId}</strong> },
-  { key: "daysWorked", label: "Días", align: "right", hideOnNarrow: true, render: (s) => number(s.daysWorked) },
-  { key: "grossSalary", label: "Bruto", align: "right", render: (s) => money(s.grossSalary) },
-  { key: "irpfRetention", label: "IRPF", align: "right", hideOnNarrow: true, render: (s) => <span style={deductionStyle}>{money(-s.irpfRetention)}</span> },
-  { key: "ssEmployee", label: "SS trabajador", align: "right", hideOnNarrow: true, render: (s) => <span style={deductionStyle}>{money(-s.ssEmployee)}</span> },
-  { key: "ssEmployer", label: "SS empresa", align: "right", hideOnNarrow: true, render: (s) => <span style={secondaryStyle}>{money(s.ssEmployer)}</span> },
-  { key: "netSalary", label: "Neto", align: "right", render: (s) => <strong>{money(s.netSalary)}</strong> },
-  {
-    key: "status",
-    label: "Estado",
-    render: (s) => (
-      <CocoaBadge tone={SLIP_STATUS_TONE[s.status] ?? "neutral"} size="small">
-        {SLIP_STATUS_LABEL[s.status] ?? s.status}
-      </CocoaBadge>
-    )
-  }
-];
+function slipColumns(labels: ReadonlyMap<string, string>): CocoaTableColumn<PayrollSlipRecord>[] {
+  return [
+    { key: "staffProfileId", label: "Empleado", render: (s) => <strong>{employeeLabel(labels, s.staffProfileId)}</strong> },
+    { key: "daysWorked", label: "Días", align: "right", hideOnNarrow: true, render: (s) => number(s.daysWorked) },
+    { key: "grossSalary", label: "Bruto", align: "right", render: (s) => money(s.grossSalary) },
+    { key: "irpfRetention", label: "IRPF", align: "right", hideOnNarrow: true, render: (s) => <span style={deductionStyle}>{money(-s.irpfRetention)}</span> },
+    { key: "ssEmployee", label: "SS trabajador", align: "right", hideOnNarrow: true, render: (s) => <span style={deductionStyle}>{money(-s.ssEmployee)}</span> },
+    { key: "ssEmployer", label: "SS empresa", align: "right", hideOnNarrow: true, render: (s) => <span style={secondaryStyle}>{money(s.ssEmployer)}</span> },
+    { key: "netSalary", label: "Neto", align: "right", render: (s) => <strong>{money(s.netSalary)}</strong> },
+    {
+      key: "status",
+      label: "Estado",
+      render: (s) => (
+        <CocoaBadge tone={SLIP_STATUS_TONE[s.status] ?? "neutral"} size="small">
+          {SLIP_STATUS_LABEL[s.status] ?? s.status}
+        </CocoaBadge>
+      )
+    }
+  ];
+}
 
 // ---- Coste de personal (Tanda 6c) ----
 
@@ -323,10 +358,23 @@ export function PayrollScreen() {
   const contractsState = useApiData<PayrollContractRecord[]>("/payroll/contracts", { query: { organizationId: ORG_ID, propertyId } });
   const periodsState = useApiData<PayrollPeriodRecord[]>("/payroll/periods", { query: { organizationId: ORG_ID } });
   const slipsState = useApiData<PayrollSlipRecord[]>(selectedPeriodId ? `/payroll/periods/${encodeURIComponent(selectedPeriodId)}/slips` : null);
+  // FIX-1 · F10: fichas of the centre (or of every centre within scope) — the employee picker of «Nuevo contrato» and the «Empleado» labels.
+  const profilesState = useApiData<StaffProfileRecord[]>("/payroll/staff-profiles", { query: { propertyId } });
+  // A ficha created in this session is merged until the reader comes back, so «Nuevo contrato» can preselect it at once.
+  const [createdProfiles, setCreatedProfiles] = useState<StaffProfileRecord[]>([]);
 
   const contracts = useMemo(() => toArray<PayrollContractRecord>(contractsState.data), [contractsState.data]);
   const periods = useMemo(() => toArray<PayrollPeriodRecord>(periodsState.data), [periodsState.data]);
   const slips = toArray<PayrollSlipRecord>(slipsState.data);
+  const profiles = useMemo(() => {
+    const loaded = toArray<StaffProfileRecord>(profilesState.data);
+    const known = new Set(loaded.map((profile) => profile.id));
+    return [...loaded, ...createdProfiles.filter((profile) => !known.has(profile.id))];
+  }, [profilesState.data, createdProfiles]);
+  const profileLabels = useMemo(() => staffProfileLabelMap(profiles), [profiles]);
+  const profileOptions = useMemo(() => staffProfileOptions(profiles), [profiles]);
+  const contractTableColumns = useMemo(() => contractColumns(profileLabels), [profileLabels]);
+  const slipTableColumns = useMemo(() => slipColumns(profileLabels), [profileLabels]);
   const selectedPeriod = periods.find((p) => p.id === selectedPeriodId) ?? null;
 
   const openPeriods = periods.filter((p) => p.status === "open").length;
@@ -423,6 +471,7 @@ export function PayrollScreen() {
   const refreshAll = () => {
     contractsState.refresh();
     periodsState.refresh();
+    profilesState.refresh();
     if (selectedPeriodId) slipsState.refresh();
     if (costActive) refreshCost();
   };
@@ -445,7 +494,7 @@ export function PayrollScreen() {
   const irpfValue = irpfRatePct.trim() === "" ? null : toNumber(irpfRatePct);
   const payCountValue = payCount.trim() === "" ? null : toNumber(payCount);
   const contractErrors = {
-    staffProfileId: staffProfileId.trim() === "" ? "El identificador de la ficha de personal es obligatorio." : undefined,
+    staffProfileId: staffProfileId.trim() === "" ? "Elige la ficha de personal." : undefined,
     grossSalary: grossSalary.trim() === "" ? "Indica el bruto mensual." : grossValue === null || grossValue < 0 ? "El bruto debe ser un importe mayor o igual que 0." : undefined,
     endDate: endDate !== "" && startDate !== "" && endDate < startDate ? "La fecha de fin no puede ser anterior a la de inicio." : undefined,
     irpfRatePct: irpfRatePct.trim() !== "" && (irpfValue === null || irpfValue < 0 || irpfValue > 100) ? "El IRPF debe estar entre 0 y 100." : undefined,
@@ -490,6 +539,79 @@ export function PayrollScreen() {
       setContractError(payrollErrorMessage(err, "No se pudo guardar el contrato."));
     } finally {
       setContractSaving(false);
+    }
+  }
+
+  // ---- new staff profile (drawer, FIX-1 · F10) ----
+  // The department picker needs property.configure (GET /backoffice/properties/:id/departments): without it the field stays optional and empty.
+  const configure = canDo(useNavGate(), "property.configure");
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileForm, setProfileForm] = useState<StaffProfileFormValues>(EMPTY_STAFF_PROFILE_FORM);
+  // Centre of the ficha: the «Ámbito» centre, or the one chosen in the drawer when the scope is the whole sociedad.
+  const [profileCentre, setProfileCentre] = useState("");
+  const [people, setPeople] = useState<RbacUserRowDto[]>([]);
+  const [peopleError, setPeopleError] = useState<string | null>(null);
+  const [departments, setDepartments] = useState<PropertyDepartmentRecord[]>([]);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const profilePropertyId = propertyId ?? profileCentre;
+  const centreOptions = useMemo(() => centreSelectOptions(finance.structure, finance.active), [finance.structure, finance.active]);
+  const peopleOptions = useMemo(() => personOptions(people), [people]);
+  const departmentSelectOptions = useMemo(() => departmentOptions(departments), [departments]);
+  const employmentTypeOptions = useMemo(() => [...STAFF_EMPLOYMENT_TYPE_OPTIONS], []);
+  const profileErrors = validateStaffProfileForm(profileForm);
+  const profileValid = isStaffProfileFormValid(profileErrors) && profilePropertyId !== "";
+  const newProfileLabel = newLabel("f", "ficha");
+
+  function updateProfile<K extends keyof StaffProfileFormValues>(field: K, value: StaffProfileFormValues[K]) {
+    setProfileForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function loadProfileCatalogs(centre: string) {
+    setProfileLoading(true);
+    setPeopleError(null);
+    const [usersResult, departmentsResult] = await Promise.allSettled([
+      listUsersInScope({ scopeType: "property", ref: centre }),
+      configure ? listPropertyDepartments(centre) : Promise.resolve([] as PropertyDepartmentRecord[])
+    ]);
+    setPeople(usersResult.status === "fulfilled" ? usersResult.value : []);
+    if (usersResult.status === "rejected") setPeopleError(payrollErrorMessage(usersResult.reason, "No se pudo cargar la lista de personas del centro."));
+    setDepartments(departmentsResult.status === "fulfilled" ? departmentsResult.value : []);
+    setProfileLoading(false);
+  }
+
+  function openProfileDrawer() {
+    const centre = propertyId ?? finance.active.propertyId;
+    setProfileForm(EMPTY_STAFF_PROFILE_FORM);
+    setProfileError(null);
+    setProfileCentre(centre);
+    setProfileOpen(true);
+    void loadProfileCatalogs(centre);
+  }
+
+  function changeProfileCentre(centre: string) {
+    setProfileCentre(centre);
+    setProfileForm((current) => ({ ...current, userId: "", departmentId: "" }));
+    if (centre) void loadProfileCatalogs(centre);
+  }
+
+  async function saveProfile() {
+    if (!profileValid || profileSaving) return;
+    setProfileSaving(true);
+    setProfileError(null);
+    try {
+      const created = await createStaffProfile(toStaffProfileBody(profileForm, profilePropertyId));
+      setCreatedProfiles((current) => [...current, created]);
+      showToast("Ficha creada.", { variant: "success" });
+      setProfileOpen(false);
+      profilesState.refresh();
+      // «Nuevo contrato» opens with the ficha just created already selected.
+      setStaffProfileId(created.id);
+    } catch (err) {
+      setProfileError(payrollErrorMessage(err, "No se pudo crear la ficha."));
+    } finally {
+      setProfileSaving(false);
     }
   }
 
@@ -666,6 +788,9 @@ export function PayrollScreen() {
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setPeriodOpen(true)}>
             Abrir periodo
           </CocoaButton>
+          <CocoaButton variant="bordered" tone="accent" size="small" onClick={openProfileDrawer} disabled={!manage} title={manage ? "Ficha de personal: la persona y su centro; el contrato se crea después sobre ella" : MANAGE_HINT}>
+            {newProfileLabel}
+          </CocoaButton>
           <CocoaButton variant="filled" tone="accent" size="small" onClick={() => setContractOpen(true)}>
             {newContractLabel}
           </CocoaButton>
@@ -684,6 +809,7 @@ export function PayrollScreen() {
       error={{ title: "No se pudieron cargar las nóminas", message: contractsState.error ?? periodsState.error ?? undefined, onRetry: refreshAll }}
       commands={[
         { id: "payroll-refresh", label: "Actualizar nóminas", run: refreshAll },
+        { id: "payroll-new-profile", label: `${newProfileLabel} de personal`, run: openProfileDrawer },
         { id: "payroll-new-contract", label: newContractLabel, run: () => setContractOpen(true) },
         { id: "payroll-new-period", label: "Abrir periodo de nómina", run: () => setPeriodOpen(true) },
         { id: "payroll-cost-tab", label: "Ver el coste de personal", run: () => setView("cost") },
@@ -742,12 +868,12 @@ export function PayrollScreen() {
           {contractsState.error && !contractsState.data ? (
             <CocoaState kind="error" title="No se pudieron cargar los contratos" message={contractsState.error} onRetry={contractsState.refresh} />
           ) : contractsState.loading && !contractsState.data ? (
-            <CocoaTable columns={CONTRACT_COLUMNS} rows={[]} loading aria-label="Contratos" />
+            <CocoaTable columns={contractTableColumns} rows={[]} loading aria-label="Contratos" />
           ) : contracts.length === 0 ? (
-            <CocoaState kind="empty" title="Aún no hay contratos" message="Da de alta el contrato de cada empleado para incluirlo en los periodos de nómina." primaryAction={{ label: newContractLabel, onClick: () => setContractOpen(true) }} />
+            <CocoaState kind="empty" title="Aún no hay contratos" message="Primero da de alta la ficha de personal de cada empleado («Nueva ficha») y después su contrato para incluirlo en los periodos de nómina." primaryAction={profiles.length === 0 ? { label: newProfileLabel, onClick: openProfileDrawer } : { label: newContractLabel, onClick: () => setContractOpen(true) }} />
           ) : (
             <CocoaTable
-              columns={CONTRACT_COLUMNS}
+              columns={contractTableColumns}
               rows={contracts}
               rowKey="id"
               rowTone={(c) => (c.active ? undefined : "neutral")}
@@ -871,7 +997,7 @@ export function PayrollScreen() {
           ) : slipsState.error && !slipsState.data ? (
             <CocoaState kind="error" title="No se pudieron cargar los recibos" message={slipsState.error} onRetry={slipsState.refresh} />
           ) : slipsState.loading && !slipsState.data ? (
-            <CocoaTable columns={SLIP_COLUMNS} rows={[]} loading aria-label="Recibos" />
+            <CocoaTable columns={slipTableColumns} rows={[]} loading aria-label="Recibos" />
           ) : slips.length === 0 ? (
             <CocoaState
               kind="empty"
@@ -880,7 +1006,7 @@ export function PayrollScreen() {
               primaryAction={selectedPeriod.status !== "closed" && !selectedPeriod.paidAt ? { label: "Calcular", onClick: () => setCalcTarget(selectedPeriod) } : undefined}
             />
           ) : (
-            <CocoaTable columns={SLIP_COLUMNS} rows={slips} rowKey="id" footer={{ staffProfileId: <strong>{plural(slips.length, "recibo", "recibos")}</strong>, grossSalary: <strong>{money(selectedPeriod.totalGross)}</strong>, irpfRetention: money(-selectedPeriod.totalIrpf), netSalary: <strong>{money(selectedPeriod.totalNet)}</strong> }} caption="Recibos del periodo" aria-label="Recibos del periodo" />
+            <CocoaTable columns={slipTableColumns} rows={slips} rowKey="id" footer={{ staffProfileId: <strong>{plural(slips.length, "recibo", "recibos")}</strong>, grossSalary: <strong>{money(selectedPeriod.totalGross)}</strong>, irpfRetention: money(-selectedPeriod.totalIrpf), netSalary: <strong>{money(selectedPeriod.totalNet)}</strong> }} caption="Recibos del periodo" aria-label="Recibos del periodo" />
           )}
         </CocoaSection>
       ) : null}
@@ -1015,7 +1141,7 @@ export function PayrollScreen() {
         open={contractOpen}
         onClose={() => setContractOpen(false)}
         title={newContractLabel}
-        subtitle="El empleado debe existir como ficha de personal de la propiedad; el contrato entra en el siguiente periodo que se calcule."
+        subtitle="El empleado debe tener una ficha de personal en el centro («Nueva ficha»); el contrato entra en el siguiente periodo que se calcule."
         side="right"
         size="md"
         footer={
@@ -1031,8 +1157,8 @@ export function PayrollScreen() {
       >
         <CocoaFormSection title="Empleado y modalidad">
           <CocoaFormRow columns={2}>
-            <CocoaField label="Identificador de la ficha de personal" required error={staffProfileId === "" ? undefined : contractErrors.staffProfileId}>
-              <CocoaInput value={staffProfileId} onChange={setStaffProfileId} placeholder="Identificador de la ficha" maxLength={64} autoFocus />
+            <CocoaField label="Ficha de personal" required error={staffProfileId === "" ? undefined : contractErrors.staffProfileId} help={profiles.length === 0 ? "Aún no hay fichas en este ámbito: créala con «Nueva ficha»." : undefined}>
+              <CocoaSelect value={staffProfileId} onChange={setStaffProfileId} options={profileOptions} placeholder="Elige una ficha de personal" disabled={profiles.length === 0} />
             </CocoaField>
             <CocoaField label="Modalidad de contrato" required>
               <CocoaSelect value={contractType} onChange={setContractType} options={PAYROLL_CONTRACT_TYPES.map((type) => ({ value: type, label: PAYROLL_CONTRACT_TYPE_LABELS_ES[type] }))} />
@@ -1067,6 +1193,62 @@ export function PayrollScreen() {
         {contractError ? (
           <CocoaCallout tone="danger" title="No se pudo guardar" role="alert">
             {contractError}
+          </CocoaCallout>
+        ) : null}
+      </CocoaDrawer>
+
+      {/* Nueva ficha de personal (FIX-1 · F10) */}
+      <CocoaDrawer
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        title="Nueva ficha de personal"
+        subtitle="La ficha vincula a una persona con acceso a la aplicación con su centro de trabajo; el contrato se da de alta después sobre la ficha."
+        side="right"
+        size="md"
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => setProfileOpen(false)} disabled={profileSaving}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={() => void saveProfile()} loading={profileSaving} disabled={!profileValid || profileSaving || !manage}>
+              {profileSaving ? STATUS_LABELS.saving : "Crear ficha"}
+            </CocoaButton>
+          </>
+        }
+      >
+        <CocoaFormSection title="Persona y centro">
+          <CocoaFormRow columns={2}>
+            {propertyId ? null : (
+              <CocoaField label="Centro de trabajo" required fullWidth help="El ámbito es toda la sociedad: elige el centro al que pertenece la ficha.">
+                <CocoaSelect value={profileCentre} onChange={changeProfileCentre} options={centreOptions} placeholder="Elige un centro de trabajo" />
+              </CocoaField>
+            )}
+            <CocoaField
+              label="Persona"
+              required
+              fullWidth
+              error={peopleError ?? (profileForm.userId === "" ? undefined : profileErrors.userId)}
+              help={profileLoading ? STATUS_LABELS.loading : !peopleError && people.length === 0 ? "No hay personas con acceso en este centro: invítalas en Configuración › Usuarios y roles." : "Solo personas con acceso a la aplicación en el centro (nombre · correo)."}
+            >
+              <CocoaSelect value={profileForm.userId} onChange={(value) => updateProfile("userId", value)} options={peopleOptions} placeholder="Elige a la persona" disabled={profileLoading || people.length === 0} />
+            </CocoaField>
+            <CocoaField label="Código de empleado" hint="opcional" error={profileErrors.employeeCode} help="Hasta 32 caracteres; se muestra en las tablas en vez del identificador.">
+              <CocoaInput value={profileForm.employeeCode} onChange={(value) => updateProfile("employeeCode", value)} maxLength={32} placeholder="EMP-0001" />
+            </CocoaField>
+            <CocoaField label="Departamento" hint="opcional" help={configure ? undefined : "Sin el permiso de configuración del centro el departamento se deja vacío."}>
+              <CocoaSelect value={profileForm.departmentId} onChange={(value) => updateProfile("departmentId", value)} options={departmentSelectOptions} disabled={!configure || departments.length === 0} />
+            </CocoaField>
+            <CocoaField label="Modalidad">
+              <CocoaSelect value={profileForm.employmentType} onChange={(value) => updateProfile("employmentType", value)} options={employmentTypeOptions} />
+            </CocoaField>
+            <CocoaField label="Coste hora (€)" hint="opcional" error={profileForm.hourlyCost === "" ? undefined : profileErrors.hourlyCost} help="Coste para la empresa por hora trabajada; dos decimales como máximo.">
+              <CocoaInput value={profileForm.hourlyCost} onChange={(value) => updateProfile("hourlyCost", value)} type="number" inputMode="decimal" min={0} step="0.01" placeholder="12,50" />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
+        {profileError ? (
+          <CocoaCallout tone="danger" title="No se pudo crear la ficha" role="alert">
+            {profileError}
           </CocoaCallout>
         ) : null}
       </CocoaDrawer>
@@ -1107,7 +1289,7 @@ export function PayrollScreen() {
         open={pendingDeactivate !== null}
         onClose={() => setPendingDeactivate(null)}
         tone="destructive"
-        title={pendingDeactivate ? `¿Desactivar el contrato de ${pendingDeactivate.staffProfileId}?` : "Desactivar contrato"}
+        title={pendingDeactivate ? `¿Desactivar el contrato de ${employeeLabel(profileLabels, pendingDeactivate.staffProfileId)}?` : "Desactivar contrato"}
         description="El contrato dejará de entrar en los próximos periodos de nómina. Los recibos ya calculados no cambian."
         confirmLabel={ACTIONS.deactivate}
         cancelLabel={ACTIONS.cancel}

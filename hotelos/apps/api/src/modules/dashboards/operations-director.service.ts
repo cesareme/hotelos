@@ -83,6 +83,8 @@ export type OpsDirectorMiniCards = {
 export type OpsDirectorDetailHkTask = {
   id: string;
   roomId: string;
+  /** Número de la habitación (Room.number) resuelto aparte: HousekeepingTask no tiene relación con Room. */
+  roomNumber: string | null;
   taskType: string;
   priority: string;
   status: string;
@@ -97,6 +99,8 @@ export type OpsDirectorDetailWorkOrder = {
   priority: string;
   status: string;
   roomId: string | null;
+  /** Número de la habitación (Room.number); null si la orden no tiene habitación o no se resolvió. */
+  roomNumber: string | null;
   assignedTo: string | null;
   dueDate: string | null;
   createdAt: string;
@@ -176,6 +180,18 @@ export type OpsDirectorResult = {
 
 function startOfDayUtc(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/**
+ * Añade `roomNumber` a filas con `roomId` a partir del mapa id → número que
+ * devuelve UNA consulta a Room (FIX-1 · F9). Pura: sin id o sin habitación
+ * conocida → null, y la pantalla pinta `roomNumber ?? roomId`.
+ */
+export function withRoomNumbers<T extends { roomId: string | null }>(
+  rows: T[],
+  roomsById: ReadonlyMap<string, string>
+): Array<T & { roomNumber: string | null }> {
+  return rows.map((row) => ({ ...row, roomNumber: row.roomId ? roomsById.get(row.roomId) ?? null : null }));
 }
 
 export async function buildOperationsDirector(input: { propertyId: string }): Promise<OpsDirectorResult> {
@@ -631,27 +647,49 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
     }), [] as Array<{ startAt: Date; staffProfileId: string | null }>)
   ]);
 
+  // Números de habitación (FIX-1 · F9): HousekeepingTask no tiene relación con
+  // Room y WorkOrder.roomId es opcional, así que una sola consulta resuelve los
+  // números de ambas tablas y withRoomNumbers los reparte; sin filas, sin consulta.
+  const detailRoomIds = Array.from(
+    new Set([...hkTasksDetail.map((t) => t.roomId), ...workOrdersDetail.map((wo) => wo.roomId)].filter((id): id is string => Boolean(id)))
+  );
+  const detailRooms =
+    detailRoomIds.length === 0
+      ? []
+      : await safe(
+          "details.rooms",
+          prisma.room.findMany({ where: { id: { in: detailRoomIds } }, select: { id: true, number: true } }),
+          [] as Array<{ id: string; number: string }>
+        );
+  const roomsById = new Map(detailRooms.map((r) => [r.id, r.number] as const));
+
   const details: OpsDirectorDetails = {
-    hkTasks: hkTasksDetail.map((t) => ({
-      id: t.id,
-      roomId: t.roomId,
-      taskType: t.taskType,
-      priority: t.priority,
-      status: t.status,
-      assignedTo: t.assignedTo,
-      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
-      createdAt: t.createdAt.toISOString()
-    })),
-    workOrders: workOrdersDetail.map((wo) => ({
-      id: wo.id,
-      title: wo.title,
-      priority: wo.priority,
-      status: wo.status,
-      roomId: wo.roomId,
-      assignedTo: wo.assignedTo,
-      dueDate: wo.dueDate ? wo.dueDate.toISOString() : null,
-      createdAt: wo.createdAt.toISOString()
-    })),
+    hkTasks: withRoomNumbers(
+      hkTasksDetail.map((t) => ({
+        id: t.id,
+        roomId: t.roomId,
+        taskType: t.taskType,
+        priority: t.priority,
+        status: t.status,
+        assignedTo: t.assignedTo,
+        dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+        createdAt: t.createdAt.toISOString()
+      })),
+      roomsById
+    ),
+    workOrders: withRoomNumbers(
+      workOrdersDetail.map((wo) => ({
+        id: wo.id,
+        title: wo.title,
+        priority: wo.priority,
+        status: wo.status,
+        roomId: wo.roomId,
+        assignedTo: wo.assignedTo,
+        dueDate: wo.dueDate ? wo.dueDate.toISOString() : null,
+        createdAt: wo.createdAt.toISOString()
+      })),
+      roomsById
+    ),
     shifts: shiftsDetail.map((s) => ({
       id: s.id,
       staffProfileId: s.staffProfileId,

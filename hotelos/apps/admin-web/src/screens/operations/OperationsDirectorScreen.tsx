@@ -28,6 +28,7 @@ import { toArray } from "../../utils/toArray";
 import { date, dateTime, number, percent, plural, time } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { SEVERITY_TONE, type ManagementTone } from "./managementBadges";
+import { departmentLabel, hkTaskStatusLabel, hkTaskTypeLabel, priorityLabel, roomLabel, shiftStatusLabel, woStatusLabel } from "./operations-director-labels";
 import { DirectorOpsHealthMini, type DirectorOpsHealthMiniProps, type DirectorOpsHealthStatus } from "../../components/cocoa-director";
 import {
   CocoaBadge,
@@ -112,6 +113,8 @@ type MiniCards = {
 type DetailHkTask = {
   id: string;
   roomId: string;
+  /** Número de la habitación resuelto por el API (FIX-1 · F9); la tabla pinta `roomNumber ?? roomId`. */
+  roomNumber?: string | null;
   taskType: string;
   priority: string;
   status: string;
@@ -126,6 +129,7 @@ type DetailWorkOrder = {
   priority: string;
   status: string;
   roomId: string | null;
+  roomNumber?: string | null;
   assignedTo: string | null;
   dueDate: string | null;
   createdAt: string;
@@ -392,20 +396,22 @@ function badge(tone: CocoaTone, text: string): ReactNode {
   );
 }
 
+// FIX-1 · F9: número de habitación (roomNumber, resuelto por el API) y etiquetas
+// en español (operations-director-labels) en vez de los ids y enums crudos.
 const HK_COLUMNS: CocoaTableColumn<DetailHkTask>[] = [
-  { key: "roomId", label: "Habitación" },
-  { key: "taskType", label: "Tarea" },
-  { key: "priority", label: "Prioridad", render: (t) => badge(priorityTone(t.priority), t.priority) },
-  { key: "status", label: "Estado", render: (t) => badge(statusTone(t.status), t.status) },
+  { key: "room", label: "Habitación", render: (t) => roomLabel(t) },
+  { key: "taskType", label: "Tarea", render: (t) => hkTaskTypeLabel(t.taskType) },
+  { key: "priority", label: "Prioridad", render: (t) => badge(priorityTone(t.priority), priorityLabel(t.priority)) },
+  { key: "status", label: "Estado", render: (t) => badge(statusTone(t.status), hkTaskStatusLabel(t.status)) },
   { key: "assignedTo", label: "Asignado", render: (t) => t.assignedTo ?? "—", hideOnNarrow: true },
   { key: "dueAt", label: "Vence", render: (t) => fmtDate(t.dueAt), hideOnNarrow: true }
 ];
 
 const WO_COLUMNS: CocoaTableColumn<DetailWorkOrder>[] = [
   { key: "title", label: "Título" },
-  { key: "priority", label: "Prioridad", render: (wo) => badge(priorityTone(wo.priority), wo.priority) },
-  { key: "status", label: "Estado", render: (wo) => badge(statusTone(wo.status), wo.status) },
-  { key: "roomId", label: "Habitación", render: (wo) => wo.roomId ?? "—", hideOnNarrow: true },
+  { key: "priority", label: "Prioridad", render: (wo) => badge(priorityTone(wo.priority), priorityLabel(wo.priority)) },
+  { key: "status", label: "Estado", render: (wo) => badge(statusTone(wo.status), woStatusLabel(wo.status)) },
+  { key: "room", label: "Habitación", render: (wo) => roomLabel(wo), hideOnNarrow: true },
   { key: "assignedTo", label: "Asignado", render: (wo) => wo.assignedTo ?? "—", hideOnNarrow: true },
   { key: "dueDate", label: "Vence", render: (wo) => fmtDate(wo.dueDate), hideOnNarrow: true }
 ];
@@ -414,8 +420,8 @@ const SHIFT_COLUMNS: CocoaTableColumn<DetailShift>[] = [
   { key: "startAt", label: "Inicio", render: (s) => time(s.startAt) },
   { key: "endAt", label: "Fin", render: (s) => time(s.endAt) },
   { key: "roleLabel", label: "Rol", render: (s) => s.roleLabel ?? "—" },
-  { key: "status", label: "Estado", render: (s) => badge(statusTone(s.status), s.status) },
-  { key: "staffProfileId", label: "Asignación", render: (s) => (s.staffProfileId ? s.staffProfileId : badge("warning", "Sin asignar")), hideOnNarrow: true }
+  { key: "status", label: "Estado", render: (s) => badge(statusTone(s.status), shiftStatusLabel(s.status)) },
+  { key: "assignment", label: "Asignación", render: (s) => (s.staffProfileId ? badge("success", "Asignado") : badge("warning", "Sin asignar")), hideOnNarrow: true }
 ];
 
 const INCIDENT_COLUMNS: CocoaTableColumn<DetailSafetyIncident>[] = [
@@ -645,7 +651,7 @@ export function OperationsDirectorScreen() {
                     <div className="cocoa-row" data-gap="2">
                       <strong style={calloutStyle}>{a.title}</strong>
                       <CocoaBadge tone={SEVERITY_TONE[a.severity]} size="small">
-                        {a.department}
+                        {departmentLabel(a.department)}
                       </CocoaBadge>
                     </div>
                     {a.detail ? <span style={mutedStyle}>{a.detail}</span> : null}

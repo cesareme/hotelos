@@ -17,7 +17,7 @@
 // the regularization of the year-end close and the trial balance. The diario
 // export (`journalLines`) is the other way round: the libro diario keeps both
 // halves (an annulment is an operation of the book; nothing is ever deleted).
-// Two read modes:
+// Three read modes:
 //   · balance_at(to): cumulative balances up to and including `to`, EXCLUDING
 //     the closing entries dated exactly `to` (the year-end closing zeroes every
 //     account; the balance «a 31/12» is the pre-closing one). A closing dated
@@ -26,6 +26,19 @@
 //   · movements(from, to): movements inside [from, to] EXCLUDING
 //     regularization / closing / opening entries (they would zero the P&L or
 //     double the opening balances of the year).
+//   · opening_in_period(from, to): the opening entries dated inside [from, to]
+//     whose balances are NOT already in balance_at(from − 1). An imported
+//     ledger starts with an opening dated the first day of the year (Sage:
+//     01/01): balance_at(from − 1) cannot see it and movements leaves it out,
+//     so the annual accounts add it to the opening balances (rowsBefore). An
+//     opening whose closing is dated from − 1 (that closing is excluded from
+//     balance_at(from − 1), whose balances are therefore the pre-closing ones
+//     the opening restores) or dated inside the period before the opening
+//     (both halves are in balance_at(to)) is left out: the year would
+//     otherwise open twice. The guard pairs the opening with the booked
+//     closings of the SAME property (society-level with society-level: the
+//     year-end close posts both with one propertyId, the Sage import both
+//     without) dated in [from − 1, opening).
 
 import { prisma } from "@hotelos/database";
 import { Prisma } from "@prisma/client";
@@ -36,7 +49,7 @@ import type { AccountKind } from "../accounting/chart-of-accounts.service.js";
 import { kindFromLegacyType } from "../accounting/chart-of-accounts.service.js";
 import { toDec, type Dec } from "./money.js";
 
-export type LedgerMode = "balance_at" | "movements";
+export type LedgerMode = "balance_at" | "movements" | "opening_in_period";
 
 export type LedgerQuery = {
   organizationId: string;
@@ -48,7 +61,7 @@ export type LedgerQuery = {
    */
   unassignedOnly?: boolean;
   mode: LedgerMode;
-  /** Required for `movements`; ignored for `balance_at`. */
+  /** Required for `movements` and `opening_in_period`; ignored for `balance_at`. */
   from?: string | null;
   to: string;
   /** Restrict to PGC groups (first digit). */
@@ -425,6 +438,19 @@ function ledgerWhere(query: LedgerQuery): Prisma.Sql {
   if (query.mode === "balance_at") {
     conditions.push(Prisma.sql`je.entry_date <= ${query.to}::date`);
     conditions.push(Prisma.sql`NOT (je.entry_kind = 'closing' AND je.entry_date = ${query.to}::date)`);
+  } else if (query.mode === "opening_in_period") {
+    if (!query.from) throw new Error("opening_in_period query requires from");
+    // Openings dated inside [from, to] without a booked closing of the same property (null = null) in [from − 1,
+    // opening date): a closing dated from − 1 is excluded from balance_at(from − 1) and one inside the period is in
+    // balance_at(to), so in both cases the balances the opening restores are already read (see the header).
+    conditions.push(Prisma.sql`je.entry_kind = 'opening'`);
+    conditions.push(Prisma.sql`je.entry_date >= ${query.from}::date`);
+    conditions.push(Prisma.sql`je.entry_date <= ${query.to}::date`);
+    conditions.push(Prisma.sql`NOT EXISTS (
+      SELECT 1 FROM journal_entries c
+      WHERE c.organization_id = je.organization_id AND c.property_id IS NOT DISTINCT FROM je.property_id
+        AND c.entry_kind = 'closing' AND c.status <> 'draft' AND c.reversed_by_id IS NULL AND c.reversal_of_id IS NULL
+        AND c.entry_date >= ${addDays(query.from, -1)}::date AND c.entry_date < je.entry_date)`);
   } else {
     if (!query.from) throw new Error("movements query requires from");
     conditions.push(Prisma.sql`je.entry_date >= ${query.from}::date`);
