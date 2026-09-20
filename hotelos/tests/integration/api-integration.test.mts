@@ -572,6 +572,7 @@ describe("API integration (app.inject)", () => {
       const establishment = await getJson<{ ok: boolean; missing: string[] }>(app, `/properties/${fixture.propertyId}/ses/establishment`, headers);
       assert.ok(establishment, `GET /properties/${fixture.propertyId}/ses/establishment failed`);
       const partes = await listPartes(app, fixture.reservationId, headers);
+      const parteIds = new Set(partes.map((parte) => parte.id));
       const SENDABLE = new Set(["ready_to_submit", "signed", "corrected"]);
       const sendable = partes.filter((parte) => SENDABLE.has(parte.status)).length;
       const historical = partes.filter((parte) => ["accepted", "annulled", "expired"].includes(parte.status)).length;
@@ -599,7 +600,9 @@ describe("API integration (app.inject)", () => {
         assert.ok(body.submissions.length > 0, `nothing queued: ${res.body}`);
         for (const submission of body.submissions) {
           assert.match(submission.id, CUID, `submission id is not a persisted cuid: ${submission.id}`);
-          assert.match(submission.guestRegisterRecordId, CUID);
+          // The parte id is `grr_<16 hex>` when the API created it (lib/ids.ts createId, compliance.service)
+          // and a cuid when seeded/backfilled: what matters is that it is ONE of the partes of the reservation.
+          assert.ok(parteIds.has(submission.guestRegisterRecordId), `guestRegisterRecordId is not a parte of the reservation: ${submission.guestRegisterRecordId}`);
           assert.ok(typeof submission.submissionType === "string" && submission.submissionType.length > 0);
           assert.equal(submission.status, "queued");
         }

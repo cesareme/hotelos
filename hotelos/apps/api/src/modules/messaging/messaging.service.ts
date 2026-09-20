@@ -5,6 +5,7 @@ import { demoStore, type ConversationRecord, type MessageRecord, type ServiceReq
 import { requirePermissions } from "../auth/auth.service.js";
 import { ForbiddenError, TooManyRequestsError } from "../../lib/http-error.js";
 import { getPropertyAiSettings } from "../ai-operations/property-ai.service.js";
+import { dispatch, type DispatchInput, type NotificationDeliveryRecord } from "../notifications/dispatcher.service.js";
 import { runAiTool } from "../ai-operations/tool-runner.service.js";
 import { apiToolContextFromRunner } from "../ai-operations/tools/context.js";
 import type { NotConfiguredOutput } from "../ai-operations/tools/context.js";
@@ -480,35 +481,290 @@ export async function updateServiceRequest(input: {
   return request;
 }
 
-export function sendWelcomeMessage(input: {
+// ---------------------------------------------------------------------------
+// Bienvenida real (Tanda CHK · W2-D, diseño §4c «Bienvenida»).
+//
+// Recorre los canales en orden (por defecto WhatsApp → email → SMS: WhatsApp
+// solo llega de verdad dentro de la ventana de 24 h que abre el huésped) y se
+// detiene en el primero que el dispatcher da por enviado. Cada intento pasa por
+// `dispatch` (plantilla `checkin_welcome` de sistema o de la organización,
+// fila NotificationDelivery, proveedor real o simulado) con un notificationId
+// determinista `welcome:<reservationId>:<canal>`, así que repetir la llamada
+// no reenvía nada. Honestidad: un envío simulado (sin proveedor) vuelve como
+// `simulated`, nunca como `sent`, y así se audita; cualquier excepción se
+// devuelve como `failed` con motivo en lugar de propagarse (QC-06), porque la
+// bienvenida nunca debe deshacer un check-in ya hecho.
+//
+// `propertyId` es opcional (cae en `context.propertyId`) para que el llamador
+// actual (ai/check-in.command.ts, sin await) siga compilando; W4-D lo adapta.
+// ---------------------------------------------------------------------------
+
+export const WELCOME_TEMPLATE_CODE = "checkin_welcome";
+export const DEFAULT_WELCOME_CHANNEL_ORDER: readonly string[] = ["whatsapp", "email", "sms"];
+const WELCOME_CHANNELS: ReadonlySet<string> = new Set(["whatsapp", "email", "sms"]);
+const DEFAULT_GUEST_WEB_BASE_URL = "http://localhost:5174";
+
+export type WelcomeMessageStatus = "sent" | "simulated" | "failed" | "skipped";
+
+export type WelcomeMessageResult = {
+  status: WelcomeMessageStatus;
+  /** Canal del envío (o el último intentado cuando todos fallan; el primero del orden cuando no hubo intento). */
+  channel: string;
+  deliveryId?: string;
+  error?: string;
+};
+
+export type WelcomeMessageInput = {
   context: UserContext;
+  propertyId?: string;
   reservationId: string;
   guestId: string;
+  roomNumber?: string;
+  /** Orden de canales a intentar; valores fuera de whatsapp/email/sms se ignoran. */
+  channelOrder?: string[];
   correlationId: string;
-}): { status: "queued"; channel: "whatsapp" | "email" | "app" } {
+};
+
+type WelcomeGuest = {
+  firstName: string;
+  email: string | null;
+  mobilePhone: string | null;
+  phone: string | null;
+  languagePreference: string | null;
+};
+
+type WelcomeReservation = {
+  id: string;
+  arrivalDate: Date;
+  assignedRoomId: string | null;
+};
+
+/** Dependencias inyectables (tests sin base de datos ni proveedor). */
+export type WelcomeMessageDeps = {
+  dispatch: (input: DispatchInput) => Promise<NotificationDeliveryRecord>;
+  loadGuest: (organizationId: string, guestId: string) => Promise<WelcomeGuest | null>;
+  loadReservation: (propertyId: string, reservationId: string) => Promise<WelcomeReservation | null>;
+  loadPropertyName: (propertyId: string) => Promise<string | null>;
+  loadRoomNumber: (roomId: string) => Promise<string | null>;
+  loadFaq: (propertyId: string) => Promise<unknown>;
+};
+
+const defaultWelcomeDeps: WelcomeMessageDeps = {
+  dispatch,
+  loadGuest: async (organizationId, guestId) =>
+    prisma.guest.findFirst({
+      where: { id: guestId, organizationId, deletedAt: null },
+      select: { firstName: true, email: true, mobilePhone: true, phone: true, languagePreference: true }
+    }),
+  loadReservation: async (propertyId, reservationId) =>
+    prisma.reservation.findFirst({
+      where: { id: reservationId, propertyId },
+      select: { id: true, arrivalDate: true, assignedRoomId: true }
+    }),
+  loadPropertyName: async (propertyId) =>
+    (await prisma.property.findUnique({ where: { id: propertyId }, select: { name: true } }))?.name ?? null,
+  loadRoomNumber: async (roomId) => (await prisma.room.findUnique({ where: { id: roomId }, select: { number: true } }))?.number ?? null,
+  loadFaq: async (propertyId) => (await getPropertyAiSettings(propertyId)).configurationJson.faq
+};
+
+export type WelcomeFaqDetails = { wifiName: string; wifiPassword: string; breakfastHours: string };
+
+function faqString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : typeof value === "number" ? String(value) : "";
+}
+
+function firstFaqValue(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const found = faqString(record[key]);
+    if (found) return found;
+  }
+  return "";
+}
+
+/**
+ * Lee wifi y horario de desayuno de `PropertyAiSetting.configurationJson.faq`
+ * cuando existe. Sin forma canónica todavía (ninguna pantalla la escribe):
+ * acepta un objeto plano (`wifiName` / `wifi_name` / `wifiSsid`,
+ * `wifiPassword` / `wifi_password`, `breakfastHours` / `breakfast_hours` /
+ * `breakfast`), un objeto anidado (`wifi: { name, password }`,
+ * `breakfast: { hours }`) o una lista de pares `{ question|key, answer|value }`
+ * cuyo texto mencione wifi/contraseña/desayuno. Todo lo que no encaja queda
+ * vacío y la plantilla cae en «consulta en recepción».
+ */
+export function extractWelcomeFaqDetails(faq: unknown): WelcomeFaqDetails {
+  const empty: WelcomeFaqDetails = { wifiName: "", wifiPassword: "", breakfastHours: "" };
+  if (!faq || typeof faq !== "object") return empty;
+
+  if (Array.isArray(faq)) {
+    const out = { ...empty };
+    for (const entry of faq) {
+      if (!entry || typeof entry !== "object") continue;
+      const row = entry as Record<string, unknown>;
+      const label = `${faqString(row.question)} ${faqString(row.key)} ${faqString(row.title)}`.toLowerCase();
+      const answer = faqString(row.answer) || faqString(row.value);
+      if (!answer) continue;
+      if (/wifi|wi-fi/.test(label) && /contraseñ|clave|password/.test(label)) out.wifiPassword ||= answer;
+      else if (/wifi|wi-fi/.test(label)) out.wifiName ||= answer;
+      else if (/desayuno|breakfast/.test(label)) out.breakfastHours ||= answer;
+    }
+    return out;
+  }
+
+  const record = faq as Record<string, unknown>;
+  const wifi = record.wifi && typeof record.wifi === "object" && !Array.isArray(record.wifi) ? (record.wifi as Record<string, unknown>) : {};
+  const breakfast =
+    record.breakfast && typeof record.breakfast === "object" && !Array.isArray(record.breakfast) ? (record.breakfast as Record<string, unknown>) : {};
+  return {
+    wifiName: firstFaqValue(record, ["wifiName", "wifi_name", "wifiSsid", "wifi_ssid"]) || firstFaqValue(wifi, ["name", "ssid", "network"]),
+    wifiPassword: firstFaqValue(record, ["wifiPassword", "wifi_password", "wifiKey"]) || firstFaqValue(wifi, ["password", "key"]),
+    breakfastHours:
+      firstFaqValue(record, ["breakfastHours", "breakfast_hours"]) ||
+      (typeof record.breakfast === "string" ? faqString(record.breakfast) : "") ||
+      firstFaqValue(breakfast, ["hours", "schedule", "time"])
+  };
+}
+
+/** Fecha de llegada en español («20 de septiembre de 2026»); `@db.Date` se lee en UTC. */
+export function formatArrivalDateEs(date: Date): string {
+  return new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
+/** Enlace al portal del huésped (donde vive el asistente), con el hotel en la URL como en la invitación. */
+export function guestBotUrl(propertyId: string): string {
+  const base = (process.env.GUEST_WEB_BASE_URL ?? DEFAULT_GUEST_WEB_BASE_URL).replace(/\/$/, "");
+  return `${base}/?property=${encodeURIComponent(propertyId)}`;
+}
+
+/** Teléfono para whatsapp/sms: sin espacios ni separadores, «00» inicial → «+». El proveedor exige E.164. */
+function normalizePhone(value: string | null | undefined): string {
+  const compact = (value ?? "").replace(/[\s().-]/g, "");
+  if (!compact) return "";
+  return compact.startsWith("00") ? `+${compact.slice(2)}` : compact;
+}
+
+function recipientForChannel(channel: string, guest: WelcomeGuest): string {
+  if (channel === "email") return (guest.email ?? "").trim();
+  return normalizePhone(guest.mobilePhone) || normalizePhone(guest.phone);
+}
+
+function deliveryOutcome(delivery: NotificationDeliveryRecord): { status: WelcomeMessageStatus; error?: string } {
+  if (delivery.status === "sent") {
+    return /^SIMULADO/i.test(delivery.errorMessage ?? "") ? { status: "simulated" } : { status: "sent" };
+  }
+  if (delivery.status === "failed" || delivery.status === "bounced") {
+    return { status: "failed", error: delivery.errorMessage ?? "Fallo del proveedor sin detalle." };
+  }
+  // queued/pending: el dispatcher no lo intentó (programado a futuro); no es un envío.
+  return { status: "failed", error: `Entrega en estado ${delivery.status}: no se ha enviado.` };
+}
+
+export async function sendWelcomeMessage(
+  input: WelcomeMessageInput,
+  deps: Partial<WelcomeMessageDeps> = {}
+): Promise<WelcomeMessageResult> {
+  const d: WelcomeMessageDeps = { ...defaultWelcomeDeps, ...deps };
+  const propertyId = input.propertyId ?? input.context.propertyId;
+  const channelOrder = (input.channelOrder ?? [...DEFAULT_WELCOME_CHANNEL_ORDER]).filter((c) => WELCOME_CHANNELS.has(c));
+  const attempts: Array<{ channel: string; status: WelcomeMessageStatus; deliveryId?: string; error?: string }> = [];
+  let result: WelcomeMessageResult = { status: "skipped", channel: channelOrder[0] ?? DEFAULT_WELCOME_CHANNEL_ORDER[0]! };
+
+  try {
+    if (channelOrder.length === 0) {
+      result = { status: "skipped", channel: DEFAULT_WELCOME_CHANNEL_ORDER[0]!, error: "Sin canales válidos en channelOrder." };
+    } else {
+      const [guest, reservation] = await Promise.all([
+        d.loadGuest(input.context.organizationId, input.guestId),
+        d.loadReservation(propertyId, input.reservationId)
+      ]);
+      if (!guest) {
+        result = { status: "failed", channel: channelOrder[0]!, error: "Huésped no encontrado en la organización." };
+      } else if (!reservation) {
+        result = { status: "failed", channel: channelOrder[0]!, error: "Reserva no encontrada en la propiedad." };
+      } else {
+        const candidates = channelOrder
+          .map((channel) => ({ channel, recipient: recipientForChannel(channel, guest) }))
+          .filter((c) => c.recipient !== "");
+        if (candidates.length === 0) {
+          result = { status: "skipped", channel: channelOrder[0]!, error: "El huésped no tiene email ni teléfono." };
+        } else {
+          const [propertyName, faq, roomFromReservation] = await Promise.all([
+            d.loadPropertyName(propertyId),
+            d.loadFaq(propertyId).catch(() => null),
+            !input.roomNumber && reservation.assignedRoomId ? d.loadRoomNumber(reservation.assignedRoomId).catch(() => null) : Promise.resolve(null)
+          ]);
+          const details = extractWelcomeFaqDetails(faq);
+          const variables: Record<string, unknown> = {
+            guestFirstName: guest.firstName.trim(),
+            propertyName: propertyName ?? "",
+            arrivalDate: formatArrivalDateEs(reservation.arrivalDate),
+            roomNumber: input.roomNumber?.trim() || roomFromReservation || "",
+            wifiName: details.wifiName,
+            wifiPassword: details.wifiPassword,
+            breakfastHours: details.breakfastHours,
+            botUrl: guestBotUrl(propertyId)
+          };
+
+          for (const candidate of candidates) {
+            const delivery = await d.dispatch({
+              organizationId: input.context.organizationId,
+              propertyId,
+              templateCode: WELCOME_TEMPLATE_CODE,
+              channel: candidate.channel,
+              recipient: candidate.recipient,
+              notificationId: `welcome:${input.reservationId}:${candidate.channel}`,
+              language: guest.languagePreference?.trim() || "es",
+              variables
+            });
+            const outcome = deliveryOutcome(delivery);
+            attempts.push({ channel: candidate.channel, status: outcome.status, deliveryId: delivery.id, ...(outcome.error ? { error: outcome.error } : {}) });
+            result = { status: outcome.status, channel: candidate.channel, deliveryId: delivery.id, ...(outcome.error ? { error: outcome.error } : {}) };
+            if (outcome.status === "sent" || outcome.status === "simulated") break;
+          }
+        }
+      }
+    }
+  } catch (error) {
+    // QC-06: la bienvenida nunca rompe el check-in; el motivo queda en el resultado y en la auditoría.
+    const message = error instanceof Error ? error.message : String(error);
+    const lastChannel = attempts.at(-1)?.channel ?? result.channel;
+    result = { status: "failed", channel: lastChannel, error: message };
+  }
+
   recordAuditEvent({
     organizationId: input.context.organizationId,
-    propertyId: input.context.propertyId,
+    propertyId,
     actorUserId: input.context.userId,
     actorType: "system",
-    action: "WELCOME_MESSAGE_QUEUED",
+    action: "GUEST_WELCOME_MESSAGE_SENT",
     entityType: "reservation",
     entityId: input.reservationId,
-    afterJson: { guestId: input.guestId, channel: "app" },
+    afterJson: {
+      guestId: input.guestId,
+      template: WELCOME_TEMPLATE_CODE,
+      status: result.status,
+      simulated: result.status === "simulated",
+      channel: result.channel,
+      ...(result.deliveryId ? { deliveryId: result.deliveryId } : {}),
+      ...(result.error ? { error: result.error } : {}),
+      channelOrder,
+      attempts
+    },
     correlationId: input.correlationId
   });
 
-  recordDomainEvent({
-    organizationId: input.context.organizationId,
-    propertyId: input.context.propertyId,
-    entityType: "reservation",
-    entityId: input.reservationId,
-    eventType: "GuestMessageSent",
-    payload: { guestId: input.guestId, template: "welcome" },
-    actorType: "system",
-    actorUserId: input.context.userId,
-    correlationId: input.correlationId
-  });
+  if (result.status === "sent" || result.status === "simulated") {
+    recordDomainEvent({
+      organizationId: input.context.organizationId,
+      propertyId,
+      entityType: "reservation",
+      entityId: input.reservationId,
+      eventType: "GuestMessageSent",
+      payload: { guestId: input.guestId, template: WELCOME_TEMPLATE_CODE, channel: result.channel, simulated: result.status === "simulated", deliveryId: result.deliveryId },
+      actorType: "system",
+      actorUserId: input.context.userId,
+      correlationId: input.correlationId
+    });
+  }
 
-  return { status: "queued", channel: "app" };
+  return result;
 }

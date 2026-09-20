@@ -68,6 +68,14 @@ import { documentWorkflowRoutePermissions } from "../modules/documents/workflow-
 // documents.review (medium, + R11 en el servicio) y documents.admin (high en
 // ajustes; critical en block / unblock / purge).
 import { documentArchiveRoutePermissions } from "../modules/documents/archive-route-permissions.partial.js";
+// Check-in automatizado (Tanda CHK · W2-A): /guest-portal/check-in* (token opaco del
+// huésped, riskLevel public) y /properties/:propertyId/check-in/* · /kiosks* (modules/
+// checkin/checkin.routes.ts). Claves existentes; sin rbac:sync.
+import { checkinRoutePermissions } from "../modules/checkin/route-permissions.partial.js";
+// Asignación explicable (Tanda CHK · W3-B): sugerencias por reserva, confirmación,
+// lote manual, bloqueos y comunicadas (modules/pms/room-assignment.routes.ts;
+// segundo partial del módulo pms). Claves existentes; sin rbac:sync.
+import { roomAssignmentRoutePermissions } from "../modules/pms/room-assignment-route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -196,6 +204,10 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...documentPipelineRoutePermissions,
   ...documentWorkflowRoutePermissions,
   ...documentArchiveRoutePermissions,
+  // Check-in automatizado (Tanda CHK): 18 entradas, ver modules/checkin/route-permissions.partial.ts.
+  ...checkinRoutePermissions,
+  // Asignación explicable (Tanda CHK · W3-B): 10 entradas, ver modules/pms/room-assignment-route-permissions.partial.ts.
+  ...roomAssignmentRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },
@@ -234,6 +246,11 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "DELETE", path: "/webhooks/subscriptions/:id", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
   { method: "GET", path: "/webhooks/subscriptions/:id/deliveries", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
   { method: "POST", path: "/webhooks/subscriptions/:id/test", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
+  // WhatsApp Cloud API · webhook de entrada (Tanda CHK · W4-D, routes/webhooks-whatsapp.routes.ts):
+  // Meta no lleva JWT; GET responde el hub.challenge con WHATSAPP_VERIFY_TOKEN y POST verifica
+  // la firma X-Hub-Signature-256 (WHATSAPP_APP_SECRET) sobre el cuerpo crudo. Prefijo en PUBLIC_PREFIXES.
+  { method: "GET", path: "/webhooks/whatsapp", permissions: [], riskLevel: "public" },
+  { method: "POST", path: "/webhooks/whatsapp", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/assistant/tools", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/assistant/chat", permissions: [], riskLevel: "authenticated" },
   // Tanda 5 (L1b · api-side): GET routes carry READ keys (folio.read, pos.read,

@@ -2,9 +2,13 @@ import { useEffect, useState } from "react";
 import { Layout } from "../components/Layout";
 import { StatusPill } from "../components/StatusPill";
 import type { StatusTone } from "../components/StatusPill";
-import { downloadInvoice, getReservation } from "../api/client";
-import type { ReservationSummary } from "../api/client";
+import { downloadInvoice, getCheckIn, getReservation, isApiError } from "../api/client";
+import type { ArriveResponse, CheckInSession, ReservationSummary } from "../api/client";
+import { ChatWidget } from "../components/ChatWidget";
 import { useGuestSession } from "../auth/GuestSessionContext";
+import { GUEST_ARRIVAL_STORAGE_KEY } from "../kiosk/kiosk-mode";
+import { initialStep, sessionStatusLabel, t } from "../checkin/wizard";
+import type { Lang } from "../checkin/wizard";
 
 const STATUS_LABEL: Record<ReservationSummary["status"], string> = {
   confirmed: "Confirmed",
@@ -17,6 +21,18 @@ const STATUS_TONE: Record<ReservationSummary["status"], StatusTone> = {
   confirmed: "ok",
   checked_in: "info",
   checked_out: "info",
+  cancelled: "error"
+};
+
+// Tanda CHK · W4-C: tono del bloque «Pre-check-in» por estado de la sesión.
+const CHECKIN_TONE: Record<string, StatusTone> = {
+  invited: "warn",
+  in_progress: "warn",
+  ready_for_arrival: "ok",
+  arrived: "info",
+  checked_in: "ok",
+  handed_off: "info",
+  expired: "error",
   cancelled: "error"
 };
 
@@ -38,14 +54,28 @@ function formatMoney(amount: number, currency: string): string {
   }
 }
 
-type Destination = "precheckin" | "service" | "concierge";
+/** Última llegada registrada en esta pestaña (sessionStorage; nunca en modo kiosco). */
+export function readStoredArrival(): ArriveResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(GUEST_ARRIVAL_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as ArriveResponse) : null;
+  } catch {
+    return null;
+  }
+}
 
-export function StayOverviewPage({ onNavigate }: { onNavigate: (page: Destination) => void }) {
+type Destination = "precheckin" | "service" | "concierge" | "checkin" | "arrival";
+
+export function StayOverviewPage({ onNavigate, lang = "es" }: { onNavigate: (page: Destination) => void; lang?: Lang }) {
   const { session } = useGuestSession();
   const [reservation, setReservation] = useState<ReservationSummary | null>(null);
+  const [checkIn, setCheckIn] = useState<CheckInSession | null>(null);
+  const [checkInAvailable, setCheckInAvailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const arrival = readStoredArrival();
 
   useEffect(() => {
     if (!session) return;
@@ -62,6 +92,20 @@ export function StayOverviewPage({ onNavigate }: { onNavigate: (page: Destinatio
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    // Pre-check-in (Tanda CHK): 401/403/404 → sin invitación; se ofrece el formulario clásico.
+    getCheckIn()
+      .then((data) => {
+        if (cancelled) return;
+        setCheckIn(data);
+        setCheckInAvailable(true);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setCheckIn(null);
+        // 401/403/404 → sin invitación o módulo apagado; cualquier otro fallo también deja el formulario clásico.
+        setCheckInAvailable(false);
+        if (!isApiError(err)) setError((current) => current ?? (err instanceof Error ? err.message : null));
+      });
     return () => {
       cancelled = true;
     };
@@ -76,6 +120,9 @@ export function StayOverviewPage({ onNavigate }: { onNavigate: (page: Destinatio
       setDownloading(false);
     }
   }
+
+  const checkInDone = checkIn?.status === "checked_in" || reservation?.status === "checked_in";
+  const roomNumber = arrival?.room.number ?? reservation?.roomNumber;
 
   return (
     <Layout
@@ -102,7 +149,7 @@ export function StayOverviewPage({ onNavigate }: { onNavigate: (page: Destinatio
               <div>
                 <p className="gp-label">Room</p>
                 <p className="gp-value">{reservation.roomType}</p>
-                {reservation.roomNumber ? <p className="gp-meta">Room {reservation.roomNumber}</p> : null}
+                <p className="gp-meta">{roomNumber ? `${t(lang, "roomAssigned")} · ${roomNumber}` : t(lang, "roomPending")}</p>
               </div>
               <div>
                 <p className="gp-label">Guests</p>
@@ -115,8 +162,41 @@ export function StayOverviewPage({ onNavigate }: { onNavigate: (page: Destinatio
             </div>
           </section>
 
+          <section className="gp-card gp-precheckin">
+            <div className="gp-stay-row">
+              <div>
+                <p className="gp-label">{t(lang, "preCheckInBlock")}</p>
+                <p className="gp-value">{checkIn ? sessionStatusLabel(checkIn.status, lang) : checkInDone ? t(lang, "statusCheckedIn") : t(lang, "statusInvited")}</p>
+              </div>
+              {checkIn ? <StatusPill label={sessionStatusLabel(checkIn.status, lang)} tone={CHECKIN_TONE[checkIn.status] ?? "info"} /> : null}
+            </div>
+            {checkIn && !checkInDone ? (
+              <button type="button" className="gp-button gp-button-primary" onClick={() => onNavigate("checkin")}>
+                {initialStep(checkIn) === "travellers" && checkIn.status === "invited" ? t(lang, "startPreCheckIn") : t(lang, "continuePreCheckIn")}
+              </button>
+            ) : null}
+            {checkInDone && arrival ? (
+              <button type="button" className="gp-button gp-button-primary" onClick={() => onNavigate("arrival")}>
+                {t(lang, "viewArrival")}
+              </button>
+            ) : null}
+            {arrival?.key ? (
+              <div className="gp-stay-row">
+                <StatusPill label={t(lang, "keyIssued")} tone="ok" />
+                <code className="gp-qr-serial">{arrival.key.serialNumber}</code>
+              </div>
+            ) : checkInDone ? (
+              <StatusPill label={t(lang, "keyPending")} tone="warn" />
+            ) : null}
+            {!checkIn && !checkInAvailable && !checkInDone ? (
+              <button type="button" className="gp-button gp-button-ghost" onClick={() => onNavigate("precheckin")}>
+                Pre-check-in
+              </button>
+            ) : null}
+          </section>
+
           <section className="gp-actions">
-            <button type="button" className="gp-action" onClick={() => onNavigate("precheckin")}>
+            <button type="button" className="gp-action" onClick={() => onNavigate(checkIn ? "checkin" : "precheckin")}>
               <span className="gp-action-icon" aria-hidden>&#9999;</span>
               <span className="gp-action-label">Pre-check-in</span>
               <span className="gp-action-hint">Save time at arrival</span>
@@ -137,6 +217,9 @@ export function StayOverviewPage({ onNavigate }: { onNavigate: (page: Destinatio
               <span className="gp-action-hint">Call the front desk</span>
             </a>
           </section>
+
+          {/* Tanda CHK · corrector REV3-10: canal web del recepcionista IA (POST /guest-portal/chat). */}
+          {checkInAvailable ? <ChatWidget lang={lang} propertyName={reservation.propertyName} /> : null}
         </>
       ) : null}
     </Layout>

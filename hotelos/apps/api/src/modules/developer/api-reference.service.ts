@@ -370,12 +370,24 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "supervisor-authorizations": "la autorización de supervisor",
   "break-glass": "la sesión de emergencia",
   "rate-changes": "el cambio de tarifa",
-  adjustments: "el ajuste"
+  adjustments: "el ajuste",
+  // Check-in automatizado (Tanda CHK): llegadas del día y kioscos de autoservicio.
+  arrivals: "la llegada",
+  kiosks: "el kiosco",
+  // Asignación explicable (Tanda CHK · W3-B · pms/room-assignment.routes.ts): sugerencias del motor y habitaciones comunicadas.
+  "assignment-suggestions": "la sugerencia de asignación",
+  "room-connections": "la conexión de habitaciones (comunicadas o contiguas)"
 };
 
 /** Recursos únicos (sin colección): GET → «Obtener <label>.», PUT → «Sustituir <label>.». */
 export const SINGLETON_LABELS: Record<string, string> = {
   settings: "los ajustes",
+  // Check-in automatizado (Tanda CHK): «/properties/:propertyId/check-in/policy».
+  policy: "la política de check-in en línea",
+  // Check-in automatizado (Tanda CHK · W3-A): «/guest-portal/check-in/otp/request» y «…/otp/verify».
+  otp: "el código de un solo uso (OTP)",
+  // Tanda CHK · W4-D (routes/webhooks-whatsapp.routes.ts): «/webhooks/whatsapp» es público (sin JWT).
+  whatsapp: "el webhook de WhatsApp",
   // OPERA Cloud modo sombra (Tanda 7b): «/integrations/pms-shadow/ingest» y «…/pms-shadow/reconciliation».
   "pms-shadow": "el modo sombra OPERA",
   reconciliation: "la conciliación diaria",
@@ -766,7 +778,21 @@ export const ACTION_LABELS: Record<string, string> = {
   invoice: "Emitir la factura.",
   sellable: "Cambiar si la habitación es vendible.",
   "go-live": "Aprobar la salida en vivo.",
-  "master-folio": "Abrir el folio maestro."
+  "master-folio": "Abrir el folio maestro.",
+  // Check-in automatizado (Tanda CHK · modules/checkin/checkin.routes.ts).
+  mrz: "Leer la zona MRZ del documento de identidad de",
+  complete: "Completar el check-in en línea del huésped.",
+  claim: "Emparejar el kiosco con su código de 8 dígitos y obtener el token del dispositivo.",
+  resend: "Reenviar la invitación de",
+  pair: "Generar el código de emparejamiento de",
+  // Tanda CHK · W3-A: captura, firma, pago, OTP y llegada del huésped («/guest-portal/check-in/…»).
+  document: "Capturar el documento de identidad de",
+  signature: "Registrar la firma de",
+  request: "Solicitar",
+  "payment-link": "Generar el enlace de pago del saldo o depósito del check-in en línea (sin PSP: se cobra en recepción).",
+  arrive: "Registrar la llegada del huésped (móvil o kiosco) y completar el check-in en línea.",
+  // Tanda CHK · corrector (REV3-04): recepción resuelve la derivación (handed_off) y reabre la sesión.
+  "resolve-handoff": "Resolver la derivación a recepción de la sesión de check-in en línea (vuelve a lista para llegar o en curso)."
 };
 
 /** Segmentos que delimitan el alcance («/properties/:propertyId/…») y no describen el recurso. */
@@ -893,6 +919,30 @@ export function describeEndpoint(method: string, path: string): string {
   const last = parts[lastIndex] ?? path;
 
   // Acciones específicas con frase propia.
+  // Check-in automatizado (Tanda CHK): la sesión del portal del huésped no es el check-in de la
+  // reserva, y «POST …/check-in/sessions» invita a la reserva (crea la sesión y envía el enlace).
+  if (last === "check-in" && parts[0] === "guest-portal") {
+    return verb === "PATCH"
+      ? "Actualizar la sesión de check-in en línea del huésped (hora de llegada, preferencias y consentimiento)."
+      : "Obtener la sesión de check-in en línea del huésped.";
+  }
+  if (last === "sessions" && parts[lastIndex - 1] === "check-in" && verb === "POST") return "Invitar a la reserva al check-in en línea (crea la sesión y envía el enlace).";
+  // Tanda CHK · W3-A (checkin.routes.ts): vista y pasos de recepción sobre la reserva («/reservations/:id/check-in[/<paso>]»).
+  if (parts[0] === "reservations" && parts[2] === "check-in" && parts.length <= 4) {
+    if (verb === "GET" && parts.length === 3) return "Obtener el estado del check-in de la reserva (sesión, viajeros, capturas y firmas sin datos personales).";
+    if (last === "scan") return "Escanear el documento de identidad de un viajero en recepción (MRZ o visión).";
+    if (last === "signature") return "Registrar la firma del viajero en recepción.";
+    if (last === "verify-identity") return "Marcar la identidad del viajero como verificada en recepción.";
+    if (last === "complete") return "Completar el check-in de la reserva desde recepción (habitación, check-in anticipado y motivo de excepción).";
+  }
+  // Tanda CHK · W3-B (room-assignment.routes.ts): «POST …/assignment-suggestions» ejecuta el motor explicable.
+  if (verb === "POST" && last === "assignment-suggestions" && parts[0] === "reservations") return "Generar la sugerencia de asignación de habitación de la reserva (motor explicable, con motivo).";
+  // Tanda CHK · W4-D (routes/webhooks-whatsapp.routes.ts): GET verifica la suscripción en Meta y POST recibe los mensajes para el bot del huésped.
+  if (last === "whatsapp" && parts[lastIndex - 1] === "webhooks") {
+    return verb === "GET"
+      ? "Verificar la suscripción del webhook de WhatsApp (reto de Meta: responde hub.challenge)."
+      : "Recibir los mensajes entrantes de WhatsApp (firma HMAC de Meta; se entregan al bot del huésped).";
+  }
   if (last === "check-in") return "Hacer check-in de la reserva.";
   if (last === "check-out") return "Hacer check-out de la reserva (cierra el folio y crea la tarea de limpieza de salida).";
   if (last === "assign-room") return "Asignar o reasignar habitación a la reserva.";

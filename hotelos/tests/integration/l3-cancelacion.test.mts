@@ -125,7 +125,11 @@ async function newReservation(input: { arrivalDate: string; departureDate: strin
       totalAmount: input.totalAmount,
       bookerName: `L3-B ${input.label} ${RUN}`,
       ...(input.cancellationPolicyCode ? { cancellationPolicyCode: input.cancellationPolicyCode } : {}),
-      ...(input.allowPastArrival ? { allowPastArrival: true } : {})
+      // UX-1 (corrector L-02): una llegada anterior a hoy es 400 PAST_ARRIVAL_DATE salvo confirmación
+      // explícita con pms.reservation.modify (la plantilla receptionist la tiene): las candidatas a
+      // no-show del cierre del día llegaron hace días y se registran confirmadas. Se acepta la marca
+      // explícita del caso (main) o, como red de la Tanda CHK, cualquier llegada anterior a hoy.
+      ...(input.allowPastArrival || input.arrivalDate < madridDay(0) ? { allowPastArrival: true } : {})
     }
   });
   assert.ok(created.status === 200 || created.status === 201, created.raw.slice(0, 400));

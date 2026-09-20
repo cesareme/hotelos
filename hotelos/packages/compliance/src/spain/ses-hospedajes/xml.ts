@@ -18,8 +18,9 @@ export type SesContractType = "alquiler" | "alojamiento";
 export type SesPaymentMethod = "card" | "cash" | "bank_transfer" | "platform" | "other";
 
 export type SesGuest = {
-  documentType: "DNI" | "NIE" | "PASSPORT" | "TIE";
-  documentNumber: string;
+  /** Obligatorio salvo menor de 14 años sin documento propio (RD 933/2021: lo aporta el adulto; corrector CHK REV3-06). */
+  documentType?: "DNI" | "NIE" | "PASSPORT" | "TIE";
+  documentNumber?: string;
   documentSupportNumber?: string;
   firstName: string;
   surname1: string;
@@ -93,13 +94,15 @@ function fmtAmount(n: number): string {
 function buildPersonaBlock(guest: SesGuest, idx: number): string {
   const tipoDoc = guest.documentType === "DNI" ? "1" : guest.documentType === "NIE" ? "2" : guest.documentType === "PASSPORT" ? "3" : "4";
   const sexo = guest.gender === "M" ? "1" : guest.gender === "F" ? "2" : "0";
+  // Menor de 14 sin documento propio: el bloque de documento se omite (viaja el del adulto en DocumentoParentesco).
+  const documento = guest.documentNumber
+    ? `        <TipoDocumento>${tipoDoc}</TipoDocumento>\n        <NumeroDocumento>${xmlEscape(guest.documentNumber)}</NumeroDocumento>\n${guest.documentSupportNumber ? `        <NumeroSoporte>${xmlEscape(guest.documentSupportNumber)}</NumeroSoporte>\n` : ""}`
+    : "";
   return `      <Persona>
         <Rol>${idx === 0 ? "TI" : "VI"}</Rol>
         <Nombre>${xmlEscape(guest.firstName)}</Nombre>
         <ApellidoPrimero>${xmlEscape(guest.surname1)}</ApellidoPrimero>
-${guest.surname2 ? `        <ApellidoSegundo>${xmlEscape(guest.surname2)}</ApellidoSegundo>\n` : ""}        <TipoDocumento>${tipoDoc}</TipoDocumento>
-        <NumeroDocumento>${xmlEscape(guest.documentNumber)}</NumeroDocumento>
-${guest.documentSupportNumber ? `        <NumeroSoporte>${xmlEscape(guest.documentSupportNumber)}</NumeroSoporte>\n` : ""}        <FechaNacimiento>${fmtDate(guest.dateOfBirth)}</FechaNacimiento>
+${guest.surname2 ? `        <ApellidoSegundo>${xmlEscape(guest.surname2)}</ApellidoSegundo>\n` : ""}${documento}        <FechaNacimiento>${fmtDate(guest.dateOfBirth)}</FechaNacimiento>
         <Sexo>${sexo}</Sexo>
         <Nacionalidad>${xmlEscape(guest.nationality)}</Nacionalidad>
 ${guest.phone ? `        <Telefono>${xmlEscape(guest.phone)}</Telefono>\n` : ""}${guest.email ? `        <Correo>${xmlEscape(guest.email)}</Correo>\n` : ""}${guest.residenceAddress ? `        <DireccionDomicilio>${xmlEscape(guest.residenceAddress)}</DireccionDomicilio>\n` : ""}${guest.residenceMunicipality ? `        <MunicipioDomicilio>${xmlEscape(guest.residenceMunicipality)}</MunicipioDomicilio>\n` : ""}${guest.residenceProvince ? `        <ProvinciaDomicilio>${xmlEscape(guest.residenceProvince)}</ProvinciaDomicilio>\n` : ""}${guest.residencePostalCode ? `        <CodigoPostalDomicilio>${xmlEscape(guest.residencePostalCode)}</CodigoPostalDomicilio>\n` : ""}${guest.residenceCountry ? `        <PaisDomicilio>${xmlEscape(guest.residenceCountry)}</PaisDomicilio>\n` : ""}${guest.isMinor ? `        <Menor>S</Menor>\n        <ParentescoMenor>${xmlEscape(guest.relationshipToMinor ?? "")}</ParentescoMenor>\n        <NombreParentesco>${xmlEscape(guest.parentName ?? "")}</NombreParentesco>\n        <DocumentoParentesco>${xmlEscape(guest.parentDocumentNumber ?? "")}</DocumentoParentesco>\n` : ""}      </Persona>`;

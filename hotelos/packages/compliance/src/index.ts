@@ -4,4 +4,5 @@ export * from "./invoice-policy.js";
 export * from "./risk-matrix.js";
 export * from "./retention-policy.js";
 export * from "./spain/index.js";
+export * from "./spain/mrz.js";
 export * from "./spain/tax-id.js";

@@ -100,7 +100,57 @@ export type DispatchInput = {
   notificationId?: string;
   /** Override the language preference; defaults to "es". */
   language?: string;
+  /**
+   * Corrector Tanda CHK (SEC-1): secrets that must NEVER be persisted in
+   * `notification_deliveries` (payloadJson.variables / bodyRendered / subject),
+   * e.g. the guest-portal magic-link token or an OTP code. The message is
+   * rendered with the real values for the provider only; the stored copy has
+   * `variables[key]` replaced by REDACTED_MARK and every `values` occurrence
+   * scrubbed from subject/body. A redacted delivery cannot be retried from the
+   * stored body (retryDelivery refuses with `delivery_redacted`).
+   */
+  redact?: { variables?: readonly string[]; values?: readonly string[] };
 };
+
+export const REDACTED_MARK = "[redacted]";
+/** payloadJson flag set on deliveries whose stored copy was redacted. */
+export const REDACTED_FLAG = "redacted";
+
+/** Stored copy of a rendered message with the secret values scrubbed (pure). */
+export function redactRendered(text: string, values: readonly string[]): string {
+  let out = text;
+  for (const value of values) {
+    if (typeof value !== "string" || value.length < 4) continue;
+    out = out.split(value).join(REDACTED_MARK);
+    out = out.split(encodeURIComponent(value)).join(REDACTED_MARK);
+  }
+  return out;
+}
+
+/** Stored copy of the template variables: secret keys replaced, secret values scrubbed from any string (pure). */
+export function redactVariables(variables: Record<string, unknown>, redact: DispatchInput["redact"]): Record<string, unknown> {
+  if (!redact) return variables;
+  const keys = new Set(redact.variables ?? []);
+  const values = (redact.values ?? []).filter((value): value is string => typeof value === "string");
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(variables)) {
+    if (keys.has(key)) out[key] = REDACTED_MARK;
+    else out[key] = typeof value === "string" ? redactRendered(value, values) : value;
+  }
+  return out;
+}
+
+/**
+ * Secret strings to scrub from the stored subject/body: the explicit `values`
+ * (e.g. the bare token, so the stored URL keeps `…?token=[redacted]&property=…`)
+ * or, when the caller gave none, the whole values of the secret `variables`.
+ */
+function secretValuesOf(variables: Record<string, unknown>, redact: DispatchInput["redact"]): string[] {
+  if (!redact) return [];
+  const explicit = (redact.values ?? []).filter((value): value is string => typeof value === "string" && value.length >= 4);
+  if (explicit.length > 0) return explicit;
+  return (redact.variables ?? []).map((key) => variables[key]).filter((value): value is string => typeof value === "string" && value.length >= 4);
+}
 
 /**
  * Dispatch a single notification: resolve template → render → persist queued
@@ -146,6 +196,13 @@ export async function dispatch(input: DispatchInput): Promise<NotificationDelive
       : new Date(input.scheduledFor)
     : null;
 
+  // SEC-1: the provider gets the real message; the row keeps a scrubbed copy.
+  const secrets = secretValuesOf(input.variables, input.redact);
+  const redacted = secrets.length > 0;
+  const storedSubject = redacted ? redactRendered(subject, secrets) : subject;
+  const storedBody = redacted ? redactRendered(body, secrets) : body;
+  const storedVariables = redactVariables(input.variables, input.redact);
+
   const queued = await prisma.notificationDelivery.create({
     data: {
       organizationId: input.organizationId,
@@ -155,9 +212,9 @@ export async function dispatch(input: DispatchInput): Promise<NotificationDelive
       channel: input.channel,
       recipient: input.recipient,
       status: "queued",
-      subject: subject || null,
-      bodyRendered: body,
-      payloadJson: { variables: input.variables } as Prisma.InputJsonValue,
+      subject: storedSubject || null,
+      bodyRendered: storedBody,
+      payloadJson: { variables: storedVariables, ...(redacted ? { [REDACTED_FLAG]: true } : {}) } as Prisma.InputJsonValue,
       attempts: 0,
       scheduledFor
     }
@@ -171,6 +228,11 @@ export async function dispatch(input: DispatchInput): Promise<NotificationDelive
   }
 
   return attemptSend(queued.id, { subject, body, recipient: input.recipient, channel: input.channel });
+}
+
+/** true when the stored copy of the delivery was redacted (secrets scrubbed): it cannot be re-sent from the row. */
+export function isRedactedDelivery(payloadJson: unknown): boolean {
+  return Boolean(payloadJson && typeof payloadJson === "object" && !Array.isArray(payloadJson) && (payloadJson as Record<string, unknown>)[REDACTED_FLAG] === true);
 }
 
 /**
@@ -235,6 +297,9 @@ export async function retryDelivery(deliveryId: string): Promise<NotificationDel
   if (row.status === "sent") {
     return toRecord(row as Row);
   }
+  // SEC-1: the stored body of a redacted delivery has the secret scrubbed; re-sending it would deliver
+  // «[redacted]». The caller re-issues the message (e.g. resend the invitation) instead.
+  if (isRedactedDelivery(row.payloadJson)) throw new Error("delivery_redacted");
   return attemptSend(row.id, {
     subject: row.subject ?? "",
     body: row.bodyRendered ?? "",

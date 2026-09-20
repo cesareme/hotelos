@@ -113,6 +113,12 @@ import { startPmsShadowJob } from "./modules/pms-shadow/pms-shadow.job.js";
 // (modules/reputation/reputation.routes.ts; permisos en modules/reputation/route-permissions.partial.ts);
 // job diario del líder (modules/reputation/reputation-sync.job.ts) en el bloque de schedulers.
 import { registerReputationRoutes } from "./modules/reputation/reputation.routes.js";
+import { registerCheckinRoutes } from "./modules/checkin/checkin.routes.js";
+import { registerRoomAssignmentRoutes } from "./modules/pms/room-assignment.routes.js";
+// Check-in automatizado (Tanda CHK · W3-C/W4-D): jobs del líder (invitación J-3, recordatorio J-1, lote de asignación, purga).
+import { readCheckInConfig } from "./modules/checkin/checkin-config.js";
+import { shouldStartCheckinJobs, startCheckinJobs } from "./modules/checkin/checkin-jobs.js";
+import { paymentLinkServiceContext } from "./modules/checkin/service-context.js";
 import { reputationSyncIntervalMs, startReputationSyncJob } from "./modules/reputation/reputation-sync.job.js";
 import { assertDraftPublishable } from "./modules/reputation/review-draft.service.js";
 import { setReputationAiPort } from "./modules/reputation/reputation-ai.port.js";
@@ -729,6 +735,7 @@ import { globalSearch, type SearchHit } from "./modules/search/search.service.js
 import { webhooksRoutes } from "./routes/webhooks.routes.js";
 import { assistantRoutes } from "./routes/assistant.routes.js";
 import { touristTaxRoutes } from "./routes/tourist-tax.routes.js";
+import { registerWhatsappWebhookRoutes } from "./routes/webhooks-whatsapp.routes.js";
 import { answerQuestion as assistantAnswer, getAvailableTools as assistantTools } from "./modules/assistant/assistant.service.js";
 import {
   computeTouristTax,
@@ -1086,6 +1093,17 @@ async function initSentry() {
 // app.ready()/listen(), i.e. AFTER the ~780 inline routes were declared, so no
 // route ever got a limiter (no x-ratelimit-* headers, no 429 — login included).
 // Callers: start() below and tests/integration (`await buildApiServer()`).
+
+/**
+ * Corrector Tanda CHK (SEC-6): URL de la petición para el log con cualquier
+ * `token=…` (enlace del portal del huésped) sustituido por `token=<redacted>`.
+ * Pura; exportada para tests/cors-contract.test.mjs.
+ */
+export function redactTokenInUrl(url: string | undefined): string | undefined {
+  if (typeof url !== "string") return url;
+  return url.replace(/([?&]token=)[^&#]*/gi, "$1<redacted>");
+}
+
 export async function buildApiServer() {
   // Tanda 4 (rutas-cors) · env contract (lib/env.ts) before anything else
   // reads the environment: with NODE_ENV=production assertEnv throws one
@@ -1107,7 +1125,22 @@ export async function buildApiServer() {
   // recoge antes incluso de que Sentry esté listo (Sentry buffera).
   void initSentry();
 
-  const app = Fastify({ logger: true });
+  // Corrector Tanda CHK (SEC-6): el serializador de `req` redacta cualquier `token=` de la URL
+  // (el enlace del portal del huésped abre GET /guest-portal/check-in?token=…; un token en claro
+  // en los logs equivale a la sesión del huésped). Resto de campos como el serializador por defecto.
+  const app = Fastify({
+    logger: {
+      serializers: {
+        req: (request) => ({
+          method: request.method,
+          url: redactTokenInUrl(request.url),
+          hostname: request.hostname,
+          remoteAddress: request.ip,
+          remotePort: request.socket?.remotePort
+        })
+      }
+    }
+  });
   // E1: el fallo de persistencia de auditoría (P2002…) sale por pino, no por console.error.
   setAuditLogger(app.log.child({ module: "audit" }));
 
@@ -1270,7 +1303,9 @@ export async function buildApiServer() {
     },
     credentials: false,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id", "x-property-id"],
+    // Tanda CHK (corrector REV3-04): el portal del huésped y el kiosco autentican por cabecera
+    // (`x-guest-token` / `x-kiosk-token`, apps/guest-web/src/api/client.ts) desde otro origen en dev (:5189 → :3919).
+    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id", "x-property-id", "x-guest-token", "x-kiosk-token"],
     // Headers the SPA is allowed to READ on a cross-origin response (dev:
     // :5173 → :3000): pagination (lib/pagination.ts), correlation id and the
     // rate-limit budget. Same-origin (production behind Caddy) never needs it.
@@ -1753,6 +1788,17 @@ export async function buildApiServer() {
           : `enabled (every ${Math.round(reputationSyncIntervalMs(Number(process.env.REPUTATION_SYNC_INTERVAL_MS ?? 86_400_000)) / 3_600_000)} h · lease + advisory lock)`
     };
 
+    // Check-in automatizado (Tanda CHK · W3-C/W4-D): jobs del líder; CHECKIN_INVITATION_DISABLED los apaga.
+    const checkinJobsConfig = readCheckInConfig();
+    checks.checkinJobs = {
+      ok: true,
+      message: !schedulerLeader
+        ? "disabled on this instance (RUN_SCHEDULERS=false)"
+        : checkinJobsConfig.invitationDisabled
+          ? "disabled (CHECKIN_INVITATION_DISABLED=true)"
+          : `enabled (every ${Math.round(checkinJobsConfig.invitationIntervalMs / 60_000)} min · invitación J-3, recordatorio J-1, lote de asignación a las ${checkinJobsConfig.assignmentRunAt}, purga · lease)`
+    };
+
     // env (Tanda 4 · rutas-cors): the same contract assertEnv enforced at boot
     // (lib/env.ts). `ok === false` can only happen outside production (there
     // the boot already aborted), i.e. a dev/test box running with an env that
@@ -2187,6 +2233,7 @@ export async function buildApiServer() {
   app.register(webhooksRoutes);
   app.register(assistantRoutes);
   app.register(touristTaxRoutes);
+  registerWhatsappWebhookRoutes(app); // WhatsApp Cloud API · entrada del bot del huésped (Tanda CHK · W4-D)
   // --- Mobile keys / Wallet passes (P1-5) ----------------------------------
   app.post("/reservations/:id/wallet-pass", async (request) => {
     await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
@@ -2979,6 +3026,11 @@ export async function buildApiServer() {
       ...(process.env.GOOGLE_BUSINESS_REDIRECT_URI ? { googleRedirectUri: process.env.GOOGLE_BUSINESS_REDIRECT_URI } : {})
     }
   }); // Reputación y reseñas (Tanda T8)
+  // Check-in automatizado (Tanda CHK · W2-A): sesión de pre-llegada del huésped
+  // (/guest-portal/check-in*, token opaco), llegadas, invitaciones, política y
+  // kioscos del personal (/properties/:propertyId/check-in/* y /kiosks*).
+  registerCheckinRoutes(app);
+  registerRoomAssignmentRoutes(app); // Asignación explicable (Tanda CHK · W3-B): sugerencias, confirmación, lote, bloqueos y comunicadas
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to
@@ -3255,8 +3307,13 @@ export async function buildApiServer() {
     if (!folio) throw new ConflictError("La reserva no tiene folio: no hay nada que pagar.");
     if (folio.balanceDue <= 0.005) throw new ConflictError("El folio no tiene saldo pendiente.");
     const body = (request.body ?? {}) as { returnUrl?: string; clientRequestId?: string };
+    // Tanda CHK (W2-A, diseño R17): el enlace de pago del huésped se crea con el
+    // contexto de servicio de SOLO payment.capture (modules/checkin/service-context.ts),
+    // no con request.userContext (hasta ahora el super-usuario demo). El id del
+    // actor es la reserva de la sesión verificada (VerifiedGuestSession no expone
+    // el id de la fila y el token en claro nunca debe llegar a la auditoría).
     const result = await createPaymentLink({
-      context: request.userContext,
+      context: await paymentLinkServiceContext(session.propertyId, session.reservationId),
       folioId: folio.folio.id,
       amount: folio.balanceDue,
       methodCode: "payment_link",
@@ -7854,7 +7911,7 @@ export async function buildApiServer() {
       limit?: string;
     };
     const organizationId = await resolveOrganizationScope(request, q.organizationId);
-    return listNotificationDeliveries({
+    const rows = await listNotificationDeliveries({
       organizationId,
       propertyId: q.propertyId,
       status: q.status,
@@ -7862,6 +7919,10 @@ export async function buildApiServer() {
       days: q.days ? Number(q.days) : undefined,
       limit: q.limit ? Number(q.limit) : undefined
     });
+    // Corrector Tanda CHK (SEC-1): el cuerpo renderizado y las variables solo para quien gestiona
+    // notificaciones; el resto de usuarios autenticados ve la lista sin payloadJson ni bodyRendered.
+    if (request.userContext.permissions.includes("notifications.manage") || request.userContext.isPlatformAdmin === true) return rows;
+    return rows.map((row) => ({ ...row, bodyRendered: null, payloadJson: null }));
   });
 
   app.post("/notifications/deliveries/:id/retry", async (request) => {
@@ -8897,5 +8958,18 @@ if (entryFile === argFile) {
     }, retentionIntervalMs);
     retentionTimer.unref();
     shutdown.register("documents.retention.job", () => clearInterval(retentionTimer));
+  }
+
+  // Check-in automatizado (Tanda CHK · W3-C, cableado en W4-D): invitación J-3,
+  // recordatorio J-1, lote de sugerencias de habitación (CHECKIN_ASSIGNMENT_RUN_AT)
+  // y purga de sesiones caducadas, solo en las propiedades con selfCheckInEnabled
+  // (modules/checkin/checkin-jobs.ts). Cada vuelta exige el lease del líder
+  // (holdsSchedulerLease dentro de startCheckinJobs) y un advisory lock propio;
+  // CHECKIN_INVITATION_DISABLED=true lo apaga y CHECKIN_INVITATION_INTERVAL_MS
+  // fija la cadencia (1 h por defecto). Vive aquí porque apps/worker no depende de @hotelos/api.
+  const checkinConfig = readCheckInConfig();
+  if (shouldStartCheckinJobs({ runSchedulers: schedulerLeader, disabled: checkinConfig.invitationDisabled })) {
+    const checkinJobs = startCheckinJobs({ log: app.log, intervalMs: checkinConfig.invitationIntervalMs });
+    shutdown.register("checkin.jobs", checkinJobs.stop);
   }
 }

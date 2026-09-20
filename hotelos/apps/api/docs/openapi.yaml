@@ -6651,6 +6651,761 @@ paths:
             schema:
               type: object
               additionalProperties: true
+  /guest-portal/check-in:
+    get:
+      summary: "GET /guest-portal/check-in"
+      operationId: "get-guest-portal-check-in"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: CheckInSessionDto + policy + steps
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+    patch:
+      summary: "PATCH /guest-portal/check-in"
+      operationId: "patch-guest-portal-check-in"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: Sesión cerrada al portal
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                eta:
+                  type: string
+                  maxLength: 40
+                preferences:
+                  oneOf:
+                  - type: array
+                    items:
+                      type: string
+                      maxLength: 40
+                  - type: object
+                    additionalProperties: false
+                    properties:
+                      codes:
+                        type: array
+                        items:
+                          type: string
+                          maxLength: 40
+                      freeText:
+                        type: string
+                        maxLength: 500
+                consent:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    gdpr:
+                      type: boolean
+                    aiDisclosure:
+                      type: boolean
+                    marketing:
+                      type: boolean
+                    whatsappOptIn:
+                      type: boolean
+  /guest-portal/check-in/guests:
+    post:
+      summary: "POST /guest-portal/check-in/guests"
+      operationId: "post-guest-portal-check-in-guests"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        201:
+          description: Created
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: CHECKIN_GUEST_LIMIT
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                firstName:
+                  type: string
+                  maxLength: 80
+                surname1:
+                  type: string
+                  maxLength: 80
+                surname2:
+                  type: string
+                  maxLength: 80
+                sex:
+                  type: string
+                  maxLength: 10
+                nationality:
+                  type: string
+                  maxLength: 3
+                dateOfBirth:
+                  type: string
+                  maxLength: 10
+                documentType:
+                  type: string
+                  maxLength: 20
+                documentNumber:
+                  type: string
+                  maxLength: 30
+                documentSupportNumber:
+                  type: string
+                  maxLength: 30
+                documentExpiryDate:
+                  type: string
+                  maxLength: 10
+                email:
+                  type: string
+                  maxLength: 160
+                phoneMobile:
+                  type: string
+                  maxLength: 20
+                residenceFullAddress:
+                  type: string
+                  maxLength: 200
+                residenceLocality:
+                  type: string
+                  maxLength: 100
+                residenceCountry:
+                  type: string
+                  maxLength: 3
+                kinship:
+                  type: string
+                  maxLength: 40
+                guardianTitle:
+                  type: string
+                  maxLength: 80
+                providedByCheckInGuestId:
+                  type: string
+                  maxLength: 80
+  /guest-portal/check-in/guests/{id}:
+    patch:
+      summary: "PATCH /guest-portal/check-in/guests/:id"
+      operationId: "patch-guest-portal-check-in-guests-by-id"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Viajero no encontrado
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                firstName:
+                  type: string
+                  maxLength: 80
+                surname1:
+                  type: string
+                  maxLength: 80
+                surname2:
+                  type: string
+                  maxLength: 80
+                sex:
+                  type: string
+                  maxLength: 10
+                nationality:
+                  type: string
+                  maxLength: 3
+                dateOfBirth:
+                  type: string
+                  maxLength: 10
+                documentType:
+                  type: string
+                  maxLength: 20
+                documentNumber:
+                  type: string
+                  maxLength: 30
+                documentSupportNumber:
+                  type: string
+                  maxLength: 30
+                documentExpiryDate:
+                  type: string
+                  maxLength: 10
+                email:
+                  type: string
+                  maxLength: 160
+                phoneMobile:
+                  type: string
+                  maxLength: 20
+                residenceFullAddress:
+                  type: string
+                  maxLength: 200
+                residenceLocality:
+                  type: string
+                  maxLength: 100
+                residenceCountry:
+                  type: string
+                  maxLength: 3
+                kinship:
+                  type: string
+                  maxLength: 40
+                guardianTitle:
+                  type: string
+                  maxLength: 80
+                providedByCheckInGuestId:
+                  type: string
+                  maxLength: 80
+    delete:
+      summary: "DELETE /guest-portal/check-in/guests/:id"
+      operationId: "delete-guest-portal-check-in-guests-by-id"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Viajero no encontrado
+        409:
+          description: El viajero ya tiene parte de viajeros
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /guest-portal/check-in/guests/{id}/mrz:
+    post:
+      summary: "POST /guest-portal/check-in/guests/:id/mrz"
+      operationId: "post-guest-portal-check-in-guests-by-id-mrz"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: MRZ_CHECKSUM_FAILED
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                lines:
+                  oneOf:
+                  - type: string
+                    maxLength: 200
+                  - type: array
+                    items:
+                      type: string
+                      maxLength: 44
+              required:
+              - lines
+  /guest-portal/check-in/complete:
+    post:
+      summary: "POST /guest-portal/check-in/complete"
+      operationId: "post-guest-portal-check-in-complete"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: "CHECKIN_INCOMPLETE { missing }"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /guest-portal/check-in/guests/{id}/document:
+    post:
+      summary: "POST /guest-portal/check-in/guests/:id/document"
+      operationId: "post-guest-portal-check-in-guests-by-id-document"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: DOCUMENT_UNREADABLE (ni MRZ válida ni visión)
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        413:
+          description: Imagen mayor que CHECKIN_DOCUMENT_MAX_BYTES
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                imageDataUrl:
+                  type: string
+                  maxLength: 12000000
+                documentType:
+                  type: string
+                  maxLength: 20
+                mrzLines:
+                  oneOf:
+                  - type: string
+                    maxLength: 200
+                  - type: array
+                    items:
+                      type: string
+                      maxLength: 44
+                checkInGuestId:
+                  type: string
+                  maxLength: 80
+  /guest-portal/check-in/guests/{id}/signature:
+    post:
+      summary: "POST /guest-portal/check-in/guests/:id/signature"
+      operationId: "post-guest-portal-check-in-guests-by-id-signature"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        201:
+          description: Created
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: "SIGNATURE_NOT_REQUIRED | GUEST_REGISTER_INCOMPLETE"
+        413:
+          description: SIGNATURE_TOO_LARGE
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                pngBase64:
+                  type: string
+                  maxLength: 6000000
+                svg:
+                  type: string
+                  maxLength: 6000000
+                strokeMeta:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    points:
+                      type: integer
+                      minimum: 0
+                    durationMs:
+                      type: number
+                      minimum: 0
+                    bbox:
+                      type: object
+                      additionalProperties:
+                        type: number
+                  required:
+                  - points
+                  - durationMs
+                  - bbox
+              required:
+              - pngBase64
+              - strokeMeta
+  /guest-portal/check-in/payment-link:
+    post:
+      summary: "POST /guest-portal/check-in/payment-link"
+      operationId: "post-guest-portal-check-in-payment-link"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "no_folio | settled | at_reception (PSP_NOT_CONFIGURED) | link_sent idempotente; 202 link_sent"
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                returnUrl:
+                  type: string
+                  maxLength: 500
+                clientRequestId:
+                  type: string
+                  maxLength: 120
+  /guest-portal/check-in/otp/request:
+    post:
+      summary: "POST /guest-portal/check-in/otp/request"
+      operationId: "post-guest-portal-check-in-otp-request"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: OTP_METHOD_NOT_ALLOWED
+        429:
+          description: OTP_RATE_LIMITED (reenvío antes de 60 s)
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                channel:
+                  type: string
+                  enum:
+                  - email
+                  - phone
+              required:
+              - channel
+  /guest-portal/check-in/otp/verify:
+    post:
+      summary: "POST /guest-portal/check-in/otp/verify"
+      operationId: "post-guest-portal-check-in-otp-verify"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: OTP_INVALID
+        429:
+          description: OTP_RATE_LIMITED (CHECKIN_OTP_MAX_ATTEMPTS)
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  maxLength: 20
+              required:
+              - code
+  /guest-portal/check-in/arrive:
+    post:
+      summary: "POST /guest-portal/check-in/arrive"
+      operationId: "post-guest-portal-check-in-arrive"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: CompleteCheckInResult
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: "IDENTITY_NOT_VERIFIED | GUEST_REGISTER_INCOMPLETE | CHECK_IN_DATE_OUT_OF_RANGE | BALANCE_DUE | ROOM_NOT_READY | CHECKIN_ALREADY_DONE"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                verification:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    method:
+                      type: string
+                      enum:
+                      - visual_reception
+                      - mrz_checksum
+                      - otp_phone
+                      - otp_email
+                      - payment_match
+                      - midni_qr
+                      - reader_hardware
+  /guest-portal/check-in/kiosk/claim:
+    post:
+      summary: "POST /guest-portal/check-in/kiosk/claim"
+      operationId: "post-guest-portal-check-in-kiosk-claim"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        409:
+          description: KIOSK_PAIRING_INVALID
+        429:
+          description: "10 intentos por minuto e IP"
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  maxLength: 12
+              required:
+              - code
+  /guest-portal/chat:
+    post:
+      summary: "POST /guest-portal/chat"
+      operationId: "post-guest-portal-chat"
+      tags:
+      - "guest-portal"
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: GuestBotResult
+        400:
+          description: Bad request
+        401:
+          description: Token del portal no válido o caducado (GUEST_SESSION_INVALID)
+        403:
+          description: Módulo guest_self_service no activado en la propiedad
+        404:
+          description: Resource not found
+        429:
+          description: "30 mensajes por minuto e IP"
+        500:
+          description: Internal server error
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                text:
+                  type: string
+                  maxLength: 4000
+                conversationId:
+                  type: string
+                  maxLength: 64
+                language:
+                  type: string
+                  maxLength: 10
+              required:
+              - text
   /reputation/properties/{propertyId}/reviews:
     get:
       summary: "GET /reputation/properties/:propertyId/reviews"
@@ -12246,6 +13001,36 @@ paths:
               type: object
               additionalProperties: true
   /reservations/{id}/check-in:
+    get:
+      summary: "GET /reservations/:id/check-in"
+      operationId: "get-reservations-by-id-check-in"
+      tags:
+      - reservations
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Sesión + viajeros + capturas y firmas sin PII
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: "Sesión de check-in no encontrada"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
     post:
       summary: "POST /reservations/:id/check-in"
       operationId: "post-reservations-by-id-check-in"
@@ -12276,6 +13061,1250 @@ paths:
         required: true
         schema:
           type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /properties/{propertyId}/check-in/arrivals:
+    get:
+      summary: "GET /properties/:propertyId/check-in/arrivals"
+      operationId: "get-properties-by-propertyid-check-in-arrivals"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ date, items: ArrivalDto[] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: date
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+  /properties/{propertyId}/check-in/sessions:
+    post:
+      summary: "POST /properties/:propertyId/check-in/sessions"
+      operationId: "post-properties-by-propertyid-check-in-sessions"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: InvitationResult
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Permiso ausente o módulo guest_self_service no activado
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reservationId:
+                  type: string
+                  maxLength: 80
+                channel:
+                  type: string
+                  enum:
+                  - email
+                  - whatsapp
+                  - sms
+              required:
+              - reservationId
+              - channel
+  /properties/{propertyId}/check-in/sessions/{id}:
+    get:
+      summary: "GET /properties/:propertyId/check-in/sessions/:id"
+      operationId: "get-properties-by-propertyid-check-in-sessions-by-id"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: CheckInSessionDto
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /properties/{propertyId}/check-in/sessions/{id}/resend:
+    post:
+      summary: "POST /properties/:propertyId/check-in/sessions/:id/resend"
+      operationId: "post-properties-by-propertyid-check-in-sessions-by-id-resend"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: InvitationResult (token anterior revocado)
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                channel:
+                  type: string
+                  enum:
+                  - email
+                  - whatsapp
+                  - sms
+  /properties/{propertyId}/check-in/policy:
+    get:
+      summary: "GET /properties/:propertyId/check-in/policy"
+      operationId: "get-properties-by-propertyid-check-in-policy"
+      tags:
+      - properties
+      x-permissions:
+      - guest_self_service.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: PropertyCheckInPolicyDto
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      summary: "PUT /properties/:propertyId/check-in/policy"
+      operationId: "put-properties-by-propertyid-check-in-policy"
+      tags:
+      - properties
+      x-permissions:
+      - guest_self_service.manage
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: PropertyCheckInPolicyDto
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                selfCheckInEnabled:
+                  type: boolean
+                inviteDaysBefore:
+                  type: integer
+                  minimum: 0
+                  maximum: 30
+                reminderDaysBefore:
+                  type: integer
+                  minimum: 0
+                  maximum: 30
+                allowedVerificationMethods:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - visual_reception
+                    - mrz_checksum
+                    - otp_phone
+                    - otp_email
+                    - payment_match
+                    - midni_qr
+                    - reader_hardware
+                requireVisualCheckAtKiosk:
+                  type: boolean
+                requireInspectedRoom:
+                  type: boolean
+                depositPolicy:
+                  type: string
+                  enum:
+                  - none
+                  - balance
+                  - first_night
+                  - fixed
+                depositAmount:
+                  type: string
+                  maxLength: 13
+                allowWalkIn:
+                  type: boolean
+                allowUpgradeSuggestion:
+                  type: boolean
+                autoAssignLevel:
+                  type: string
+                  enum:
+                  - suggest
+                  - suggest_and_confirm
+                  - preassign
+                assignmentWeights:
+                  type: object
+                  additionalProperties:
+                    type: number
+                welcomeChannelOrder:
+                  type: array
+                  items:
+                    type: string
+                    enum:
+                    - email
+                    - whatsapp
+                    - sms
+                    - kiosk
+                    - reception
+                    - manual
+                guestConsentText:
+                  type: string
+                  maxLength: 4000
+                aiDisclosureText:
+                  type: string
+                  maxLength: 4000
+  /properties/{propertyId}/kiosks:
+    get:
+      summary: "GET /properties/:propertyId/kiosks"
+      operationId: "get-properties-by-propertyid-kiosks"
+      tags:
+      - properties
+      x-permissions:
+      - kiosk.configure
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "KioskDeviceDto[]"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "POST /properties/:propertyId/kiosks"
+      operationId: "post-properties-by-propertyid-kiosks"
+      tags:
+      - properties
+      x-permissions:
+      - kiosk.configure
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        201:
+          description: KioskDeviceDto
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  maxLength: 80
+                capabilities:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    mrzReader:
+                      type: boolean
+                    cardEncoder:
+                      type: boolean
+                    paymentTerminal:
+                      type: boolean
+                    printer:
+                      type: boolean
+                lockProvider:
+                  type: string
+                  maxLength: 40
+                config:
+                  type: object
+              required:
+              - name
+  /properties/{propertyId}/kiosks/{id}:
+    patch:
+      summary: "PATCH /properties/:propertyId/kiosks/:id"
+      operationId: "patch-properties-by-propertyid-kiosks-by-id"
+      tags:
+      - properties
+      x-permissions:
+      - kiosk.configure
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: KioskDeviceDto
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  maxLength: 80
+                capabilities:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    mrzReader:
+                      type: boolean
+                    cardEncoder:
+                      type: boolean
+                    paymentTerminal:
+                      type: boolean
+                    printer:
+                      type: boolean
+                lockProvider:
+                  type: string
+                  maxLength: 40
+                config:
+                  type: object
+                status:
+                  type: string
+                  enum:
+                  - disabled
+                  - offline
+  /properties/{propertyId}/kiosks/{id}/pair:
+    post:
+      summary: "POST /properties/:propertyId/kiosks/:id/pair"
+      operationId: "post-properties-by-propertyid-kiosks-by-id-pair"
+      tags:
+      - properties
+      x-permissions:
+      - kiosk.configure
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ device, pairingCode (una sola vez), expiresAt }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+  /reservations/{id}/check-in/scan:
+    post:
+      summary: "POST /reservations/:id/check-in/scan"
+      operationId: "post-reservations-by-id-check-in-scan"
+      tags:
+      - reservations
+      x-permissions:
+      - ai.tool.execute
+      - guest_register.create
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "IdentityCaptureResult (persisted:false sin checkInGuestId)"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                imageDataUrl:
+                  type: string
+                  maxLength: 12000000
+                documentType:
+                  type: string
+                  maxLength: 20
+                mrzLines:
+                  oneOf:
+                  - type: string
+                    maxLength: 200
+                  - type: array
+                    items:
+                      type: string
+                      maxLength: 44
+                checkInGuestId:
+                  type: string
+                  maxLength: 80
+  /reservations/{id}/check-in/signature:
+    post:
+      summary: "POST /reservations/:id/check-in/signature"
+      operationId: "post-reservations-by-id-check-in-signature"
+      tags:
+      - reservations
+      x-permissions:
+      - guest_register.sign
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        201:
+          description: Created
+        400:
+          description: Se necesita checkInGuestId o guestRegisterRecordId
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: "SIGNATURE_NOT_REQUIRED | GUEST_REGISTER_INCOMPLETE"
+        413:
+          description: SIGNATURE_TOO_LARGE
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                checkInGuestId:
+                  type: string
+                  maxLength: 80
+                guestRegisterRecordId:
+                  type: string
+                  maxLength: 80
+                pngBase64:
+                  type: string
+                  maxLength: 6000000
+                svg:
+                  type: string
+                  maxLength: 6000000
+                strokeMeta:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    points:
+                      type: integer
+                      minimum: 0
+                    durationMs:
+                      type: number
+                      minimum: 0
+                    bbox:
+                      type: object
+                      additionalProperties:
+                        type: number
+                  required:
+                  - points
+                  - durationMs
+                  - bbox
+              required:
+              - pngBase64
+              - strokeMeta
+  /reservations/{id}/check-in/verify-identity:
+    post:
+      summary: "POST /reservations/:id/check-in/verify-identity"
+      operationId: "post-reservations-by-id-check-in-verify-identity"
+      tags:
+      - reservations
+      x-permissions:
+      - guest_register.edit
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ guest, guestRegisterRecord }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                checkInGuestId:
+                  type: string
+                  maxLength: 80
+                method:
+                  type: string
+                  enum:
+                  - visual_reception
+                  - mrz_checksum
+                  - otp_phone
+                  - otp_email
+                  - payment_match
+                  - midni_qr
+                  - reader_hardware
+              required:
+              - checkInGuestId
+  /reservations/{id}/check-in/complete:
+    post:
+      summary: "POST /reservations/:id/check-in/complete"
+      operationId: "post-reservations-by-id-check-in-complete"
+      tags:
+      - reservations
+      x-permissions:
+      - pms.checkin.execute
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: CompleteCheckInResult
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: "CHECKIN_INCOMPLETE | GUEST_REGISTER_INCOMPLETE | ROOM_NOT_READY | CHECKIN_ALREADY_DONE"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                roomId:
+                  type: string
+                  maxLength: 80
+                verification:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    method:
+                      type: string
+                      enum:
+                      - visual_reception
+                      - mrz_checksum
+                      - otp_phone
+                      - otp_email
+                      - payment_match
+                      - midni_qr
+                      - reader_hardware
+                allowEarlyCheckIn:
+                  type: boolean
+                overrideReason:
+                  type: string
+                  maxLength: 500
+  /reservations/{id}/assignment-suggestions:
+    post:
+      summary: "POST /reservations/:id/assignment-suggestions"
+      operationId: "post-reservations-by-id-assignment-suggestions"
+      tags:
+      - reservations
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        201:
+          description: AssignmentSuggestionDto + rejected/dataNotes/housekeepingAlerts
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: ASSIGNMENT_NO_CANDIDATES
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                sessionId:
+                  type: string
+                  maxLength: 80
+    get:
+      summary: "GET /reservations/:id/assignment-suggestions"
+      operationId: "get-reservations-by-id-assignment-suggestions"
+      tags:
+      - reservations
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ current, history }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /assignment-suggestions/{id}/confirm:
+    post:
+      summary: "POST /assignment-suggestions/:id/confirm"
+      operationId: "post-assignment-suggestions-by-id-confirm"
+      tags:
+      - "assignment-suggestions"
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "AssignmentSuggestionDto confirmed | changed"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: ASSIGNMENT_SUGGESTION_DECIDED
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                roomId:
+                  type: string
+                  maxLength: 80
+  /properties/{propertyId}/check-in/assignments/run:
+    post:
+      summary: "POST /properties/:propertyId/check-in/assignments/run"
+      operationId: "post-properties-by-propertyid-check-in-assignments-run"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ date, suggested, skipped, failed[] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                date:
+                  type: string
+                  maxLength: 10
+  /properties/{propertyId}/room-blocks:
+    get:
+      summary: "GET /properties/:propertyId/room-blocks"
+      operationId: "get-properties-by-propertyid-room-blocks"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ items: RoomBlock[] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "POST /properties/:propertyId/room-blocks"
+      operationId: "post-properties-by-propertyid-room-blocks"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        201:
+          description: Created
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: ROOM_BLOCK_OVERLAP
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                roomId:
+                  type: string
+                  maxLength: 80
+                fromDate:
+                  type: string
+                  maxLength: 10
+                toDate:
+                  type: string
+                  maxLength: 10
+                reason:
+                  type: string
+                  enum:
+                  - maintenance
+                  - deep_clean
+                  - owner
+                  - event
+                  - other
+                note:
+                  type: string
+                  maxLength: 500
+                workOrderId:
+                  type: string
+                  maxLength: 80
+              required:
+              - roomId
+              - fromDate
+              - toDate
+              - reason
+  /room-blocks/{id}:
+    delete:
+      summary: "DELETE /room-blocks/:id"
+      operationId: "delete-room-blocks-by-id"
+      tags:
+      - "room-blocks"
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /properties/{propertyId}/room-connections:
+    get:
+      summary: "GET /properties/:propertyId/room-connections"
+      operationId: "get-properties-by-propertyid-room-connections"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.read
+      x-risk-level: low
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ items: RoomConnection[] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: "POST /properties/:propertyId/room-connections"
+      operationId: "post-properties-by-propertyid-room-connections"
+      tags:
+      - properties
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        201:
+          description: Created
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: ROOM_CONNECTION_EXISTS
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                roomAId:
+                  type: string
+                  maxLength: 80
+                roomBId:
+                  type: string
+                  maxLength: 80
+                kind:
+                  type: string
+                  enum:
+                  - connecting
+                  - adjacent
+              required:
+              - roomAId
+              - roomBId
+              - kind
+  /room-connections/{id}:
+    delete:
+      summary: "DELETE /room-connections/:id"
+      operationId: "delete-room-connections-by-id"
+      tags:
+      - "room-connections"
+      x-permissions:
+      - pms.reservation.modify
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /webhooks/whatsapp:
+    get:
+      summary: GET /webhooks/whatsapp
+      operationId: "get-webhooks-whatsapp"
+      tags:
+      - webhooks
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: hub.challenge (text/plain)
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: WHATSAPP_VERIFY_TOKEN_INVALID
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+        503:
+          description: WHATSAPP_WEBHOOK_NOT_CONFIGURED (sin WHATSAPP_VERIFY_TOKEN)
+      parameters:
+      - name: hub.mode
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: hub.verify_token
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: hub.challenge
+        in: query
+        required: true
+        schema:
+          type: string
+    post:
+      summary: POST /webhooks/whatsapp
+      operationId: "post-webhooks-whatsapp"
+      tags:
+      - webhooks
+      x-permissions: []
+      x-risk-level: public
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ received, processed, failed, simulated } (siempre 200 tras verificar la firma)"
+        400:
+          description: Bad request
+        401:
+          description: WHATSAPP_SIGNATURE_INVALID
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+        503:
+          description: WHATSAPP_WEBHOOK_NOT_CONFIGURED (sin WHATSAPP_APP_SECRET en producción)
       requestBody:
         required: false
         content:

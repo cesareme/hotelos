@@ -38,6 +38,7 @@ import { getPropertyTaxProfile, invalidateTaxCache } from "../accounting/tax-rat
 import { resolveSesEstablishment } from "../compliance/ses-submission.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, RbacForbiddenError } from "../../lib/http-error.js";
+import { assertWhatsappPhoneIdFree } from "../ai-operations/property-ai.service.js";
 import { ensureRoleHasPermissions } from "../../lib/rbac-catalog.js";
 import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
 // Tanda 6b (L2 · estructura societaria): the issuer identity (NIF, razón social)
@@ -6376,6 +6377,8 @@ export async function patchAiSettings(input: BackOfficeMutationInput & { patch: 
   }
   const { settings: current, provisioned } = await resolveAiSettings(input.propertyId);
   const before = { ...current };
+  // Corrector Tanda CHK (SEC-4): un phone_number_id de WhatsApp ya reclamado por otra propiedad → 409.
+  if (input.patch.configurationJson !== undefined) await assertWhatsappPhoneIdFree(input.propertyId, input.patch.configurationJson);
   // Prisma first: upsert by propertyId so a missing row is created from the current
   // values (defaults or seed record) merged with the patch; then mirror the mapped row.
   const data: Prisma.PropertyAiSettingUncheckedUpdateInput = {};

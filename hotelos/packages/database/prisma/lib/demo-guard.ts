@@ -18,8 +18,10 @@
 
 // Tanda UX-1 (lote U1): el tenant aislado del «día de prueba» de recepción
 // (prisma/seed-ux-day.ts) también es demo: org_uxday / prop_uxday.
-export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday"];
-export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday"];
+// Tanda CHK (lote W1-D): el tenant aislado del check-in automatizado
+// (prisma/seed-checkin.ts) también es demo: org_chk / prop_chk.
+export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday", "org_chk"];
+export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday", "prop_chk"];
 
 /** One write the seed intends to perform (printed before the decision). */
 export type PlannedWrite = {

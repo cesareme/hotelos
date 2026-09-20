@@ -1902,6 +1902,249 @@ model GuestPortalAction {
   @@map("guest_portal_actions")
 }
 
+// ---------------------------------------------------------------------------
+// Check-in automatizado (Tanda CHK · W1-A, docs/design/CHECKIN-AUTOMATIZADO-IA.md §6).
+// Estados como String documentados con `///` (0 enums nuevos, como
+// PropertyAiToolSetting.automationLevel); todo aditivo y reversible. La llave
+// móvil sigue en GuestPortalAction (actionType mkey_*), no hay modelo MobileKey.
+// ---------------------------------------------------------------------------
+
+/// Una sesión por reserva: estado del pre-check-in y de la llegada.
+model CheckInSession {
+  id                   String    @id @default(cuid())
+  organizationId       String    @map("organization_id")
+  propertyId           String    @map("property_id")
+  reservationId        String    @map("reservation_id")
+  guestPortalSessionId String?   @map("guest_portal_session_id")
+  /// invited | in_progress | ready_for_arrival | arrived | checked_in | handed_off | expired | cancelled
+  status               String    @default("invited")
+  /// email | whatsapp | sms | kiosk | reception | manual
+  channel              String
+  invitedAt            DateTime? @map("invited_at")
+  reminderAt           DateTime? @map("reminder_at")
+  completedAt          DateTime? @map("completed_at")
+  arrivedAt            DateTime? @map("arrived_at")
+  checkedInAt          DateTime? @map("checked_in_at")
+  /// Hora de llegada declarada por el huésped (HH:MM).
+  etaDeclared          String?   @map("eta_declared")
+  /// string[] con el vocabulario PREFERENCE_VOCABULARY de packages/shared/src/checkin-types.ts.
+  preferencesJson      Json      @default("[]") @map("preferences_json")
+  /// { gdprAt, aiDisclosureAt, marketing, whatsappOptInAt }
+  consentJson          Json      @default("{}") @map("consent_json")
+  /// none | link_sent | paid | authorized | failed | at_reception
+  paymentStatus        String    @default("none") @map("payment_status")
+  paymentIntentId      String?   @map("payment_intent_id")
+  paymentTokenId       String?   @map("payment_token_id")
+  handoffKind          String?   @map("handoff_kind")
+  handoffReason        String?   @map("handoff_reason")
+  kioskDeviceId        String?   @map("kiosk_device_id")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  guests CheckInGuest[]
+
+  @@unique([reservationId])
+  @@index([propertyId, status])
+  @@map("checkin_sessions")
+}
+
+/// Un viajero de la sesión (titular + acompañantes) → Guest y GuestRegisterRecord.
+/// PII cifrada en reposo (PII_FIELDS.CheckInGuest, packages/database/src/crypto-fields.ts)
+/// con hash de búsqueda determinista (LOOKUP_HASH_FIELDS.CheckInGuest).
+model CheckInGuest {
+  id                         String    @id @default(cuid())
+  sessionId                  String    @map("session_id")
+  propertyId                 String    @map("property_id")
+  guestId                    String?   @map("guest_id")
+  guestRegisterRecordId      String?   @map("guest_register_record_id")
+  isPrimary                  Boolean   @default(false) @map("is_primary")
+  ordinal                    Int
+  /// pending | document_captured | data_complete | signed | verified
+  status                     String    @default("pending")
+  ageAtArrival               Int?      @map("age_at_arrival")
+  isMinor                    Boolean   @default(false) @map("is_minor")
+  providedByCheckInGuestId   String?   @map("provided_by_checkin_guest_id")
+  kinship                    String?
+  guardianTitle              String?   @map("guardian_title")
+  /// visual_reception | mrz_checksum | otp_phone | otp_email | payment_match | midni_qr | reader_hardware
+  identityVerificationMethod String?   @map("identity_verification_method")
+  identityVerifiedAt         DateTime? @map("identity_verified_at")
+  identityVerifiedBy         String?   @map("identity_verified_by")
+  firstName                  String?   @map("first_name")
+  surname1                   String?   @map("surname_1")
+  surname2                   String?   @map("surname_2")
+  sex                        String?
+  nationality                String?
+  dateOfBirth                DateTime? @map("date_of_birth")
+  documentType               String?   @map("document_type")
+  documentExpiryDate         DateTime? @map("document_expiry_date")
+  residenceLocality          String?   @map("residence_locality")
+  residenceCountry           String?   @map("residence_country")
+  documentNumber             String?   @map("document_number")
+  documentNumberLookupHash   String?   @map("document_number_lookup_hash")
+  documentSupportNumber      String?   @map("document_support_number")
+  email                      String?
+  emailLookupHash            String?   @map("email_lookup_hash")
+  phoneMobile                String?   @map("phone_mobile")
+  phoneMobileLookupHash      String?   @map("phone_mobile_lookup_hash")
+  residenceFullAddress       String?   @map("residence_full_address")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
+
+  session CheckInSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, ordinal])
+  @@index([guestRegisterRecordId])
+  @@index([propertyId])
+  @@map("checkin_guests")
+}
+
+/// Resultado de una lectura de documento: campos NO PII + confianza + checks MRZ. NUNCA la imagen.
+model DocumentCapture {
+  id               String   @id @default(cuid())
+  checkInGuestId   String   @map("checkin_guest_id")
+  propertyId       String   @map("property_id")
+  /// mrz_reader | mrz_ai | ai_vision | manual
+  source           String
+  /// TD1 | TD3
+  mrzFormat        String?  @map("mrz_format")
+  /// { document, birth, expiry, composite } — checksums MRZ (ICAO 9303).
+  checksJson       Json     @default("{}") @map("checks_json")
+  /// SOLO valores no PII (documentType, sex, nationality, fechas, formato); los PII van a CheckInGuest.
+  fieldsJson       Json     @default("{}") @map("fields_json")
+  confidenceJson   Json     @default("{}") @map("confidence_json")
+  /// string[] de campos que requieren revisión humana.
+  needsReviewJson  Json     @default("[]") @map("needs_review_json")
+  model            String?
+  tokensInput      Int?     @map("tokens_input")
+  tokensOutput     Int?     @map("tokens_output")
+  costEur          Decimal? @map("cost_eur") @db.Decimal(10, 4)
+  /// Siempre false: la imagen del documento no se persiste.
+  imageStored      Boolean  @default(false) @map("image_stored")
+  imageDiscardedAt DateTime @map("image_discarded_at")
+  processingMs     Int?     @map("processing_ms")
+  /// Después de esta fecha se vacían fieldsJson/confidenceJson y queda la métrica.
+  purgeAt          DateTime @map("purge_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([checkInGuestId])
+  @@index([purgeAt])
+  @@map("document_captures")
+}
+
+/// Firma del parte de viajeros: hash del trazo/PDF + evidencias.
+model Signature {
+  id                    String   @id @default(cuid())
+  organizationId        String   @map("organization_id")
+  propertyId            String   @map("property_id")
+  checkInGuestId        String?  @map("checkin_guest_id")
+  guestRegisterRecordId String   @map("guest_register_record_id")
+  /// data-URI provisional (PNG/SVG) o clave del almacén de documentos de la Tanda 9.
+  objectKey             String   @map("object_key")
+  sha256                String
+  pdfObjectKey          String?  @map("pdf_object_key")
+  pdfSha256             String?  @map("pdf_sha256")
+  signedAt              DateTime @map("signed_at")
+  ip                    String?
+  userAgent             String?  @map("user_agent")
+  sessionId             String?  @map("session_id")
+  /// { points, durationMs, bbox }
+  strokeMetaJson        Json     @default("{}") @map("stroke_meta_json")
+  /// touch_portal | touch_kiosk | touch_reception | paper_scanned
+  method                String
+  retentionUntil        DateTime @map("retention_until")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([guestRegisterRecordId])
+  @@index([retentionUntil])
+  @@map("signatures")
+}
+
+/// Sugerencia de asignación de habitación con candidatas y motivos.
+model AssignmentSuggestion {
+  id              String    @id @default(cuid())
+  propertyId      String    @map("property_id")
+  reservationId   String    @map("reservation_id")
+  sessionId       String?   @map("session_id")
+  /// AssignmentCandidate[] (top-3 con reasons y warnings; packages/shared/src/checkin-types.ts).
+  candidatesJson  Json      @map("candidates_json")
+  rejectedCount   Int       @default(0) @map("rejected_count")
+  chosenRoomId    String?   @map("chosen_room_id")
+  confidence      Decimal   @db.Decimal(5, 4)
+  rulesVersion    String    @map("rules_version")
+  /// rules | rules+ai
+  source          String
+  /// suggest | suggest_and_confirm | preassign (PropertyCheckInPolicy.autoAssignLevel al sugerir).
+  automationLevel String    @map("automation_level")
+  /// suggested | confirmed | changed | auto_assigned | expired
+  status          String    @default("suggested")
+  decidedBy       String?   @map("decided_by")
+  decidedAt       DateTime? @map("decided_at")
+  aiToolCallId    String?   @map("ai_tool_call_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, status, createdAt])
+  @@index([reservationId])
+  @@map("assignment_suggestions")
+}
+
+/// Kiosco de auto check-in emparejado con la propiedad.
+model KioskDevice {
+  id               String    @id @default(cuid())
+  propertyId       String    @map("property_id")
+  name             String
+  pairingCodeHash  String?   @map("pairing_code_hash")
+  pairingExpiresAt DateTime? @map("pairing_expires_at")
+  pairedAt         DateTime? @map("paired_at")
+  deviceTokenHash  String?   @map("device_token_hash")
+  lastSeenAt       DateTime? @map("last_seen_at")
+  /// unpaired | online | offline | disabled
+  status           String    @default("unpaired")
+  /// { mrzReader, cardEncoder, paymentTerminal, printer }
+  capabilitiesJson Json      @default("{}") @map("capabilities_json")
+  lockProvider     String?   @map("lock_provider")
+  /// idioma, tiempo de inactividad, upsell
+  configJson       Json      @default("{}") @map("config_json")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@map("kiosk_devices")
+}
+
+/// Política de check-in de la propiedad: self check-in, verificación, depósito, asignación, kiosco.
+model PropertyCheckInPolicy {
+  id                             String   @id @default(cuid())
+  propertyId                     String   @map("property_id")
+  selfCheckInEnabled             Boolean  @default(false) @map("self_checkin_enabled")
+  inviteDaysBefore               Int      @default(3) @map("invite_days_before")
+  reminderDaysBefore             Int      @default(1) @map("reminder_days_before")
+  /// IdentityVerificationMethod[] permitidos en la propiedad.
+  allowedVerificationMethodsJson Json     @default("[\"visual_reception\",\"mrz_checksum\",\"otp_email\"]") @map("allowed_verification_methods_json")
+  requireVisualCheckAtKiosk      Boolean  @default(true) @map("require_visual_check_at_kiosk")
+  requireInspectedRoom           Boolean  @default(false) @map("require_inspected_room")
+  /// none | balance | first_night | fixed
+  depositPolicy                  String   @default("balance") @map("deposit_policy")
+  depositAmount                  Decimal? @map("deposit_amount") @db.Decimal(12, 2)
+  /// Corrector CHK (REV3-02): sin PSP, `paymentStatus at_reception` solo satisface depositPolicy para
+  /// el huésped/kiosco si la propiedad admite el pago en recepción; recepción nunca queda bloqueada.
+  allowPayAtReception            Boolean  @default(false) @map("allow_pay_at_reception")
+  allowWalkIn                    Boolean  @default(false) @map("allow_walk_in")
+  allowUpgradeSuggestion         Boolean  @default(true) @map("allow_upgrade_suggestion")
+  /// suggest | suggest_and_confirm | preassign
+  autoAssignLevel                String   @default("suggest_and_confirm") @map("auto_assign_level")
+  assignmentWeightsJson          Json     @default("{}") @map("assignment_weights_json")
+  /// CheckInChannel[] en orden de preferencia para la bienvenida.
+  welcomeChannelOrderJson        Json     @default("[\"whatsapp\",\"email\",\"sms\"]") @map("welcome_channel_order_json")
+  guestConsentText               String?  @map("guest_consent_text")
+  aiDisclosureText               String?  @map("ai_disclosure_text")
+  createdAt                      DateTime @default(now()) @map("created_at")
+  updatedAt                      DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId])
+  @@map("property_checkin_policies")
+}
+
 model UpsellOffer {
   id                    String   @id @default(cuid())
   propertyId            String   @map("property_id")
@@ -3342,6 +3585,39 @@ model RoomFeature {
 
   @@unique([propertyId, code])
   @@map("room_features")
+}
+
+/// Bloqueo de habitación por fechas (Tanda CHK · W1-A): excluye la habitación de la asignación.
+model RoomBlock {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  roomId      String   @map("room_id")
+  fromDate    DateTime @map("from_date") @db.Date
+  toDate      DateTime @map("to_date") @db.Date
+  /// maintenance | deep_clean | owner | event | other
+  reason      String
+  workOrderId String?  @map("work_order_id")
+  note        String?
+  createdBy   String   @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([roomId, fromDate, toDate])
+  @@index([propertyId])
+  @@map("room_blocks")
+}
+
+/// Relación física entre dos habitaciones (Tanda CHK · W1-A) para la asignación de grupos.
+model RoomConnection {
+  id         String @id @default(cuid())
+  propertyId String @map("property_id")
+  roomAId    String @map("room_a_id")
+  roomBId    String @map("room_b_id")
+  /// connecting | adjacent
+  kind       String
+
+  @@unique([roomAId, roomBId])
+  @@index([propertyId])
+  @@map("room_connections")
 }
 
 model BedType {

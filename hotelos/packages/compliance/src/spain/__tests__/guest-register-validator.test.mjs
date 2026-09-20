@@ -107,6 +107,15 @@ describe("validateSpainGuestRegisterRecord — minors (under 14)", () => {
     assert.equal(result.status, "ready_to_submit");
   });
 
+  it("corrector CHK (REV3-06): a minor without own document nor phone still validates (the adult provides them, FAQ MIR: DNI only > 14)", () => {
+    const result = validateSpainGuestRegisterRecord({ ...MINOR, age: 9, documentType: undefined, documentNumber: undefined, documentSupportNumber: undefined, phoneMobile: undefined, phoneLandline: undefined });
+    assert.equal(result.valid, true, codes(result).join(","));
+    assert.equal(result.status, "ready_to_submit");
+    // The same omissions on an adult keep failing (no regression on the adult rule).
+    const adult = validateSpainGuestRegisterRecord({ ...COMPLETE_ADULT, documentType: undefined, documentNumber: undefined, phoneMobile: undefined });
+    assert.deepEqual(codes(adult).sort(), ["missing_documentNumber", "missing_documentType", "missing_phone_contact", "signature_required"]);
+  });
+
   it("minor without adult link nor kinship → missing_data with both codes and still no signature issue", () => {
     const result = validateSpainGuestRegisterRecord({ ...MINOR, age: 8, providedByAdultGuestId: undefined, kinshipRelationIfMinor: undefined });
     assert.equal(result.valid, false);

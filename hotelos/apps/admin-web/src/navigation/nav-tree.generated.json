@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 293,
+      "csvRows": 294,
       "categories": 9,
       "items": 70,
-      "tabs": 103,
+      "tabs": 104,
       "devOnly": 21,
       "retired": 72,
       "aliases": 25,
@@ -104,6 +104,18 @@
                 "direccion",
                 "admin",
                 "propiedad",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "CheckInAutomationSettingsScreen",
+              "label": "Check-in automatizado",
+              "url": "/hoy/check-in-automatizado",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "admin",
                 "auditoria"
               ],
               "modulesAny": []

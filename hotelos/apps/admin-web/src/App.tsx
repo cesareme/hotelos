@@ -187,6 +187,8 @@ const SCREEN_COMPONENTS = {
   OperationsDirectorScreen: MiDiaTabs,
   GeneralManagerScreen: MiDiaTabs,
   OwnerHome: MiDiaTabs,
+  // Tanda CHK · W4-B: pestaña «Check-in automatizado» de Mi día (/hoy/check-in-automatizado).
+  CheckInAutomationSettingsScreen: MiDiaTabs,
   AssistantChat: AssistantChatScreen,
   ShiftManagerScreen,
   NightAuditScreen,

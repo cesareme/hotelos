@@ -271,7 +271,21 @@ Returns `confirmation_required` with a confirmation card, or `rejected` with err
 }
 ```
 
-Executes check-in, marks room occupied, signs guest register record, queues SES.HOSPEDAJES, queues welcome message, and writes audit/domain events.
+Executes check-in, marks room occupied, signs guest register record, queues SES.HOSPEDAJES, sends the welcome message, and writes audit/domain events.
+
+**Tanda CHK (2026-09-19):** `signatureObjectKey` debe ser el **id de una fila de `signatures`** (el `signatureId` que
+devuelven `POST /reservations/:id/check-in/signature` y `POST /guest-portal/check-in/guests/:id/signature`,
+`modules/checkin/signature.service.ts`): los literales `sig_drawer_checkin` / `sig_manual_checkin` / `sig_demo_guest` ya
+no representan una firma. La ruta conserva el respaldo `sig_demo_guest` cuando el cuerpo no trae clave (compatibilidad
+del cajón clásico), pero `completeCheckIn` (`arrival.service.ts`) rechaza esos literales con 409
+`GUEST_REGISTER_INCOMPLETE { missing[].reason: "legacy_signature" }`. `executeConfirmation` (`modules/ai/check-in.command.ts`)
+tolera como **avisos** (`warnings[]`, nunca deshace el check-in ya hecho) los 409 de la cadena SES
+`SES_ESTABLISHMENT_INCOMPLETE`, `SES_DISABLED`, `GUEST_REGISTER_INVALID` y `SES_SUBMISSION_IN_FLIGHT`
+(`TOLERATED_SES_CODES`); cualquier otro error propaga. La bienvenida (`sendWelcomeMessage`, W2-D) se **espera** y la
+respuesta lleva `welcome { status: sent|simulated|failed|skipped, channel, deliveryId? }`; lo que no fue un envío real se
+anota en `warnings[]` (auditoría `GUEST_WELCOME_MESSAGE_SENT`). El flujo nuevo (pre-check-in, kiosco, bot y copiloto)
+cierra la llegada por `POST /reservations/:id/check-in/complete` / `POST /guest-portal/check-in/arrive` y confirma la IA
+en `POST /ai/tool-calls/:id/confirm`: ver «Check-in automatizado (Tanda CHK · 2026-09-19)».
 
 ## Operations
 
@@ -599,10 +613,128 @@ SECRET_ACCESS_KEY`, `DOCUMENT_MAX_BYTES` (25 MiB), `DOCUMENT_UPLOAD_BODY_LIMIT` 
 `corepack pnpm --filter @hotelos/api demo:seed-documents -- --dry-run | --apply | --purge --apply` (solo la allowlist demo;
 runbook §9). Rutas retiradas por la tanda: `GET /properties/:propertyId/supplier-bills` y `POST /supplier-bills/drafts`
 (ver «Accounting» y la tabla de rutas retiradas).
+## Check-in automatizado (Tanda CHK · 2026-09-19)
+
+Fuente: `docs/design/CHECKIN-AUTOMATIZADO-IA.md` (§7 API, permisos y privacidad; apéndice «Estado tras la implementación»);
+código `apps/api/src/modules/checkin/*` (rutas `checkin.routes.ts`, manifiesto `route-permissions.partial.ts` con 30
+entradas, esquemas `checkin.schemas.ts` todos `.strict()` → 400 `VALIDATION_ERROR`), asignación
+`apps/api/src/modules/pms/room-assignment.{routes,service,engine}.ts` + `room-assignment-route-permissions.partial.ts`
+(10 entradas), webhook `apps/api/src/routes/webhooks-whatsapp.routes.ts` (2 entradas en `route-permissions.ts`); runbook
+`docs/runbooks/checkin-automatizado.md`; tipos wire `packages/shared/src/checkin-types.ts` (`CheckInSessionDto`,
+`CheckInGuestDto`, `DocumentCaptureResult`, `AssignmentSuggestionDto`, `PropertyCheckInPolicyDto`, `KioskDeviceDto`,
+`CHECKIN_ERROR_CODES`). Migración única `20260920150000_checkin_automatizado` (9 tablas, 0 enums). Requisito de las rutas
+del huésped y de las invitaciones: módulo `guest_self_service` activado en la propiedad (403 «El módulo guest_self_service
+no está activado en esta propiedad.»); las de configuración (política, kioscos, llegadas) no lo exigen.
+
+**Autenticación del huésped:** rutas `/guest-portal/check-in*` y `/guest-portal/chat` con `permissions: []`,
+`riskLevel: "public"` (prefijos en `PUBLIC_PREFIXES` de `lib/auth-context.ts`); el token opaco de `GuestPortalSession`
+viaja en la cabecera `x-guest-token` o en `?token=` (misma lectura que `/guest-portal/reservation`); inválido →
+`401 { message, details.code: "GUEST_SESSION_INVALID" }`. Un kiosco emparejado añade `x-kiosk-token` y solo cuenta si es de
+la MISMA propiedad que la sesión (si no, actor `guest`; nunca 401). Las escrituras de dominio usan el contexto de servicio
+(`modules/checkin/service-context.ts`: `guest:<sessionId>` · `kiosk:<deviceId>` · `system:checkin:<job>`; auditoría
+`actorType: "system"` con `actorUserId` = ese id). CORS: `allowedHeaders` de `server.ts` aún no incluye `x-guest-token` ni
+`x-kiosk-token` (`tests/cors-contract.test.mjs` fija el literal): un portal servido en otro origen usa `?token=`; en
+producción el portal es same-origin tras Caddy.
+
+| Método y ruta (huésped) | Cuerpo | Respuesta · errores |
+|---|---|---|
+| `GET /guest-portal/check-in` | — | `CheckInSessionDto & { policy: PropertyCheckInPolicyDto, steps: { key: travellers\|identity\|details\|preferences\|signature\|payment\|complete, status: pending\|done\|optional\|not_required }[] }` |
+| `PATCH /guest-portal/check-in` | `{ eta?: string\|null, preferences?: string[] \| { codes?: string[], freeText?: string }, consent?: { gdpr?, aiDisclosure?, marketing?, whatsappOptIn? } }` | sesión actualizada (`in_progress`); ETA → `Reservation.eta`; códigos filtrados por `PREFERENCE_VOCABULARY`; consentimientos fechados en `consent` (corrector REV3-08: el resto de claves de `consentJson`, p. ej. el OTP pendiente, se conserva); 409 si la sesión está cerrada (`arrived\|checked_in\|handed_off\|expired\|cancelled`) |
+| `POST /guest-portal/check-in/guests` | `GuestInput` (`firstName, surname1, surname2, sex (H\|M\|O; F/M admitidos), nationality (ISO/ICAO), dateOfBirth, documentType, documentNumber, documentSupportNumber, documentExpiryDate, email, phoneMobile (E.164), residenceFullAddress, residenceLocality, residenceCountry, kinship, guardianTitle, providedByCheckInGuestId`) | 201 `{ guest: CheckInGuestDto, session }`; rellena primero el hueco `pending`; 409 `CHECKIN_GUEST_LIMIT` (más de `adults + children`); un menor exige `providedByCheckInGuestId` adulto de la sesión |
+| `PATCH /guest-portal/check-in/guests/:id` · `DELETE …/guests/:id` | `GuestInput` · — | viajero actualizado (un `signed\|verified` no retrocede); 404 «Viajero no encontrado.»; `DELETE` 409 si tiene parte |
+| `POST /guest-portal/check-in/guests/:id/mrz` | `{ lines: string \| string[] (2-3 líneas ≤ 44) }` | `MrzApplyResult { guest, missing[], capture { id, source: "mrz_reader", format, checks, needsReview, fields (no PII) }, warnings[] }`; 400 `MRZ_CHECKSUM_FAILED`; marca `identityVerificationMethod mrz_checksum` sin `identityVerifiedAt`. Corrector REV3-05 (§4d): si el nombre del documento no coincide con ningún viajero de la reserva, los campos NO se aplican, `capture.needsReview = ["identity_mismatch"]` y `warnings` lo dice (recepción coteja) |
+| `POST /guest-portal/check-in/guests/:id/document` (bodyLimit 8 MB) | `{ imageDataUrl?: "data:image/…;base64,…", mrzLines?, documentType? }` (uno de los dos) | `{ capture: DocumentCaptureResult & { captureId, persisted, warnings[] }, guest, session }`; 400 `DOCUMENT_UNREADABLE { captureId, needsReview, warnings }` cuando ni MRZ válida ni visión; 413 si la imagen supera `CHECKIN_DOCUMENT_MAX_BYTES`; nombre distinto del titular/acompañantes → aviso + `identity_mismatch` en `needsReview` y el viajero no se actualiza |
+| `POST /guest-portal/check-in/guests/:id/signature` | `{ pngBase64, svg?, strokeMeta: { points, durationMs, bbox } }` | 201 `SignGuestResult { signatureId, guestRegisterRecordId, checkInGuestId, sha256, pdfSha256, signedAt, retentionUntil, method: touch_portal\|touch_kiosk, guestRegisterStatus, checkInGuestStatus }`; 409 `SIGNATURE_NOT_REQUIRED` (< 14 años), 409 `GUEST_REGISTER_INCOMPLETE { missing }`, 413 `SIGNATURE_TOO_LARGE { maxBytes }` |
+| `POST /guest-portal/check-in/payment-link` | `{ returnUrl?, clientRequestId? }` | `{ status: "no_folio" \| "settled" \| "link_sent" \| "at_reception", paymentStatus, link? }` (`link_sent` 202, 200 si idempotente); `PSP_NOT_CONFIGURED` del PSP se convierte en `at_reception` con `details`; auditoría `CheckInPaymentStatusChanged` |
+| `POST /guest-portal/check-in/complete` | — | sesión `ready_for_arrival` + parte por viajero + evento `CheckInPreArrivalCompleted`; 409 `CHECKIN_INCOMPLETE { missing: { checkInGuestId, ordinal, isPrimary, fields[] }[] }` |
+| `POST /guest-portal/check-in/otp/request` · `…/otp/verify` | `{ channel: "email" \| "phone" }` · `{ code }` | `{ channel, method, expiresAt, simulated, debugCode? }` (solo fuera de producción con `HOTELOS_ALLOW_DEMO_AUTH=true`) · `VerifyOtpResult { sessionId, checkInGuestId, method, verifiedAt, policyAllowed, guestStatus, guestRegisterRecordId }` (corrector SEC-10); 409 `OTP_METHOD_NOT_ALLOWED { method, allowedMethods }`, 409 `OTP_INVALID { reason }`, 429 `OTP_RATE_LIMITED` (reenvío antes de 60 s o `CHECKIN_OTP_MAX_ATTEMPTS`) |
+| `POST /guest-portal/check-in/arrive` | `{ verification?: { method? } }` | `CompleteCheckInResult { reservationId, sessionId, actor: guest\|kiosk, room { id, number, floor }, reassigned, key { status, … }, ses { status: queued\|partial\|warning, submissions[], warnings[] }, welcome { status: sent\|simulated\|failed\|skipped, channel, deliveryId? }, checkedInAt, warnings[] }`; 409 `IDENTITY_NOT_VERIFIED { reason }`, `GUEST_REGISTER_INCOMPLETE { missing[].reason: signature\|legacy_signature\|guest_register_record }`, `CHECK_IN_DATE_OUT_OF_RANGE`, `BALANCE_DUE { required, paid, balanceDue, depositPolicy, paymentStatus, handoffKind? }` (corrector REV3-02: `at_reception` —sin PSP— solo vale con `allowPayAtReception`; si no, la sesión pasa a `handed_off` con `handoffKind: payment_failed` para que recepción cobre y cierre desde el cajón), `ROOM_NOT_READY { etaReady, handoffKind: room_not_ready }` (la sesión queda `arrived`; una habitación con RoomBlock que solape la estancia cuenta como no lista, corrector REV3-01), `CHECKIN_ALREADY_DONE` |
+| `POST /guest-portal/check-in/kiosk/claim` (10/min por IP) | `{ code }` (8 dígitos) | `{ deviceToken, device: KioskDeviceDto, capabilities }` una sola vez; 409 `KIOSK_PAIRING_INVALID`; exige el módulo en la propiedad del kiosco |
+| `POST /guest-portal/chat` (30/min por IP) | `{ text (≤ 4.000), conversationId?, language? }` | `GuestBotResult { conversationId, messageId, reply, intent, confidence, mode: rules\|llm, action: answered\|updated\|pending_confirmation\|handoff\|identify\|duplicate\|disabled, toolCallId, disclosureShown, identified, language, duplicate }`; no abre sesión de check-in; el `propertyId` sale del token verificado |
+
+| Método y ruta (personal) | Permiso · riesgo | Cuerpo / consulta | Respuesta · errores |
+|---|---|---|---|
+| `GET /properties/:propertyId/check-in/arrivals` | `pms.reservation.read` · low | `?date=YYYY-MM-DD` | `{ date, items: ArrivalDto[] }` (`reservationId, code, status, arrivalDate, departureDate, adults, children, eta, roomTypeId, assignedRoomId, assignedRoomNumber, primaryGuest { firstName, surname1 }, preCheckIn { sessionId, status, completedGuests, totalGuests, etaDeclared } \| null, suggestion { id, status, topRoomId, topRoomNumber, confidence, createdAt } \| null, key { serialNumber, validUntil, issuedAt, signed } \| null`; `signed` = pase firmado por Apple: la métrica «Llaves sin recepción» solo cuenta estos (corrector REV3-13)) |
+| `POST /properties/:propertyId/check-in/sessions` | `pms.reservation.modify` · medium | `{ reservationId, channel: email\|whatsapp\|sms }` | `InvitationResult { session, notification { dispatched, simulated, channel, recipient (enmascarado), reason, deliveryId }, token?, checkInUrl? }` (token en claro solo si no hubo entrega real fuera de producción o `GUEST_PORTAL_RETURN_TOKEN=true`); 404 opaco si la reserva no es de la propiedad; `template_not_found` no rompe (`dispatched:false`) |
+| `GET /properties/:propertyId/check-in/sessions/:id` · `POST …/sessions/:id/resend` | `pms.reservation.read` · low · `pms.reservation.modify` · medium | — · `{ channel? }` | `CheckInSessionDto` · `InvitationResult` (revoca el token anterior; `notificationId checkin_invitation:<portalSessionId>`) |
+| `GET /properties/:propertyId/check-in/policy` · `PUT …/policy` | `guest_self_service.read` · low · `guest_self_service.manage` · medium | `PolicyPut` parcial: `selfCheckInEnabled, inviteDaysBefore (0-30), reminderDaysBefore, allowedVerificationMethods[], requireVisualCheckAtKiosk, requireInspectedRoom, depositPolicy (none\|balance\|first_night\|fixed), depositAmount ("0.00"), allowPayAtReception (corrector REV3-02: sin PSP, `at_reception` solo satisface depositPolicy para el huésped/kiosco si es true; por defecto false), allowWalkIn, allowUpgradeSuggestion, autoAssignLevel (suggest\|suggest_and_confirm\|preassign), assignmentWeights { regla: peso }, welcomeChannelOrder[], guestConsentText, aiDisclosureText` | `PropertyCheckInPolicyDto` (sin fila → defectos del modelo con `updatedAt` vacío; `GET` nunca crea la fila); auditoría `CheckInPolicyUpdated` |
+| `GET /properties/:propertyId/kiosks` · `POST …/kiosks` · `PATCH …/kiosks/:id` · `POST …/kiosks/:id/pair` | `kiosk.configure` · low / medium | `{ name, capabilities? { mrzReader, cardEncoder, paymentTerminal, printer }, lockProvider?, config? }` · `{ name?, capabilities?, lockProvider?, config?, status?: disabled\|offline }` · — | `KioskDeviceDto[]` · 201 `KioskDeviceDto` · `KioskDeviceDto` · `{ device, code, expiresAt }` (corrector SEC-10: mismo nombre en API, `KioskPairingResult` y pantalla) (código visible una sola vez; hash con `KIOSK_PAIRING_TTL_MS`); auditoría `KioskDeviceCreated/Updated`, `KioskPairingStarted`, `KioskPaired` |
+| `GET /reservations/:id/check-in` | `pms.reservation.read` · low | — | vista de personal: `CheckInSessionDto & { policy, steps }` con `guests[].captures[] { id, source, mrzFormat, checksJson, needsReviewJson, imageStored, processingMs, purgeAt, createdAt }` y `guests[].signatures[] { id, method, sha256, pdfSha256, signedAt, retentionUntil }` (sin PII ni trazo); 404 «Sesión de check-in no encontrada.» |
+| `POST /reservations/:id/check-in/scan` (bodyLimit 8 MB) | `ai.tool.execute` + `guest_register.create` · medium | `{ imageDataUrl?, mrzLines?, documentType?, checkInGuestId? }` | `IdentityCaptureResult` (`captureId, persisted, source, fields (en memoria), confidence, checks, needsReview, warnings`); sin `checkInGuestId` → `persisted:false` (solo evento + auditoría `ID_IMAGE_DISCARDED`); sin proveedor de IA una imagen responde 200 `source: manual` con 0 campos y aviso (el 400 `DOCUMENT_UNREADABLE` es solo de la ruta del portal) |
+| `POST /reservations/:id/check-in/signature` | `guest_register.sign` · high | `{ checkInGuestId \| guestRegisterRecordId, pngBase64, svg?, strokeMeta }` | 201 `SignGuestResult` (`method: touch_reception`); 400 si faltan ambos ids; 404 si el viajero/parte no es de la reserva |
+| `POST /reservations/:id/check-in/verify-identity` | `guest_register.edit` · medium | `{ checkInGuestId, method?: IdentityVerificationMethod = visual_reception }` | `{ guest: CheckInGuestDto (identityVerifiedAt/By, status verified si estaba signed), guestRegisterRecord { id, identityVerified, identityVerificationMethod, status } \| null }`; auditoría `CHECKIN_IDENTITY_VERIFIED` |
+| `POST /reservations/:id/check-in/complete` | `pms.checkin.execute` · high | `{ roomId?, verification?: { method? }, allowEarlyCheckIn?, overrideReason? (obligatorio con allowEarlyCheckIn), dryRun? }` | `CompleteCheckInResult` (actor `user`; recepción nunca bloqueada por saldo; `allowEarlyCheckIn` salta `CHECK_IN_DATE_OUT_OF_RANGE`). Corrector REV3-04: los viajeros con datos completos sin parte lo reciben aquí (sesión invited / in_progress / handed_off cerrada desde el mostrador). Corrector REV3-03: `dryRun: true` → `PrecheckCheckInResult { ok, dryRun, reservationId, sessionId, actor, identityMethod, recordsCreated, warnings }` con los mismos 409 SIN asignar, cobrar ni alojar (el cajón lo llama antes del cobro). 409 `CHECKIN_INCOMPLETE`, `GUEST_REGISTER_INCOMPLETE`, `ROOM_NOT_READY`, `ROOM_BLOCKED` (corrector REV3-01: RoomBlock que solapa la estancia, `{ blockId, fromDate, toDate, reason }`; la asignada bloqueada se reasigna a otra de la misma categoría), `CHECKIN_ALREADY_DONE`; auditoría `GUEST_CHECKED_IN_ASSISTED` |
+| `PATCH /reservations/:id/check-in/guests/:guestId` | `guest_register.edit` · medium | `GuestInput` (mismo esquema que el portal) | `{ guest, missing[], session }` (corrector REV3-04): recepción corrige un viajero de una sesión invited / in_progress / handed_off (409 `CHECKIN_SESSION_CLOSED` en checked_in / cancelled / expired); si el viajero ya tiene parte y queda completo, el parte se actualiza; auditoría `CheckInGuestUpdated` con actor user |
+| `POST /reservations/:id/check-in/resolve-handoff` | `pms.checkin.execute` · medium | `{ note? }` | `CheckInSessionDto & { policy, steps, resolvedTo, missing[] }` (corrector REV3-04): la sesión `handed_off` (o `arrived` con handoffKind) vuelve a `ready_for_arrival` (partes creados) si los datos están completos o a `in_progress` si faltan; `handoffKind`/`handoffReason` se vacían; 409 `CHECKIN_NOT_HANDED_OFF`; auditoría `CheckInHandoffResolved` |
+| `POST /reservations/:id/assignment-suggestions` · `GET …` | `pms.reservation.read` · low | `{ sessionId? }` · — | 201 `AssignmentSuggestionDto & { rejected[] { roomId, number, reason }, dataNotes[], housekeepingAlerts[], persisted }` (expira las `suggested` anteriores; 0 candidatas → 409 `ASSIGNMENT_NO_CANDIDATES`) · `{ current: AssignmentSuggestionDto \| null, history: AssignmentSuggestionDto[] }` (`rejected`/`dataNotes` no se persisten) |
+| `POST /assignment-suggestions/:id/confirm` | `pms.reservation.modify` · high | `{ roomId? }` (sin él, la primera candidata) | `AssignmentSuggestionDto` `confirmed` (candidata) o `changed` (otra); `assignRoom` con lock (in-house → `moveInHouseReservation`); 409 `ASSIGNMENT_SUGGESTION_DECIDED`; auditoría `ASSIGNMENT_SUGGESTION_DECIDED`. `assignRoom` no comprueba `room_blocks` (deuda) |
+| `POST /properties/:propertyId/check-in/assignments/run` | `pms.reservation.modify` · high | `{ date?: YYYY-MM-DD }` (sin `date`: mañana según la fecha de negocio) | `{ date, suggested, skipped, failed: { reservationId, error }[] }`; `autoAssignLevel preassign` no asigna (D4) |
+| `GET /properties/:propertyId/room-blocks` · `POST …/room-blocks` · `DELETE /room-blocks/:id` | read · low / modify · medium | `?roomId=&from=&to=` · `{ roomId, fromDate, toDate, reason: maintenance\|deep_clean\|owner\|event\|other, note?, workOrderId? }` | `{ items }` · 201 fila · fila borrada; 409 `ROOM_BLOCK_OVERLAP`; auditoría `ROOM_BLOCK_CREATED/DELETED` |
+| `GET /properties/:propertyId/room-connections` · `POST …/room-connections` · `DELETE /room-connections/:id` | read · low / modify · medium | `?roomId=` · `{ roomAId, roomBId, kind: connecting\|adjacent }` | `{ items }` · 201 fila · fila borrada; 409 `ROOM_CONNECTION_EXISTS`; auditoría `ROOM_CONNECTION_CREATED/DELETED` |
+| `POST /ai/tool-calls/:id/confirm` (existente) | `ai.tool.execute` (+ `requiredPermissions` de la herramienta; `high\|critical` exigen además `ai.high_risk.confirm`, y el rol de aprobación si la fila o el ajuste lo fijan) · high | `{ decision: approve\|reject, notes? }` | `ConfirmToolResult` (ejecuta `createServiceRequest` / `sendGuestMessage` / `assignRoom` / `checkInReservation`…); 403 `AI_TOOL_CONFIRM_FORBIDDEN { missing, requiresApprovalRole? }`, 403 `AI_DISABLED_FOR_PROPERTY`, 403 `AI_BUDGET_EXCEEDED`, 409 `AI_CONFIRMATION_EXPIRED`, 404 opaco. Recepción (`receptionist`) confirma *medium*; jefatura y dirección *high* |
+| `GET /webhooks/whatsapp` · `POST /webhooks/whatsapp` | público (`permissions: []`), verificación por firma | `?hub.mode=subscribe&hub.verify_token=&hub.challenge=` · cuerpo crudo de la Cloud API + `X-Hub-Signature-256` | `GET`: 200 `text/plain` con `hub.challenge`; 503 `WHATSAPP_WEBHOOK_NOT_CONFIGURED` (sin `WHATSAPP_VERIFY_TOKEN`), 403 `WHATSAPP_VERIFY_TOKEN_INVALID`. `POST`: 401 `WHATSAPP_SIGNATURE_INVALID`; sin `WHATSAPP_APP_SECRET` 503 en producción y `simulated: true` fuera; tras verificar SIEMPRE 200 `{ received, processed, failed, simulated }` (deduplicación por `message.id`; la propiedad sale de `metadata.phone_number_id` → `PropertyAiSetting.configurationJson.whatsappPhoneId`) |
+
+Códigos tipados del módulo (`CHECKIN_ERROR_CODES` + los usados por los servicios): `GUEST_SESSION_INVALID`,
+`CHECKIN_GUEST_LIMIT`, `DOCUMENT_UNREADABLE`, `MRZ_CHECKSUM_FAILED`, `IDENTITY_MISMATCH` (solo como `needsReview`, nunca
+409), `SIGNATURE_NOT_REQUIRED`, `SIGNATURE_TOO_LARGE`, `GUEST_REGISTER_INCOMPLETE`, `CHECKIN_INCOMPLETE`, `ROOM_NOT_READY`,
+`IDENTITY_NOT_VERIFIED`, `CHECK_IN_DATE_OUT_OF_RANGE`, `BALANCE_DUE`, `CHECKIN_ALREADY_DONE`, `PSP_NOT_CONFIGURED`,
+`UPSELL_UNAVAILABLE` (reservado: el API no expone ofertas al pre-check-in), `KIOSK_PAIRING_INVALID`, `OTP_INVALID`,
+`OTP_RATE_LIMITED`, `OTP_METHOD_NOT_ALLOWED`, `SES_QUEUE_FAILED` (aviso, no 4xx), `ASSIGNMENT_NO_CANDIDATES`,
+`ASSIGNMENT_SUGGESTION_DECIDED`, `ROOM_BLOCK_OVERLAP`, `ROOM_CONNECTION_EXISTS`, `WHATSAPP_WEBHOOK_NOT_CONFIGURED`,
+`WHATSAPP_SIGNATURE_INVALID`, `WHATSAPP_VERIFY_TOKEN_INVALID`. `CHECKIN_ALREADY_DONE`, `OTP_METHOD_NOT_ALLOWED`,
+`BALANCE_DUE` y `SES_QUEUE_FAILED` no están todavía en la lista `CHECKIN_ERROR_CODES` de `packages/shared` (deuda).
+
+Auditoría (`audit_events.action`): `CheckInSessionCreated`, `CheckInInvited`, `CheckInReminderSent`,
+`CheckInSessionUpdated`, `CheckInGuestRemoved`, `CheckInMrzApplied`, `CheckInGuestProfileFilled`,
+`CheckInPreArrivalCompleted`, `CheckInPaymentStatusChanged`, `CheckInHandedOff`, `CheckInSessionExpired`,
+`CheckInPolicyUpdated`, `CHECKIN_GUEST_SIGNED`, `CHECKIN_IDENTITY_VERIFIED`, `CHECKIN_OTP_REQUESTED/FAILED/VERIFIED`,
+`ID_IMAGE_DISCARDED`, `GUEST_SELF_CHECKED_IN`, `GUEST_CHECKED_IN_ASSISTED`, `GUEST_WELCOME_MESSAGE_SENT` (sustituye a
+`WELCOME_MESSAGE_QUEUED`), `KioskDeviceCreated/Updated`, `KioskPairingStarted`, `KioskPaired`,
+`ASSIGNMENT_SUGGESTION_DECIDED`, `ROOM_BLOCK_CREATED/DELETED`, `ROOM_CONNECTION_CREATED/DELETED`,
+`GUEST_CONVERSATION_HANDED_OFF`, `GUEST_ETA_UPDATED`. Eventos de dominio: `CheckInPreArrivalCompleted`,
+`GuestMessageSent`, `GuestConversationHandedOff`. Jobs: `worker_job_runs.jobName = checkin.assignment`
+(`queueName api.checkin`, no es una cola pg-boss).
+
+**Contratos aditivos que cambian en esta tanda:**
+
+- `GET /guest-portal/reservation` (token) proyecta además `propertyId`, `assignedRoomNumber`, `eta` y
+  `primaryGuest { firstName, surname1Initial }`; `POST /guest-portal/sign-in` acepta `propertyId` (el portal lo toma de
+  `?property=` o `VITE_GUEST_PROPERTY_ID`). `POST /guest-portal/session/:token/pay` cobra con el contexto de servicio de
+  SOLO `payment.capture` (`paymentLinkServiceContext`) en vez de `request.userContext`.
+- `GET /dashboards/front-desk`: por llegada `preCheckIn { status: not_invited\|invited\|in_progress\|ready_for_arrival\|… }`,
+  `suggestedRoom` (solo llegadas sin habitación) y `key`; `kpis.preCheckInCompleted`; `degraded[]`. Solo aparecen cuando
+  el colaborador expone los modelos del check-in (siempre con Prisma real).
+- `GET /dashboards/front-desk-queue`: `kind` nuevos `precheckin_ready` (acción `start_checkin`), `assignment_suggested`
+  (acción `confirm_assignment` → `POST /assignment-suggestions/:id/confirm { roomId }`), `self_checkin_done`,
+  `identity_review`, `minor_without_guardian`, `room_not_ready`, `payment_failed`, `ses_rejected`; acción
+  `open_precheckin`; `degraded[]` con `checkin_sessions`, `assignment_suggestions`, `assignment_suggestions_tomorrow`,
+  `ses_rejected`.
+- Plantillas de sistema (`SYSTEM_TEMPLATES`): `checkin_invitation` (email ×2, whatsapp), `checkin_reminder` (email,
+  whatsapp), `checkin_welcome` (email, whatsapp, sms), `checkin_otp` (email, sms). `ProviderSendInput` admite `template`
+  y `attachments` (el dispatcher aún no pasa `template` al proveedor de WhatsApp: fuera de la ventana de 24 h hacen falta
+  plantillas *utility* aprobadas).
+- `sendWelcomeMessage` (`messaging.service.ts`) es real e idempotente (`notificationId welcome:<reservationId>:<canal>`):
+  `{ status: sent\|simulated\|failed\|skipped, channel, deliveryId? }`; `executeConfirmation` y `completeCheckIn` la esperan
+  y anotan en `warnings[]` lo que no fue un envío real.
+- Herramientas de IA (`packages/ai-tools`): `suggestRoomAssignment` (`pms_core`, `pms.reservation.read`, medium, lectura)
+  y `createServiceRequest` (`ai_concierge`, medium, confirmación) con `execute`; `answerGuestQuestion` (low) y
+  `sendGuestMessage` (medium, confirmación) ya existentes. `matchGuestToReservation` filtra por organización y propiedad:
+  `propertyId` desconocido → 404 «Propiedad no encontrada.»; un documento de otra organización no localiza al huésped.
+- Variables: `CHECKIN_INVITATION_DISABLED`, `CHECKIN_INVITATION_INTERVAL_MS`, `CHECKIN_ASSIGNMENT_RUN_AT`,
+  `CHECKIN_OTP_TTL_MS`, `CHECKIN_OTP_MAX_ATTEMPTS`, `KIOSK_PAIRING_TTL_MS`, `CHECKIN_CAPTURE_PURGE_DAYS`,
+  `CHECKIN_DOCUMENT_MAX_BYTES`, `CHECKIN_SIGNATURE_MAX_BYTES`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN`
+  (`modules/checkin/env.partial.ts`); `SEED_CHK_PASSWORD`, `SEED_CHK_ALLOW_PRODUCTION` (seed `db:seed:checkin`,
+  tenant `org_chk` / `prop_chk`, usuarios `*@chk.test`).
+- Cliente admin-web (`services/checkinApi.ts`): `getCheckInSession`, `scanDocument`, `applyMrz`, `signAtReception`,
+  `verifyIdentity`, `completeCheckIn`, `getSuggestions`, `createSuggestion`, `confirmSuggestion`, `inviteSession`,
+  `getPolicy`, `putPolicy`, `listKiosks`, `createKiosk`, `pairKiosk` (+ `checkInErrorCode`, `checkInErrorDetails`,
+  `isCheckInSessionMissing`, `normalizeMrzInput`). Portal (`apps/guest-web/src/api/client.ts`): `/guest-portal/check-in*`
+  y `/guest-portal/chat`; rutas `/checkin` o `?checkin=1` abren el asistente, `?kiosk=1&device=<id>` el modo kiosco
+  (sesión en `sessionStorage`, nunca `localStorage`).
 
 ## Tanda L2 · Persistencia y API (2026-09-18)
 
-Fuente: `docs/audits/TANDA-5-PLAN-2026-09-15.md` §3 fila L2. Principio: funcional = persiste en Postgres, responde 2xx/4xx tipado y lo que la pantalla ofrece existe en el API. Toda consulta filtra por `organizationId` y, en recursos de hotel, por `propertyId` dentro del ámbito del usuario; fuera del ámbito → 404 opaco «Propiedad no encontrada.»; sin clave → 403 «No tienes permiso para realizar esta acción (requiere: …)». El manifiesto tiene **981 entradas** = rutas registradas (`tests/api-route-permissions-contract.test.mjs`; 948 tras L2/T8, +35 de la Tanda T9 y −2 heredadas de facturas de proveedor retiradas en T9-15).
+Fuente: `docs/audits/TANDA-5-PLAN-2026-09-15.md` §3 fila L2. Principio: funcional = persiste en Postgres, responde 2xx/4xx tipado y lo que la pantalla ofrece existe en el API. Toda consulta filtra por `organizationId` y, en recursos de hotel, por `propertyId` dentro del ámbito del usuario; fuera del ámbito → 404 opaco «Propiedad no encontrada.»; sin clave → 403 «No tienes permiso para realizar esta acción (requiere: …)». El manifiesto tiene **1031 entradas** = rutas registradas (`tests/api-route-permissions-contract.test.mjs`; 948 tras L2/T8, +35 de la Tanda T9 y −2 heredadas de facturas de proveedor retiradas en T9-15 = 981; +50 de la Tanda CHK: check-in en línea y en recepción, kioscos, asignación explicable y webhook de WhatsApp = 1031 medidas en la fusión T9 + CHK del 2026-09-20).
 
 ### Rutas retiradas (84: 82 de L2-02 + 2 de la Tanda T9; todas responden 404 «Not Found», nunca el 403 del manifiesto)
 

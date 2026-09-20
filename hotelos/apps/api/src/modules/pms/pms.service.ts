@@ -52,13 +52,54 @@ async function lockRoomRow(tx: Prisma.TransactionClient, roomId: string): Promis
   await tx.$queryRaw`SELECT id FROM rooms WHERE id = ${roomId} FOR UPDATE`;
 }
 
-/** Lock the room row, then re-run canAssignRoom inside the transaction (see lockRoomRow). */
+/**
+ * Corrector Tanda CHK (REV3-01): un RoomBlock (room_blocks, W1-A) que solape la
+ * estancia es un filtro DURO para asignar, alojar o mover (diseño §4b): el motor
+ * de sugerencias ya excluye las bloqueadas, pero assignRoom / checkIn / PATCH de
+ * fechas no lo consultaban. `toDate` es inclusivo (bloqueo del 20 al 22 cubre la
+ * noche del 22); la salida de la reserva es exclusiva (llegada 22 no choca con un
+ * bloqueo que acaba el 21).
+ */
+export async function findOverlappingRoomBlock(
+  db: Prisma.TransactionClient | typeof prisma,
+  input: { roomId: string; arrivalDate: string; departureDate: string }
+): Promise<{ id: string; fromDate: string; toDate: string; reason: string } | null> {
+  const arrival = dateOnly(input.arrivalDate);
+  const lastNight = new Date(dateOnly(input.departureDate).getTime() - 86_400_000);
+  const row = await db.roomBlock.findFirst({
+    where: { roomId: input.roomId, fromDate: { lte: lastNight < arrival ? arrival : lastNight }, toDate: { gte: arrival } },
+    orderBy: { fromDate: "asc" },
+    select: { id: true, fromDate: true, toDate: true, reason: true }
+  });
+  return row ? { id: row.id, fromDate: isoDate(row.fromDate), toDate: isoDate(row.toDate), reason: row.reason } : null;
+}
+
+/** 409 ROOM_BLOCKED con las fechas y el motivo del bloqueo (mismo `details.code` para el cajón y el portal). */
+export function roomBlockedError(roomNumber: string, block: { id: string; fromDate: string; toDate: string; reason: string }): ConflictError {
+  return new ConflictError(`La habitación ${roomNumber} está bloqueada del ${block.fromDate} al ${block.toDate} (${block.reason}): elige otra.`, {
+    code: "ROOM_BLOCKED",
+    blockId: block.id,
+    fromDate: block.fromDate,
+    toDate: block.toDate,
+    reason: block.reason
+  });
+}
+
+/** Lock the room row, then re-run canAssignRoom inside the transaction (see lockRoomRow); a RoomBlock overlapping the stay → 409 ROOM_BLOCKED. */
 async function validateRoomUnderLock(
   tx: Prisma.TransactionClient,
   input: Omit<RoomAssignmentInput, "db"> & { roomId: string }
 ): Promise<RoomAssignmentValidation> {
   await lockRoomRow(tx, input.roomId);
-  return canAssignRoom({ ...input, db: tx });
+  const validation = await canAssignRoom({ ...input, db: tx });
+  if (validation.allowed) {
+    const block = await findOverlappingRoomBlock(tx, { roomId: input.roomId, arrivalDate: input.arrivalDate, departureDate: input.departureDate });
+    if (block) {
+      const room = await tx.room.findUnique({ where: { id: input.roomId }, select: { number: true } });
+      throw roomBlockedError(room?.number ?? input.roomId, block);
+    }
+  }
+  return validation;
 }
 
 const RESERVATION_STATUSES: readonly ReservationStatus[] = ["draft", "confirmed", "checked_in", "checked_out", "cancelled", "no_show"];
@@ -1877,6 +1918,11 @@ export async function updateReservationShadow(input: {
 export async function matchGuestToReservation(input: {
   propertyId: string;
   documentFields: GuestIdentityFields;
+  /**
+   * Tanda CHK (R4): por defecto solo se buscan vínculos de titular (`isPrimary`);
+   * con `true` también valen los acompañantes (parte de viajeros de cada ocupante).
+   */
+  includeCompanions?: boolean;
 }): Promise<{ guest: GuestRecord; reservation: ReservationRecord }> {
   const orClauses: Prisma.GuestWhereInput[] = [];
   if (input.documentFields.documentNumber) {
@@ -1894,17 +1940,24 @@ export async function matchGuestToReservation(input: {
     throw new BadRequestError("Se necesita el número de documento o nombre y primer apellido para localizar al huésped.");
   }
 
+  // SECURITY (Tanda CHK · R4): la propiedad delimita la organización — un documento
+  // escaneado en una propiedad no puede localizar huéspedes de otro tenant.
+  const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
+  if (!property) {
+    throw new NotFoundError("Propiedad no encontrada.");
+  }
+
   // documentNumber inside the OR is plaintext; the Prisma encryption
   // extension (packages/database/src/client.ts) rewrites it to
   // `documentNumberLookupHash` via the deterministic HMAC so equality
   // lookups still hit an index after Sprint 32 encryption.
-  const guestRow = await prisma.guest.findFirst({ where: { OR: orClauses } });
+  const guestRow = await prisma.guest.findFirst({ where: { organizationId: property.organizationId, OR: orClauses } });
   if (!guestRow) {
     throw new NotFoundError("No se ha encontrado ningún huésped que coincida con el documento.");
   }
 
   const links = await prisma.reservationGuest.findMany({
-    where: { guestId: guestRow.id, isPrimary: true }
+    where: input.includeCompanions ? { guestId: guestRow.id } : { guestId: guestRow.id, isPrimary: true }
   });
   if (links.length === 0) {
     throw new NotFoundError("El huésped no tiene ninguna reserva abierta en esta propiedad.");

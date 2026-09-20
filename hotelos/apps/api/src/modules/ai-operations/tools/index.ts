@@ -1,9 +1,13 @@
-// Catálogo de implementaciones AiTool del API (Tanda L6a, lote 3): 14
-// lecturas/borradores (effect "read", ejecución inmediata por el runner) y 12
-// escrituras (effect "write", SIEMPRE awaiting_confirmation; la 12.ª,
-// proposeIncomingDocumentAction, es de la Tanda T9). Todo lo que toca dinero o
-// fiscal (folio, pagos, facturas, contabilidad, capex) y el resto del catálogo
-// queda SIN execute: el runner responde denied tool_not_implemented.
+// Catálogo de implementaciones AiTool del API (Tanda L6a, lote 3): 15
+// lecturas/borradores (effect "read", ejecución inmediata por el runner) y 13
+// escrituras (effect "write", SIEMPRE awaiting_confirmation). Todo lo que toca
+// dinero o fiscal (folio, pagos, facturas, contabilidad, capex) y el resto del
+// catálogo queda SIN execute: el runner responde denied tool_not_implemented.
+// Tanda T9 (lote T9-06a): +1 escritura proposeIncomingDocumentAction (propuesta de
+// acción sobre un documento digitalizado).
+// Tanda CHK (W4-D): +1 lectura suggestRoomAssignment (motor de asignación
+// explicable) y +1 escritura createServiceRequest (peticiones del bot del
+// huésped: late check-out, toallas…; recepción confirma).
 
 import type { HotelOsToolName } from "@hotelos/ai-tools";
 import { checkInReservationTool } from "./check-in.tools.js";
@@ -12,7 +16,7 @@ import { classifyIncomingDocumentTool, classifyOnboardingFileTool, extractIncomi
 import { checkGuestRegisterCompletenessTool, extractGuestIdentityFieldsTemporaryTool, prepareGuestRegisterRecordTool, queueSesHospedajesSubmissionTool, validateSpainGuestRegisterTool } from "./guest-register.tools.js";
 import { answerGuestQuestionTool, sendGuestMessageTool } from "./messaging.tools.js";
 import { blockRoomForMaintenanceTool, createHousekeepingTaskTool, createWorkOrderTool, getHousekeepingBoardTool, markRoomCleanTool, markRoomInspectedTool, resolveWorkOrderTool } from "./operations.tools.js";
-import { assignRoomTool, findReservationTool, matchGuestToReservationTool, quoteAvailabilityTool, validateRoomAssignmentTool } from "./pms.tools.js";
+import { assignRoomTool, createServiceRequestTool, findReservationTool, matchGuestToReservationTool, quoteAvailabilityTool, suggestRoomAssignmentTool, validateRoomAssignmentTool } from "./pms.tools.js";
 import { analyzeReviewSentimentTool, draftReviewResponseTool } from "./reputation.tools.js";
 
 export type { AiToolImpl, ApiToolContext } from "./context.js";
@@ -22,11 +26,12 @@ export { apiToolContext, apiToolContextFromRunner, defineAiTool, parseToolInput 
 type AnyAiToolImpl = AiToolImpl<any, any>;
 
 const IMPLEMENTATIONS: AnyAiToolImpl[] = [
-  // Lecturas y borradores (14)
+  // Lecturas y borradores (15)
   findReservationTool,
   matchGuestToReservationTool,
   validateRoomAssignmentTool,
   quoteAvailabilityTool,
+  suggestRoomAssignmentTool,
   checkGuestRegisterCompletenessTool,
   validateSpainGuestRegisterTool,
   getHousekeepingBoardTool,
@@ -37,7 +42,7 @@ const IMPLEMENTATIONS: AnyAiToolImpl[] = [
   extractGuestIdentityFieldsTemporaryTool,
   draftReviewResponseTool,
   answerGuestQuestionTool,
-  // Escrituras (12): siempre awaiting_confirmation
+  // Escrituras (13): siempre awaiting_confirmation
   assignRoomTool,
   checkInReservationTool,
   createWorkOrderTool,
@@ -49,7 +54,8 @@ const IMPLEMENTATIONS: AnyAiToolImpl[] = [
   prepareGuestRegisterRecordTool,
   queueSesHospedajesSubmissionTool,
   sendGuestMessageTool,
-  proposeIncomingDocumentActionTool
+  proposeIncomingDocumentActionTool,
+  createServiceRequestTool
 ];
 
 export const AI_TOOL_IMPLEMENTATIONS: Record<string, AnyAiToolImpl> = Object.freeze(Object.fromEntries(IMPLEMENTATIONS.map((impl) => [impl.name, impl])));

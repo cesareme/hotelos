@@ -42,6 +42,11 @@ export * from "./ledger-import-types.js";
 // approval kinds, static SoD pairs, error/audit codes and the wire DTOs of the rbac,
 // approvals, supervisor-PIN and break-glass routes shared by the API and the admin-web.
 export * from "./rbac-types.js";
+// Check-in automatizado y recepcionista IA (Tanda CHK · W1-A): estados de la sesión y
+// del viajero, canales, métodos de verificación, vocabulario de preferencias, DTOs sin
+// PII, resultado de lectura de documentos, candidatas de asignación y códigos de error
+// compartidos por el API, el portal del huésped, el kiosco y el admin-web.
+export * from "./checkin-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

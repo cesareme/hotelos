@@ -236,6 +236,23 @@ const JUSTIFIED_GAPS = [
     kind: "sister",
     evidence: "GroupsEventsDashboard → GET /properties/:p/event-spaces [events.read]; receptionist y front_office_manager la tienen (M17 V)",
     reason: "los espacios de eventos son de recepción de día y comercial; la auditoría nocturna no los consulta"
+  },
+  // --- Tanda CHK (fusión T9 + CHK, 2026-09-20): Hoy › Mi día › Check-in automatizado ---------------------------------
+  {
+    templates: ["night_auditor"],
+    permission: "guest_self_service.read",
+    screens: /^CheckInAutomationSettingsScreen$/,
+    kind: "sister",
+    evidence: "CheckInAutomationSettingsScreen.tsx useApiData → GET /properties/:p/check-in/policy [guest_self_service.read] (modules/checkin/route-permissions.partial.ts); receptionist y front_office_manager la tienen (permissions.ts); sin ella la pantalla muestra el aviso «Ver la política requiere guest_self_service.read»",
+    reason: "la política del check-in en línea (pesos, OTP, pago, kiosco) la consulta recepción de día y la fija jefatura de recepción o dirección (guest_self_service.manage); la auditoría nocturna no la revisa"
+  },
+  {
+    templates: ["receptionist", "night_auditor", "front_office_manager", "auditor"],
+    permission: "kiosk.configure",
+    screens: /^CheckInAutomationSettingsScreen$/,
+    kind: "inventory",
+    evidence: "el inventario lista GET /properties/:p/kiosks [kiosk.configure] como ruta principal, pero CheckInAutomationSettingsScreen.tsx:233 solo la pide con la clave (useApiData(canConfigureKiosks(grantedPermissions) ? …/kiosks : null); checkin-settings-view.ts canConfigureKiosks): sin ella el bloque «Kioscos» muestra el aviso «Configurar kioscos requiere kiosk.configure» sin ninguna petición. Ninguna plantilla de recepcion ni auditor tiene kiosk.configure (solo manager, operations_director, general_manager y admin); front_office_manager sin kiosk.configure es deuda registrada de la Tanda CHK (docs/audits/TANDA-CHK-CHECKIN-IA-2026-09-19.md §5)",
+    reason: "los kioscos del vestíbulo los da de alta y empareja dirección o administración; recepción y auditoría ven la política y las métricas de llegadas, no la configuración de dispositivos"
   }
 ];
 

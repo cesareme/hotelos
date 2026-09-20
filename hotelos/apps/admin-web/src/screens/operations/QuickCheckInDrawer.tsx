@@ -44,8 +44,33 @@
 // reserva que devuelve el API y el cajón se cierra al instante con un toast
 // que dice qué pasó («Check-in de la 204 hecho · parte enviado a SES (1)»).
 // Sin la palabra «preautorizar» (D8).
+//
+// Tanda CHK · lote W4-A (docs/design/CHECKIN-AUTOMATIZADO-IA.md §8 «Drawer de
+// check-in», D12: montado ENCIMA del runner y del cajón de UX-1, sin reescribir
+// el <form>, la acción contextual ni el cobro). Con sesión de check-in en línea
+// (GET /reservations/:id/check-in, services/checkinApi.ts):
+//   · paso 1: «Escanear documento» (CocoaFileInput → POST …/check-in/scan) o
+//     «Pegar MRZ» (mismo endpoint con mrzLines) → campos con origen (MRZ / IA /
+//     Manual) y confianza; viajeros de la sesión con estado (documento · firma ·
+//     cotejo) y chip «Menor»;
+//   · paso 2: top-3 del motor (§4b) con motivos en CocoaPopover, «Confirmar»
+//     (POST /assignment-suggestions/:id/confirm, decisión auditada) u «Otra…»
+//     (el selector de candidatas limpias de siempre); isRoomClean y el override
+//     F18 se conservan;
+//   · paso 4: «Firmado en el portal el dd/mm HH:MM» si el titular ya firmó; si
+//     no, CocoaSheet con SignaturePad → POST …/check-in/signature
+//     (touch_reception); «Identidad cotejada» → POST …/verify-identity
+//     (visual_reception), solo con guest_register.edit (canDo(useNavGate()));
+//   · CTA: el runner recibe `completeCheckIn` → POST …/check-in/complete (sin
+//     sello sig_*); el resultado trae habitación, llave móvil, SES y avisos.
+//     Un 409 ROOM_NOT_READY se muestra con la hora prevista de pisos y ofrece
+//     «Buscar alternativa» (nueva sugerencia del motor).
+// Sin sesión (o con el override de limpieza activo, que POST …/complete no
+// admite) el cajón sigue por el check-in clásico. Presupuesto de `style=`: 4
+// (sin cambios); lógica pura exportada para __tests__/checkin-drawer.test.mts.
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import type { AssignmentCandidate, AssignmentSuggestionDto, DocumentCaptureSource } from "@hotelos/shared";
 import { useToast } from "../../components/Toast";
 import { ApiError, apiRequest } from "../../services/api-client";
 import { getUser } from "../../services/auth-storage";
@@ -58,11 +83,37 @@ import {
   QUICK_CHECKIN_PAYMENT_MODE_LABELS,
   defaultQuickCheckinPaymentMode,
   resolveQuickCheckinAmount,
+  readStoredCheckinAttempt,
+  storeCheckinAttempt,
   type QuickCheckinMethodOption,
   type QuickCheckinPaymentAttempt,
   type QuickCheckinPaymentMode
 } from "./quickCheckinPayment";
 import { CheckinRunError, isOverrideReasonValid, overrideReasonFor, progressLabel, runCheckin, type CheckedInReservation, type CheckinProgress } from "./checkinRunner";
+import {
+  applyMrz,
+  completeCheckIn,
+  precheckCheckIn,
+  confirmSuggestion,
+  createSuggestion,
+  getCheckInSession,
+  getSuggestions,
+  isCheckInSessionMissing,
+  normalizeMrzInput,
+  scanDocument,
+  signAtReception,
+  verifyIdentity as verifyCheckInIdentity,
+  type ArrivalKey,
+  type AssignmentSuggestionDetail,
+  type IdentityCaptureFieldKey,
+  type IdentityCaptureResult,
+  type ReservationCheckInGuest,
+  type ReservationCheckInView,
+  type RoomNotReadyDetails
+} from "../../services/checkinApi";
+import { SignaturePad, type SignatureOutput } from "../../components/cocoa-extras/SignaturePad";
+import { canDo } from "../accounting/accounting-ui";
+import { useNavGate } from "../../navigation/useEnabledModules";
 import {
   guestRegisterIssueLabel,
   queueSesSubmissions,
@@ -83,7 +134,7 @@ import { navigateTo } from "../../lib/navigate";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { reservationStatusLabel, roomOptionLabel } from "./frontdesk-labels";
 import { roomStatus } from "../../content/status-dictionary";
-import { DEFAULT_CURRENCY, money, plural } from "../../lib/format";
+import { DEFAULT_CURRENCY, date, dateTime, money, plural, time } from "../../lib/format";
 import { ACTIONS, FRONT_DESK_ACTIONS, FRONT_DESK_NOTES, FRONT_DESK_TOASTS, STATUS_LABELS } from "../../content/actions";
 import { ChatBubbleIcon, ClockIcon, InfoCircleIcon, StarIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
@@ -92,10 +143,13 @@ import {
   CocoaCallout,
   CocoaDrawer,
   CocoaField,
+  CocoaFileInput,
   CocoaInput,
+  CocoaPopover,
   CocoaSection,
   CocoaSegmentedControl,
   CocoaSelect,
+  CocoaSheet,
   CocoaSkeleton,
   CocoaState,
   CocoaStatusBadge,
@@ -176,6 +230,10 @@ export type QuickCheckInCompleted = {
   reservation: CheckedInReservation | null;
   roomNumber: string | null;
   ses: SesQueueOutcome;
+  /** Tanda CHK: llave móvil emitida por POST …/check-in/complete (null en el check-in clásico o si no se emitió). */
+  key?: ArrivalKey;
+  /** Avisos del check-in completo (llave sin firmar por Apple, reasignación, SES parcial…). */
+  warnings?: string[];
 };
 
 export type QuickCheckInProps = {
@@ -252,6 +310,170 @@ export function initialRoomFor(reservation: Pick<Reservation, "assignedRoomId" |
   if (proposed && proposed.roomTypeId === reservation.roomTypeId && isRoomFree(proposed) && isRoomClean(proposed)) return proposed.id;
   return candidateRoomsFor(rooms, reservation.roomTypeId)[0]?.id;
 }
+
+// ---------------------------------------------------------------- Tanda CHK · lógica pura del cajón
+// (sin React ni red; la ejecuta node --test en __tests__/checkin-drawer.test.mts)
+
+/** Origen de un campo leído del documento (CocoaBadge): MRZ (lector o visión sobre la banda), IA (visión del anverso) o Manual. */
+export function fieldOriginLabel(source: DocumentCaptureSource | string | null | undefined): { label: "MRZ" | "IA" | "Manual"; tone: CocoaTone } {
+  switch (source) {
+    case "mrz_reader":
+    case "mrz_ai":
+      return { label: "MRZ", tone: "success" };
+    case "ai_vision":
+      return { label: "IA", tone: "info" };
+    default:
+      return { label: "Manual", tone: "neutral" };
+  }
+}
+
+/** «98 %» de una confianza 0..1; «—» sin dato. */
+export function confidenceLabel(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return `${Math.round(Math.min(1, Math.max(0, value)) * 100)} %`;
+}
+
+/** «···321»: el cajón nunca pinta el número completo (mismo contrato que documentNumberLast3 de la vista). */
+export function maskDocumentNumber(value: string | null | undefined): string {
+  const text = (value ?? "").trim();
+  if (!text) return "—";
+  return `···${text.slice(-3)}`;
+}
+
+/** «Dígitos de control 4/4» (solo los aplicables; «—» si ninguno aplica). */
+export function mrzChecksLabel(checks: { document: boolean | null; birth: boolean | null; expiry: boolean | null; composite: boolean | null } | null | undefined): string {
+  if (!checks) return "—";
+  const values = [checks.document, checks.birth, checks.expiry, checks.composite].filter((value): value is boolean => typeof value === "boolean");
+  if (values.length === 0) return "—";
+  return `Dígitos de control ${values.filter(Boolean).length}/${values.length}`;
+}
+
+export type TravellerStatus = { document: boolean; signature: boolean; verified: boolean; label: string; tone: CocoaTone };
+
+/** Estado de un viajero de la sesión (documento leído · firmado · identidad cotejada) en una frase con su tono. */
+export function travellerStatusLabel(guest: Pick<ReservationCheckInGuest, "status" | "isMinor" | "identityVerifiedAt" | "captures" | "signatures">): TravellerStatus {
+  const document = guest.captures.length > 0 || guest.status === "document_captured" || guest.status === "data_complete" || guest.status === "signed" || guest.status === "verified";
+  const signature = guest.signatures.length > 0 || guest.status === "signed" || guest.status === "verified";
+  const verified = Boolean(guest.identityVerifiedAt);
+  if (guest.isMinor) return { document, signature: true, verified, label: document ? "Menor · datos del adulto" : "Menor · sin datos", tone: document ? "info" : "warning" };
+  if (signature && verified) return { document, signature, verified, label: "Firmado y cotejado", tone: "success" };
+  if (signature) return { document, signature, verified, label: "Firmado · sin cotejar", tone: "info" };
+  if (document) return { document, signature, verified, label: "Documento leído · sin firma", tone: "warning" };
+  return { document, signature, verified, label: "Sin documento", tone: "warning" };
+}
+
+/** Top-3 del motor (§4b) sobre el catálogo de la reserva: la asignada si la hay; si no, la primera candidata limpia, libre y del tipo; undefined si ninguna vale ahora mismo. */
+export function pickSuggestionRoom(candidates: readonly Pick<AssignmentCandidate, "roomId">[], rooms: readonly Room[], roomTypeId: string, assignedRoomId?: string | null): string | undefined {
+  if (assignedRoomId) return assignedRoomId;
+  for (const candidate of candidates.slice(0, 3)) {
+    const room = rooms.find((row) => row.id === candidate.roomId);
+    if (room && room.roomTypeId === roomTypeId && isRoomFree(room) && isRoomClean(room)) return room.id;
+  }
+  return undefined;
+}
+
+export type SignatureState = { kind: "portal" | "kiosk" | "reception" | "paper" | "pending" | "not_required"; signedAt: string | null; label: string };
+
+const SIGNATURE_PLACE: Readonly<Record<string, { kind: SignatureState["kind"]; place: string }>> = Object.freeze({
+  touch_portal: { kind: "portal", place: "el portal" },
+  touch_kiosk: { kind: "kiosk", place: "el kiosco" },
+  touch_reception: { kind: "reception", place: "recepción" },
+  paper_scanned: { kind: "paper", place: "papel" }
+});
+
+/** «dd/mm HH:MM» de un instante ISO (fecha corta sin año + hora de Madrid). */
+export function shortDateTime(iso: string): string {
+  return `${date(iso, "short").slice(0, 5)} ${time(iso)}`;
+}
+
+/** Firma del titular tal y como la ve recepción: dónde firmó (portal, kiosco, mostrador, papel) y cuándo, o pendiente; los menores no firman. */
+export function signatureStateOf(guest: Pick<ReservationCheckInGuest, "isMinor" | "signatures"> | null | undefined): SignatureState {
+  if (!guest) return { kind: "pending", signedAt: null, label: "Sin viajero en la sesión: la firma se recoge en el registro de viajeros." };
+  if (guest.isMinor) return { kind: "not_required", signedAt: null, label: "Menor de 14 años: no firma (lo declara el adulto)." };
+  const last = [...guest.signatures].sort((a, b) => b.signedAt.localeCompare(a.signedAt))[0];
+  if (!last) return { kind: "pending", signedAt: null, label: "Pendiente de firma." };
+  const place = SIGNATURE_PLACE[last.method] ?? { kind: "reception" as const, place: "recepción" };
+  return { kind: place.kind, signedAt: last.signedAt, label: `Firmado en ${place.place} el ${shortDateTime(last.signedAt)}` };
+}
+
+/** Estados de sesión en los que el huésped cerró el pre-check-in: el check-in completo tiene partes y firmas del portal. */
+const COMPLETE_PATH_STATUSES: ReadonlySet<string> = new Set(["ready_for_arrival", "arrived"]);
+
+/**
+ * Camino del CTA: «complete» (POST …/check-in/complete, Tanda CHK) solo con
+ * sesión en línea, sin override de limpieza — ese endpoint no admite una
+ * habitación sin limpiar (409 ROOM_NOT_READY); con override el check-in
+ * clásico sigue auditando el motivo (F18) — y, corrector REV3-04, cuando la
+ * sesión está cerrada por el huésped (ready_for_arrival · arrived) o el
+ * titular ya firmó en el mostrador (`signed`); una sesión invited /
+ * in_progress / handed_off sin firma va por el check-in clásico en vez de
+ * estrellarse contra 409 GUEST_REGISTER_INCOMPLETE.
+ */
+export function checkinPathFor(input: { hasSession: boolean; overrideActive: boolean; sessionStatus?: string | null; signed?: boolean }): "complete" | "legacy" {
+  if (!input.hasSession || input.overrideActive) return "legacy";
+  if (input.sessionStatus === undefined && input.signed === undefined) return "complete";
+  return (input.sessionStatus && COMPLETE_PATH_STATUSES.has(input.sessionStatus)) || input.signed === true ? "complete" : "legacy";
+}
+
+/** Mensaje de mostrador del 409 ROOM_NOT_READY con la hora prevista de pisos (`etaReady`). */
+export function roomNotReadyMessage(details: Pick<RoomNotReadyDetails, "roomNumber" | "etaReady"> | null | undefined, fallback: string): string {
+  if (!details) return fallback;
+  const room = details.roomNumber ? `La ${details.roomNumber}` : "La habitación";
+  const eta = details.etaReady ? ` Pisos prevé tenerla lista a las ${time(details.etaReady)}.` : " Pisos no ha dado hora prevista.";
+  return `${room} no está lista.${eta} Busca una alternativa limpia del mismo tipo o espera a pisos.`;
+}
+
+const SESSION_STATUS_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  invited: "Invitado",
+  in_progress: "En curso",
+  ready_for_arrival: "Listo para llegar",
+  arrived: "Ha llegado",
+  checked_in: "Alojado",
+  handed_off: "Pasado a recepción",
+  expired: "Caducado",
+  cancelled: "Cancelado"
+});
+
+/** Estado de la sesión de check-in en línea en español. */
+export function sessionStatusLabel(status: string): string {
+  return SESSION_STATUS_LABELS[status] ?? status;
+}
+
+const VERIFICATION_METHOD_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  visual_reception: "cotejo visual",
+  mrz_checksum: "MRZ",
+  otp_phone: "OTP móvil",
+  otp_email: "OTP correo",
+  payment_match: "pago",
+  midni_qr: "MiDNI",
+  reader_hardware: "lector"
+});
+
+function verificationMethodLabel(method: string | null | undefined): string {
+  return method ? (VERIFICATION_METHOD_LABELS[method] ?? method) : "—";
+}
+
+function travellerName(guest: Pick<ReservationCheckInGuest, "firstName" | "surname1" | "surname2" | "ordinal"> | null | undefined): string {
+  if (!guest) return "Viajero";
+  return [guest.firstName, guest.surname1, guest.surname2].filter(Boolean).join(" ").trim() || `Viajero ${guest.ordinal + 1}`;
+}
+
+/** Imagen del escáner: el API acota el decodificado (CHECKIN_DOCUMENT_MAX_BYTES, 6 MiB) y el cuerpo (8 MB). */
+const SCAN_MAX_BYTES = 6 * 1024 * 1024;
+
+const CAPTURE_FIELD_LABELS: ReadonlyArray<readonly [IdentityCaptureFieldKey, string]> = [
+  ["documentType", "Tipo de documento"],
+  ["documentNumber", "Número"],
+  ["documentSupportNumber", "Soporte"],
+  ["firstName", "Nombre"],
+  ["surname1", "Primer apellido"],
+  ["surname2", "Segundo apellido"],
+  ["nationality", "Nacionalidad"],
+  ["sex", "Sexo"],
+  ["dateOfBirth", "Nacimiento"],
+  ["documentExpiryDate", "Caducidad"],
+  ["issuingCountry", "País emisor"]
+];
 
 /** F3: la ficha de la reserva con su id (`/recepcion/reservas/:id`), nunca la lista. */
 function openReservationDetail(reservationId: string): void {
@@ -347,11 +569,45 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
   const [verifyIdentity, setVerifyIdentity] = useState(false);
   const [identityNotice, setIdentityNotice] = useState<string | null>(null);
 
+  // Tanda CHK · W4-A: sesión de check-in en línea (null = sin sesión → check-in
+  // clásico), lectura del documento, top-3 del motor, firma en el pad y cotejo.
+  // La vista se relee de GET /reservations/:id/check-in tras cada escritura.
+  const navGate = useNavGate();
+  const canVerifyAtDesk = canDo(navGate, "guest_register.edit");
+  const mrzFieldId = useId();
+  const [checkInSession, setCheckInSession] = useState<ReservationCheckInView | null>(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [capture, setCapture] = useState<IdentityCaptureResult | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanFileName, setScanFileName] = useState<string | null>(null);
+  const [mrzOpen, setMrzOpen] = useState(false);
+  const [mrzText, setMrzText] = useState("");
+  const [scanTargetId, setScanTargetId] = useState<string | null>(null);
+  const [suggestion, setSuggestion] = useState<AssignmentSuggestionDetail | AssignmentSuggestionDto | null>(null);
+  const [suggestionBusy, setSuggestionBusy] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [reasonsFor, setReasonsFor] = useState<{ roomId: string; anchor: HTMLElement } | null>(null);
+  const [roomPickerOpen, setRoomPickerOpen] = useState(false);
+  // Habitación confirmada desde la sugerencia (el API ya la asignó): el runner no la reasigna.
+  const [confirmedRoomId, setConfirmedRoomId] = useState<string | null>(null);
+  const [signOpen, setSignOpen] = useState(false);
+  const [signBusy, setSignBusy] = useState(false);
+  const [signError, setSignError] = useState<string | null>(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [notReady, setNotReady] = useState<RoomNotReadyDetails | null>(null);
+  const [completionKey, setCompletionKey] = useState<ArrivalKey>(null);
+  const [completionWarnings, setCompletionWarnings] = useState<string[]>([]);
+
   // Cronómetro — empieza al abrir, congela al completar.
   const [tick, setTick] = useState(0);
   const startedAt = useMemo(() => Date.now(), []);
   useEffect(() => {
     logBreadcrumb("checkin.opened", "ui", { reservationId });
+    // Corrector REV3-03: un cobro registrado en una apertura anterior del cajón (check-in completo
+    // fallido después) conserva su clave de idempotencia; reabrir el cajón no vuelve a cobrar.
+    paymentAttempt.current = readStoredCheckinAttempt(reservationId);
     // El efecto se ejecuta una sola vez al montar; reservationId es estable
     // durante la vida del drawer (cambiar reserva implica reabrirlo).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -446,6 +702,194 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
   const overrideReady = overrideEnabled && isOverrideReasonValid(overrideReason);
   const currency = reservation?.currency || DEFAULT_CURRENCY;
 
+  // ------------------------------------------------------------- Tanda CHK · sesión, lectura, motor, firma y cotejo
+  const messageOf = (err: unknown, fallback: string): string => (err instanceof Error && err.message ? err.message : fallback);
+
+  const loadSession = useCallback(async (): Promise<ReservationCheckInView | null> => {
+    try {
+      const view = await getCheckInSession(reservationId);
+      setCheckInSession(view);
+      setSessionError(null);
+      return view;
+    } catch (err) {
+      if (isCheckInSessionMissing(err)) {
+        setCheckInSession(null);
+        setSessionError(null);
+      } else {
+        setSessionError(messageOf(err, "No se pudo leer la sesión de check-in en línea."));
+      }
+      return null;
+    } finally {
+      setSessionLoaded(true);
+    }
+  }, [reservationId]);
+
+  useEffect(() => {
+    void loadSession();
+  }, [loadSession]);
+
+  const sessionGuests = useMemo(() => checkInSession?.guests ?? [], [checkInSession]);
+  const primaryTraveller = useMemo(() => sessionGuests.find((row) => row.isPrimary) ?? sessionGuests[0] ?? null, [sessionGuests]);
+  const scanTarget = useMemo(() => sessionGuests.find((row) => row.id === scanTargetId) ?? primaryTraveller, [sessionGuests, scanTargetId, primaryTraveller]);
+  const primarySignature = useMemo(() => signatureStateOf(primaryTraveller), [primaryTraveller]);
+  const checkinPath = checkinPathFor({
+    hasSession: Boolean(checkInSession),
+    overrideActive: !roomIsClean && overrideReady,
+    sessionStatus: checkInSession?.status ?? null,
+    signed: primarySignature.kind !== "pending" && primarySignature.kind !== "not_required"
+  });
+
+  // Top-3 del motor: la sugerencia vigente (o la última decidida, para ver los
+  // motivos de la habitación ya asignada) y, sin habitación ni sugerencia, una
+  // nueva persistida.
+  const suggestionRequested = useRef(false);
+  useEffect(() => {
+    if (suggestionRequested.current || !reservation || !sessionLoaded || reservation.status !== "confirmed") return;
+    suggestionRequested.current = true;
+    let cancelled = false;
+    (async () => {
+      setSuggestionBusy(true);
+      try {
+        const list = await getSuggestions(reservation.id);
+        const current = list.current ?? (reservation.assignedRoomId ? (list.history[0] ?? null) : await createSuggestion(reservation.id, checkInSession?.id ?? null));
+        if (!cancelled) setSuggestion(current);
+      } catch (err) {
+        if (!cancelled) setSuggestionError(messageOf(err, "El motor de asignación no respondió."));
+      } finally {
+        if (!cancelled) setSuggestionBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reservation, sessionLoaded, checkInSession?.id]);
+
+  const topCandidates = useMemo(() => (suggestion ? suggestion.candidates.slice(0, 3) : []), [suggestion]);
+
+  // Sin habitación inicial, la top-1 limpia y libre pasa a ser la elegida (una sola vez).
+  const suggestionApplied = useRef(false);
+  useEffect(() => {
+    if (suggestionApplied.current || !suggestion || !reservation || !roomInitialised.current) return;
+    suggestionApplied.current = true;
+    if (selectedRoomId) return;
+    const picked = pickSuggestionRoom(suggestion.candidates, availableRooms, reservation.roomTypeId, reservation.assignedRoomId);
+    if (picked) setSelectedRoomId(picked);
+  }, [suggestion, reservation, availableRooms, selectedRoomId]);
+
+  async function runCapture(run: () => Promise<IdentityCaptureResult>): Promise<void> {
+    setScanBusy(true);
+    setCaptureError(null);
+    try {
+      const result = await run();
+      setCapture(result);
+      logBreadcrumb("checkin.scan", "mutation", { reservationId, source: result.source, persisted: result.persisted, needsReview: result.needsReview.length });
+      await loadSession();
+      if (!result.persisted) showToast("Documento leído, pero sin viajero de la sesión al que vincularlo.", { variant: "warning" });
+    } catch (err) {
+      setCaptureError(messageOf(err, "No se pudo leer el documento."));
+    } finally {
+      setScanBusy(false);
+    }
+  }
+
+  function onScanFile(file: File): void {
+    setScanFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      if (!dataUrl) {
+        setCaptureError("No se pudo leer el fichero de imagen.");
+        return;
+      }
+      void runCapture(() => scanDocument(reservationId, dataUrl, scanTarget?.id ?? null));
+    };
+    reader.onerror = () => setCaptureError("No se pudo leer el fichero de imagen.");
+    reader.readAsDataURL(file);
+  }
+
+  const mrzLines = normalizeMrzInput(mrzText);
+
+  function onApplyMrz(): void {
+    if (mrzLines.length < 2) return;
+    void runCapture(() => applyMrz(reservationId, mrzLines, scanTarget?.id ?? null));
+  }
+
+  async function onConfirmSuggestion(roomId: string): Promise<void> {
+    if (!suggestion || !reservation) return;
+    setSuggestionBusy(true);
+    setSuggestionError(null);
+    try {
+      const result = await confirmSuggestion(suggestion.id, roomId);
+      const assigned = result.reservation.assignedRoomId ?? roomId;
+      setSuggestion(result.suggestion);
+      setConfirmedRoomId(assigned);
+      setSelectedRoomId(assigned);
+      setRoomPickerOpen(false);
+      setNotReady(null);
+      invalidateApi(`/properties/${reservation.propertyId}/rooms`);
+      staleOnClose.current = true;
+      const number = availableRooms.find((row) => row.id === assigned)?.number ?? suggestion.candidates.find((row) => row.roomId === assigned)?.number ?? assigned;
+      showToast(FRONT_DESK_TOASTS.roomAssigned(number), { variant: "success" });
+    } catch (err) {
+      setSuggestionError(messageOf(err, "No se pudo confirmar la sugerencia."));
+    } finally {
+      setSuggestionBusy(false);
+    }
+  }
+
+  /** «Buscar alternativa» tras un 409 ROOM_NOT_READY: nueva sugerencia del motor y la primera limpia pasa a elegida. */
+  async function findAlternative(): Promise<void> {
+    if (!reservation) return;
+    setSuggestionBusy(true);
+    setSuggestionError(null);
+    try {
+      const fresh = await createSuggestion(reservation.id, checkInSession?.id ?? null);
+      setSuggestion(fresh);
+      invalidateApi(`/properties/${reservation.propertyId}/rooms`);
+      const picked = pickSuggestionRoom(fresh.candidates, availableRooms, reservation.roomTypeId, null);
+      if (picked) setSelectedRoomId(picked);
+      else setSuggestionError("El motor no encontró ninguna habitación lista del mismo tipo: espera a pisos o elige a mano.");
+      setNotReady(null);
+      setError(null);
+    } catch (err) {
+      setSuggestionError(messageOf(err, "El motor de asignación no respondió."));
+    } finally {
+      setSuggestionBusy(false);
+    }
+  }
+
+  async function onSignature(output: SignatureOutput): Promise<void> {
+    if (!primaryTraveller) return;
+    setSignBusy(true);
+    setSignError(null);
+    try {
+      const result = await signAtReception(reservationId, { checkInGuestId: primaryTraveller.id, pngBase64: output.pngBase64, svg: output.svg, strokeMeta: output.strokeMeta });
+      logBreadcrumb("checkin.signature", "mutation", { reservationId, signatureId: result.signatureId, method: result.method, points: output.strokeMeta.points });
+      setSignOpen(false);
+      showToast(`Firma registrada en recepción (${result.signatureId})`, { variant: "success" });
+      await Promise.all([loadSession(), loadPartes()]);
+    } catch (err) {
+      setSignError(messageOf(err, "No se pudo registrar la firma."));
+    } finally {
+      setSignBusy(false);
+    }
+  }
+
+  async function onVerifyIdentity(guest: ReservationCheckInGuest): Promise<void> {
+    setVerifyBusy(true);
+    setIdentityNotice(null);
+    try {
+      await verifyCheckInIdentity(reservationId, { checkInGuestId: guest.id, method: "visual_reception" });
+      logBreadcrumb("checkin.identity", "mutation", { reservationId, checkInGuestId: guest.id, method: "visual_reception" });
+      showToast(`Identidad de ${travellerName(guest)} cotejada en mostrador`, { variant: "success" });
+      await Promise.all([loadSession(), loadPartes()]);
+    } catch (err) {
+      setIdentityNotice(messageOf(err, "No se pudo marcar la identidad cotejada."));
+    } finally {
+      setVerifyBusy(false);
+    }
+  }
+
   // ------------------------------------------------------------- execute
   const canSubmit = Boolean(reservation && selectedRoomId && guest && reservation.status === "confirmed" && (folio || !paymentRequiresFolio) && (roomIsClean || overrideReady));
   const blockingReason = !reservation
@@ -499,18 +943,21 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
     }
     const payment = folio && amountToCollect !== null ? { folioId: folio.folio.id, amount: amountToCollect, method: paymentMethod } : null;
     // L-17 (§4.1): la fila de Mi día cambia al instante; el resultado del runner la reconcilia o la revierte.
+    setNotReady(null);
     onSubmitted?.({ reservationId: reservation.id, roomId: selectedRoomId, roomNumber: selectedRoom?.number ?? null });
     try {
       const result = await runCheckin(
         {
           reservationId: reservation.id,
           propertyId: reservation.propertyId,
-          assignedRoomId: reservation.assignedRoomId ?? null,
+          // La habitación confirmada desde la sugerencia ya está asignada en el API: no se reasigna.
+          assignedRoomId: confirmedRoomId ?? reservation.assignedRoomId ?? null,
           roomId: selectedRoomId,
           currency,
           payment,
           overrideReason: !roomIsClean && overrideReady ? overrideReasonFor(overrideReason, selectedRoom?.number) : null,
-          verifyIdentity
+          // Con sesión en línea el cotejo es el botón «Identidad cotejada» (ya en el API); el interruptor es del camino clásico.
+          verifyIdentity: checkinPath === "legacy" ? verifyIdentity : false
         },
         {
           request: apiRequest,
@@ -518,6 +965,14 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
           listPartes: loadPartes,
           markIdentity: (parteId) => markGuestRegisterIdentityVerified(parteId, "visual_document_check"),
           queueSes: (pid, rid) => queueSesSubmissions(pid, rid).then(sesQueueOutcomeFromResponse, sesQueueOutcomeFromError),
+          // Tanda CHK: POST …/check-in/complete (sin sello sig_*) cuando hay sesión y no hay override de limpieza;
+          // corrector REV3-03: con `dryRun` ANTES de asignar y cobrar (las precondiciones fallan sin cargo ni habitación).
+          ...(checkinPath === "complete"
+            ? {
+                completeCheckIn: (rid: string, body: Parameters<typeof completeCheckIn>[1]) => completeCheckIn(rid, body),
+                precheckCheckIn: (rid: string, body: Parameters<typeof precheckCheckIn>[1]) => precheckCheckIn(rid, body)
+              }
+            : {}),
           newClientRequestId,
           previousAttempt: paymentAttempt.current,
           isForbidden: (err) => err instanceof ApiError && err.status === 403,
@@ -525,9 +980,13 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
         }
       );
       paymentAttempt.current = result.paymentAttempt;
+      // Check-in hecho: la memoria del cobro ya no hace falta.
+      storeCheckinAttempt(reservation.id, null);
       setIdentityNotice(result.identityNote);
       setSesOutcome(result.ses);
-      logBreadcrumb("checkin.ses", "mutation", { reservationId: reservation.id, outcome: result.ses.kind });
+      setCompletionKey(result.completion?.key ?? null);
+      setCompletionWarnings(result.completion?.warnings ?? []);
+      logBreadcrumb("checkin.ses", "mutation", { reservationId: reservation.id, outcome: result.ses.kind, path: checkinPath, key: Boolean(result.completion?.key), warnings: result.completion?.warnings.length ?? 0 });
       // La habitación pasa a ocupada: el catálogo de Mi día se revalida. La
       // reserva y el folio se marcan caducados al CERRAR el cajón (sus hooks
       // siguen montados mientras se lee el resultado SES: invalidarlos aquí
@@ -536,12 +995,17 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
       staleOnClose.current = true;
 
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      const roomNumber = selectedRoom?.number ?? null;
+      // Con el check-in completo la habitación es la que devuelve el API (puede haber reasignado).
+      const roomNumber = result.completion?.room.number ?? selectedRoom?.number ?? null;
+      const key = result.completion?.key ?? null;
+      const warnings = result.completion?.warnings ?? [];
       setCompleted({ elapsedSeconds: elapsed });
-      onCompleted?.({ reservationId: reservation.id, elapsedSeconds: elapsed, reservation: result.reservation, roomNumber, ses: result.ses });
+      onCompleted?.({ reservationId: reservation.id, elapsedSeconds: elapsed, reservation: result.reservation, roomNumber, ses: result.ses, key, warnings });
       if (result.ses.kind === "queued") {
-        // Cierre inmediato (§5.2 (6)): el toast dice qué pasó y ofrece la ficha.
-        showToast(FRONT_DESK_TOASTS.checkInDoneSes(roomNumber, result.ses.queued), {
+        // Cierre inmediato (§5.2 (6)): el toast dice qué pasó (habitación, SES, llave y avisos) y ofrece la ficha.
+        const keyText = key ? ` · llave móvil ${key.serialNumber}` : "";
+        const warningText = warnings.length > 0 ? ` · ${plural(warnings.length, "aviso", "avisos")}` : "";
+        showToast(`${FRONT_DESK_TOASTS.checkInDoneSes(roomNumber, result.ses.queued)}${keyText}${warningText}`, {
           variant: "success",
           action: { label: FRONT_DESK_ACTIONS.openReservation, onAction: () => openReservationDetail(reservation.id) }
         });
@@ -551,8 +1015,18 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
         showToast(FRONT_DESK_TOASTS.checkInDone(roomNumber), { variant: "success" });
       }
     } catch (err) {
-      if (err instanceof CheckinRunError) paymentAttempt.current = err.paymentAttempt;
-      const message = err instanceof Error ? err.message : "Error ejecutando check-in";
+      const runError = err instanceof CheckinRunError ? err : null;
+      if (runError) {
+        paymentAttempt.current = runError.paymentAttempt;
+        // Corrector REV3-03: el intento sobrevive al cierre del cajón (misma clave al reintentar) y, si el cobro
+        // llegó a registrarse, el folio se relee para que «Pagos hasta ahora» no siga en 0,00 €.
+        storeCheckinAttempt(reservation.id, runError.paymentAttempt);
+        if (runError.progress.payment === "done") void folioState.refresh();
+      }
+      // 409 ROOM_NOT_READY (POST …/complete): hora prevista de pisos y «Buscar alternativa» en el paso 2.
+      const roomNotReady = runError?.code === "ROOM_NOT_READY" ? (runError.details as RoomNotReadyDetails) : null;
+      if (roomNotReady) setNotReady(roomNotReady);
+      const message = runError && roomNotReady ? roomNotReadyMessage(roomNotReady, runError.message) : err instanceof Error ? err.message : "Error ejecutando check-in";
       setError(message);
       // El callout del cajón (role=alert) ya lo anuncia; el toast no se duplica (L-04).
       showToast(message, { variant: "error", announce: false });
@@ -588,6 +1062,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
         partes={partes}
         partesError={partesError}
         identityNotice={identityNotice}
+        keyOutcome={completionKey}
+        warnings={completionWarnings}
       />
     );
   } else {
@@ -632,6 +1108,82 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
                 {reservation.specialRequests ?? reservation.notes}
               </CocoaCallout>
             ) : null}
+
+            {/* Tanda CHK: escaneo / MRZ y viajeros de la sesión en línea */}
+            {sessionError ? (
+              <CocoaCallout tone="warning" role="status">
+                {sessionError}
+              </CocoaCallout>
+            ) : null}
+            {checkInSession ? (
+              <div className="cocoa-stack" data-gap="2">
+                <div className="cocoa-row" data-gap="2" data-align="center">
+                  <CocoaBadge tone={checkInSession.status === "ready_for_arrival" || checkInSession.status === "arrived" ? "success" : checkInSession.status === "expired" || checkInSession.status === "cancelled" ? "danger" : "info"} size="small">
+                    Pre-check-in · {sessionStatusLabel(checkInSession.status)}
+                  </CocoaBadge>
+                  {checkInSession.etaDeclared ? <span className="cocoa-note">ETA {checkInSession.etaDeclared}</span> : null}
+                  {checkInSession.handoffKind ? <span className="cocoa-note">· pasado a recepción: {checkInSession.handoffReason ?? checkInSession.handoffKind}</span> : null}
+                </div>
+                <div className="cocoa-row" data-gap="2" data-align="center">
+                  <CocoaFileInput accept="image/*" maxBytes={SCAN_MAX_BYTES} label="Escanear documento" fileName={scanFileName} onPick={onScanFile} onReject={setCaptureError} disabled={busy || scanBusy} />
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setMrzOpen((open) => !open)} disabled={busy || scanBusy} aria-expanded={mrzOpen} aria-controls={mrzFieldId}>
+                    Pegar MRZ
+                  </CocoaButton>
+                  {sessionGuests.length > 1 ? (
+                    <CocoaSelect aria-label="Viajero al que se vincula la lectura" value={scanTarget?.id ?? ""} onChange={(value) => setScanTargetId(value || null)} options={sessionGuests.map((row) => ({ value: row.id, label: travellerName(row) }))} disabled={busy || scanBusy} />
+                  ) : null}
+                </div>
+                {mrzOpen ? (
+                  <div className="cocoa-stack" data-gap="2">
+                    <CocoaField label="MRZ del lector (2 o 3 líneas)" htmlFor={mrzFieldId} help="Pega las líneas tal cual: se validan los dígitos de control ICAO 9303.">
+                      <CocoaInput id={mrzFieldId} value={mrzText} onChange={setMrzText} multiline rows={3} disabled={busy || scanBusy} autoComplete="off" />
+                    </CocoaField>
+                    <div className="cocoa-row" data-gap="2" data-justify="end">
+                      <CocoaButton variant="filled" tone="accent" size="small" onClick={onApplyMrz} disabled={busy || scanBusy || mrzLines.length < 2} loading={scanBusy}>
+                        Aplicar MRZ
+                      </CocoaButton>
+                    </div>
+                  </div>
+                ) : null}
+                {captureError ? (
+                  <CocoaCallout tone="danger" role="alert">
+                    {captureError}
+                  </CocoaCallout>
+                ) : null}
+                {capture ? <CaptureFields capture={capture} /> : null}
+                <ul className="c22-section__list" aria-label="Viajeros del check-in">
+                  {sessionGuests.map((row) => {
+                    const status = travellerStatusLabel(row);
+                    return (
+                      <li key={row.id}>
+                        <span className="cocoa-row" data-gap="2" data-align="center">
+                          {travellerName(row)}
+                          {row.isPrimary ? (
+                            <CocoaBadge tone="accent" variant="tinted" size="small" uppercase={false}>
+                              Principal
+                            </CocoaBadge>
+                          ) : null}
+                          {row.isMinor ? (
+                            <CocoaBadge tone="info" variant="tinted" size="small" uppercase={false}>
+                              Menor
+                            </CocoaBadge>
+                          ) : null}
+                          {row.documentNumberLast3 ? <span className="cocoa-note">doc. ···{row.documentNumberLast3}</span> : null}
+                        </span>
+                        {/* Envuelto en <span>: un badge (overflow hidden) como ítem flex directo se encoge a 0 y se corta con elipsis. */}
+                        <span>
+                          <CocoaBadge tone={status.tone} size="small">
+                            {status.label}
+                          </CocoaBadge>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : sessionLoaded ? (
+              <p className="cocoa-note">Sin sesión de check-in en línea: check-in clásico (el parte se crea al confirmar y se firma después en el registro de viajeros).</p>
+            ) : null}
           </div>
         </Step>
 
@@ -644,7 +1196,101 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
               {roomType ? <span className="cocoa-note">· {roomType.name}</span> : null}
               {catalogLoading ? <span className="cocoa-note">· cargando habitaciones…</span> : null}
             </div>
-            {selectedRoom && !roomIsClean && candidateRooms.length > 0 ? (
+            {notReady ? (
+              <CocoaCallout
+                tone="danger"
+                title="Habitación no lista"
+                role="alert"
+                actions={
+                  <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => void findAlternative()} disabled={busy || suggestionBusy} loading={suggestionBusy}>
+                    Buscar alternativa
+                  </CocoaButton>
+                }
+              >
+                {roomNotReadyMessage(notReady, error ?? FRONT_DESK_NOTES.roomNotClean)}
+              </CocoaCallout>
+            ) : null}
+            {suggestionError ? (
+              <CocoaCallout tone="warning" role="status">
+                {suggestionError}
+              </CocoaCallout>
+            ) : null}
+            {/* Tanda CHK: top-3 del motor con motivos (§4b); «Confirmar» asigna con decisión auditada, «Otra…» abre el selector de candidatas. */}
+            {topCandidates.length > 0 && suggestion ? (
+              <ul className="c22-section__list" aria-label="Sugerencias de habitación">
+                {topCandidates.map((candidate, index) => {
+                  const room = availableRooms.find((row) => row.id === candidate.roomId);
+                  const ready = room ? isRoomClean(room) && isRoomFree(room) : false;
+                  return (
+                    <li key={candidate.roomId}>
+                      <span className="cocoa-row" data-gap="2" data-align="center">
+                        <strong>Hab. {candidate.number}</strong>
+                        {index === 0 ? (
+                          <CocoaBadge tone="accent" variant="tinted" size="small" uppercase={false}>
+                            Top 1
+                          </CocoaBadge>
+                        ) : null}
+                        {room ? <CocoaStatusBadge entry={roomStatus(room.housekeepingStatus)} dense /> : null}
+                        <span className="cocoa-note">{candidate.score} pts</span>
+                        <CocoaButton variant="plain" tone="neutral" size="small" onClick={(event) => setReasonsFor({ roomId: candidate.roomId, anchor: event.currentTarget })} aria-haspopup="dialog" aria-expanded={reasonsFor?.roomId === candidate.roomId}>
+                          Motivos ({candidate.reasons.length})
+                        </CocoaButton>
+                      </span>
+                      <span className="cocoa-row" data-gap="2" data-align="center">
+                        {selectedRoomId === candidate.roomId ? (
+                          <span>
+                            <CocoaBadge tone="success" variant="tinted" size="small" uppercase={false}>
+                              Elegida
+                            </CocoaBadge>
+                          </span>
+                        ) : null}
+                        {suggestion.status === "suggested" ? (
+                          <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => void onConfirmSuggestion(candidate.roomId)} disabled={busy || suggestionBusy || !ready} title={ready ? "Asigna la habitación con el motivo auditado" : "Ahora mismo no está limpia y libre"}>
+                            Confirmar
+                          </CocoaButton>
+                        ) : selectedRoomId !== candidate.roomId ? (
+                          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setSelectedRoomId(candidate.roomId)} disabled={busy || !ready}>
+                            Elegir
+                          </CocoaButton>
+                        ) : null}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : suggestionBusy ? (
+              <p className="cocoa-note">Pidiendo sugerencias al motor…</p>
+            ) : null}
+            {suggestion && "dataNotes" in suggestion && suggestion.dataNotes.length > 0 ? <p className="cocoa-note">{suggestion.dataNotes.join(" · ")}</p> : null}
+            <CocoaPopover open={reasonsFor !== null} anchorEl={reasonsFor?.anchor ?? null} onClose={() => setReasonsFor(null)} aria-label="Motivos de la sugerencia">
+              {(() => {
+                const candidate = topCandidates.find((row) => row.roomId === reasonsFor?.roomId);
+                if (!candidate) return null;
+                return (
+                  <div className="cocoa-stack" data-gap="2">
+                    <strong>Hab. {candidate.number}</strong>
+                    {candidate.reasons.length > 0 ? (
+                      <ul className="c22-section__list">
+                        {candidate.reasons.map((reason) => (
+                          <li key={reason.rule}>
+                            <span>{reason.detail}</span>
+                            <strong>{reason.weight > 0 ? `+${reason.weight}` : reason.weight}</strong>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="cocoa-note">Sin motivos puntuables: todas las candidatas empatan.</p>
+                    )}
+                    {candidate.warnings.map((warning) => (
+                      <p className="cocoa-note" key={warning}>
+                        {warning}
+                      </p>
+                    ))}
+                  </div>
+                );
+              })()}
+            </CocoaPopover>
+            {!suggestion && selectedRoom && !roomIsClean && candidateRooms.length > 0 ? (
               <CocoaCallout
                 tone="info"
                 title="Sugerencia"
@@ -658,9 +1304,17 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
                 La {candidateRooms[0].number} está limpia, libre y es del mismo tipo.
               </CocoaCallout>
             ) : null}
-            <CocoaField label={FRONT_DESK_ACTIONS.changeRoom} htmlFor={roomSelectId}>
-              <CocoaSelect id={roomSelectId} value={selectedRoomId ?? ""} onChange={(value) => setSelectedRoomId(value || undefined)} options={roomOptions} disabled={busy} />
-            </CocoaField>
+            {topCandidates.length > 0 && !roomPickerOpen ? (
+              <div className="cocoa-row" data-gap="2">
+                <CocoaButton id={roomSelectId} variant="bordered" tone="neutral" size="small" onClick={() => setRoomPickerOpen(true)} disabled={busy}>
+                  Otra…
+                </CocoaButton>
+              </div>
+            ) : (
+              <CocoaField label={FRONT_DESK_ACTIONS.changeRoom} htmlFor={roomSelectId}>
+                <CocoaSelect id={roomSelectId} value={selectedRoomId ?? ""} onChange={(value) => setSelectedRoomId(value || undefined)} options={roomOptions} disabled={busy} />
+              </CocoaField>
+            )}
             {selectedRoom && !roomIsClean ? (
               <div className="cocoa-stack" data-gap="2">
                 <CocoaSwitch checked={overrideEnabled} onChange={setOverrideEnabled} size="small" disabled={busy} label={`${FRONT_DESK_ACTIONS.overrideCheckIn} (la limpieza sigue siendo de pisos; el motivo queda auditado)`} />
@@ -735,13 +1389,57 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
           badgeTone={partesError ? "warning" : "info"}
         >
           <div className="cocoa-stack" data-gap="2">
-            <PartesList partes={partes} error={partesError} emptyText="Sin partes de viajeros todavía: el check-in crea uno por huésped vinculado a la reserva." />
-            {canVerifyIdentity ? (
+            <PartesList partes={partes} error={partesError} emptyText={checkInSession ? "Sin partes todavía: se crean al cerrar el pre-check-in en el portal." : "Sin partes de viajeros todavía: el check-in crea uno por huésped vinculado a la reserva."} />
+            {checkInSession ? (
+              <div className="cocoa-stack" data-gap="2">
+                {/* Tanda CHK: firma real del titular (portal / kiosco / pad de recepción) y cotejo de identidad en mostrador. */}
+                <div className="cocoa-row" data-gap="2" data-align="center">
+                  <CocoaBadge tone={primarySignature.kind === "pending" ? "warning" : primarySignature.kind === "not_required" ? "info" : "success"} size="small">
+                    {primarySignature.kind === "pending" ? "Firma pendiente" : primarySignature.kind === "not_required" ? "Sin firma" : "Firmado"}
+                  </CocoaBadge>
+                  <span className="cocoa-note">{primarySignature.label}</span>
+                </div>
+                {signError && !signOpen ? (
+                  <CocoaCallout tone="danger" role="alert">
+                    {signError}
+                  </CocoaCallout>
+                ) : null}
+                <div className="cocoa-row" data-gap="2" data-align="center">
+                  {primarySignature.kind === "pending" && primaryTraveller ? (
+                    <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => setSignOpen(true)} disabled={busy} aria-haspopup="dialog">
+                      Firmar en el pad
+                    </CocoaButton>
+                  ) : null}
+                  {primaryTraveller?.identityVerifiedAt ? (
+                    <CocoaBadge tone="success" variant="tinted" size="small" uppercase={false}>
+                      Identidad cotejada ({verificationMethodLabel(primaryTraveller.identityVerificationMethod)} · {shortDateTime(primaryTraveller.identityVerifiedAt)})
+                    </CocoaBadge>
+                  ) : canVerifyAtDesk && primaryTraveller && !primaryTraveller.isMinor ? (
+                    <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void onVerifyIdentity(primaryTraveller)} disabled={busy || verifyBusy} loading={verifyBusy} title="Documento cotejado a la vista (visual_reception); se anota en el parte y en el viajero">
+                      Identidad cotejada
+                    </CocoaButton>
+                  ) : primaryTraveller && !primaryTraveller.isMinor ? (
+                    <span className="cocoa-note">Sin permiso guest_register.edit para cotejar la identidad.</span>
+                  ) : null}
+                </div>
+                {identityNotice ? (
+                  <CocoaCallout tone="warning" role="status">
+                    {identityNotice}
+                  </CocoaCallout>
+                ) : null}
+              </div>
+            ) : canVerifyIdentity ? (
               <CocoaSwitch checked={verifyIdentity} onChange={setVerifyIdentity} disabled={busy} label="Identidad verificada en mostrador (documento cotejado; se anota en cada parte antes del envío SES)" />
             ) : null}
             <ul style={bulletListStyle}>
               <li>Al confirmar se encola el parte de viajeros (SES.HOSPEDAJES); aquí verás el resultado real del encolado.</li>
-              <li>Firma digital aplicada con sello "sig_drawer_checkin".</li>
+              <li>
+                {checkinPath === "complete"
+                  ? "Check-in completo: el API exige la firma real del titular y su identidad verificada; devuelve habitación, llave móvil y SES."
+                  : checkInSession
+                    ? "Con el override de limpieza el check-in va por el camino clásico (el motivo queda auditado); el parte se firma después en el registro de viajeros."
+                    : "Check-in clásico: sin firma real en este paso; el parte queda pendiente de firma en el registro de viajeros."}
+              </li>
               <li>Política de cancelación: {reservation.cancellationPolicyCode ?? "estándar"}.</li>
             </ul>
           </div>
@@ -798,11 +1496,87 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted, onSubm
         </div>
         {body}
       </div>
+      {/* Tanda CHK: firma del titular en el pad (CocoaSheet encima del cajón; POST …/check-in/signature, touch_reception). */}
+      <CocoaSheet
+        open={signOpen}
+        onClose={() => {
+          if (!signBusy) setSignOpen(false);
+        }}
+        title={`Firma del parte · ${travellerName(primaryTraveller)}`}
+        size="sm"
+        dismissible={!signBusy}
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <p className="cocoa-note">El titular firma el parte de viajeros en el pad: la firma (PNG y hash) se archiva 3 años y el parte pasa a «firmado».</p>
+          {signError ? (
+            <CocoaCallout tone="danger" role="alert">
+              {signError}
+            </CocoaCallout>
+          ) : null}
+          <SignaturePad onAccept={(output) => void onSignature(output)} busy={signBusy} aria-label="Área de firma del parte de viajeros" />
+        </div>
+      </CocoaSheet>
     </CocoaDrawer>
   );
 }
 
 // =============================================================== sub-components
+
+/** Campos leídos del documento con su origen (MRZ / IA / Manual) y confianza; el número siempre enmascarado; avisos y revisión del API tal cual. */
+function CaptureFields({ capture }: { capture: IdentityCaptureResult }) {
+  const origin = fieldOriginLabel(capture.source);
+  const review = new Set(capture.needsReview);
+  const rows = CAPTURE_FIELD_LABELS.filter(([key]) => capture.fields[key] !== undefined && capture.fields[key] !== "");
+  return (
+    <div className="cocoa-stack" data-gap="2">
+      <div className="cocoa-row" data-gap="2" data-align="center">
+        <CocoaBadge tone={origin.tone} size="small">
+          Lectura {origin.label}
+          {capture.mrzFormat ? ` · ${capture.mrzFormat}` : ""}
+        </CocoaBadge>
+        <span className="cocoa-note">{mrzChecksLabel(capture.checks)}</span>
+        <span className="cocoa-note">· {capture.processingMs} ms</span>
+        {!capture.persisted ? (
+          <CocoaBadge tone="warning" size="small">
+            Sin vincular
+          </CocoaBadge>
+        ) : null}
+      </div>
+      {rows.length > 0 ? (
+        <ul className="c22-section__list" aria-label="Campos leídos del documento">
+          {rows.map(([key, label]) => (
+            <li key={key}>
+              <span className="cocoa-row" data-gap="2" data-align="center">
+                {label}
+                <CocoaBadge tone={origin.tone} variant="tinted" size="small" uppercase={false}>
+                  {origin.label} · {confidenceLabel(capture.confidence[key])}
+                </CocoaBadge>
+                {review.has(key) ? (
+                  <CocoaBadge tone="warning" variant="tinted" size="small" uppercase={false}>
+                    Revisar
+                  </CocoaBadge>
+                ) : null}
+              </span>
+              <strong>{key === "documentNumber" || key === "documentSupportNumber" ? maskDocumentNumber(capture.fields[key]) : capture.fields[key]}</strong>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="cocoa-note">La lectura no devolvió campos.</p>
+      )}
+      {review.has("identity_mismatch") ? (
+        <CocoaCallout tone="warning" role="status">
+          El documento no coincide con el titular ni con los acompañantes de la reserva: el viajero no recibe los datos hasta que recepción lo revise.
+        </CocoaCallout>
+      ) : null}
+      {capture.warnings.map((warning) => (
+        <p className="cocoa-note" key={warning}>
+          {warning}
+        </p>
+      ))}
+    </div>
+  );
+}
 
 function Step({ title, badge, badgeTone = "neutral", badgeNode, children }: { title: string; badge?: string; badgeTone?: CocoaTone; badgeNode?: ReactNode; children: ReactNode }) {
   return (
@@ -924,7 +1698,9 @@ function CompletedView({
   ses,
   partes,
   partesError,
-  identityNotice
+  identityNotice,
+  keyOutcome = null,
+  warnings = []
 }: {
   elapsed: string;
   guest: string;
@@ -933,6 +1709,10 @@ function CompletedView({
   partes: GuestRegisterRecord[];
   partesError: string | null;
   identityNotice: string | null;
+  /** Tanda CHK: llave móvil de POST …/check-in/complete (null en el check-in clásico). */
+  keyOutcome?: ArrivalKey;
+  /** Avisos del check-in completo, tal cual los da el API. */
+  warnings?: string[];
 }) {
   return (
     <div className="cocoa-stack" data-gap="3">
@@ -942,6 +1722,33 @@ function CompletedView({
           {elapsed} · objetivo &lt; 1:30
         </CocoaBadge>
       </div>
+      {keyOutcome ? (
+        <CocoaSection title="Llave móvil" meta={<CocoaBadge tone={keyOutcome.wallet.apple.signedByApple ? "success" : "warning"} size="small">{keyOutcome.wallet.apple.signedByApple ? "Wallet firmada" : "QR válido · Wallet sin firmar"}</CocoaBadge>}>
+          <ul className="c22-section__list">
+            <li>
+              <span>Número de serie</span>
+              <strong className="cocoa-mono">{keyOutcome.serialNumber}</strong>
+            </li>
+            <li>
+              <span>Válida</span>
+              <strong>
+                {dateTime(keyOutcome.validFrom)} – {dateTime(keyOutcome.validUntil)}
+              </strong>
+            </li>
+          </ul>
+        </CocoaSection>
+      ) : null}
+      {warnings.length > 0 ? (
+        <CocoaCallout tone="warning" title={`${plural(warnings.length, "aviso", "avisos")} del check-in`} role="status">
+          <ul className="c22-section__list">
+            {warnings.map((warning) => (
+              <li key={warning}>
+                <span>{warning}</span>
+              </li>
+            ))}
+          </ul>
+        </CocoaCallout>
+      ) : null}
       <CocoaSection title="Partes de viajeros" meta={partes.length > 0 ? plural(partes.length, "parte", "partes") : undefined}>
         <div className="cocoa-stack" data-gap="2">
           <PartesList partes={partes} error={partesError} emptyText="El check-in no ha creado partes: la reserva no tiene huéspedes vinculados." />

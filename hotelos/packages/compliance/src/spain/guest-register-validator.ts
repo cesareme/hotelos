@@ -151,10 +151,25 @@ export function calculateSpainGuestRegisterRetentionUntil(checkoutOrEndOfService
   return retentionUntil.toISOString();
 }
 
+/**
+ * RD 933/2021 (Anexo I A.3 y FAQ del MIR): los menores de 14 años no están
+ * obligados a tener documento propio y sus datos los aporta el adulto
+ * responsable (bloque de parentesco), así que tipo/número de documento y el
+ * contacto telefónico no se exigen al menor. Corrector Tanda CHK (REV3-06).
+ */
+const MINOR_OPTIONAL_FIELDS: ReadonlySet<keyof SpainGuestRegisterRecordInput> = new Set(["documentType", "documentNumber"]);
+
+/** Menor de 14 años a efectos del parte (columna persistida o edad calculada). */
+export function isSpainGuestRegisterMinor(input: Pick<SpainGuestRegisterRecordInput, "isMinor" | "age">): boolean {
+  return input.isMinor === true || (input.age !== undefined && input.age < 14);
+}
+
 export function validateSpainGuestRegisterRecord(input: SpainGuestRegisterRecordInput): SpainGuestRegisterValidationResult {
   const issues: SpainGuestRegisterValidationIssue[] = [];
+  const minor = isSpainGuestRegisterMinor(input);
 
   for (const field of REQUIRED_BASE_FIELDS) {
+    if (minor && MINOR_OPTIONAL_FIELDS.has(field)) continue;
     if (isMissing(input[field])) {
       addMissingIssue(issues, field);
     }
@@ -168,7 +183,8 @@ export function validateSpainGuestRegisterRecord(input: SpainGuestRegisterRecord
     addMissingIssue(issues, "documentSupportNumber", "Document support number is required for DNI/TIE when the official schema applies it.");
   }
 
-  if (isMissing(input.phoneMobile) && isMissing(input.phoneLandline)) {
+  // El contacto de un menor es el del adulto que lo declara (bloque de parentesco).
+  if (!minor && isMissing(input.phoneMobile) && isMissing(input.phoneLandline)) {
     issues.push({
       code: "missing_phone_contact",
       field: "phoneMobile",
@@ -181,7 +197,7 @@ export function validateSpainGuestRegisterRecord(input: SpainGuestRegisterRecord
     addMissingIssue(issues, "checkinAt", "Check-in/start-of-service timestamp is required before authority submission.");
   }
 
-  if (input.isMinor === true || (input.age !== undefined && input.age < 14)) {
+  if (minor) {
     if (isMissing(input.providedByAdultGuestId)) {
       addMissingIssue(issues, "providedByAdultGuestId", "Children under 14 must be linked to the accompanying adult who provides their data.");
     }
@@ -190,7 +206,7 @@ export function validateSpainGuestRegisterRecord(input: SpainGuestRegisterRecord
     }
   }
 
-  const signatureRequired = input.signatureRequired !== false && input.isMinor !== true && !(input.age !== undefined && input.age < 14);
+  const signatureRequired = input.signatureRequired !== false && !minor;
   if (signatureRequired && isMissing(input.signedAt)) {
     issues.push({
       code: "signature_required",

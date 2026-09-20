@@ -11,8 +11,25 @@
 //
 // Honesty principle: every tool returns its raw numbers + a `source` string
 // so the assistant can cite where each fact came from.
+//
+// Tanda CHK (W4-D · diseño §5 «Copiloto de recepción», presets): tres lecturas
+// nuevas — get_arrivals_without_room (llegadas de hoy sin habitación con el
+// top-3 sugerido y sus motivos por room-assignment.service, sin persistir),
+// get_incomplete_precheckins (sesiones invited/in_progress de hoy y mañana con
+// lo que falta por viajero) y get_rooms_ready_for_delivery (misma consulta que
+// copilot.service.ts listRoomsReadyForDelivery). Ninguna escribe ni asigna:
+// assignRoom sigue exigiendo confirmación en el tool runner. El motor recibe un
+// contexto de servicio de la propiedad (service-context.ts, solo lectura),
+// porque el router del asistente no transporta el UserContext. «Hoy» y
+// «mañana» son los del huso horario de la propiedad (Property.timezone, como
+// las llegadas de recepción), no el día UTC de las tools históricas: a las
+// 00:30 en Madrid las llegadas del día ya son las de hoy.
 
 import { prisma } from "@hotelos/database";
+import { missingForSession } from "../checkin/checkin-session.service.js";
+import { checkInServiceContext } from "../checkin/service-context.js";
+import { todayInTimezone } from "../pms/pms.service.js";
+import { suggestForReservation } from "../pms/room-assignment.service.js";
 
 export type ToolResult = {
   ok: boolean;
@@ -276,6 +293,156 @@ export async function getComplianceSummary(ctx: ToolContext): Promise<ToolResult
 }
 
 // ---------------------------------------------------------------------------
+// Check-in automatizado (Tanda CHK · W4-D): presets del copiloto
+// ---------------------------------------------------------------------------
+
+/** Límite de reservas a las que se pide sugerencia en un turno (el motor carga la instantánea de la propiedad por reserva). */
+export const ARRIVALS_WITHOUT_ROOM_LIMIT = 20;
+
+function isCleanHk(value?: string | null, fallbackStatus?: string): boolean {
+  const v = (value ?? "").toLowerCase();
+  if (v === "clean" || v === "inspected" || v === "ready") return true;
+  if (!v && fallbackStatus === "clean") return true;
+  return false;
+}
+
+/** Día de negocio de la propiedad (Property.timezone; Europe/Madrid si no existe la fila). */
+async function propertyToday(propertyId: string): Promise<string> {
+  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { timezone: true } });
+  return todayInTimezone(property?.timezone ?? "Europe/Madrid");
+}
+
+export async function getArrivalsWithoutRoom(ctx: ToolContext): Promise<ToolResult> {
+  const today = startOfDayUtc(await propertyToday(ctx.propertyId));
+  const arrivals = await prisma.reservation.findMany({
+    where: { propertyId: ctx.propertyId, arrivalDate: today, status: "confirmed", assignedRoomId: null, deletedAt: null },
+    orderBy: [{ eta: "asc" }, { code: "asc" }],
+    select: { id: true, code: true, eta: true, adults: true, children: true, roomTypeId: true, vipFlag: true },
+    take: ARRIVALS_WITHOUT_ROOM_LIMIT + 1
+  });
+  const truncated = arrivals.length > ARRIVALS_WITHOUT_ROOM_LIMIT;
+  const rows = truncated ? arrivals.slice(0, ARRIVALS_WITHOUT_ROOM_LIMIT) : arrivals;
+  const context = rows.length > 0 ? await checkInServiceContext(ctx.propertyId, { kind: "system", job: "copilot" }) : null;
+  const items = [];
+  for (const reservation of rows) {
+    try {
+      const suggestion = await suggestForReservation({ context: context!, reservationId: reservation.id, persist: false });
+      items.push({
+        reservationId: reservation.id,
+        code: reservation.code,
+        eta: reservation.eta ?? null,
+        adults: reservation.adults,
+        children: reservation.children,
+        vip: reservation.vipFlag,
+        confidence: suggestion.confidence,
+        suggested: suggestion.candidates.slice(0, 3).map((candidate) => ({ roomId: candidate.roomId, number: candidate.number, score: candidate.score, reasons: candidate.reasons.map((reason) => reason.detail), warnings: candidate.warnings })),
+        rejected: suggestion.rejectedCount,
+        dataNotes: suggestion.dataNotes
+      });
+    } catch (error) {
+      items.push({ reservationId: reservation.id, code: reservation.code, eta: reservation.eta ?? null, adults: reservation.adults, children: reservation.children, vip: reservation.vipFlag, confidence: 0, suggested: [], rejected: 0, dataNotes: [`sin sugerencia: ${error instanceof Error ? error.message : String(error)}`] });
+    }
+  }
+  const withSuggestion = items.filter((item) => item.suggested.length > 0).length;
+  return {
+    ok: true,
+    data: {
+      count: items.length,
+      withSuggestion,
+      truncated,
+      items,
+      summary: items.length === 0 ? "Todas las llegadas de hoy tienen habitación." : `${items.length} llegada${items.length === 1 ? "" : "s"} de hoy sin habitación, ${withSuggestion} con sugerencia: ${items.map((item) => `${item.code} → ${item.suggested[0]?.number ?? "sin candidata"}`).join(", ")}.`
+    },
+    source: "prisma:Reservation.arrivalDate=today(Property.timezone),assignedRoomId=null + room-assignment.engine (sin persistir)",
+    generatedAt: new Date().toISOString()
+  };
+}
+
+export async function getIncompletePreCheckIns(ctx: ToolContext): Promise<ToolResult> {
+  const today = startOfDayUtc(await propertyToday(ctx.propertyId));
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+  const reservations = await prisma.reservation.findMany({
+    where: { propertyId: ctx.propertyId, status: "confirmed", deletedAt: null, arrivalDate: { in: [today, tomorrow] } },
+    select: { id: true, code: true, arrivalDate: true, eta: true }
+  });
+  if (reservations.length === 0) {
+    return { ok: true, data: { count: 0, items: [], summary: "Sin llegadas de hoy ni mañana con pre-check-in pendiente." }, source: "prisma:CheckInSession.status in (invited,in_progress)", generatedAt: new Date().toISOString() };
+  }
+  const byReservation = new Map(reservations.map((row) => [row.id, row] as const));
+  const sessions = await prisma.checkInSession.findMany({
+    where: { propertyId: ctx.propertyId, reservationId: { in: reservations.map((row) => row.id) }, status: { in: ["invited", "in_progress"] } },
+    select: { id: true, reservationId: true, status: true, etaDeclared: true, paymentStatus: true, invitedAt: true, reminderAt: true }
+  });
+  // Viajeros por consulta de primer nivel (descifrados): la presencia de campos es real.
+  const guests = sessions.length > 0 ? await prisma.checkInGuest.findMany({ where: { sessionId: { in: sessions.map((session) => session.id) } }, orderBy: { ordinal: "asc" } }) : [];
+  const items = sessions
+    .map((session) => {
+      const reservation = byReservation.get(session.reservationId)!;
+      const rows = guests.filter((guest) => guest.sessionId === session.id);
+      const missing = missingForSession(rows).map((row) => ({ ordinal: row.ordinal, isPrimary: row.isPrimary, fields: row.fields }));
+      return {
+        sessionId: session.id,
+        reservationId: reservation.id,
+        code: reservation.code,
+        arrivalDate: ymd(reservation.arrivalDate),
+        eta: session.etaDeclared ?? reservation.eta ?? null,
+        status: session.status,
+        paymentStatus: session.paymentStatus,
+        invitedAt: session.invitedAt?.toISOString() ?? null,
+        reminderAt: session.reminderAt?.toISOString() ?? null,
+        travellers: rows.length,
+        missingFields: missing.reduce((sum, row) => sum + row.fields.length, 0),
+        missing
+      };
+    })
+    .sort((a, b) => a.arrivalDate.localeCompare(b.arrivalDate) || a.code.localeCompare(b.code));
+  return {
+    ok: true,
+    data: {
+      count: items.length,
+      invited: items.filter((item) => item.status === "invited").length,
+      inProgress: items.filter((item) => item.status === "in_progress").length,
+      items,
+      summary: items.length === 0 ? "Sin pre-check-ins incompletos para hoy ni mañana." : `${items.length} pre-check-in${items.length === 1 ? "" : "s"} incompleto${items.length === 1 ? "" : "s"} (hoy y mañana): ${items.map((item) => `${item.code} ${item.status === "invited" ? "sin empezar" : `en curso, faltan ${item.missingFields} datos`}`).join(", ")}.`
+    },
+    source: "prisma:CheckInSession.status in (invited,in_progress) · Reservation.arrivalDate in (today,tomorrow · Property.timezone)",
+    generatedAt: new Date().toISOString()
+  };
+}
+
+export async function getRoomsReadyForDelivery(ctx: ToolContext): Promise<ToolResult> {
+  const rooms = await prisma.room.findMany({ where: { propertyId: ctx.propertyId, active: true, sellable: true }, select: { id: true, number: true, roomTypeId: true, status: true, housekeepingStatus: true } });
+  const inHouse = await prisma.reservation.findMany({ where: { propertyId: ctx.propertyId, status: "checked_in" }, select: { assignedRoomId: true } });
+  const occupied = new Set(inHouse.map((r) => r.assignedRoomId).filter((x): x is string => Boolean(x)));
+  const ready = rooms.filter((r) => !occupied.has(r.id) && isCleanHk(r.housekeepingStatus, r.status) && r.status !== "out_of_order");
+  const roomTypes = await prisma.roomType.findMany({ where: { propertyId: ctx.propertyId }, select: { id: true, name: true } });
+  const byType = new Map<string, typeof ready>();
+  for (const room of ready) {
+    const key = room.roomTypeId ?? "sin_tipo";
+    const list = byType.get(key) ?? [];
+    list.push(room);
+    byType.set(key, list);
+  }
+  const items = Array.from(byType.entries()).map(([roomTypeId, list]) => ({
+    roomTypeId,
+    roomType: roomTypes.find((type) => type.id === roomTypeId)?.name ?? roomTypeId,
+    count: list.length,
+    rooms: list.map((room) => room.number).sort()
+  }));
+  return {
+    ok: true,
+    data: {
+      readyRooms: ready.length,
+      totalSellable: rooms.length,
+      items,
+      summary: `${ready.length} habitaciones listas para entregar (limpias o inspeccionadas, sin ocupar) en ${byType.size} tipo${byType.size === 1 ? "" : "s"}${items.length > 0 ? `: ${items.map((item) => `${item.roomType} ${item.count}`).join(", ")}` : ""}.`
+    },
+    source: "prisma:Room.housekeepingStatus in (clean,inspected,ready) − Reservation.checked_in",
+    generatedAt: new Date().toISOString()
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Tool catalog (for both deterministic router and LLM tool-calling)
 // ---------------------------------------------------------------------------
 
@@ -351,6 +518,25 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
     description: "Resumen de cumplimiento normativo: controles críticos, vencidos, pendientes.",
     keywords: ["cumplimiento", "compliance", "controles", "auditoría", "rgpd", "fiscal"],
     run: getComplianceSummary
+  },
+  // Tanda CHK (W4-D): presets del copiloto de recepción (diseño §5). Lecturas; nada se asigna.
+  {
+    name: "get_arrivals_without_room",
+    description: "Llegadas de hoy sin habitación asignada con las tres habitaciones sugeridas por el motor de asignación y sus motivos (sin asignar nada).",
+    keywords: ["llegadas sin habitación", "llegadas sin habitacion", "sin habitación asignada", "sin habitacion asignada", "sin asignar", "habitación sugerida", "habitacion sugerida", "arrivals without room", "sugerencia de habitación", "sugerencia de habitacion"],
+    run: getArrivalsWithoutRoom
+  },
+  {
+    name: "get_incomplete_precheckins",
+    description: "Pre-check-ins en línea de hoy y mañana sin terminar (invitados o en curso) con los datos que faltan por viajero.",
+    keywords: ["pre-check-in incompleto", "pre-check-ins incompletos", "precheckin", "pre-check-in pendiente", "pre-check-ins pendientes", "check-in online pendiente", "check-in en línea pendiente", "check-in en linea pendiente", "incomplete pre-check-in", "sin terminar el check-in"],
+    run: getIncompletePreCheckIns
+  },
+  {
+    name: "get_rooms_ready_for_delivery",
+    description: "Habitaciones listas para entregar ahora (limpias o inspeccionadas y sin ocupar), agrupadas por tipo.",
+    keywords: ["habitaciones listas", "listas para entregar", "lista para entregar", "habitaciones para entregar", "rooms ready", "ready for delivery", "listas para entrega"],
+    run: getRoomsReadyForDelivery
   }
 ];
 

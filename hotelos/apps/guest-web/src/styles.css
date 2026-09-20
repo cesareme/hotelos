@@ -574,3 +574,619 @@ a {
     scroll-behavior: auto !important;
   }
 }
+
+/* ======================================================================
+   Tanda CHK · W4-C — asistente de pre-check-in (6 pasos), cámara, firma,
+   llegada y modo kiosco. Sin `style=` inline: todo por clase.
+   ====================================================================== */
+
+.gp-intro {
+  margin: 0;
+  color: var(--gp-ink-soft);
+  font-size: 15px;
+}
+
+.gp-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* -------- Progreso -------- */
+.gp-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-progress-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.gp-progress-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gp-accent-deep);
+}
+
+.gp-lang {
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.gp-progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--gp-soft);
+  overflow: hidden;
+}
+
+.gp-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--gp-accent);
+  transition: width 240ms ease;
+  width: 0;
+}
+
+.gp-progress-fill[data-percent="17"] { width: 17%; }
+.gp-progress-fill[data-percent="33"] { width: 33%; }
+.gp-progress-fill[data-percent="50"] { width: 50%; }
+.gp-progress-fill[data-percent="67"] { width: 67%; }
+.gp-progress-fill[data-percent="83"] { width: 83%; }
+.gp-progress-fill[data-percent="100"] { width: 100%; }
+
+.gp-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.gp-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--gp-muted);
+  text-align: center;
+  line-height: 1.2;
+}
+
+.gp-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--gp-line);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.gp-step.is-done .gp-step-index {
+  background: var(--gp-success-soft);
+  border-color: var(--gp-success);
+  color: var(--gp-success);
+}
+
+.gp-step.is-current {
+  color: var(--gp-accent-deep);
+  font-weight: 700;
+}
+
+.gp-step.is-current .gp-step-index {
+  background: var(--gp-accent);
+  border-color: var(--gp-accent);
+  color: #fff;
+}
+
+/* -------- Formularios del asistente -------- */
+.gp-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 420px) {
+  .gp-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.gp-traveller-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.gp-traveller-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.gp-traveller-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.gp-badge-source {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--gp-info-soft);
+  color: var(--gp-info);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.gp-missing {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--gp-warn-soft);
+  color: var(--gp-warn);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gp-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.gp-check input {
+  margin-top: 3px;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--gp-accent);
+}
+
+.gp-consent {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gp-wizard-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.gp-wizard-nav .gp-button {
+  flex: 1;
+}
+
+/* -------- Cámara -------- */
+.gp-camera {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gp-camera-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--gp-ink-soft);
+}
+
+.gp-camera-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-file-button {
+  position: relative;
+  overflow: hidden;
+  text-align: center;
+  cursor: pointer;
+}
+
+.gp-file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.gp-file-button.is-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.gp-camera-live {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-camera-video {
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  border-radius: 14px;
+  background: #000;
+  object-fit: cover;
+}
+
+.gp-camera-guide {
+  position: absolute;
+  inset: 0;
+  height: auto;
+  aspect-ratio: 3 / 2;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+}
+
+.gp-camera-guide-mrz {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: 10%;
+  height: 22%;
+  border: 2px dashed var(--gp-accent);
+  border-radius: 8px;
+}
+
+.gp-mrz {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gp-mrz-input {
+  font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--gp-line);
+  background: var(--gp-surface);
+}
+
+/* -------- Firma -------- */
+.gp-signature {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gp-signature-canvas {
+  width: 100%;
+  height: 180px;
+  border: 1px dashed var(--gp-accent);
+  border-radius: 14px;
+  background: #fff;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.gp-signature.is-disabled .gp-signature-canvas {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gp-signature-placeholder {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--gp-muted);
+  font-size: 14px;
+  pointer-events: none;
+}
+
+.gp-signature-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.gp-signature-card,
+.gp-document,
+.gp-details,
+.gp-payment,
+.gp-otp,
+.gp-arrive,
+.gp-precheckin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* -------- Preferencias -------- */
+.gp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gp-chip {
+  border: 1px solid var(--gp-line);
+  background: var(--gp-surface);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  min-height: 40px;
+}
+
+.gp-chip.is-active {
+  background: var(--gp-accent-soft);
+  border-color: var(--gp-accent);
+  color: var(--gp-accent-deep);
+  font-weight: 700;
+}
+
+.gp-payment-message {
+  margin: 0;
+  font-size: 15px;
+}
+
+.gp-offers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gp-offers li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gp-button-big {
+  min-height: 56px;
+  font-size: 17px;
+}
+
+.gp-button-huge {
+  min-height: 96px;
+  font-size: 26px;
+  border-radius: 24px;
+  padding: 0 48px;
+}
+
+/* -------- Llegada -------- */
+.gp-arrival-room {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.gp-room-number {
+  margin: 0;
+  font-size: 56px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--gp-accent-deep);
+}
+
+.gp-arrival-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gp-arrival-key {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-qr {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px dashed var(--gp-accent);
+  background: var(--gp-accent-soft);
+}
+
+.gp-qr-payload {
+  font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 13px;
+  word-break: break-all;
+  color: var(--gp-ink);
+}
+
+.gp-qr-serial {
+  font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 12px;
+  color: var(--gp-muted);
+}
+
+.gp-arrival-pending {
+  border-color: var(--gp-warn);
+  background: var(--gp-warn-soft);
+}
+
+.gp-arrival-message {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.gp-handoff {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+}
+
+/* -------- Kiosco -------- */
+.gp-kiosk {
+  min-height: 100vh;
+  background: var(--gp-bg);
+}
+
+.gp-kiosk .gp-shell {
+  max-width: 720px;
+}
+
+.gp-kiosk-screen {
+  max-width: 720px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 48px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  text-align: center;
+}
+
+.gp-kiosk-screen h1 {
+  margin: 0;
+  font-size: 40px;
+  line-height: 1.1;
+}
+
+.gp-kiosk-attract h1 {
+  font-size: 56px;
+}
+
+.gp-kiosk-form {
+  width: 100%;
+  max-width: 520px;
+  text-align: left;
+}
+
+.gp-kiosk-code {
+  font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 32px;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+.gp-kiosk .gp-button,
+.gp-wizard-kiosk .gp-button,
+.gp-kiosk .gp-chip,
+.gp-kiosk input,
+.gp-kiosk select,
+.gp-kiosk textarea {
+  min-height: 56px;
+  font-size: 18px;
+}
+
+.gp-kiosk .gp-signature-canvas {
+  height: 240px;
+}
+
+.gp-kiosk-idle-warning {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  padding: 12px 16px;
+  text-align: center;
+  font-weight: 700;
+  background: var(--gp-warn-soft);
+  color: var(--gp-warn);
+}
+
+/* Tanda CHK · corrector REV3-10 / REV3-14: chat del huésped y QR de la llave. */
+.gp-chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.gp-chat-turn {
+  display: flex;
+  flex-direction: column;
+  max-width: 88%;
+}
+
+.gp-chat-guest {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.gp-chat-bot {
+  align-self: flex-start;
+}
+
+.gp-chat-bubble {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--gp-accent-soft);
+  color: var(--gp-ink);
+  white-space: pre-wrap;
+}
+
+.gp-chat-guest .gp-chat-bubble {
+  background: var(--gp-accent);
+  color: #ffffff;
+}
+
+.gp-chat-action {
+  margin: 2px 4px 0;
+  font-size: 12px;
+  color: var(--gp-muted);
+}
+
+.gp-chat-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.gp-chat-field {
+  flex: 1;
+  margin: 0;
+}
+
+.gp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.gp-qr-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: #ffffff;
+}

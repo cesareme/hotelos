@@ -32,6 +32,16 @@
 // «Walk-in» abre el cajón de Mi día (`onWalkIn`) o, sin él, el evento del
 // shell (⌥W); un fallo de `assign_room` se queda en Mi día con el mensaje del
 // API (409 ocupada…) en vez de saltar a la lista de reservas.
+//
+// Tanda CHK · W4-B (docs/design/CHECKIN-AUTOMATIZADO-IA.md §8, fila «Cola de
+// acciones»; detectores de W3-D en front-desk-queue.service.ts): ocho `kind`
+// nuevos con etiqueta y tono (precheckin_ready, assignment_suggested,
+// self_checkin_done, identity_review, minor_without_guardian, room_not_ready,
+// payment_failed, ses_rejected) y dos acciones: `confirm_assignment` (POST
+// /assignment-suggestions/:id/confirm, optimista como `assign_room`; una
+// primera asignación no tiene reversa, así que sin «Deshacer») y
+// `open_precheckin` (abre ArrivalPreCheckInDrawer, solo lectura). Sin `style=`
+// nuevos (presupuesto 15, hoy 4).
 
 import { useState, type CSSProperties } from "react";
 import { invalidateApi, useApiData } from "../../hooks/useApiData";
@@ -62,6 +72,8 @@ import {
 } from "../../components/cocoa";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
+import { ArrivalPreCheckInDrawer } from "./ArrivalPreCheckInDrawer";
+import { confirmSuggestion } from "../../services/checkinApi";
 
 type Priority = "urgent" | "today" | "soon";
 
@@ -77,7 +89,19 @@ type QueueKind =
   | "checkout_pending"
   | "checkin_ready"
   | "vip_arriving"
-  | "repeat_arriving";
+  | "repeat_arriving"
+  // Tanda CHK · W3-D
+  | "precheckin_ready"
+  | "assignment_suggested"
+  | "self_checkin_done"
+  | "identity_review"
+  | "minor_without_guardian"
+  | "room_not_ready"
+  | "payment_failed"
+  | "ses_rejected";
+
+/** Los ocho `kind` del check-in automatizado (orden del servicio). */
+export const CHECKIN_QUEUE_KINDS: readonly QueueKind[] = ["precheckin_ready", "assignment_suggested", "self_checkin_done", "identity_review", "minor_without_guardian", "room_not_ready", "payment_failed", "ses_rejected"];
 
 type ActionKind =
   | "open_reservation"
@@ -89,7 +113,10 @@ type ActionKind =
   | "open_folio"
   | "open_guest"
   | "start_checkin"
-  | "start_checkout";
+  | "start_checkout"
+  // Tanda CHK · W3-D
+  | "confirm_assignment"
+  | "open_precheckin";
 
 type QueueAction = {
   label: string;
@@ -133,7 +160,15 @@ const KIND_LABEL: Record<QueueKind, string> = {
   checkout_pending: "Check-out pendiente",
   checkin_ready: "Listo para check-in",
   vip_arriving: "VIP",
-  repeat_arriving: "Recurrente"
+  repeat_arriving: "Recurrente",
+  precheckin_ready: "Pre-check-in listo",
+  assignment_suggested: "Habitación sugerida",
+  self_checkin_done: "Check-in autónomo",
+  identity_review: "Revisar identidad",
+  minor_without_guardian: "Menor sin adulto",
+  room_not_ready: "Habitación no lista",
+  payment_failed: "Pago rechazado",
+  ses_rejected: "Parte SES rechazado"
 };
 
 const KIND_TONE: Record<QueueKind, CocoaTone> = {
@@ -148,8 +183,26 @@ const KIND_TONE: Record<QueueKind, CocoaTone> = {
   checkout_pending: "warning",
   checkin_ready: "success",
   vip_arriving: "accent",
-  repeat_arriving: "info"
+  repeat_arriving: "info",
+  precheckin_ready: "success",
+  assignment_suggested: "info",
+  self_checkin_done: "success",
+  identity_review: "danger",
+  minor_without_guardian: "danger",
+  room_not_ready: "warning",
+  payment_failed: "warning",
+  ses_rejected: "danger"
 };
+
+/** Etiqueta del badge de un `kind`; un valor desconocido lee «Acción pendiente», nunca el enum (P6). */
+export function queueKindLabel(kind: string): string {
+  return KIND_LABEL[kind as QueueKind] ?? "Acción pendiente";
+}
+
+/** Tono del badge de un `kind`; desconocido → neutral. */
+export function queueKindTone(kind: string): CocoaTone {
+  return KIND_TONE[kind as QueueKind] ?? "neutral";
+}
 
 const PRIORITY_LABEL: Record<Priority, string> = {
   urgent: "Urgente",
@@ -174,11 +227,15 @@ type ActionContext = {
   openNoShow: (itemId: string, reservationId: string) => void;
   /** Asignación optimista (U3): quita la tarjeta al instante; rechaza si el API falla (rollback ya hecho). */
   assignRoom: (itemId: string, reservationId: string, roomId: string) => Promise<void>;
+  /** Tanda CHK: confirma la sugerencia del motor (o una candidata) con el mismo optimismo que `assignRoom`. */
+  confirmAssignment: (itemId: string, suggestionId: string, roomId: string) => Promise<void>;
+  /** Tanda CHK: abre el cajón de solo lectura del pre-check-in de la reserva. */
+  openPreCheckIn: (reservationId: string) => void;
 };
 
-/** «Asignar 102» → «102» (colas anteriores a `payload.roomNumber`); vacío si no hay número. */
+/** «Asignar 102» / «Confirmar 102» → «102» (colas anteriores a `payload.roomNumber`); vacío si no hay número. */
 export function roomNumberFromLabel(label: string | undefined): string {
-  const match = /^Asignar\s+(\S+)$/i.exec((label ?? "").trim());
+  const match = /^(?:Asignar|Confirmar)\s+(\S+)$/i.exec((label ?? "").trim());
   return match ? match[1] : "";
 }
 
@@ -277,6 +334,27 @@ async function executeAction(
         drawerCtx.openNoShow(itemId, String(reservationId));
         return { ok: true };
       }
+      case "confirm_assignment": {
+        // Tanda CHK: POST /assignment-suggestions/:id/confirm { roomId } (la candidata del botón); optimista como assign_room.
+        const suggestionId = payload?.suggestionId;
+        const roomId = payload?.roomId;
+        if (!suggestionId || !roomId) return { ok: false, message: "Datos incompletos" };
+        try {
+          await drawerCtx.confirmAssignment(itemId, String(suggestionId), String(roomId));
+        } catch (err) {
+          return { ok: false, message: err instanceof Error && err.message ? err.message : "No se pudo confirmar la habitación" };
+        }
+        const roomNumber = String(payload?.roomNumber ?? "").trim() || roomNumberFromLabel(action.label);
+        return { ok: true, message: roomNumber ? FRONT_DESK_TOASTS.roomAssigned(roomNumber) : "Habitación confirmada" };
+      }
+      case "open_precheckin": {
+        const id = String(payload?.reservationId ?? "");
+        if (id) {
+          drawerCtx.openPreCheckIn(id);
+          return { ok: true };
+        }
+        return { ok: false, message: "Falta reservationId" };
+      }
       default:
         return { ok: false, message: "Acción no soportada" };
     }
@@ -324,6 +402,7 @@ export function FrontDeskActionQueue({ onWalkIn }: FrontDeskActionQueueProps = {
   const [checkInReservationId, setCheckInReservationId] = useState<string | null>(null);
   const [checkOutReservationId, setCheckOutReservationId] = useState<string | null>(null);
   const [noShowTarget, setNoShowTarget] = useState<NoShowTarget | null>(null);
+  const [preCheckInReservationId, setPreCheckInReservationId] = useState<string | null>(null);
 
   const items = data?.items ?? [];
   const summary = data?.summary ?? { urgent: 0, today: 0, soon: 0, total: 0 };
@@ -341,7 +420,13 @@ export function FrontDeskActionQueue({ onWalkIn }: FrontDeskActionQueueProps = {
       mutate(
         (prev) => removeQueueItem(prev, itemId),
         (request) => request<void>(`/reservations/${encodeURIComponent(reservationId)}/assign-room`, { method: "POST", body: { roomId } })
-      )
+      ),
+    confirmAssignment: (itemId, suggestionId, roomId) =>
+      mutate(
+        (prev) => removeQueueItem(prev, itemId),
+        () => confirmSuggestion(suggestionId, roomId).then(() => undefined)
+      ),
+    openPreCheckIn: (reservationId) => setPreCheckInReservationId(reservationId)
   };
 
   async function handleAction(item: QueueItem, action: QueueAction) {
@@ -354,7 +439,11 @@ export function FrontDeskActionQueue({ onWalkIn }: FrontDeskActionQueueProps = {
     if (result.ok && action.kind === "assign_room") {
       // `mutate` ya revalida la cola al terminar el commit; Mi día se invalida aparte.
       invalidateApi("/dashboards/front-desk");
-    } else if (result.ok && action.kind !== "start_checkin" && action.kind !== "start_checkout" && action.kind !== "mark_no_show") {
+    } else if (result.ok && action.kind === "confirm_assignment") {
+      // Tanda CHK: igual que assign_room, más el catálogo de habitaciones (la confirmada deja de estar libre).
+      invalidateApi("/dashboards/front-desk");
+      invalidateApi(`/properties/${propertyId}/rooms`);
+    } else if (result.ok && action.kind !== "start_checkin" && action.kind !== "start_checkout" && action.kind !== "mark_no_show" && action.kind !== "open_precheckin") {
       invalidateFrontDesk();
     }
   }
@@ -442,6 +531,19 @@ export function FrontDeskActionQueue({ onWalkIn }: FrontDeskActionQueueProps = {
           onCompleted={() => {
             invalidateFrontDesk();
           }}
+        />
+      ) : null}
+      {/* Tanda CHK: cajón de solo lectura del pre-check-in (open_precheckin); «Abrir check-in» salta al cajón de 90 s. */}
+      {preCheckInReservationId ? (
+        <ArrivalPreCheckInDrawer
+          reservationId={preCheckInReservationId}
+          propertyId={propertyId}
+          onClose={() => setPreCheckInReservationId(null)}
+          onOpenCheckIn={(reservationId) => {
+            setPreCheckInReservationId(null);
+            setCheckInReservationId(reservationId);
+          }}
+          onChanged={invalidateFrontDesk}
         />
       ) : null}
       <LifecycleDialog

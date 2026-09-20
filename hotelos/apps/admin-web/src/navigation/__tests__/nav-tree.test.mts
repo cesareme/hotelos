@@ -51,8 +51,10 @@ describe("nav-tree · generated tree shape", () => {
     // Fusión TL (2026-09-19): +1 item (Hoy › Live Timeline, todos los perfiles) · −1 tab (Reservas › Cronograma pasa a alias de LiveTimeline).
     // Tanda T9 (Documentos, 2026-09-20): +1 item (Operaciones › Digitalizar, core: recepcion, administracion, direccion, fnb, pisos, mantenimiento y admin).
     // Tanda T9 · ola 4 (2026-09-20): +3 tabs (Operaciones › Compras › Recepciones; Finanzas › Proveedores › Documentos y › Archivo).
+    // Tanda CHK (2026-09-20): +1 tab (Hoy › Mi día › Check-in automatizado, CheckInAutomationSettingsScreen).
+    // Fusión T9 + CHK (2026-09-20): 70 items · 104 tabs (medido con build-nav-tree.mjs sobre el CSV compartido).
     assert.equal(NAV_TREE.meta.counts.items, 70);
-    assert.equal(NAV_TREE.meta.counts.tabs, 103);
+    assert.equal(NAV_TREE.meta.counts.tabs, 104);
     assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
   });
@@ -63,7 +65,8 @@ describe("nav-tree · generated tree shape", () => {
     assert.equal(today.baseTab, "Recepción");
     assert.deepEqual(
       today.tabs.map((tab) => tab.url),
-      ["/hoy/operaciones", "/hoy/direccion", "/hoy/propietario"]
+      // Tanda CHK: + Check-in automatizado (CheckInAutomationSettingsScreen; recepcion · direccion · admin · auditoria).
+      ["/hoy/operaciones", "/hoy/direccion", "/hoy/propietario", "/hoy/check-in-automatizado"]
     );
   });
 });
@@ -135,7 +138,9 @@ describe("nav-tree · lookups", () => {
 
   it("lists every URL the router must register, unique and without /backoffice", () => {
     const urls = allUrls();
-    assert.equal(urls.length, 70 + 103 + 21 + 2); // items + tabs + devOnly + public (Tanda T9: +1 item, Operaciones › Digitalizar; ola 4: +3 tabs, Recepciones / Documentos / Archivo)
+    // items + tabs + devOnly + public (Tanda T9: +1 item, Operaciones › Digitalizar; ola 4: +3 tabs, Recepciones / Documentos / Archivo;
+    // Tanda CHK: +1 tab, /hoy/check-in-automatizado) = 70 + 104 + 21 + 2 = 197.
+    assert.equal(urls.length, 70 + 104 + 21 + 2);
     assert.equal(new Set(urls).size, urls.length);
     assert.ok(urls.every((url) => !url.startsWith("/backoffice")));
   });

@@ -1,7 +1,7 @@
 // Tanda L6a (lote 3): cobertura del catálogo de herramientas. Todo nombre de
-// tool-names.ts tiene definición (147/147 desde la Tanda T9), toda implementación tiene
+// tool-names.ts tiene definición (148/148 desde la fusión T9 + CHK), toda implementación tiene
 // definición con `effect` EXPLÍCITO en registry.ts que coincide con el de la
-// implementación, las 12 escrituras son "write" y las 14 lecturas "read", y
+// implementación, las 13 escrituras son "write" y las 15 lecturas "read", y
 // nada que toque dinero/fiscal tiene execute. Sin base de datos ni red.
 // From apps/api:
 //   node --import tsx --test src/modules/ai-operations/__tests__/tools-coverage.test.mts
@@ -33,7 +33,9 @@ const EXPECTED_READS = [
   "extractIncomingDocumentFields",
   "extractGuestIdentityFieldsTemporary",
   "draftReviewResponse",
-  "answerGuestQuestion"
+  "answerGuestQuestion",
+  // Tanda CHK (W4-D): sugerencia de habitación con motivo (lectura; la pre-asignación autónoma queda desactivada, D4).
+  "suggestRoomAssignment"
 ].sort();
 
 const EXPECTED_WRITES = [
@@ -49,7 +51,9 @@ const EXPECTED_WRITES = [
   "queueSesHospedajesSubmission",
   "sendGuestMessage",
   // Tanda T9 (lote T9-06a): propuesta de acción sobre un documento digitalizado.
-  "proposeIncomingDocumentAction"
+  "proposeIncomingDocumentAction",
+  // Tanda CHK (W4-D): peticiones del bot del huésped (late check-out, toallas…); recepción confirma.
+  "createServiceRequest"
 ].sort();
 
 /** Nombres que tocan dinero o fiscal: SIN execute en la Tanda L6a (honesto: denied tool_not_implemented). */
@@ -92,13 +96,13 @@ function explicitEffectInSource(name: string): "read" | "write" | null {
 }
 
 describe("catálogo de herramientas · definiciones", () => {
-  it("todo nombre de ALL_TOOL_NAMES tiene definición (147/147: 146 de L6a + proposeIncomingDocumentAction de T9) y ninguna definición está fuera del catálogo", () => {
+  it("todo nombre de ALL_TOOL_NAMES tiene definición (148/148: 146 de L6a + proposeIncomingDocumentAction de T9 + suggestRoomAssignment de la Tanda CHK) y ninguna definición está fuera del catálogo", () => {
     const defined = new Set(TOOL_DEFINITIONS.map((definition) => definition.name as string));
     const missing = ALL_TOOL_NAMES.filter((name) => !defined.has(name));
     assert.deepEqual(missing, [], `nombres sin definición: ${missing.join(", ")}`);
-    assert.equal(ALL_TOOL_NAMES.length, 147);
-    assert.equal(TOOL_DEFINITIONS.length, 147);
-    assert.equal(new Set(ALL_TOOL_NAMES).size, 147, "sin nombres duplicados");
+    assert.equal(ALL_TOOL_NAMES.length, 148);
+    assert.equal(TOOL_DEFINITIONS.length, 148);
+    assert.equal(new Set(ALL_TOOL_NAMES).size, 148, "sin nombres duplicados");
     const catalog = new Set<string>(ALL_TOOL_NAMES);
     assert.deepEqual(TOOL_DEFINITIONS.filter((definition) => !catalog.has(definition.name)).map((definition) => definition.name), []);
     assert.deepEqual([...DOCUMENTS_TOOL_NAMES], ["classifyIncomingDocument", "extractIncomingDocumentFields", "proposeIncomingDocumentAction"]);
@@ -149,10 +153,10 @@ describe("implementaciones AiTool del API", () => {
     }
   });
 
-  it("las 12 escrituras tienen effect write (y preview determinista) y las 14 lecturas effect read", () => {
+  it("las 13 escrituras tienen effect write (y preview determinista) y las 15 lecturas effect read", () => {
     assert.deepEqual([...AI_WRITE_TOOL_NAMES].sort(), EXPECTED_WRITES);
     assert.deepEqual([...AI_READ_TOOL_NAMES].sort(), EXPECTED_READS);
-    assert.equal(Object.keys(AI_TOOL_IMPLEMENTATIONS).length, 26);
+    assert.equal(Object.keys(AI_TOOL_IMPLEMENTATIONS).length, 28);
     for (const name of EXPECTED_WRITES) {
       assert.equal(typeof AI_TOOL_IMPLEMENTATIONS[name]!.preview, "function", `${name} (escritura) sin preview`);
     }

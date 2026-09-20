@@ -89,7 +89,8 @@ describe("AUTH-08 · CORS is an allow-list resolved by lib/env.ts (no reflected 
     assert.match(registration, /methods: \["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"\]/);
     // Tanda 8a (L1/L4): el front envía `x-property-id` (services/api-client.ts, ACTIVE_PROPERTY_HEADER) para las rutas sin
     // :propertyId; sin listarla en allowedHeaders el preflight del navegador (:5173 → :3000) rechazaría toda petición.
-    assert.match(registration, /allowedHeaders: \["Content-Type", "Authorization", "x-correlation-id", "x-property-id"\]/);
+    // Tanda CHK (corrector REV3-04): el portal del huésped y el kiosco autentican por cabecera desde otro origen en dev.
+    assert.match(registration, /allowedHeaders: \["Content-Type", "Authorization", "x-correlation-id", "x-property-id", "x-guest-token", "x-kiosk-token"\]/);
     assert.match(registration, /exposedHeaders: \["x-correlation-id", "X-Total-Count", "X-Next-Cursor", "x-ratelimit-limit", "x-ratelimit-remaining", "retry-after"\]/);
     assert.match(registration, /maxAge: 600/);
     // The design is documented next to the code (why credentials are off and
@@ -113,6 +114,24 @@ describe("AUTH-08 · CORS is an allow-list resolved by lib/env.ts (no reflected 
     assert.match(integration, /access-control-allow-credentials/);
     assert.match(integration, /CORS_ALLOWED_ORIGINS/);
     assert.match(integration, /access-control-request-method/);
+  });
+});
+
+describe("Tanda CHK (corrector SEC-6) · el token del portal del huésped no llega a los logs de peticiones", () => {
+  it("Fastify se construye con un serializador de `req` que pasa la URL por redactTokenInUrl", () => {
+    assert.match(code, /const app = Fastify\(\{\s*logger: \{\s*serializers: \{\s*req: \(request\) => \(\{[\s\S]*?url: redactTokenInUrl\(request\.url\)/);
+    assert.doesNotMatch(code, /Fastify\(\{ logger: true \}\)/, "logger: true serializaría req.url con ?token=<64 hex> en claro");
+  });
+
+  it("redactTokenInUrl sustituye cualquier token= de la query y deja el resto de la URL", () => {
+    const fn = /export function redactTokenInUrl\(url: string \| undefined\): string \| undefined \{([\s\S]*?)\n\}/.exec(code);
+    assert.ok(fn, "redactTokenInUrl exportada en server.ts");
+    // Se evalúa el cuerpo tal cual está en el fichero (función pura, sin imports).
+    const redact = new Function("url", fn[1].replace(/^\s*if \(typeof url !== "string"\) return url;/m, 'if (typeof url !== "string") return url;'));
+    assert.equal(redact("/guest-portal/check-in?token=" + "a".repeat(64) + "&property=prop_1"), "/guest-portal/check-in?token=<redacted>&property=prop_1");
+    assert.equal(redact("/guest-portal/check-in?property=p&token=abc#x"), "/guest-portal/check-in?property=p&token=<redacted>#x");
+    assert.equal(redact("/reservations/res_1/check-in"), "/reservations/res_1/check-in");
+    assert.equal(redact(undefined), undefined);
   });
 });
 

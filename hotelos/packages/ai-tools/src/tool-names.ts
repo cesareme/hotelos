@@ -11,7 +11,11 @@ export const PMS_TOOL_NAMES = [
   "quoteAvailability",
   // Tanda L6a (lote 3): nombre canónico del parser de reservas (reservation-agent.service.ts) para
   // que el lote 4 lo registre a través del tool runner.
-  "parseReservationRequest"
+  "parseReservationRequest",
+  // Tanda CHK (W4-D): sugerencia de habitación con motivo (room-assignment.service, lectura
+  // medium · auto). NO existe `preassign_room` (decisión D4: la pre-asignación autónoma
+  // queda desactivada; la sugerencia siempre espera confirmación humana).
+  "suggestRoomAssignment"
 ] as const;
 
 export const GUEST_REGISTER_TOOL_NAMES = [

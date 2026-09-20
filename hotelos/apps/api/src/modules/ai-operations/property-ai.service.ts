@@ -3,7 +3,7 @@ import { budgetStatus, monthlyBudgetEurOf } from "@hotelos/ai-core/runner";
 import { prisma } from "@hotelos/database";
 import { aiConfigSummary } from "../../lib/ai-config.js";
 import type { AiConfigSummary } from "../../lib/ai-config.js";
-import { BadRequestError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
 import { recordDomainEvent } from "../audit/audit.service.js";
 import { monthToDateCostEur } from "./pipeline.service.js";
@@ -81,6 +81,27 @@ export type UpdatePropertyAiSettingsInput = {
   organizationId?: string;
   actorUserId?: string;
 };
+
+/**
+ * Corrector Tanda CHK (SEC-4): `configurationJson.whatsappPhoneId` (phone_number_id de
+ * Meta) enruta los mensajes entrantes de POST /webhooks/whatsapp a la propiedad; un id
+ * ya reclamado por OTRA propiedad (de cualquier organización) no se puede declarar
+ * (409 WHATSAPP_PHONE_ID_CLAIMED), si no un administrador ajeno recibiría sus mensajes.
+ * La comparten los dos escritores de la fila (este servicio y
+ * backoffice.service.ts#patchAiSettings, el de PATCH …/ai-settings).
+ */
+export async function assertWhatsappPhoneIdFree(propertyId: string, configurationJson: unknown): Promise<void> {
+  const config = toConfig(configurationJson);
+  const claimedPhoneId = typeof config.whatsappPhoneId === "string" ? config.whatsappPhoneId.trim() : "";
+  if (!claimedPhoneId) return;
+  const owner = await prisma.propertyAiSetting.findFirst({
+    where: { propertyId: { not: propertyId }, configurationJson: { path: ["whatsappPhoneId"], equals: claimedPhoneId } },
+    select: { propertyId: true }
+  });
+  if (owner) {
+    throw new ConflictError("El phone_number_id de WhatsApp ya está declarado en otra propiedad: cada número de Meta solo puede enrutar a una.", { code: "WHATSAPP_PHONE_ID_CLAIMED" });
+  }
+}
 
 function isAutomationLevel(value: unknown): value is AutomationLevel {
   return typeof value === "string" && (AUTOMATION_LEVELS as readonly string[]).includes(value);
@@ -193,6 +214,8 @@ export async function updatePropertyAiSettings(
       );
     }
   }
+
+  if (input.configurationJson !== undefined) await assertWhatsappPhoneIdFree(propertyId, effectiveConfig);
 
   const updateData: Record<string, unknown> = {};
   if (input.aiEnabled !== undefined) updateData.aiEnabled = input.aiEnabled;

@@ -22,6 +22,7 @@ import { PAYMENTS_ENV_CONTRACT } from "../modules/payments/env.partial.js";
 import { PMS_SHADOW_ENV_CONTRACT } from "../modules/pms-shadow/env.partial.js";
 import { REPUTATION_ENV_CONTRACT } from "../modules/reputation/env.partial.js";
 import { DOCUMENTS_ENV_CONTRACT } from "../modules/documents/env.partial.js";
+import { CHECKIN_ENV_CONTRACT } from "../modules/checkin/env.partial.js";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import { isValidSpanishTaxId, resolveVerifactuCredentials, resolveVerifactuSoftware } from "@hotelos/compliance";
@@ -784,6 +785,11 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   // lee SOLO en modules/documents/documents.config.ts vía effectiveValue +
   // processEnvironment (su env-partial.test prohíbe lecturas directas del entorno).
   ...DOCUMENTS_ENV_CONTRACT,
+  // Check-in automatizado (Tanda CHK · W2-A): job de invitaciones (CHECKIN_INVITATION_DISABLED,
+  // CHECKIN_INVITATION_INTERVAL_MS, CHECKIN_ASSIGNMENT_RUN_AT · sección Schedulers), OTP, emparejamiento
+  // de kioscos y purga de capturas (sección Seguridad) y límites de tamaño de documento/firma
+  // (sección Rate limit/CORS) en modules/checkin/env.partial.ts.
+  ...CHECKIN_ENV_CONTRACT,
 
   // ---------------------------------------------------------------- Wallet
   APPLE_WALLET_PASS_TYPE_ID: { section: "Wallet", format: "string", default: "pass.com.hotelos.roomkey", doc: "Pass Type ID de las llaves móviles en Apple Wallet." },
@@ -870,6 +876,19 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     values: ["1"],
     tags: ["dev-only", "dangerous"],
     doc: "seed-ux-day (Tanda UX-1, corrector R9): con NODE_ENV=production el seed aborta (crea un usuario admin con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente."
+  },
+  SEED_CHK_PASSWORD: {
+    section: "Seeds",
+    format: "string",
+    tags: ["dev-only"],
+    doc: "seed-checkin (Tanda CHK, lote W1-D): contraseña de los tres usuarios *@chk.test del tenant aislado org_chk / prop_chk; sin ella, «chk-demo». Nunca en producción."
+  },
+  SEED_CHK_ALLOW_PRODUCTION: {
+    section: "Seeds",
+    format: "enum",
+    values: ["1"],
+    tags: ["dev-only", "dangerous"],
+    doc: "seed-checkin (Tanda CHK, lote W1-D): con NODE_ENV=production el seed aborta (crea usuarios con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente."
   },
   RBAC_DEMO_PASSWORD: {
     section: "Seeds",

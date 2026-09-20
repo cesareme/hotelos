@@ -100,6 +100,8 @@ describe("guest magic-link notification handler", () => {
     const magicLinkUrl = String(call.variables.magicLinkUrl);
     assert.ok(magicLinkUrl.includes(TOKEN), "magicLinkUrl must contain the raw token");
     assert.equal(magicLinkUrl, `http://localhost:5174/?token=${TOKEN}`);
+    // Corrector Tanda CHK (SEC-1): the dispatcher is told to keep the token out of notification_deliveries.
+    assert.deepEqual(calls[0]!.redact, { variables: ["magicLinkUrl"], values: [TOKEN] });
     assert.equal(call.variables.reservationCode, "RES-18392");
     assert.equal(call.variables.propertyName, "Hotel Demo Madrid Centro");
     assert.equal(call.variables.expiryHours, 24);

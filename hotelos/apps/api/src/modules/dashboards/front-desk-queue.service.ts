@@ -21,6 +21,24 @@
 //  11.  vip_arriving           · guest VIP llega hoy
 //  12.  repeat_arriving        · guest con ≥1 estancia anterior (checked_out)
 //
+// Tanda CHK · W3-D (diseño §4b consumidores, §4d handoffs, §8 «Cola de acciones»),
+// leídos de CheckInSession / AssignmentSuggestion / SesHospedajesSubmission:
+//  13.  identity_review        · sesión handed_off (identity_review · identity_mismatch) → urgente
+//  14.  minor_without_guardian · sesión handed_off (menor sin adulto) → urgente
+//  15.  room_not_ready         · sesión handed_off (habitación no lista al llegar) → urgente
+//  16.  payment_failed         · sesión handed_off (pago rechazado / sin PSP) → hoy
+//  17.  ses_rejected           · parte SES rechazado hoy → hoy
+//  18.  assignment_suggested   · llegada de MAÑANA sin habitación con sugerencia
+//                                pendiente (lote de las 18:00) → confirmar en un clic
+//  19.  precheckin_ready       · sesión ready_for_arrival → «Hacer check-in»
+//                                (sustituye a checkin_ready para esa reserva)
+//  20.  self_checkin_done      · sesión checked_in por el huésped (portal) o el
+//                                kiosco en las últimas 12 h → informativo
+//   ·   unassigned_arrival     · si hay AssignmentSuggestion `suggested`, la
+//                                recomendación es la 1.ª candidata del motor con
+//                                sus motivos y la acción `confirm_assignment`
+//                                (2.ª y 3.ª como acciones secundarias).
+//
 // Cada item incluye:
 //   - priority: "urgent" | "today" | "soon"
 //   - title: cabecera corta
@@ -57,7 +75,16 @@ export type FrontDeskQueueKind =
   | "checkout_pending"
   | "checkin_ready"
   | "vip_arriving"
-  | "repeat_arriving";
+  | "repeat_arriving"
+  // Tanda CHK · W3-D
+  | "precheckin_ready"
+  | "assignment_suggested"
+  | "self_checkin_done"
+  | "identity_review"
+  | "minor_without_guardian"
+  | "room_not_ready"
+  | "payment_failed"
+  | "ses_rejected";
 
 export type FrontDeskQueueActionKind =
   | "open_reservation"           // navega al detalle de la reserva
@@ -69,7 +96,28 @@ export type FrontDeskQueueActionKind =
   | "open_folio"                 // navega al folio
   | "open_guest"                 // navega a la ficha de huésped
   | "start_checkin"              // arranca el flujo de check-in en 90s
-  | "start_checkout";            // arranca el flujo de check-out
+  | "start_checkout"             // arranca el flujo de check-out
+  // Tanda CHK · W3-D
+  | "confirm_assignment"         // mutación: POST /assignment-suggestions/:id/confirm · payload { suggestionId, roomId, roomNumber, reservationId }
+  | "open_precheckin";           // navega al pre-check-in de la reserva · payload { reservationId }
+
+/** Modelos Prisma que lee la cola (inyectables en tests; `prisma` real por defecto). */
+export type FrontDeskQueueDb = Pick<
+  typeof prisma,
+  "reservation" | "room" | "workOrder" | "reservationGuest" | "guest" | "checkInSession" | "assignmentSuggestion" | "sesHospedajesSubmission"
+>;
+
+/**
+ * Colaboradores inyectables (Tanda CHK · W3-D, mismo patrón que
+ * `FrontDeskDashboardDeps`): `__tests__/front-desk-checkin.test.mts` pasa un
+ * Prisma falso y saldos falsos; en producción se usan `prisma` y
+ * `computeBalancesForReservations`. El parche de delegados de
+ * tests/integration/l2-robustez sigue funcionando porque `db` es el mismo objeto.
+ */
+export type FrontDeskQueueDeps = {
+  db?: FrontDeskQueueDb;
+  computeBalances?: (reservationIds: string[]) => Promise<Map<string, number>>;
+};
 
 export type FrontDeskQueueAction = {
   label: string;
@@ -103,7 +151,11 @@ export type FrontDeskQueueResult = {
     soon: number;
     total: number;
   };
-  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_orders"). */
+  /**
+   * Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this
+   * response ("work_orders"; Tanda CHK · W3-D: "checkin_sessions",
+   * "assignment_suggestions", "assignment_suggestions_tomorrow", "ses_rejected").
+   */
   degraded: string[];
 };
 
@@ -111,9 +163,90 @@ export type FrontDeskQueueResult = {
 // Helpers
 // ===========================================================================
 
-function startOfDayUtc(): Date {
-  const now = new Date();
+/** Día UTC de `now` (W3-D: antes leía el reloj real e ignoraba `input.now`; sin `now` es lo mismo). */
+function startOfDayUtc(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Ventana del detector self_checkin_done. */
+const SELF_CHECKIN_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+/** `CheckInSession.handoffKind` → kind de cola (diseño §4d). Kinds no listados (group_arrival, walk_in…) no generan ítem en este lote. */
+const HANDOFF_QUEUE_KIND: Record<string, Extract<FrontDeskQueueKind, "identity_review" | "minor_without_guardian" | "room_not_ready" | "payment_failed">> = {
+  identity_review: "identity_review",
+  identity_mismatch: "identity_review",
+  minor_without_guardian: "minor_without_guardian",
+  room_not_ready: "room_not_ready",
+  payment_failed: "payment_failed"
+};
+
+const HANDOFF_COPY: Record<
+  "identity_review" | "minor_without_guardian" | "room_not_ready" | "payment_failed",
+  { priority: FrontDeskQueuePriority; title: string; recommendation: string }
+> = {
+  identity_review: {
+    priority: "urgent",
+    title: "Revisar identidad",
+    recommendation: "Coteja el documento en el mostrador y marca la identidad como verificada antes de entregar la llave."
+  },
+  minor_without_guardian: {
+    priority: "urgent",
+    title: "Menor sin adulto responsable",
+    recommendation: "Identifica al adulto responsable de la reserva antes de firmar el parte del menor."
+  },
+  room_not_ready: {
+    priority: "urgent",
+    title: "Habitación no lista para el auto-check-in",
+    recommendation: "Prioriza la limpieza con pisos o reasigna una habitación limpia de la misma categoría."
+  },
+  payment_failed: {
+    priority: "today",
+    title: "Pago rechazado",
+    recommendation: "Cobra en el mostrador o envía un nuevo enlace de pago antes de completar el check-in."
+  }
+};
+
+/** Candidatas de `AssignmentSuggestion.candidatesJson` (misma tolerancia que `parseCandidates` de room-assignment.service). */
+type QueueCandidate = { roomId: string; number: string; reasons: string[] };
+
+function candidatesOf(json: unknown): QueueCandidate[] {
+  if (!Array.isArray(json)) return [];
+  const out: QueueCandidate[] = [];
+  for (const item of json) {
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as { roomId?: unknown; number?: unknown; reasons?: unknown };
+    if (typeof candidate.roomId !== "string") continue;
+    const reasons = Array.isArray(candidate.reasons)
+      ? candidate.reasons
+          .map((reason) => (reason && typeof reason === "object" ? (reason as { detail?: unknown }).detail : undefined))
+          .filter((detail): detail is string => typeof detail === "string" && detail.trim().length > 0)
+      : [];
+    out.push({ roomId: candidate.roomId, number: typeof candidate.number === "string" ? candidate.number : candidate.roomId.slice(-4), reasons });
+  }
+  return out;
+}
+
+/** «La 312: Inspeccionada esta mañana · Planta alta como pidió (confianza 80 %)». */
+function describeCandidate(candidate: QueueCandidate, confidence: number): string {
+  const motives = candidate.reasons.slice(0, 2);
+  const pct = Number.isFinite(confidence) ? Math.round(Math.max(0, Math.min(1, confidence)) * 100) : null;
+  return `la ${candidate.number}${motives.length ? `: ${motives.join(" · ")}` : ""}${pct !== null ? ` (confianza ${pct} %)` : ""}`;
+}
+
+function confirmAssignmentAction(label: string, suggestionId: string, reservationId: string, candidate: QueueCandidate): FrontDeskQueueAction {
+  return {
+    label,
+    kind: "confirm_assignment",
+    payload: { suggestionId, roomId: candidate.roomId, roomNumber: candidate.number, reservationId }
+  };
+}
+
+function elapsedLabel(from: Date, now: Date): string {
+  const minutes = Math.max(0, Math.round((now.getTime() - from.getTime()) / 60000));
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return `hace ${hours} h${minutes % 60 ? ` ${minutes % 60} min` : ""}`;
 }
 
 function fmtName(g: { firstName?: string | null; surname1?: string | null; surname2?: string | null } | null): string {
@@ -140,8 +273,20 @@ const KIND_ORDER: FrontDeskQueueKind[] = [
   "checkout_pending",
   "checkin_ready",
   "vip_arriving",
-  "repeat_arriving"
+  "repeat_arriving",
+  // Tanda CHK · W3-D (después de los existentes: el orden previo no cambia).
+  "identity_review",
+  "minor_without_guardian",
+  "room_not_ready",
+  "payment_failed",
+  "ses_rejected",
+  "assignment_suggested",
+  "precheckin_ready",
+  "self_checkin_done"
 ];
+
+/** Todos los kinds están en KIND_ORDER (`counts` los cubre todos). */
+export const FRONT_DESK_QUEUE_KINDS: readonly FrontDeskQueueKind[] = KIND_ORDER;
 
 function kindWeight(k: FrontDeskQueueKind): number {
   const idx = KIND_ORDER.indexOf(k);
@@ -152,11 +297,16 @@ function kindWeight(k: FrontDeskQueueKind): number {
 // Builder principal
 // ===========================================================================
 
-export async function buildFrontDeskQueue(input: { propertyId: string; now?: Date; limit?: number }): Promise<FrontDeskQueueResult> {
+export async function buildFrontDeskQueue(
+  input: { propertyId: string; now?: Date; limit?: number },
+  deps: FrontDeskQueueDeps = {}
+): Promise<FrontDeskQueueResult> {
+  const db = deps.db ?? prisma;
+  const computeBalances = deps.computeBalances ?? computeBalancesForReservations;
   const propertyId = input.propertyId;
   const now = input.now ?? new Date();
-  const dayStart = startOfDayUtc();
-  const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+  const dayStart = startOfDayUtc(now);
+  const dayEnd = new Date(dayStart.getTime() + DAY_MS);
   const items: FrontDeskQueueItem[] = [];
 
   // Pagination guard rails. Default 100, caller may override within [1, 500].
@@ -170,26 +320,26 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
   // ----------------------------------------------------------------------
   const { safe, degraded } = createDegradedCollector("dashboards.front-desk-queue", { propertyId });
   const [arrivalsToday, departuresToday, inHouseAll, allRooms, openWorkOrders] = await Promise.all([
-    prisma.reservation.findMany({
+    db.reservation.findMany({
       where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["confirmed", "checked_in", "no_show"] } },
       orderBy: { eta: "asc" },
       take
     }),
-    prisma.reservation.findMany({
+    db.reservation.findMany({
       where: { propertyId, departureDate: { gte: dayStart, lt: dayEnd }, status: { in: ["checked_in", "checked_out"] } },
       orderBy: { etd: "asc" },
       take
     }),
-    prisma.reservation.findMany({
+    db.reservation.findMany({
       where: { propertyId, status: "checked_in" },
       take
     }),
-    prisma.room.findMany({ where: { propertyId, active: true }, take: Math.max(take, 500) }),
+    db.room.findMany({ where: { propertyId, active: true }, take: Math.max(take, 500) }),
     // Work orders. Tanda L2 (L2-06): a failed query is logged and reported in
     // `degraded[]` (was `.catch(() => [])`: a broken table looked like «sin incidencias»).
     safe(
       "work_orders",
-      prisma.workOrder.findMany({
+      db.workOrder.findMany({
         where: { propertyId, status: { in: ["open", "in_progress"] } },
         orderBy: { createdAt: "asc" },
         take
@@ -226,13 +376,68 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
     ...departuresToday.map((r) => r.id),
     ...inHouseAll.map((r) => r.id)
   ];
-  const reservationGuests = allReservationIds.length
-    ? await prisma.reservationGuest.findMany({
-        where: { reservationId: { in: allReservationIds } },
-        select: { reservationId: true, guestId: true, isPrimary: true },
+  // Tanda CHK · W3-D: la capa de check-in se lee en la misma ronda que los
+  // vínculos (todas dependen solo de las llegadas), cada consulta dentro de
+  // `safe()`: una tabla rota deja la cola sin esos ítems y lo declara en `degraded[]`.
+  const arrivalIds = arrivalsToday.map((r) => r.id);
+  const arrivalIdSet = new Set(arrivalIds);
+  const selfCheckInSince = new Date(now.getTime() - SELF_CHECKIN_WINDOW_MS);
+  const [reservationGuests, sessions, suggestions, sesRejected] = await Promise.all([
+    allReservationIds.length
+      ? db.reservationGuest.findMany({
+          where: { reservationId: { in: allReservationIds } },
+          select: { reservationId: true, guestId: true, isPrimary: true },
+          take: Math.max(take, 500)
+        })
+      : Promise.resolve([]),
+    // Sesiones de las llegadas de hoy + auto-check-ins recientes (aunque la
+    // llegada fuera ayer por la noche).
+    safe(
+      "checkin_sessions",
+      db.checkInSession.findMany({
+        where: {
+          propertyId,
+          OR: [{ reservationId: { in: arrivalIds } }, { status: "checked_in", checkedInAt: { gte: selfCheckInSince } }]
+        },
+        select: {
+          id: true,
+          reservationId: true,
+          status: true,
+          channel: true,
+          kioskDeviceId: true,
+          handoffKind: true,
+          handoffReason: true,
+          etaDeclared: true,
+          checkedInAt: true,
+          guests: { select: { status: true } }
+        },
         take: Math.max(take, 500)
-      })
-    : [];
+      }),
+      []
+    ),
+    // Sugerencias pendientes de la propiedad (llegadas de hoy sin habitación y
+    // lote de mañana); la más reciente por reserva gana (orderBy desc).
+    safe(
+      "assignment_suggestions",
+      db.assignmentSuggestion.findMany({
+        where: { propertyId, status: "suggested" },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, reservationId: true, candidatesJson: true, confidence: true },
+        take: Math.max(take, 500)
+      }),
+      []
+    ),
+    safe(
+      "ses_rejected",
+      db.sesHospedajesSubmission.findMany({
+        where: { propertyId, status: "rejected", updatedAt: { gte: dayStart } },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true, reservationId: true, errorCode: true, updatedAt: true },
+        take
+      }),
+      []
+    )
+  ]);
   const primaryGuestId = new Map<string, string>();
   for (const link of reservationGuests) {
     if (link.isPrimary) primaryGuestId.set(link.reservationId, link.guestId);
@@ -241,33 +446,65 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
     if (!primaryGuestId.has(link.reservationId)) primaryGuestId.set(link.reservationId, link.guestId);
   }
   const guestIds = Array.from(new Set(Array.from(primaryGuestId.values())));
-  const guests = guestIds.length
-    ? await prisma.guest.findMany({
-        where: { id: { in: guestIds } },
-        select: { id: true, firstName: true, surname1: true, surname2: true, vipCode: true, loyaltyTier: true, documentNumber: true },
-        take: Math.max(take, 500)
-      })
-    : [];
-  const guestById = new Map(guests.map((g) => [g.id, g]));
 
-  // Para "repeat_arriving": cuenta de estancias anteriores por guestId.
-  let priorStaysByGuest = new Map<string, number>();
-  if (guestIds.length > 0) {
-    const priorLinks = await prisma.reservationGuest.findMany({
-      where: {
-        guestId: { in: guestIds },
-        reservation: { propertyId, status: "checked_out", departureDate: { lt: dayStart } }
-      },
-      select: { guestId: true, reservationId: true },
-      take: Math.max(take, 500)
-    });
-    for (const link of priorLinks) {
-      priorStaysByGuest.set(link.guestId, (priorStaysByGuest.get(link.guestId) ?? 0) + 1);
-    }
+  const sessionByReservation = new Map(sessions.map((session) => [session.reservationId, session] as const));
+  const suggestionByReservation = new Map<string, (typeof suggestions)[number]>();
+  for (const suggestion of suggestions) {
+    if (!suggestionByReservation.has(suggestion.reservationId)) suggestionByReservation.set(suggestion.reservationId, suggestion);
+  }
+  const suggestedElsewhereIds = Array.from(suggestionByReservation.keys()).filter((id) => !arrivalIdSet.has(id));
+
+  const [guests, priorLinks, tomorrowSuggested] = await Promise.all([
+    guestIds.length
+      ? db.guest.findMany({
+          where: { id: { in: guestIds } },
+          select: { id: true, firstName: true, surname1: true, surname2: true, vipCode: true, loyaltyTier: true, documentNumber: true },
+          take: Math.max(take, 500)
+        })
+      : Promise.resolve([]),
+    // Para "repeat_arriving": cuenta de estancias anteriores por guestId.
+    guestIds.length
+      ? db.reservationGuest.findMany({
+          where: {
+            guestId: { in: guestIds },
+            reservation: { propertyId, status: "checked_out", departureDate: { lt: dayStart } }
+          },
+          select: { guestId: true, reservationId: true },
+          take: Math.max(take, 500)
+        })
+      : Promise.resolve([]),
+    // Detector 18: reservas de MAÑANA sin habitación con sugerencia pendiente.
+    suggestedElsewhereIds.length
+      ? safe(
+          "assignment_suggestions_tomorrow",
+          db.reservation.findMany({
+            where: {
+              id: { in: suggestedElsewhereIds },
+              propertyId,
+              status: "confirmed",
+              assignedRoomId: null,
+              arrivalDate: { gte: dayEnd, lt: new Date(dayEnd.getTime() + DAY_MS) }
+            },
+            select: { id: true, code: true, eta: true },
+            orderBy: { eta: "asc" },
+            take
+          }),
+          []
+        )
+      : Promise.resolve([])
+  ]);
+  const guestById = new Map(guests.map((g) => [g.id, g]));
+  const priorStaysByGuest = new Map<string, number>();
+  for (const link of priorLinks) {
+    priorStaysByGuest.set(link.guestId, (priorStaysByGuest.get(link.guestId) ?? 0) + 1);
   }
 
+  // Reservas conocidas por id (llegadas + in-house) para los detectores que parten de la sesión o del parte SES.
+  const reservationById = new Map<string, (typeof arrivalsToday)[number]>();
+  for (const res of [...arrivalsToday, ...inHouseAll]) reservationById.set(res.id, res);
+
   // Folio balances de llegadas + salidas + in-house.
-  const balances = await computeBalancesForReservations(allReservationIds);
+  const balances = await computeBalances(allReservationIds);
   const balanceFor = (id: string) => balances.get(id) ?? 0;
   const nameFor = (resId: string) => {
     const gid = primaryGuestId.get(resId);
@@ -283,7 +520,7 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
   // dentro de las próximas 14 noches.
   // ----------------------------------------------------------------------
   const overbookingHorizon = new Date(dayStart.getTime() + 14 * 24 * 60 * 60 * 1000);
-  const overbookingCandidates = await prisma.reservation.findMany({
+  const overbookingCandidates = await db.reservation.findMany({
     where: {
       propertyId,
       status: { in: ["confirmed", "checked_in"] },
@@ -359,9 +596,91 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
       noShowFlagged = true;
     }
 
+    // Tanda CHK · W3-D — detectores 19 y 13-16 a partir de la CheckInSession.
+    // Van ANTES de unassigned_arrival (que hace `continue`): un handoff del
+    // kiosco importa aunque la reserva no tenga habitación.
+    const session = sessionByReservation.get(res.id);
+    const preCheckInReady = Boolean(session && session.status === "ready_for_arrival" && res.status === "confirmed" && !noShowFlagged);
+    if (session && preCheckInReady) {
+      const completed = session.guests.filter((g) => ["data_complete", "signed", "verified"].includes(g.status)).length;
+      const roomReady = room ? roomStateOf(room).isClean : false;
+      items.push({
+        id: `precheckin_ready_${res.id}`,
+        priority: "today",
+        kind: "precheckin_ready",
+        title: `Pre-check-in completo · ${guestName}`,
+        context: `${completed}/${session.guests.length} viajeros con datos y firma${session.etaDeclared ? ` · llegada declarada ${session.etaDeclared}` : etaLabel}${room ? ` · Hab. ${room.number}` : " · sin habitación"}.`,
+        recommendation: roomReady
+          ? "Todo listo: coteja el documento y entrega la llave (≤ 90 s)."
+          : room
+            ? "El huésped ya lo tiene todo hecho; falta que la habitación esté lista."
+            : "El huésped ya lo tiene todo hecho; falta asignarle habitación.",
+        reservationId: res.id,
+        guestId: guest?.id,
+        roomId: room?.id,
+        primaryAction: { label: "Hacer check-in", kind: "start_checkin", payload: { reservationId: res.id } },
+        secondaryActions: [{ label: "Ver pre-check-in", kind: "open_precheckin", payload: { reservationId: res.id } }]
+      });
+    }
+    if (session && session.status === "handed_off" && res.status === "confirmed") {
+      const handoffKind = HANDOFF_QUEUE_KIND[session.handoffKind ?? ""];
+      if (handoffKind) {
+        const copy = HANDOFF_COPY[handoffKind];
+        const origin = session.channel === "kiosk" || session.kioskDeviceId ? "Derivado desde el kiosco" : "Derivado desde el portal";
+        items.push({
+          id: `${handoffKind}_${res.id}`,
+          priority: copy.priority,
+          kind: handoffKind,
+          title: `${copy.title} · ${guestName}`,
+          context: `${origin}${etaLabel}${room ? ` · Hab. ${room.number}` : ""}${session.handoffReason ? ` · ${session.handoffReason}` : ""}.`,
+          recommendation: copy.recommendation,
+          reservationId: res.id,
+          guestId: guest?.id,
+          roomId: room?.id,
+          primaryAction: { label: "Abrir pre-check-in", kind: "open_precheckin", payload: { reservationId: res.id } },
+          secondaryActions: [{ label: "Hacer check-in", kind: "start_checkin", payload: { reservationId: res.id } }]
+        });
+      }
+    }
+
     // Detector 5: unassigned_arrival — sin habitación asignada.
     // Si ya marcamos no_show_risk, evitamos duplicar el flag de "haz algo".
     if (!res.assignedRoomId && res.status === "confirmed" && !noShowFlagged) {
+      // Tanda CHK · W3-D (diseño §4b consumidores): si el motor dejó una
+      // AssignmentSuggestion `suggested`, la recomendación es su 1.ª candidata
+      // con motivos y la acción es confirmar (2.ª y 3.ª como alternativas).
+      // Se descartan candidatas ya ocupadas, bloqueadas, inactivas o
+      // propuestas a otra llegada (L-22); sin candidata válida, lógica previa.
+      const stored = suggestionByReservation.get(res.id);
+      const storedCandidates = stored
+        ? candidatesOf(stored.candidatesJson).filter((candidate) => {
+            const candidateRoom = roomById.get(candidate.roomId);
+            if (!candidateRoom || occupiedRoomIds.has(candidate.roomId) || suggestedRoomIds.has(candidate.roomId)) return false;
+            const state = roomStateOf(candidateRoom);
+            return !(state.occupancy === "out_of_order" || state.occupancy === "out_of_service" || state.isBlocked);
+          })
+        : [];
+      const top = storedCandidates[0];
+      if (stored && top) {
+        suggestedRoomIds.add(top.roomId);
+        const confidence = Number(stored.confidence);
+        items.push({
+          id: `unassigned_${res.id}`,
+          priority: "urgent",
+          kind: "unassigned_arrival",
+          title: `Sin habitación · ${guestName}`,
+          context: `Llega hoy${etaLabel}. No tiene habitación asignada.`,
+          recommendation: `El motor propone ${describeCandidate(top, confidence)}. ¿Confirmar?`,
+          reservationId: res.id,
+          guestId: guest?.id,
+          primaryAction: confirmAssignmentAction(`Confirmar ${top.number}`, stored.id, res.id, top),
+          secondaryActions: [
+            ...storedCandidates.slice(1, 3).map((candidate) => confirmAssignmentAction(`Asignar ${candidate.number}`, stored.id, res.id, candidate)),
+            { label: "Ver room rack", kind: "open_room_rack", payload: { propertyId } }
+          ]
+        });
+        continue;
+      }
       const candidates = res.roomTypeId ? cleanByRoomType.get(res.roomTypeId) ?? [] : [];
       // L-22: dos llegadas del mismo tipo nunca reciben la misma candidata.
       const suggestion = candidates.find((candidate) => !suggestedRoomIds.has(candidate.id));
@@ -413,20 +732,23 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
         });
         continue;
       }
-      // Detector 10: checkin_ready
-      items.push({
-        id: `checkin_ready_${res.id}`,
-        priority: "today",
-        kind: "checkin_ready",
-        title: `Listo para check-in · ${guestName}`,
-        context: `Hab. ${room.number}${etaLabel}. La habitación está lista.`,
-        recommendation: "Pulsa para arrancar el flujo de check-in (≤ 90 s).",
-        reservationId: res.id,
-        guestId: guest?.id,
-        roomId: room.id,
-        primaryAction: { label: "Hacer check-in", kind: "start_checkin", payload: { reservationId: res.id } },
-        secondaryActions: [{ label: "Ver reserva", kind: "open_reservation", payload: { reservationId: res.id } }]
-      });
+      // Detector 10: checkin_ready. W3-D: si ya hay precheckin_ready para la
+      // reserva (misma acción «Hacer check-in», más contexto) no se duplica.
+      if (!preCheckInReady) {
+        items.push({
+          id: `checkin_ready_${res.id}`,
+          priority: "today",
+          kind: "checkin_ready",
+          title: `Listo para check-in · ${guestName}`,
+          context: `Hab. ${room.number}${etaLabel}. La habitación está lista.`,
+          recommendation: "Pulsa para arrancar el flujo de check-in (≤ 90 s).",
+          reservationId: res.id,
+          guestId: guest?.id,
+          roomId: room.id,
+          primaryAction: { label: "Hacer check-in", kind: "start_checkin", payload: { reservationId: res.id } },
+          secondaryActions: [{ label: "Ver reserva", kind: "open_reservation", payload: { reservationId: res.id } }]
+        });
+      }
     }
 
     // Detector 11: VIP
@@ -541,6 +863,94 @@ export async function buildFrontDeskQueue(input: { propertyId: string; now?: Dat
       roomId: wo.roomId,
       workOrderId: wo.id,
       primaryAction: { label: "Abrir incidencia", kind: "open_work_order", payload: { workOrderId: wo.id } }
+    });
+  }
+
+  // ----------------------------------------------------------------------
+  // Tanda CHK · W3-D — Detector 20: SELF_CHECKIN_DONE. Sesión `checked_in`
+  // en las últimas 12 h cuyo actor fue el huésped (portal) o el kiosco. Sin
+  // columna de actor en CheckInSession, el canal es el proxy: `reception`
+  // queda fuera; `kiosk` (o kioskDeviceId) → kiosco; el resto → portal.
+  // ----------------------------------------------------------------------
+  for (const session of sessions) {
+    if (session.status !== "checked_in" || !session.checkedInAt) continue;
+    if (session.checkedInAt.getTime() < selfCheckInSince.getTime() || session.checkedInAt.getTime() > now.getTime()) continue;
+    if (session.channel === "reception") continue;
+    const res = reservationById.get(session.reservationId);
+    if (!res || res.status !== "checked_in") continue;
+    const viaKiosk = session.channel === "kiosk" || Boolean(session.kioskDeviceId);
+    const room = res.assignedRoomId ? roomById.get(res.assignedRoomId) : undefined;
+    items.push({
+      id: `self_checkin_${res.id}`,
+      priority: "today",
+      kind: "self_checkin_done",
+      title: `Check-in autónomo completado · Hab. ${room?.number ?? "—"}`,
+      context: `${nameFor(res.id)} hizo el check-in ${viaKiosk ? "en el kiosco" : "desde su móvil"} ${elapsedLabel(session.checkedInAt, now)}.`,
+      recommendation: "Informativo: desde la reserva puedes cambiar de habitación, revocar la llave o anular el check-in.",
+      reservationId: res.id,
+      guestId: primaryGuestId.get(res.id),
+      roomId: room?.id,
+      dueAt: session.checkedInAt.toISOString(),
+      primaryAction: { label: "Ver reserva", kind: "open_reservation", payload: { reservationId: res.id } },
+      secondaryActions: [{ label: "Ver pre-check-in", kind: "open_precheckin", payload: { reservationId: res.id } }]
+    });
+  }
+
+  // ----------------------------------------------------------------------
+  // Detector 17: SES_REJECTED — partes rechazados hoy (un ítem por reserva;
+  // solo el código de error, nunca el mensaje del ministerio con datos).
+  // ----------------------------------------------------------------------
+  const sesByKey = new Map<string, { reservationId: string | null; count: number; codes: Set<string> }>();
+  for (const submission of sesRejected) {
+    const key = submission.reservationId ?? `submission_${submission.id}`;
+    const entry = sesByKey.get(key) ?? { reservationId: submission.reservationId ?? null, count: 0, codes: new Set<string>() };
+    entry.count += 1;
+    if (submission.errorCode) entry.codes.add(submission.errorCode);
+    sesByKey.set(key, entry);
+  }
+  for (const [key, entry] of sesByKey.entries()) {
+    const res = entry.reservationId ? reservationById.get(entry.reservationId) : undefined;
+    const room = res?.assignedRoomId ? roomById.get(res.assignedRoomId) : undefined;
+    const codes = Array.from(entry.codes).sort();
+    items.push({
+      id: `ses_rejected_${key}`,
+      priority: "today",
+      kind: "ses_rejected",
+      title: `Parte SES rechazado · ${entry.reservationId ? nameFor(entry.reservationId) : "sin reserva vinculada"}`,
+      context: `${entry.count} envío${entry.count === 1 ? "" : "s"} rechazado${entry.count === 1 ? "" : "s"} hoy${codes.length ? ` · código ${codes.join(", ")}` : ""}${room ? ` · Hab. ${room.number}` : ""}.`,
+      recommendation: "Corrige el parte de viajeros y reenvíalo desde cumplimiento; el reintento automático no cubre los rechazos de datos.",
+      reservationId: entry.reservationId ?? undefined,
+      roomId: room?.id,
+      ...(entry.reservationId
+        ? { primaryAction: { label: "Abrir reserva", kind: "open_reservation" as const, payload: { reservationId: entry.reservationId } } }
+        : {})
+    });
+  }
+
+  // ----------------------------------------------------------------------
+  // Detector 18: ASSIGNMENT_SUGGESTED — llegadas de mañana sin habitación con
+  // sugerencia pendiente (lote de las 18:00, diseño §4b «suggest_and_confirm»).
+  // ----------------------------------------------------------------------
+  for (const res of tomorrowSuggested) {
+    const stored = suggestionByReservation.get(res.id);
+    if (!stored) continue;
+    const candidates = candidatesOf(stored.candidatesJson).filter((candidate) => roomById.has(candidate.roomId));
+    const top = candidates[0];
+    if (!top) continue;
+    const confidence = Number(stored.confidence);
+    items.push({
+      id: `assignment_suggested_${res.id}`,
+      priority: "today",
+      kind: "assignment_suggested",
+      title: `Asignación sugerida · ${res.code}`,
+      context: `Llega mañana${res.eta ? ` · ETA ${res.eta}` : ""}. El motor propone ${describeCandidate(top, confidence)}.`,
+      recommendation: "Confirma la habitación para dejar la llegada de mañana preparada, o elige otra candidata.",
+      reservationId: res.id,
+      primaryAction: confirmAssignmentAction(`Confirmar ${top.number}`, stored.id, res.id, top),
+      secondaryActions: [
+        ...candidates.slice(1, 3).map((candidate) => confirmAssignmentAction(`Asignar ${candidate.number}`, stored.id, res.id, candidate)),
+        { label: "Abrir reserva", kind: "open_reservation", payload: { reservationId: res.id } }
+      ]
     });
   }
 

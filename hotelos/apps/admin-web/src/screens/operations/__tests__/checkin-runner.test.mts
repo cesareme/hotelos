@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 // §6.1): orden de los pasos, aborto en el cobro (el check-in NO se hace),
 // override de limpieza auditado y reconciliación con la reserva que devuelve
 // POST /reservations/:id/check-in. `request` es un doble: sin red ni React.
-const { CheckinRunError, buildCheckinBody, checkinStepMessage, initialCheckinProgress, isOverrideReasonValid, overrideReasonFor, progressLabel, runCheckin } = await import("../checkinRunner.ts");
+const { CheckinRunError, DEFAULT_SIGNATURE_KEY, buildCheckinBody, buildCompleteCheckInBody, checkinStepMessage, initialCheckinProgress, isOverrideReasonValid, overrideReasonFor, paymentAlreadyTakenSuffix, progressLabel, runCheckin, sesOutcomeFromCompletion } = await import("../checkinRunner.ts");
 
 type Call = { path: string; method: string; body: unknown };
 
@@ -168,5 +168,174 @@ describe("override de limpieza (F18)", () => {
   });
   it("el progreso inicial omite los pasos que no aplican", () => {
     assert.equal(progressLabel(initialCheckinProgress({ willAssign: false, willPay: true })), "Cobro — · Check-in — · Partes — · SES —");
+  });
+});
+
+// Tanda CHK · lote W4-A: con `deps.completeCheckIn` el paso 3 es POST
+// /reservations/:id/check-in/complete (sin sello sig_*), el SES se lee del
+// resultado (sin POST …/ses/submissions) y un 409 ROOM_NOT_READY aborta con el
+// mensaje del API y sus `details` (etaReady) en el CheckinRunError.
+const COMPLETION = {
+  reservationId: "res_1",
+  sessionId: "chs_1",
+  actor: "user" as const,
+  room: { id: "room_204", number: "204", floor: "2" },
+  reassigned: false,
+  key: { serialNumber: "27fbb034cc13", qr: "hotelos:key:…", validFrom: "2026-09-20T12:00:00.000Z", validUntil: "2026-09-22T10:00:00.000Z", wallet: { apple: { signedByApple: false, pass: null }, google: null } },
+  ses: { status: "queued" as const, submissions: [{ guestRegisterRecordId: "gr_1", submissionId: "ses_1", status: "queued", code: null }], warnings: [] },
+  welcome: { status: "simulated", channel: "email" },
+  checkedInAt: "2026-09-20T12:00:00.000Z",
+  warnings: ["llave móvil sin firmar por Apple (sin certificado): vale el QR"]
+};
+
+describe("runCheckin · check-in completo (Tanda CHK)", () => {
+  it("con completeCheckIn el runner no envía signatureObjectKey ni llama a /check-in", async () => {
+    const completeCalls: Array<{ reservationId: string; body: unknown }> = [];
+    const { deps, calls } = fakeDeps({
+      completeCheckIn: async (reservationId, body) => {
+        completeCalls.push({ reservationId, body });
+        return COMPLETION;
+      }
+    });
+    const result = await runCheckin({ ...BASE, assignedRoomId: "room_204", roomId: "room_204", payment: null }, deps);
+    // Ni POST …/check-in clásico ni POST …/ses/submissions: el API completo ya hizo ambos.
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), ["GET /guest-register"]);
+    assert.deepEqual(completeCalls, [{ reservationId: "res_1", body: { roomId: "room_204" } }]);
+    assert.equal(JSON.stringify(completeCalls[0]!.body).includes("signatureObjectKey"), false);
+    assert.equal(JSON.stringify(completeCalls[0]!.body).includes(DEFAULT_SIGNATURE_KEY), false);
+    // Reconciliación y resultado: habitación del API, llave, avisos y SES leído del resultado.
+    assert.equal(result.reservation?.status, "checked_in");
+    assert.equal(result.reservation?.assignedRoomId, "room_204");
+    assert.equal(result.completion?.key?.serialNumber, "27fbb034cc13");
+    assert.deepEqual(result.completion?.warnings, COMPLETION.warnings);
+    assert.deepEqual(result.ses, { kind: "queued", queued: 1 });
+    assert.equal(progressLabel(result.progress), "Check-in ✓ · Partes ✓ · SES ✓");
+  });
+  it("con cobro y cambio de habitación, el orden sigue siendo asignar → cobrar → completar y el motivo viaja sin allowEarlyCheckIn", async () => {
+    const completeCalls: unknown[] = [];
+    const { deps, calls } = fakeDeps({
+      completeCheckIn: async (_reservationId, body) => {
+        completeCalls.push(body);
+        return COMPLETION;
+      }
+    });
+    await runCheckin({ ...BASE, roomId: "room_204", payment: { folioId: "folio_1", amount: 120, method: "card" }, overrideReason: "llega antes de hora" }, deps);
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), ["POST /reservations/res_1/assign-room", "POST /folios/folio_1/payments", "GET /guest-register"]);
+    assert.deepEqual(completeCalls, [{ roomId: "room_204", overrideReason: "llega antes de hora" }]);
+  });
+  it("corrector REV3-03: con precheckCheckIn la comprobación previa va ANTES de asignar y cobrar; un 409 de firmas aborta sin cobro ni habitación", async () => {
+    const apiError = Object.assign(new Error("Faltan firmas del parte de viajeros."), { status: 409, details: { code: "GUEST_REGISTER_INCOMPLETE", missing: [{ reason: "signature" }] } });
+    const precheckCalls: unknown[] = [];
+    const { deps, calls, progress } = fakeDeps({
+      completeCheckIn: async () => COMPLETION,
+      precheckCheckIn: async (_reservationId, body) => {
+        precheckCalls.push(body);
+        throw apiError;
+      }
+    });
+    await assert.rejects(
+      () => runCheckin({ ...BASE, roomId: "room_204", payment: { folioId: "folio_1", amount: 190, method: "card" } }, deps),
+      (error: unknown) => {
+        assert.ok(error instanceof CheckinRunError);
+        assert.equal(error.step, "precheck");
+        assert.equal(error.code, "GUEST_REGISTER_INCOMPLETE");
+        assert.equal(error.message, "Faltan firmas del parte de viajeros.");
+        assert.equal(error.progress.precheck, "failed");
+        assert.equal(error.progress.payment, "pending");
+        assert.equal(error.paymentAttempt, null, "sin intento de cobro: no hubo cobro");
+        return true;
+      }
+    );
+    assert.deepEqual(precheckCalls, [{ roomId: "room_204" }]);
+    assert.deepEqual(calls, [], "ni assign-room ni cobro ni partes");
+    assert.equal(progress[0], "Comprobación — · Habitación — · Cobro — · Check-in — · Partes — · SES —");
+  });
+  it("corrector REV3-03: con la comprobación en verde el orden es comprobar → asignar → cobrar → completar; sin nada irreversible por delante no se comprueba", async () => {
+    const order: string[] = [];
+    const { deps, calls } = fakeDeps({
+      completeCheckIn: async () => {
+        order.push("complete");
+        return COMPLETION;
+      },
+      precheckCheckIn: async () => {
+        order.push("precheck");
+        return { ok: true, dryRun: true };
+      }
+    });
+    const result = await runCheckin({ ...BASE, roomId: "room_204", payment: { folioId: "folio_1", amount: 190, method: "card" } }, deps);
+    assert.deepEqual(order, ["precheck", "complete"]);
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), ["POST /reservations/res_1/assign-room", "POST /folios/folio_1/payments", "GET /guest-register"]);
+    assert.equal(progressLabel(result.progress), "Comprobación ✓ · Habitación ✓ · Cobro ✓ · Check-in ✓ · Partes ✓ · SES ✓");
+    order.length = 0;
+    await runCheckin({ ...BASE, assignedRoomId: "room_204", roomId: "room_204", payment: null }, deps);
+    assert.deepEqual(order, ["complete"], "sin asignación ni cobro no hay comprobación previa");
+  });
+  it("corrector REV3-03: si el check-in completo falla tras cobrar, el mensaje dice el importe ya cobrado y la clave; reintentar reutiliza la clave", async () => {
+    const apiError = Object.assign(new Error("Faltan firmas del parte de viajeros."), { status: 409, details: { code: "GUEST_REGISTER_INCOMPLETE" } });
+    const { deps, calls } = fakeDeps({ completeCheckIn: async () => Promise.reject(apiError) });
+    await assert.rejects(
+      () => runCheckin({ ...BASE, assignedRoomId: "room_204", roomId: "room_204", payment: { folioId: "folio_1", amount: 190, method: "card" } }, deps),
+      (error: unknown) => {
+        assert.ok(error instanceof CheckinRunError);
+        assert.equal(error.step, "checkin");
+        // Intl separa importe y símbolo con un espacio no separable (U+00A0 / U+202F): se normaliza antes de comparar.
+        assert.equal(error.message.replace(/[  ]/g, " "), "Faltan firmas del parte de viajeros. El cobro de 190,00 € ya está registrado en el folio (clave req-1): al reintentar el check-in no se vuelve a cobrar.");
+        assert.equal(error.paymentAttempt?.clientRequestId, "req-1");
+        return true;
+      }
+    );
+    assert.equal(calls.filter((call) => call.path === "/folios/folio_1/payments").length, 1);
+    assert.equal(paymentAlreadyTakenSuffix(null, "EUR", null, initialCheckinProgress({ willAssign: false, willPay: false })), "");
+  });
+  it("ROOM_NOT_READY aborta con mensaje del API", async () => {
+    const apiError = Object.assign(new Error("La habitación 204 no está lista (dirty); elige otra o espera a pisos."), {
+      status: 409,
+      details: { code: "ROOM_NOT_READY", roomId: "room_204", roomNumber: "204", etaReady: "2026-09-20T13:30:00.000Z" }
+    });
+    const { deps, calls } = fakeDeps({ completeCheckIn: async () => Promise.reject(apiError) });
+    await assert.rejects(
+      () => runCheckin({ ...BASE, assignedRoomId: "room_204", roomId: "room_204", payment: null }, deps),
+      (error: unknown) => {
+        assert.ok(error instanceof CheckinRunError);
+        assert.equal(error.step, "checkin");
+        assert.equal(error.message, "La habitación 204 no está lista (dirty); elige otra o espera a pisos.");
+        assert.equal(error.code, "ROOM_NOT_READY");
+        assert.equal((error.details as { etaReady: string }).etaReady, "2026-09-20T13:30:00.000Z");
+        assert.equal(error.progress.checkin, "failed");
+        return true;
+      }
+    );
+    // Ni partes ni SES: el check-in no se ha hecho.
+    assert.deepEqual(calls, []);
+  });
+  it("buildCompleteCheckInBody: sin sello, motivo solo con ≥ 3 caracteres y allowEarlyCheckIn solo junto al motivo", () => {
+    assert.deepEqual(buildCompleteCheckInBody({ roomId: "r" }), { roomId: "r" });
+    assert.deepEqual(buildCompleteCheckInBody({ roomId: "r", overrideReason: " ok " }), { roomId: "r" });
+    assert.deepEqual(buildCompleteCheckInBody({ roomId: "r", overrideReason: "ab", allowEarlyCheckIn: true }), { roomId: "r" });
+    assert.deepEqual(buildCompleteCheckInBody({ roomId: "r", overrideReason: " llega hoy ", allowEarlyCheckIn: true }), { roomId: "r", overrideReason: "llega hoy", allowEarlyCheckIn: true });
+    assert.equal("signatureObjectKey" in buildCompleteCheckInBody({ roomId: "r", overrideReason: "x y z" }), false);
+    // El camino clásico conserva la constante (deprecated) para el test histórico.
+    assert.equal(buildCheckinBody({ roomId: "r" }).signatureObjectKey, DEFAULT_SIGNATURE_KEY);
+  });
+  it("sesOutcomeFromCompletion lee el SES del resultado con honestidad: queued · partial · no_records · error", () => {
+    assert.deepEqual(sesOutcomeFromCompletion(COMPLETION.ses), { kind: "queued", queued: 1 });
+    assert.deepEqual(sesOutcomeFromCompletion({ status: "warning", submissions: [], warnings: [] }), { kind: "no_records" });
+    const partial = sesOutcomeFromCompletion({
+      status: "partial",
+      submissions: [
+        { guestRegisterRecordId: "gr_1", submissionId: "ses_1", status: "queued", code: null },
+        { guestRegisterRecordId: "gr_2", submissionId: null, status: "failed", code: "GUEST_REGISTER_INVALID" }
+      ],
+      warnings: ["parte gr_2: GUEST_REGISTER_INVALID · falta la firma"]
+    });
+    assert.equal(partial.kind, "partial");
+    assert.ok(partial.kind === "partial");
+    assert.equal(partial.queued, 1);
+    assert.deepEqual(partial.failed, [{ guestRegisterRecordId: "gr_2", code: "GUEST_REGISTER_INVALID", message: "parte gr_2: GUEST_REGISTER_INVALID · falta la firma" }]);
+    const failed = sesOutcomeFromCompletion({ status: "warning", submissions: [{ guestRegisterRecordId: "gr_1", submissionId: null, status: "failed", code: "SES_DISABLED" }], warnings: ["parte gr_1: SES_DISABLED · desactivado"] });
+    assert.equal(failed.kind, "error");
+    assert.ok(failed.kind === "error");
+    assert.equal(failed.code, "SES_DISABLED");
+    assert.match(failed.message, /SES_DISABLED/);
   });
 });

@@ -18,7 +18,8 @@
 // aprobación. Cocoa 22: CocoaButton + CocoaBadge, no inline style.
 //
 // L1b registers: screenKey FrontDeskDashboard · url /hoy · tabs /hoy/operaciones,
-// /hoy/direccion, /hoy/propietario.
+// /hoy/direccion, /hoy/propietario; Tanda CHK adds /hoy/check-in-automatizado
+// (CheckInAutomationSettingsScreen, roles recepcion · direccion · admin · auditoria).
 
 import { useEffect, useState } from "react";
 import { CocoaBadge } from "../../../components/cocoa/CocoaBadge";
@@ -36,7 +37,9 @@ const LOADERS: TabLoaders = {
   FrontDeskDashboard: () => import("../../operations/FrontDeskDashboard").then((m) => ({ default: m.FrontDeskDashboard })),
   OperationsDirectorScreen: () => import("../../operations/OperationsDirectorScreen").then((m) => ({ default: m.OperationsDirectorScreen })),
   GeneralManagerScreen: () => import("../../operations/GeneralManagerScreen").then((m) => ({ default: m.GeneralManagerScreen })),
-  OwnerHome: () => import("../../owner/OwnerHomeScreen").then((m) => ({ default: m.OwnerHomeScreen }))
+  OwnerHome: () => import("../../owner/OwnerHomeScreen").then((m) => ({ default: m.OwnerHomeScreen })),
+  // Tanda CHK · W4-B: ajustes del check-in automatizado (política, pesos, kioscos, métricas), /hoy/check-in-automatizado.
+  CheckInAutomationSettingsScreen: () => import("../../operations/CheckInAutomationSettingsScreen").then((m) => ({ default: m.CheckInAutomationSettingsScreen }))
 };
 
 /** Roles whose Mi día includes the front-desk view (the rest land on their own tab). */
