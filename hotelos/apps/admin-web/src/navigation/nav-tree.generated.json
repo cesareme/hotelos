@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 289,
+      "csvRows": 293,
       "categories": 9,
-      "items": 69,
-      "tabs": 100,
+      "items": 70,
+      "tabs": 103,
       "devOnly": 21,
       "retired": 72,
       "aliases": 25,
@@ -646,6 +646,22 @@
               "modulesAny": [
                 "procurement_inventory"
               ]
+            },
+            {
+              "screenKey": "GoodsReceiptsScreen",
+              "label": "Recepciones",
+              "url": "/operaciones/compras/recepciones",
+              "roles": [
+                "direccion",
+                "fnb",
+                "finanzas",
+                "admin",
+                "administracion",
+                "auditoria"
+              ],
+              "modulesAny": [
+                "procurement_inventory"
+              ]
             }
           ]
         },
@@ -674,6 +690,23 @@
             "direccion",
             "admin",
             "auditoria"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "DocumentCaptureScreen",
+          "label": "Digitalizar",
+          "url": "/operaciones/digitalizar",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "administracion",
+            "direccion",
+            "fnb",
+            "pisos",
+            "mantenimiento",
+            "admin"
           ],
           "modulesAny": [],
           "tabs": []
@@ -1442,6 +1475,32 @@
                 "direccion",
                 "admin",
                 "administracion",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "IncomingDocumentsScreen",
+              "label": "Documentos",
+              "url": "/finanzas/proveedores/documentos",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "administracion",
+                "admin",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "DocumentArchiveScreen",
+              "label": "Archivo",
+              "url": "/finanzas/proveedores/archivo",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "administracion",
+                "admin",
                 "auditoria"
               ],
               "modulesAny": []

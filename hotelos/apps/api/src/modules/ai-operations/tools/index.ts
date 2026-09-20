@@ -1,13 +1,14 @@
 // Catálogo de implementaciones AiTool del API (Tanda L6a, lote 3): 14
-// lecturas/borradores (effect "read", ejecución inmediata por el runner) y 11
-// escrituras (effect "write", SIEMPRE awaiting_confirmation). Todo lo que toca
-// dinero o fiscal (folio, pagos, facturas, contabilidad, capex) y el resto del
-// catálogo queda SIN execute: el runner responde denied tool_not_implemented.
+// lecturas/borradores (effect "read", ejecución inmediata por el runner) y 12
+// escrituras (effect "write", SIEMPRE awaiting_confirmation; la 12.ª,
+// proposeIncomingDocumentAction, es de la Tanda T9). Todo lo que toca dinero o
+// fiscal (folio, pagos, facturas, contabilidad, capex) y el resto del catálogo
+// queda SIN execute: el runner responde denied tool_not_implemented.
 
 import type { HotelOsToolName } from "@hotelos/ai-tools";
 import { checkInReservationTool } from "./check-in.tools.js";
 import type { AiToolImpl } from "./context.js";
-import { classifyIncomingDocumentTool, classifyOnboardingFileTool, extractIncomingDocumentFieldsTool } from "./documents.tools.js";
+import { classifyIncomingDocumentTool, classifyOnboardingFileTool, extractIncomingDocumentFieldsTool, proposeIncomingDocumentActionTool } from "./documents.tools.js";
 import { checkGuestRegisterCompletenessTool, extractGuestIdentityFieldsTemporaryTool, prepareGuestRegisterRecordTool, queueSesHospedajesSubmissionTool, validateSpainGuestRegisterTool } from "./guest-register.tools.js";
 import { answerGuestQuestionTool, sendGuestMessageTool } from "./messaging.tools.js";
 import { blockRoomForMaintenanceTool, createHousekeepingTaskTool, createWorkOrderTool, getHousekeepingBoardTool, markRoomCleanTool, markRoomInspectedTool, resolveWorkOrderTool } from "./operations.tools.js";
@@ -36,7 +37,7 @@ const IMPLEMENTATIONS: AnyAiToolImpl[] = [
   extractGuestIdentityFieldsTemporaryTool,
   draftReviewResponseTool,
   answerGuestQuestionTool,
-  // Escrituras (11): siempre awaiting_confirmation
+  // Escrituras (12): siempre awaiting_confirmation
   assignRoomTool,
   checkInReservationTool,
   createWorkOrderTool,
@@ -47,7 +48,8 @@ const IMPLEMENTATIONS: AnyAiToolImpl[] = [
   markRoomInspectedTool,
   prepareGuestRegisterRecordTool,
   queueSesHospedajesSubmissionTool,
-  sendGuestMessageTool
+  sendGuestMessageTool,
+  proposeIncomingDocumentActionTool
 ];
 
 export const AI_TOOL_IMPLEMENTATIONS: Record<string, AnyAiToolImpl> = Object.freeze(Object.fromEntries(IMPLEMENTATIONS.map((impl) => [impl.name, impl])));

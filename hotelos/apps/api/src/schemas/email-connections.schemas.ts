@@ -15,8 +15,12 @@ import { z } from "zod";
 export const EMAIL_CONNECTION_PROVIDERS = ["gmail", "microsoft", "imap", "manual"] as const;
 export type EmailConnectionProvider = (typeof EMAIL_CONNECTION_PROVIDERS)[number];
 
-/** `reservation_ai`: extraer reservas con IA (HITL) · `pms_shadow`: entregar los adjuntos al ingest del modo sombra. */
-export const EMAIL_CONNECTION_PURPOSES = ["reservation_ai", "pms_shadow"] as const;
+/**
+ * `reservation_ai`: extraer reservas con IA (HITL) · `pms_shadow`: entregar los adjuntos al ingest del modo sombra ·
+ * `documents` (Tanda T9 · T9-07): cada adjunto PDF / imagen / XML crea un IncomingDocument del centro (no exige fromDomain;
+ * el buzón acepta facturas de cualquier proveedor y los filtros `fromDomain` / `subjectContains` son opcionales).
+ */
+export const EMAIL_CONNECTION_PURPOSES = ["reservation_ai", "pms_shadow", "documents"] as const;
 export type EmailConnectionPurpose = (typeof EMAIL_CONNECTION_PURPOSES)[number];
 
 export const EMAIL_CONNECTION_MAX_FILTER = 120;

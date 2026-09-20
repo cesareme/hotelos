@@ -117,6 +117,8 @@ const ITEM_NARRATION: Record<string, string> = {
   ProcurementDashboard: "Pedidos a proveedores, recepciones e inventario de almacén.",
   AssetsDashboard: "Inventario de activos y equipamiento del hotel: valor, garantías próximas a vencer y proyectos de inversión.",
   EnergyDashboard: "Consumo de energía y agua por zonas y su evolución, para detectar anomalías.",
+  DocumentCaptureScreen:
+    "Digitaliza en el centro las facturas, albaranes y cartas que llegan en papel o por correo: súbelas o hazles una foto desde el móvil, reciben su número de registro y viajan a la oficina en la valija con su hoja de remesa. El original en papel se conserva seis años.",
   // Comercial
   CrmDashboard: "Tus clientes: segmentos, programa de fidelización y campañas para volver a traerlos.",
   ReputationDashboard: "Reseñas de los portales, encuestas de satisfacción y casos de calidad; responde a cada reseña desde aquí.",

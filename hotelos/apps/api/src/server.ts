@@ -114,6 +114,21 @@ import { reputationSyncIntervalMs, startReputationSyncJob } from "./modules/repu
 import { assertDraftPublishable } from "./modules/reputation/review-draft.service.js";
 import { setReputationAiPort } from "./modules/reputation/reputation-ai.port.js";
 import { createAiCoreReputationPort } from "./modules/reputation/reputation-ai.core-adapter.js";
+// Documentos y digitalización con IA (Tanda T9): captura/registro/descarga/archivo
+// (modules/documents/documents.routes.ts; permisos en modules/documents/route-permissions.partial.ts),
+// pipeline de clasificación/extracción/cotejo (modules/documents/pipeline.routes.ts +
+// pipeline.service.ts; permisos en pipeline-route-permissions.partial.ts) y puerto de IA
+// sobre ai-core (documents-ai.port.ts / documents-ai.core-adapter.ts). La configuración
+// del almacén (DOCUMENT_*) se resuelve UNA vez en modules/documents/documents.config.ts.
+import { registerDocumentsRoutes } from "./modules/documents/documents.routes.js";
+import { registerDocumentPipelineRoutes } from "./modules/documents/pipeline.routes.js";
+import { registerDocumentWorkflowRoutes } from "./modules/documents/workflow.routes.js";
+import { registerDocumentArchiveRoutes } from "./modules/documents/archive.routes.js";
+import { startDocumentsRetentionJob } from "./modules/documents/documents-retention.job.js";
+import { runDocumentPipeline } from "./modules/documents/pipeline.service.js";
+import { describeDocumentStorageHealth, getDocumentsUploadBodyLimit } from "./modules/documents/documents.config.js";
+import { setDocumentsAiPort } from "./modules/documents/documents-ai.port.js";
+import { createAiCoreDocumentsPort } from "./modules/documents/documents-ai.core-adapter.js";
 import { isLlmConfigured } from "./lib/llm.js";
 import { createShutdownController } from "./lib/shutdown.js";
 import { CreateEmailConnectionSchema } from "./schemas/email-connections.schemas.js";
@@ -765,9 +780,7 @@ import {
 import { getComplianceAssistant, extractComplianceDocumentDates } from "./modules/compliance/compliance-assistant.service.js";
 import {
   createJournalEntryDraft,
-  createSupplierBillDraft,
   listJournalEntries,
-  listSupplierBills,
   postJournalEntry
 } from "./modules/accounting/accounting.service.js";
 import {
@@ -1760,18 +1773,28 @@ export async function buildApiServer() {
     const allOk = Object.values(checks).every((check) => check.ok);
     const status: "healthy" | "degraded" = allOk ? "healthy" : "degraded";
 
+    // Documentos (Tanda T9): tipo del almacén que sirve el API — inline (sin
+    // configurar nada), disk o s3 — o "unconfigured" si la configuración no
+    // permite construir el adaptador. Fuera de `checks`: no degrada `status`;
+    // /health es público, así que nunca lleva rutas, endpoints ni buckets
+    // (modules/documents/documents.config.ts). DependencyStatus de
+    // packages/config solo admite ok|degraded|unconfigured: el builder legacy
+    // recibe ok/unconfigured y la respuesta expone el tipo real.
+    const objectStorage = describeDocumentStorageHealth();
+
     // Construimos también la respuesta legacy para los consumidores actuales.
     const legacy = buildHealthResponse({
       service: SERVICE_NAMES.api,
       dependencies: {
         postgres: checks.database.ok ? "ok" : "degraded",
         redis: checks.redis.message === "configured" ? "ok" : "unconfigured",
-        objectStorage: "unconfigured"
+        objectStorage: objectStorage === "unconfigured" ? "unconfigured" : "ok"
       }
     });
 
     return {
       ...legacy,
+      dependencies: { ...legacy.dependencies, objectStorage },
       ok: allOk,
       status,
       timestamp: new Date().toISOString(),
@@ -2820,9 +2843,13 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "emailConnection", id: (request.params as { id: string }).id });
     return pollEmailConnection({ context: request.userContext, connectionId: (request.params as { id: string }).id, correlationId: createId("corr") });
   });
-  app.post("/properties/:propertyId/email/ingest", async (request) => {
-    const b = (request.body ?? {}) as { connectionId?: string; from?: string; subject?: string; body?: string };
-    return ingestManualEmail({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, connectionId: b.connectionId, from: b.from, subject: b.subject, body: String(b.body ?? ""), correlationId: createId("corr") });
+  // Tanda T9 (corrector RV-09): la ingesta manual reenvía `attachments` (única vía HTTP del buzón
+  // `documents`: cada adjunto PDF / imagen / XML crea un documento del centro) con el bodyLimit de
+  // las subidas de documentos (DOCUMENT_UPLOAD_BODY_LIMIT), como documents.routes.ts.
+  app.post("/properties/:propertyId/email/ingest", { bodyLimit: getDocumentsUploadBodyLimit() }, async (request) => {
+    const b = (request.body ?? {}) as { connectionId?: string; from?: string; subject?: string; body?: string; attachments?: Array<{ fileName: string; mimeType?: string; base64: string }> };
+    const attachments = Array.isArray(b.attachments) ? b.attachments.filter((attachment) => attachment && typeof attachment === "object" && typeof attachment.fileName === "string" && typeof attachment.base64 === "string") : undefined;
+    return ingestManualEmail({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, connectionId: b.connectionId, from: b.from, subject: b.subject, body: String(b.body ?? ""), ...(attachments && attachments.length > 0 ? { attachments } : {}), correlationId: createId("corr") });
   });
   app.get("/properties/:propertyId/email/inbound", async (request) => listInboundEmails((request.params as { propertyId: string }).propertyId, (request.query as { status?: string }).status));
   app.post("/email/inbound/:id/approve", async (request) => {
@@ -2909,6 +2936,31 @@ export async function buildApiServer() {
   // cuentas y analítico, plantilla canónica, reconciliación y reverso
   // (/accounting/ledger-imports* y /accounting/ledger-imports/reconciliation*).
   registerLedgerImportRoutes(app);
+  // Documentos y digitalización con IA (Tanda T9): captura (subida/foto/valija),
+  // registro, descarga, acciones y archivo (/properties/:propertyId/documents*,
+  // /documents/:id*) con el bodyLimit del contrato (DOCUMENT_UPLOAD_BODY_LIMIT; con
+  // una configuración inválida el API arranca igual, /health dice «unconfigured»
+  // y las subidas responden 500 tipado: en producción el contrato ya aborta antes);
+  // cada captura lanza el pipeline (clasificación, extracción con IA o reglas,
+  // cotejo y propuesta) en segundo plano con la correlación de la petición; el
+  // pipeline persiste su propio fallo (extraction_failed), aquí solo se registra.
+  registerDocumentsRoutes(app, {
+    uploadBodyLimit: getDocumentsUploadBodyLimit(),
+    onCaptured: (documentId: string, correlationId: string) =>
+      runDocumentPipeline(documentId, { trigger: "capture", correlationId }).catch((error: unknown) => {
+        app.log.error({ err: error, documentId, correlationId }, "[documents] el pipeline tras la captura falló");
+      })
+  });
+  registerDocumentPipelineRoutes(app);
+  // Flujo de la oficina (Tanda T9 · T9-08): asignar, revisar, aprobar (factura /
+  // gasto / recepción / tarea / archivo), rechazar, archivar, dividir / unir,
+  // tareas con plazo y valija con hoja de remesa (modules/documents/workflow.routes.ts;
+  // permisos en workflow-route-permissions.partial.ts).
+  registerDocumentWorkflowRoutes(app);
+  // Archivo, KPIs, ajustes por organización y retención (Tanda T9 · T9-13):
+  // /organizations/:organizationId/documents/{archive,kpis,settings,:id/block|unblock|purge}
+  // (modules/documents/archive.routes.ts; permisos en archive-route-permissions.partial.ts).
+  registerDocumentArchiveRoutes(app);
   // Reputación y reseñas (Tanda T8 · T8-D): bandeja, detalle/PATCH/borrador/caso de
   // una reseña, fuentes, sincronización manual, ejecuciones e importación CSV
   // (/reputation/properties/:propertyId/* y /reputation/reviews/:id/*).
@@ -5479,32 +5531,12 @@ export async function buildApiServer() {
     });
   });
 
-  app.get("/properties/:propertyId/supplier-bills", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listSupplierBills(params.propertyId);
-  });
-
-  app.post("/supplier-bills/drafts", async (request) => {
-    const body = request.body as Omit<Parameters<typeof createSupplierBillDraft>[0], "context" | "correlationId">;
-    return createSupplierBillDraft({
-      context: request.userContext,
-      supplierName: body.supplierName,
-      supplierTaxId: body.supplierTaxId,
-      invoiceNumber: body.invoiceNumber,
-      issueDate: body.issueDate,
-      dueDate: body.dueDate,
-      total: body.total,
-      taxTotal: body.taxTotal,
-      documentObjectKey: body.documentObjectKey,
-      suggestedAccountCode: body.suggestedAccountCode,
-      roomId: body.roomId,
-      retentionRate: body.retentionRate,
-      retentionAmount: body.retentionAmount,
-      rowCode: body.rowCode,
-      paymentDate: body.paymentDate,
-      correlationId: createId("corr")
-    });
-  });
+  // Tanda T9 (documentos · lote T9-15, dosier §3.4): las dos rutas heredadas de facturas de
+  // proveedor de este bloque (lista por propiedad y alta de borrador sin líneas) se retiraron
+  // del API y del manifiesto; responden 404. Canónicas: GET|POST /properties/:propertyId/payables/
+  // supplier-bills (modules/payables/payables.routes.ts, payables.read / payables.create) y la
+  // factura digitalizada nace de POST /properties/:propertyId/documents/:id/approve
+  // (modules/documents/workflow.routes.ts, action create_supplier_bill).
 
   // ---- Bank reconciliation (Sprint 21 · Track 1) ----
   app.get("/banking/accounts", async (request) => {
@@ -8487,6 +8519,8 @@ if (entryFile === argFile) {
   const app = await buildApiServer();
   // IA de reputación (Tanda T8 · §13): con proveedor configurado el puerto pasa por ai-core (redactPii/restorePii y presupuesto por organización); sin clave sigue RulesReputationAi con etiquetas honestas dictionary/rules. Solo en el proceso que escucha: los tests que usan buildApiServer no lo activan.
   if (isLlmConfigured()) setReputationAiPort(createAiCoreReputationPort());
+  // IA de documentos (Tanda T9 · §5): con proveedor configurado el puerto pasa por ai-core (extractFromDocument/classify con PII enmascarada y presupuesto por hotel); sin clave sigue el fallback por reglas (regex + diccionario de proveedores). Solo en el proceso que escucha, como el de reputación.
+  if (isLlmConfigured()) setDocumentsAiPort(createAiCoreDocumentsPort());
 
   // Tanda 3 (cierre · CRÍTICO SES): a rejected promise nobody awaited (the old
   // `records.map(queueSesHospedajesSubmission…)` in POST /ses/submissions) took
@@ -8820,5 +8854,29 @@ if (entryFile === argFile) {
     reputationTimer.unref();
     const reputationJob = { stop: () => clearInterval(reputationTimer) };
     shutdown.register("reputation.sync.job", reputationJob.stop);
+  }
+
+  // Documentos (Tanda T9 · T9-13): job diario de retención del líder — bloquea los
+  // documentos con retentionUntil vencido, purga los bloqueados hace 12 meses (fichero
+  // fuera del almacén, searchText y campos pseudonimizados, deletedAt) salvo legalHold,
+  // relanza la extracción atascada (> 10 min pending) y aplica la decisión autónoma;
+  // cada vuelta bajo pg_try_advisory_xact_lock(hashtext('documents.retention'))
+  // (modules/documents/documents-retention.job.ts). Vive aquí porque apps/worker no
+  // depende de @hotelos/api. Disable with DOCUMENT_RETENTION_JOB_DISABLED=true. Como
+  // reputación: el arranque del módulo (runAtBoot + log) conserva la cadencia, pero su
+  // temporizador propio se detiene y lo sustituye uno que exige el lease en cada vuelta.
+  if (schedulerLeader && process.env.DOCUMENT_RETENTION_JOB_DISABLED !== "true") {
+    const retentionIntervalMs = 86_400_000;
+    const documentsRetention = startDocumentsRetentionJob({ log: app.log, intervalMs: retentionIntervalMs, runAtBoot: true });
+    documentsRetention.stop();
+    const retentionTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      await documentsRetention.runNow();
+    };
+    const retentionTimer = setInterval(() => {
+      void retentionTick().catch((error) => app.log.error({ err: error }, "[documents.retention.job] failed"));
+    }, retentionIntervalMs);
+    retentionTimer.unref();
+    shutdown.register("documents.retention.job", () => clearInterval(retentionTimer));
   }
 }

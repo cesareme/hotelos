@@ -569,6 +569,80 @@ fusión de `tanda-ux1` 4e7fdee):
   contraste 1.4.11 en claro de badges warning/success, `role=grid` para selección
   múltiple, sesiones con recepcionistas reales (kit en `docs/runbooks/ux-recepcion-pruebas.md`)
 
+Estado verificado (Tanda T9 · Documentos y digitalización, 2026-09-19/20, worktree
+`tanda-t9` sobre f77820d con los lotes T9-01…T9-15 + corrector; informe
+`docs/audits/TANDA-T9-DOCUMENTOS-2026-09-19.md`; fusión pendiente por
+`docs/design/olas/T9-MERGE-LINES.md`):
+- módulo `apps/api/src/modules/documents/*` (diseño `docs/design/DOCUMENTOS-DIGITALIZACION.md`
+  con las correcciones «[actualizado 2026-09-19]», runbook `docs/runbooks/documentos-digitalizacion.md`):
+  captura por subida / foto PWA / buzón de correo `purpose=documents` (también `POST …/email/ingest`
+  con `attachments`) / XML Facturae-UBL (→ `source e_invoice`) con registro `DOC-<centro>-<año>-<n>`,
+  sha256 y magic bytes; almacén `inline` (demo, caché LRU 8 MiB; rechazado en producción) / `disk`
+  (AES-256-GCM en reposo) / `s3` (SigV4 propio con tiempo límite y tope de lectura, sin SDK ni cuenta
+  real); pipeline clasificación → extracción → validación (NIF, cuadre, IVA, duplicados, retención,
+  cotejo) → propuesta, con IA por ai-core (`classifyIncomingDocument` · `extractIncomingDocumentFields` ·
+  `proposeIncomingDocumentAction`) y fallback honesto por reglas sin proveedor (nunca campos
+  inventados; `totals` en `warn` sin líneas ni total); flujo centro → oficina (`captured →
+  sent_to_office → in_review → approved | posted | archived | rejected | returned_to_centre`, SLA 2 días
+  laborables con aviso a la oficina al enviar y aviso diario de SLA vencido, `autoSendToOffice`
+  operativo, valija con hoja de remesa, split lógico por páginas físicas (`sourcePagesJson`: cada trozo
+  extrae SOLO su rango; origen repartido entero → `archived` + `mergedIntoId`), merge, tareas con
+  plazo); aprobar crea la factura de proveedor en `draft` por payables (`receptionDate`, `source
+  digitized | e_invoice`, `matchStatus`, enlace factura ↔ documento solo desde el flujo: 400 por HTTP,
+  404 cross-tenant; quien aprueba queda como registrador → SoD), el gasto, la recepción de mercancía
+  (`GoodsReceipt` + `StockMovement` en la misma transacción) o la tarea; cotejo a 2 vías (`POST
+  …/supplier-bills/:billId/match`, tolerancias por organización, 409 `SUPPLIER_BILL_MATCH_REQUIRED`
+  opcional al aprobar); archivo con búsqueda por texto, retención 6 / 10 / 6 / +1 años (4 solo con
+  `guestId`) fijada también al contabilizar, bloqueo y purga (job diario del líder), GDPR en
+  `executeErasure`; las 9 rutas `authenticated` exigen sesión real (`requireRealSession` → 401 al
+  fallback demo) y la disyunción `capture | review` la aplica el servicio; auditoría sin nota ni
+  remitente; copia «digital no certificada»: el papel se conserva
+- cifras: manifiesto 948 → **981** (+35 rutas: 30 en los cuatro partials del módulo + 5 en el
+  de payables; −2 heredadas retiradas: `GET /properties/:propertyId/supplier-bills` y
+  `POST /supplier-bills/drafts`), tablas 277 → **287** (38 → 45 enums; migraciones aditivas
+  `20260920120000_documentos_digitalizacion` y `20260920130000_documentos_split_paginas_retencion`
+  (`incoming_documents.source_pages_json` + `capture_note`, `letter_retention_years` 4 → 6), en `main`
+  tras las dos de fix1), claves 250 → **254** (`documents.capture | review | archive.read | admin`;
+  `ROLE_TEMPLATE_VERSION` 3 → 4 aditiva en 15 plantillas), herramientas IA 146 → **147**,
+  `DOCUMENT_ERROR_CODES` **20**, pantallas +4 (Operaciones › Digitalizar `/operaciones/digitalizar`;
+  Finanzas › Proveedores › Documentos y Archivo; Compras › Recepciones), `/health`
+  `dependencies.objectStorage = inline | disk | s3 | unconfigured`, `DOCUMENT_STORAGE_KIND` obligatoria
+  con `NODE_ENV=production`; 191 ficheros del carril (73 ` M` + 118 nuevos, +3.332/−736 y 34.663 líneas
+  nuevas); `pnpm-lock.yaml` ` M` +74/−25 es deuda previa del aprovisionamiento de carriles (refutación
+  SEC-05/R1 del informe §4.2) y se excluye de la fusión
+- revisión: 3 revisores → 18 hallazgos confirmados (2 altos funcionales: split sin separar, rutas
+  `authenticated` servidas al fallback demo; 1 alto de seguridad: enlace factura ↔ documento
+  cross-tenant; 15 medios) + 13 menores, todos corregidos con test por el corrector (informe §4;
+  `T9-MERGE-LINES.md` §16); 2 refutados (lock del worktree)
+- puerta completa final (20/09 08:03-08:07, `NAV_TREE_CSV=… bash scripts/gates.sh --json`, BD
+  `hotelos_t9`, `scratchpad/T9/gates-final.json`; JSON del corrector en
+  `docs/audits/T9-corrector-gates-{quick,full}.json`): **12/14** · typecheck:all 15 PASS · 0 FAIL · 1
+  SKIP · api unit 3.242 (3.241 pass · 1 skip) · admin-web unit 1.916 (1.915 pass · 1 skip) · ai-core
+  119/119 · worker 34/34 · contratos raíz 608 (606 pass · 0 fail · 2 skip) · discoverability 196 URLs ·
+  0 enlaces rotos · route-access 15 × 196 · cocoa waves al día · rbac:sync dry-run OK (+0 sobre
+  `hotelos_t9`: las 4 claves `documents.*` ya las escribió el arranque del API; en `main` dará +4) ·
+  admin-web build OK · integración (`--test-concurrency=1`, loader tsx, `.env` del carril) **865 · 857
+  pass · 0 fail · 8 skip condicionales** (el run del corrector dio 856 · 1 fail por un flake AJENO:
+  `l2-persistencia-plataforma.test.mts` L2-04, dos `offline_sync_records` en el mismo milisegundo, verde
+  en la suite sola; las 7 suites T9 verdes en todos los runs) · `db:migrations:check` 20 migraciones →
+  287 tablas / 45 enums. Rojos estables (2/14), externos al carril: `nav-tree --check`
+  (`nav-tree.generated.json` «stale» por la fila `CheckInAutomationSettingsScreen` del CSV compartido,
+  carril CHK; el árbol generado es 70 · 103 · 205) y «migrate status + drift» (`migrate status` 20/20
+  al día; `db:drift:check` con EXACTAMENTE los 3 ítems heredados de fix1 en `hotelos_t9`:
+  `VatBookRegime`, `vat_book_entries.regime` + índice, `vat_settings.opening_compensation*`).
+  Incidente registrado (informe §3): los runs 1-2 de la puerta «integración» de T9-15 corrieron 12
+  suites con `DATABASE_URL ??= …/hotelos` contra la BD PRINCIPAL (tenants de prueba creados y
+  limpiados; 0 residuales verificados); `scripts/gates.sh`, `package.json` `test:integration` y
+  `tests/integration/helpers/load-env.mts` cierran la trampa. Invariantes de Faranda idénticas al
+  inicio y al final; 0 organizaciones residuales; seed de demo purgado (0 `incoming_documents`)
+- pendientes: fusión (mergeLines §1-§16 y regeneración de `nav-tree.generated.json` con CHK
+  fusionado), `db:migrate:deploy` + `db:generate`, reinicio de `:3000` y `POST
+  /ai-operations/tools/sync`, `rbac:sync` real (autorización: escribe `role_permissions`),
+  `env:census:write` el último; `openapi.yaml` con las 2 rutas retiradas, `emailApi.ts` con dos
+  propósitos, `anyOf` en el manifiesto; decisiones de César (informe §9, runbook §11): S3 o disco +
+  backup en el VPS, buzón por centro y OAuth, escáneres, IA con clave y DPA, retención firmada,
+  tolerancias / SLA; deuda 17
+
 ## Servicios en local Mac Pro
 
 - Postgres 16 brew · puerto 5432 · DB hotelos / user hotelos / pass
@@ -636,7 +710,7 @@ node scripts/check-discoverability.mjs
 
 ## Seeds
 
-Doce seeds, tres ámbitos. Todos los parametrizables pasan por el guard
+Trece seeds, tres ámbitos. Todos los parametrizables pasan por el guard
 `packages/database/prisma/lib/demo-guard.ts` (`assertDemoTarget`): la allowlist
 demo es `org_123` / `prop_123` / `prop_canary`; cualquier otro objetivo exige
 `SEED_ALLOW_REAL=1` **y** `SEED_CONFIRM=<id exacto[,id]>` o el seed corta con
@@ -699,6 +773,17 @@ demo, reseñas deterministas `demo:<seed>:<n>` y encuestas «(demo)», todo marc
 org_123 / prop_123 / prop_canary, fuera de ella `--allow-real --confirm
 <organizationId|propertyId>`; NO activa `reputation_quality` en ninguna
 propiedad; runbook `docs/runbooks/reputacion-reviews.md` §7).
+
+Documentos ficticios (Tanda T9): `corepack pnpm --filter @hotelos/api
+demo:seed-documents -- --dry-run` (`src/scripts/seed-documents-demo.ts` + dataset puro
+`seed-documents-demo.dataset.ts`; `--apply --property prop_123 --seed 42` crea los
+usuarios `documentos.centro@example.com` / `documentos.oficina@example.com` (contraseña
+`hotelos-demo`), 3 proveedores «… Demo S…» con NIF calculado, 22 documentos con título
+`demo-documentos-*` (12 facturas —9 PDF, 3 PNG, 1 XML Facturae—, 6 albaranes, 4 de
+correspondencia) que pasan por los servicios reales hasta su estado final, 2 valijas y 3
+facturas contabilizadas con cotejo; idempotente por título; `--purge --apply` borra SOLO lo
+suyo (nunca `audit_events` ni las claves añadidas a los roles); allowlist demo, fuera de ella
+`--allow-real --confirm <id>`; runbook `docs/runbooks/documentos-digitalizacion.md` §9).
 
 **Residuos esperados tras una limpieza:** `audit_events` y `event_stream` son
 cadenas hash GLOBALES (un solo génesis, enlaces que cruzan organizaciones):
@@ -1161,6 +1246,23 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     `packages/shared/src/types.ts:23-37, 354-363` sin consumidor desde la retirada
     del gateway (Tanda L6a); decisión pendiente: retirarlos o conservarlos para el
     asistente unificado de L6b (informe L6a §5.7).
+17. **Tanda T9 · Documentos y digitalización (2026-09-19):** (a) búsqueda del
+    archivo con `ILIKE` sin índice: el GIN `pg_trgm` sobre
+    `incoming_documents.search_text` va en una migración propia (`previewFeatures =
+    ["postgresqlExtensions"]`, `extensions = [pg_trgm]`); (b) subida solo como JSON
+    base64 (`bodyLimit` 40 MiB): multipart (`@fastify/multipart`) pendiente; (c)
+    adaptador S3 (SigV4 propio, sin SDK) sin cuenta real: verificado solo con los
+    vectores oficiales de firma y el sandbox local; (d) pago fuera de la separación de
+    funciones detectado en la revisión: la remesa `POST /treasury/sepa/supplier-payments`
+    (`payables.pay`) no pasa por `assertSupplierBillPaymentAuthorized` (creador ≠
+    aprobador ≠ pagador), así que quien aprueba un documento y queda como registrador de
+    la factura podría ordenar su pago por tesorería; (e) fuga de proveedores en
+    `GET /dashboards/procurement`: `dashboards/procurement.service.ts` lee
+    `prisma.supplier.findMany({ where: { active: true } })` sin `organizationId` (recon
+    T9 §2.4); además `emailApi.ts` sigue con dos propósitos de buzón y `openapi.yaml`
+    conserva las dos rutas retiradas (mergeLines §14.6); `POST …/email/ingest` con
+    `attachments` y `PayablesErrorCode` con `SUPPLIER_BILL_MATCH_REQUIRED` + los 400 de
+    recepciones en `DOCUMENT_ERROR_CODES` los cerró el corrector T9 (informe §4).
 
 ## Docs prioritarios
 
@@ -1188,6 +1290,10 @@ Antes de tomar decisiones de producto, lee:
 - `docs/audits/TANDA-8-REPUTACION-2026-09-19.md` — cierre de la Tanda T8 · Reputación y reseñas: bot diario honesto por fuente, índice 0-100, bandeja con borrador HITL, encuestas y casos, seed ficticio; mergeLines y decisiones del propietario
 - `docs/runbooks/reputacion-reviews.md` — operación del módulo de reputación: tick, estados de fuente, importación CSV, borrador y respuesta, seed/purga, puertas y degradaciones sin el parche T8-L0 (`docs/design/olas/T8-SCHEMA-PATCH.md`)
 - `docs/runbooks/auditoria-eventos.md` — ids de auditoría (16 hex desde la fusión T8), cadena hash, rotura del 2026-09-19 y vigilancia por /health checks.audit
+- `docs/audits/TANDA-T9-DOCUMENTOS-2026-09-19.md` — cierre de la Tanda T9 · Documentos y digitalización: qué construyó cada lote y cómo se verificó, puertas por ola (12/14 final, rojos externos), los 18 hallazgos confirmados y 2 refutados con su corrección, qué es real sin clave / cuenta / escáner, pendientes, decisiones de César con el defecto aplicado y mensaje de commit
+- `docs/runbooks/documentos-digitalizacion.md` — operación del módulo de documentos (Tanda T9): almacén (inline / disk cifrado / S3, backup), buzón por centro, flujo centro → oficina paso a paso, IA con y sin proveedor, tabla exacta de rutas y claves (§6.1), códigos de error, retención / purga / GDPR, seed de demo, puertas y lo que solo César puede aportar
+- `docs/design/DOCUMENTOS-DIGITALIZACION.md` — diseño de la digitalización por centro: marco legal (Orden EHA/962/2007, RD 1619/2012, e-factura B2B RD 238/2026), captura, pipeline IA con fallback, flujo y RBAC, contabilización y archivo, modelo de datos, API (§9), front (§10), lotes; con las correcciones «[actualizado 2026-09-19]» de la implementación
+- `docs/design/olas/T9-MERGE-LINES.md` — mergeLines de la Tanda T9 (anclas de texto por fichero compartido, orden de la migración tras fix1, post-fusión: tools/sync, rbac:sync, env:census:write, drift heredado)
 - `docs/manual/README.md` — manual de uso por perfil (dirección, administración, RRHH, pisos y mantenimiento, comercial y revenue, sistemas, recepción en esqueleto), plan de formación, fichas y FAQ; capturas regenerables con `docs/manual/tools/capturas.mjs`; contrato `tests/manual-contract.test.mjs`
 
 ## Primera tarea en cada sesión nueva

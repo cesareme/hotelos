@@ -33,7 +33,9 @@ export const GUEST_REGISTER_TOOL_NAMES = [
 
 // Tanda L6a (lote 3): documentos entrantes (clasificación y extracción sin persistencia; el módulo
 // documents es de otra tanda). moduleCode compliance_hub en registry.ts.
-export const DOCUMENTS_TOOL_NAMES = ["classifyIncomingDocument", "extractIncomingDocumentFields"] as const;
+// Tanda T9 (lote T9-06a): proposeIncomingDocumentAction (erp_accounting, documents.review) propone la acción de
+// dominio sobre la última extracción del documento; escritura con confirmación.
+export const DOCUMENTS_TOOL_NAMES = ["classifyIncomingDocument", "extractIncomingDocumentFields", "proposeIncomingDocumentAction"] as const;
 
 export const FOLIO_PAYMENT_INVOICE_TOOL_NAMES = [
   "getFolioBalance",

@@ -480,6 +480,15 @@ const RESOLVERS = {
   complianceDocument: byProperty("Documento de cumplimiento no encontrado.", (id) =>
     prisma.complianceDocument.findUnique({ where: { id }, select: selectProperty })
   ),
+  // Documentos y digitalización (Tanda T9): documento entrante y recepción de
+  // mercancía pertenecen al hotel de la fila (rutas /properties/:propertyId/documents/:id
+  // y /goods-receipts/:id); fuera del ámbito del usuario → 404 opaco.
+  incomingDocument: byProperty("Documento no encontrado.", (id) =>
+    prisma.incomingDocument.findUnique({ where: { id }, select: selectProperty })
+  ),
+  goodsReceipt: byProperty("Recepción de mercancía no encontrada.", (id) =>
+    prisma.goodsReceipt.findUnique({ where: { id }, select: selectProperty })
+  ),
   emailConnection: byProperty("Conexión de correo no encontrada.", (id) =>
     prisma.emailConnection.findUnique({ where: { id }, select: selectProperty })
   ),

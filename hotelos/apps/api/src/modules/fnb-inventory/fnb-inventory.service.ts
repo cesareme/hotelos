@@ -12,6 +12,7 @@
 //     type "sale_consumption"
 //   - listStockBalances + lowStockReport
 import { prisma } from "@hotelos/database";
+import type { Prisma } from "@prisma/client";
 import { NotFoundError, BadRequestError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
 
@@ -71,18 +72,26 @@ export async function createInventoryItem(input: {
 
 // -------------------- Stock movements --------------------
 
-export async function recordStockMovement(input: {
-  propertyId: string;
-  inventoryItemId: string;
-  stockLocationId: string;
-  movementType: "opening_balance" | "receipt" | "sale_consumption" | "waste" | "adjustment" | "transfer_in" | "transfer_out";
-  quantity: number; // positive = increase, negative = decrease
-  unitCost?: number;
-  sourceType?: string;
-  sourceId?: string;
-}) {
+// Tanda T9 (recepciones de mercancía, diseño §7.2): `tx` opcional para que
+// goods-receipts.service.ts escriba el movimiento `receipt` EN LA MISMA
+// transacción que la recepción (sourceType "goods_receipt"). Sin `tx` se
+// comporta exactamente como antes (los llamadores actuales no cambian).
+export async function recordStockMovement(
+  input: {
+    propertyId: string;
+    inventoryItemId: string;
+    stockLocationId: string;
+    movementType: "opening_balance" | "receipt" | "sale_consumption" | "waste" | "adjustment" | "transfer_in" | "transfer_out";
+    quantity: number; // positive = increase, negative = decrease
+    unitCost?: number;
+    sourceType?: string;
+    sourceId?: string;
+  },
+  tx?: Prisma.TransactionClient
+) {
   if (!Number.isFinite(input.quantity) || input.quantity === 0) throw new BadRequestError("quantity debe ser un número distinto de cero.");
-  return prisma.stockMovement.create({
+  const db = tx ?? prisma;
+  return db.stockMovement.create({
     data: {
       propertyId: input.propertyId,
       inventoryItemId: input.inventoryItemId,

@@ -2,13 +2,20 @@
 // Finanzas · lote 6-E): labels and tones of the wire enums, decimal parsing of
 // the string-controlled Cocoa inputs, calendar helpers, the inline attachment
 // reader (≤ 512 KiB, PDF/JPEG/PNG), account-picker filters and the failure
-// describer. No React, no api-client: screens/payables/__tests__ runs this file
-// under `node --test`; the hooks live in payables-shared.ts.
+// describer. Since Tanda T9 (lote T9-11) also the origin and match vocabularies
+// of a supplier bill (`source` · `matchStatus`), `openBillAttachment` (inline
+// base64 as before, or the binary of the digitised document by its
+// `downloadPath`, with the network and the window injected) and
+// `billApprovalBlock` (which gate stopped an approval and what the screen can
+// offer: supervisor PIN, match, nothing). No React, no api-client:
+// screens/payables/__tests__ runs this file under `node --test`; the hooks live
+// in payables-shared.ts.
 
-import type { ExpensePaidWith, FixedAssetCategory, FixedAssetStatus, InlineAttachment, RetentionRowCode, SupplierBillStatus } from "@hotelos/shared";
+import type { ExpensePaidWith, FixedAssetCategory, FixedAssetStatus, InlineAttachment, RetentionRowCode, SupplierBillMatchStatus, SupplierBillSource, SupplierBillStatus } from "@hotelos/shared";
 import { FIXED_ASSET_MAX_COEFFICIENT_PCT } from "@hotelos/shared";
 import type { ChartAccountView } from "@hotelos/shared";
-import { financeErrorCode, financeErrorMessage } from "../../services/finance-contracts";
+import { financeErrorCode, financeErrorDetails, financeErrorMessage } from "../../services/finance-contracts";
+import { openBlob } from "../../components/billing/download";
 import { date, isoDate, percent, toNumber } from "../../lib/format";
 import { STATUS_LABELS } from "../../content/actions";
 import type { CocoaTone } from "../../components/cocoa/cocoa-tones";
@@ -32,6 +39,43 @@ export const BILL_STATUS_TONES: Record<SupplierBillStatus, CocoaTone> = {
   paid: "success",
   cancelled: "danger"
 };
+
+/** Origen de la factura (Tanda T9, `SupplierBill.source`): alta manual, digitalizada desde un documento, factura electrónica. */
+export const BILL_SOURCE_LABELS: Record<SupplierBillSource, string> = {
+  manual: "Manual",
+  digitized: "Digitalizada",
+  e_invoice: "e-factura"
+};
+
+export const BILL_SOURCE_TONES: Record<SupplierBillSource, CocoaTone> = { manual: "neutral", digitized: "info", e_invoice: "accent" };
+
+/** Cotejo con albaranes (`SupplierBill.matchStatus`): sin cotejar · parcial · completo · diferencias fuera de tolerancia. */
+export const BILL_MATCH_LABELS: Record<SupplierBillMatchStatus, string> = {
+  none: "Sin cotejar",
+  partial: "Parcial",
+  full: "Completo",
+  variance: "Diferencias"
+};
+
+export const BILL_MATCH_TONES: Record<SupplierBillMatchStatus, CocoaTone> = { none: "neutral", partial: "warning", full: "success", variance: "danger" };
+
+/** Label of a wire `source`; an unknown value (older API) reads as manual. */
+export function billSourceLabel(source: string | null | undefined): string {
+  return (source && (BILL_SOURCE_LABELS as Record<string, string>)[source]) || BILL_SOURCE_LABELS.manual;
+}
+
+export function billSourceTone(source: string | null | undefined): CocoaTone {
+  return (source && (BILL_SOURCE_TONES as Record<string, CocoaTone>)[source]) || BILL_SOURCE_TONES.manual;
+}
+
+/** Label of a wire `matchStatus`; an unknown value (older API) reads as «Sin cotejar». */
+export function billMatchLabel(status: string | null | undefined): string {
+  return (status && (BILL_MATCH_LABELS as Record<string, string>)[status]) || BILL_MATCH_LABELS.none;
+}
+
+export function billMatchTone(status: string | null | undefined): CocoaTone {
+  return (status && (BILL_MATCH_TONES as Record<string, CocoaTone>)[status]) || BILL_MATCH_TONES.none;
+}
 
 export const PAID_WITH_LABELS: Record<ExpensePaidWith, string> = { cash: "Efectivo", card: "Tarjeta", bank: "Banco" };
 
@@ -235,6 +279,53 @@ export function openInlineAttachment(base64: string, mimeType: string): boolean 
   }
 }
 
+/** What GET …/supplier-bills/:id/attachment answers (payablesApi.SupplierBillAttachment), as far as opening it needs. */
+export type BillAttachmentLike = {
+  inline: boolean;
+  base64?: string | null;
+  mimeType?: string | null;
+  /** Tanda T9 (T9-08): binary route of the digitised document (`GET …/documents/:id/file`). */
+  downloadPath?: string | null;
+  documentObjectKey?: string | null;
+};
+
+/** Where the bytes of an attachment come from: the JSON itself (inline base64), the binary route of the document, or nowhere. */
+export type BillAttachmentSource = "inline" | "download" | "none";
+
+export function billAttachmentSource(attachment: BillAttachmentLike): BillAttachmentSource {
+  if (attachment.inline && attachment.base64 && attachment.mimeType) return "inline";
+  if (attachment.downloadPath) return "download";
+  return "none";
+}
+
+export type OpenBillAttachmentDeps = {
+  /** Fetches the binary of `downloadPath` (the screen passes payablesApi.downloadSupplierBillAttachment). */
+  fetchBlob: (downloadPath: string) => Promise<Blob>;
+  /** Opens a Blob in a new tab; false when the browser blocked the window (default: components/billing/download openBlob). */
+  openBlob?: (blob: Blob) => boolean;
+  /** Opens an inline base64 attachment (default: openInlineAttachment). */
+  openInline?: (base64: string, mimeType: string) => boolean;
+};
+
+export type OpenBillAttachmentResult = { source: BillAttachmentSource; opened: boolean };
+
+/**
+ * Open the attachment of a supplier bill: an inline one (≤ 512 KiB, base64 in
+ * the JSON) as before; a digitised one (Tanda T9) by its `downloadPath`
+ * (`?inline=1`, audited DOCUMENT_DOWNLOADED) as a Blob in a new tab. `opened`
+ * is false when the browser blocked the window; `source: "none"` when the
+ * bill has no attachment the browser can show (the screen says so).
+ */
+export async function openBillAttachment(attachment: BillAttachmentLike, deps: OpenBillAttachmentDeps): Promise<OpenBillAttachmentResult> {
+  const source = billAttachmentSource(attachment);
+  if (source === "inline") return { source, opened: (deps.openInline ?? openInlineAttachment)(attachment.base64!, attachment.mimeType!) };
+  if (source === "download") {
+    const blob = await deps.fetchBlob(attachment.downloadPath!);
+    return { source, opened: (deps.openBlob ?? openBlob)(blob) };
+  }
+  return { source, opened: false };
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -244,6 +335,40 @@ export type PayablesFailure = { code: string | null; message: string };
 /** Spanish message + `details.code` of a payables / assets failure (a plain Error keeps its message). */
 export function describeFailure(error: unknown, fallback: string): PayablesFailure {
   return { code: financeErrorCode(error), message: financeErrorMessage(error, fallback) };
+}
+
+/** Gates of POST …/supplier-bills/:id/approve the screen can act on (Tanda 8a RBAC · Tanda T9 §7.1). */
+export type BillApprovalBlockCode = "RBAC_LEVEL_EXCEEDED" | "RBAC_SOD_CONFLICT" | "SUPPLIER_BILL_MATCH_REQUIRED";
+
+export type BillApprovalBlock = {
+  code: BillApprovalBlockCode;
+  /** Spanish sentence with the tiers, the pending request or the match reason. */
+  message: string;
+  /** What the drawer offers: the supervisor PIN (lifts the tier), the match with the receipts, or nothing (SoD is decided by the API). */
+  action: "supervisor" | "match" | null;
+  tier: string | null;
+  maxTier: string | null;
+  /** Pending approval request the engine already holds (Hoy › Pendientes de aprobación), when the API names it. */
+  requestId: string | null;
+};
+
+/** The approval gate behind a failed approve, or null when the failure is something else (shown through describeFailure). */
+export function billApprovalBlock(error: unknown): BillApprovalBlock | null {
+  const code = financeErrorCode(error);
+  if (code !== "RBAC_LEVEL_EXCEEDED" && code !== "RBAC_SOD_CONFLICT" && code !== "SUPPLIER_BILL_MATCH_REQUIRED") return null;
+  const details = financeErrorDetails(error);
+  const text = (key: string): string | null => {
+    const value = details?.[key];
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  };
+  return {
+    code,
+    message: financeErrorMessage(error, "La aprobación necesita autorización."),
+    action: code === "RBAC_LEVEL_EXCEEDED" ? "supervisor" : code === "SUPPLIER_BILL_MATCH_REQUIRED" ? "match" : null,
+    tier: text("tier"),
+    maxTier: text("maxTier"),
+    requestId: text("requestId")
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -49,6 +49,12 @@ SyslogIdentifier=anfitorio-api
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
+# Tanda T9: almacén disk de los documentos capturados (DOCUMENT_STORAGE_KIND=disk,
+# DOCUMENT_STORAGE_DIR=/var/lib/anfitorio/documents en api.env). ProtectSystem=full
+# no bloquea /var, pero el directorio debe existir y pertenecer al usuario del
+# servicio: crearlo con install-from-scratch.sh/deploy.sh (mkdir -p + chown
+# anfitorio:anfitorio). Incluirlo en el backup junto al pg_dump.
+ReadWritePaths=/var/lib/anfitorio/documents
 ProtectControlGroups=true
 ProtectKernelModules=true
 ProtectKernelTunables=true

@@ -355,6 +355,10 @@ export function validateValues(values, declared, contract, { role, isExample }) 
       errors.push("HOTELOS_ALLOW_DEMO_AUTH no puede estar activo en producción: el API se niega a arrancar (AUTH-04). Elimínalo; solo una demo pública sin datos reales puede forzarlo con HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true.");
     }
   }
+  // Tanda T9 (corrector SEC-03): same rule as validateEnv — the inline store is demo-only.
+  if (production && effective("DOCUMENT_STORAGE_KIND") === "inline") {
+    errors.push("DOCUMENT_STORAGE_KIND=inline no se admite en producción (facturas y cartas en claro en la base de datos, tope 2 MiB): usa disk (DOCUMENT_STORAGE_DIR) o s3 (DOCUMENT_S3_*).");
+  }
   const emailDefined = ["EMAIL_PROVIDER", "EMAIL_PROVIDER_KEY", "EMAIL_FROM"].filter((k) => read(k) !== undefined).length;
   if (emailDefined > 0 && emailDefined < 3 && read("EMAIL_PROVIDER") === undefined) {
     errors.push("EMAIL_PROVIDER_KEY/EMAIL_FROM sin EMAIL_PROVIDER: los tres EMAIL_* van juntos (postmark|sendgrid + clave + remitente).");

@@ -1,7 +1,7 @@
 // Tanda L6a (lote 3): cobertura del catálogo de herramientas. Todo nombre de
-// tool-names.ts tiene definición (146/146), toda implementación tiene
+// tool-names.ts tiene definición (147/147 desde la Tanda T9), toda implementación tiene
 // definición con `effect` EXPLÍCITO en registry.ts que coincide con el de la
-// implementación, las 11 escrituras son "write" y las 14 lecturas "read", y
+// implementación, las 12 escrituras son "write" y las 14 lecturas "read", y
 // nada que toque dinero/fiscal tiene execute. Sin base de datos ni red.
 // From apps/api:
 //   node --import tsx --test src/modules/ai-operations/__tests__/tools-coverage.test.mts
@@ -47,7 +47,9 @@ const EXPECTED_WRITES = [
   "markRoomInspected",
   "prepareGuestRegisterRecord",
   "queueSesHospedajesSubmission",
-  "sendGuestMessage"
+  "sendGuestMessage",
+  // Tanda T9 (lote T9-06a): propuesta de acción sobre un documento digitalizado.
+  "proposeIncomingDocumentAction"
 ].sort();
 
 /** Nombres que tocan dinero o fiscal: SIN execute en la Tanda L6a (honesto: denied tool_not_implemented). */
@@ -90,21 +92,28 @@ function explicitEffectInSource(name: string): "read" | "write" | null {
 }
 
 describe("catálogo de herramientas · definiciones", () => {
-  it("todo nombre de ALL_TOOL_NAMES tiene definición (146/146 con los 5 nombres nuevos) y ninguna definición está fuera del catálogo", () => {
+  it("todo nombre de ALL_TOOL_NAMES tiene definición (147/147: 146 de L6a + proposeIncomingDocumentAction de T9) y ninguna definición está fuera del catálogo", () => {
     const defined = new Set(TOOL_DEFINITIONS.map((definition) => definition.name as string));
     const missing = ALL_TOOL_NAMES.filter((name) => !defined.has(name));
     assert.deepEqual(missing, [], `nombres sin definición: ${missing.join(", ")}`);
-    assert.equal(ALL_TOOL_NAMES.length, 146);
-    assert.equal(TOOL_DEFINITIONS.length, 146);
-    assert.equal(new Set(ALL_TOOL_NAMES).size, 146, "sin nombres duplicados");
+    assert.equal(ALL_TOOL_NAMES.length, 147);
+    assert.equal(TOOL_DEFINITIONS.length, 147);
+    assert.equal(new Set(ALL_TOOL_NAMES).size, 147, "sin nombres duplicados");
     const catalog = new Set<string>(ALL_TOOL_NAMES);
     assert.deepEqual(TOOL_DEFINITIONS.filter((definition) => !catalog.has(definition.name)).map((definition) => definition.name), []);
-    assert.deepEqual([...DOCUMENTS_TOOL_NAMES], ["classifyIncomingDocument", "extractIncomingDocumentFields"]);
+    assert.deepEqual([...DOCUMENTS_TOOL_NAMES], ["classifyIncomingDocument", "extractIncomingDocumentFields", "proposeIncomingDocumentAction"]);
     for (const name of ["parseReservationRequest", "extractPropertyMap", "summarizeComplianceStatus", "classifyIncomingDocument", "extractIncomingDocumentFields"]) {
       assert.equal(getToolDefinition(name as (typeof ALL_TOOL_NAMES)[number]).effect, "read", `${name} es una lectura`);
     }
     assert.equal(getToolDefinition("classifyIncomingDocument").moduleCode, "compliance_hub");
     assert.deepEqual(getToolDefinition("extractIncomingDocumentFields").requiredPermissions, ["ai.tool.execute"]);
+    // Tanda T9 (lote T9-06a): la propuesta es una escritura de erp_accounting con documents.review (diseño §5.2).
+    const propose = getToolDefinition("proposeIncomingDocumentAction");
+    assert.equal(propose.effect, "write");
+    assert.equal(propose.moduleCode, "erp_accounting");
+    assert.equal(propose.riskLevel, "high");
+    assert.equal(propose.requiresConfirmation, true);
+    assert.deepEqual(propose.requiredPermissions, ["documents.review", "ai.tool.execute"]);
   });
 
   it("toda definición lleva effect y las escrituras exigen confirmación", () => {
@@ -140,10 +149,10 @@ describe("implementaciones AiTool del API", () => {
     }
   });
 
-  it("las 11 escrituras tienen effect write (y preview determinista) y las 14 lecturas effect read", () => {
+  it("las 12 escrituras tienen effect write (y preview determinista) y las 14 lecturas effect read", () => {
     assert.deepEqual([...AI_WRITE_TOOL_NAMES].sort(), EXPECTED_WRITES);
     assert.deepEqual([...AI_READ_TOOL_NAMES].sort(), EXPECTED_READS);
-    assert.equal(Object.keys(AI_TOOL_IMPLEMENTATIONS).length, 25);
+    assert.equal(Object.keys(AI_TOOL_IMPLEMENTATIONS).length, 26);
     for (const name of EXPECTED_WRITES) {
       assert.equal(typeof AI_TOOL_IMPLEMENTATIONS[name]!.preview, "function", `${name} (escritura) sin preview`);
     }

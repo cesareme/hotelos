@@ -21,6 +21,7 @@ import { CHANNEL_MANAGER_ENV_CONTRACT } from "../modules/channel-manager/env.par
 import { PAYMENTS_ENV_CONTRACT } from "../modules/payments/env.partial.js";
 import { PMS_SHADOW_ENV_CONTRACT } from "../modules/pms-shadow/env.partial.js";
 import { REPUTATION_ENV_CONTRACT } from "../modules/reputation/env.partial.js";
+import { DOCUMENTS_ENV_CONTRACT } from "../modules/documents/env.partial.js";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import { isValidSpanishTaxId, resolveVerifactuCredentials, resolveVerifactuSoftware } from "@hotelos/compliance";
@@ -40,6 +41,7 @@ export type EnvSection =
   | "IA"
   | "OTA"
   | "Pagos"
+  | "Documentos"
   | "Wallet"
   | "Sentry"
   | "Frontend"
@@ -774,6 +776,14 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   // de Google Business Profile (GOOGLE_BUSINESS_CLIENT_ID/SECRET/REDIRECT_URI · sección OTA)
   // en modules/reputation/env.partial.ts.
   ...REPUTATION_ENV_CONTRACT,
+  // Documentos (Tanda T9): modules/documents/env.partial.ts — almacén de los
+  // documentos capturados (DOCUMENT_STORAGE_KIND inline|disk|s3, DOCUMENT_STORAGE_DIR,
+  // DOCUMENT_S3_*, DOCUMENT_MAX_BYTES, DOCUMENT_UPLOAD_BODY_LIMIT y
+  // DOCUMENT_ENCRYPT_AT_REST · sección Documentos) y el interruptor del job de
+  // retención (DOCUMENT_RETENTION_JOB_DISABLED · sección Schedulers). El módulo las
+  // lee SOLO en modules/documents/documents.config.ts vía effectiveValue +
+  // processEnvironment (su env-partial.test prohíbe lecturas directas del entorno).
+  ...DOCUMENTS_ENV_CONTRACT,
 
   // ---------------------------------------------------------------- Wallet
   APPLE_WALLET_PASS_TYPE_ID: { section: "Wallet", format: "string", default: "pass.com.hotelos.roomkey", doc: "Pass Type ID de las llaves móviles en Apple Wallet." },
@@ -925,6 +935,16 @@ function readValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
 /** Value the code will actually use: raw value or the contract default. */
 export function effectiveValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
   return readValue(env, name) ?? ENV_CONTRACT[name]?.default;
+}
+
+/**
+ * The live process environment for module configs that must not reference it
+ * themselves (Tanda T9: modules/documents/documents.config.ts resolves every
+ * DOCUMENT_* variable with effectiveValue(processEnvironment(), name); its
+ * env-partial contract test forbids direct reads inside modules/documents).
+ */
+export function processEnvironment(): NodeJS.ProcessEnv {
+  return process.env;
 }
 
 /** Evaluate the `{ when }` grammar (see EnvRequired) against effective values. */
@@ -1141,6 +1161,12 @@ export function validateEnv(env: NodeJS.ProcessEnv, opts: { production: boolean 
         "HOTELOS_ALLOW_DEMO_AUTH no puede estar activo en producción: elimínalo del entorno (NODE_ENV=production). El API se niega a arrancar (AUTH-04); solo una demo pública sin datos reales puede forzarlo con HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true."
       );
     }
+  }
+
+  // Tanda T9 (corrector SEC-03): the inline store (base64 in Postgres, no encryption, 2 MiB cap)
+  // is for demos only; production must persist documents on disk (encrypted) or S3.
+  if (production && effectiveValue(env, "DOCUMENT_STORAGE_KIND") === "inline") {
+    errors.push("DOCUMENT_STORAGE_KIND=inline no se admite en producción (facturas y cartas en claro en la base de datos, tope 2 MiB): usa disk (DOCUMENT_STORAGE_DIR) o s3 (DOCUMENT_S3_*).");
   }
 
   // Email trio: all or nothing; production without it degrades invitations.

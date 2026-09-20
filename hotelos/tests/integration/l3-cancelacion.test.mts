@@ -108,8 +108,13 @@ function expect409(reply: Reply, code: string): void {
 const ctxOf = (userId: string, permissions: readonly string[]): UserContext =>
   ({ organizationId: tenant.organizationId, propertyId: tenant.propertyA, userId, fullName: "L3-B", deviceId: `l3b-${RUN}`, permissions: [...permissions], orgScope: true }) as unknown as UserContext;
 
-/** Reserva confirmada del hotel A creada por recepción por HTTP con importe explícito. */
-async function newReservation(input: { arrivalDate: string; departureDate: string; totalAmount: number; label: string; cancellationPolicyCode?: string }): Promise<{ id: string; code: string }> {
+/**
+ * Reserva confirmada del hotel A creada por recepción por HTTP con importe explícito.
+ * `allowPastArrival`: desde UX-1 (corrector L-02) una llegada anterior a hoy se rechaza
+ * con 400 PAST_ARRIVAL_DATE salvo confirmación explícita (la ruta la admite porque
+ * recepción tiene pms.reservation.modify); solo lo usan los casos de no-show.
+ */
+async function newReservation(input: { arrivalDate: string; departureDate: string; totalAmount: number; label: string; cancellationPolicyCode?: string; allowPastArrival?: boolean }): Promise<{ id: string; code: string }> {
   const created = await call("POST", `/properties/${tenant.propertyA}/reservations`, reception, {
     payload: {
       arrivalDate: input.arrivalDate,
@@ -119,7 +124,8 @@ async function newReservation(input: { arrivalDate: string; departureDate: strin
       ratePlanId: tenant.ratePlanA,
       totalAmount: input.totalAmount,
       bookerName: `L3-B ${input.label} ${RUN}`,
-      ...(input.cancellationPolicyCode ? { cancellationPolicyCode: input.cancellationPolicyCode } : {})
+      ...(input.cancellationPolicyCode ? { cancellationPolicyCode: input.cancellationPolicyCode } : {}),
+      ...(input.allowPastArrival ? { allowPastArrival: true } : {})
     }
   });
   assert.ok(created.status === 200 || created.status === 201, created.raw.slice(0, 400));
@@ -457,7 +463,7 @@ describe("L3-B · processNoShows (paso del cierre del día)", () => {
   it("con la identidad de dirección general y las claves de jefatura de recepción (con modify): marca no_show, carga no_show_fee y audita autoNoShow", async () => {
     const fom = ROLE_PERMISSION_MAP.front_office_manager as readonly string[];
     assert.ok(fom.includes("pms.reservation.modify") && fom.includes("folio.charge.post") && fom.includes("night_audit.run"));
-    const r = await newReservation({ arrivalDate: madridDay(-3), departureDate: madridDay(-2), totalAmount: 80, label: "noshow-1" });
+    const r = await newReservation({ arrivalDate: madridDay(-3), departureDate: madridDay(-2), totalAmount: 80, label: "noshow-1", allowPastArrival: true });
     const result = await lifecycle.processNoShows({ context: ctxOf(tenant.users.generalManager.id, fom), propertyId: tenant.propertyA, businessDate: businessDate(), correlationId: `corr_l3b_na1_${RUN}` });
     assert.equal(result.processedCount, 1);
     assert.equal(result.totalChargedEur, 80);
@@ -479,7 +485,7 @@ describe("L3-B · processNoShows (paso del cierre del día)", () => {
   it("con las claves de night_auditor (SIN pms.reservation.modify): la autoridad de night_audit.run deriva modify solo para el paso", async () => {
     const nightAuditor = ROLE_PERMISSION_MAP.night_auditor as readonly string[];
     assert.ok(!nightAuditor.includes("pms.reservation.modify") && nightAuditor.includes("night_audit.run") && nightAuditor.includes("folio.charge.post"));
-    const r = await newReservation({ arrivalDate: madridDay(-5), departureDate: madridDay(-4), totalAmount: 90, label: "noshow-2" });
+    const r = await newReservation({ arrivalDate: madridDay(-5), departureDate: madridDay(-4), totalAmount: 90, label: "noshow-2", allowPastArrival: true });
     const ctx = ctxOf(tenant.users.systems.id, nightAuditor);
     const actor = lifecycle.nightAuditActor(ctx);
     assert.ok(actor.permissions.includes("pms.reservation.modify") && !ctx.permissions.includes("pms.reservation.modify"), "el contexto original no cambia");

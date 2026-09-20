@@ -11,6 +11,7 @@
  * It is intentionally NOT part of the default `pnpm test` (which runs in a
  * no-DB job); CI runs it in a dedicated job that provisions Postgres.
  */
+import "./helpers/load-env.mts";
 import assert from "node:assert/strict";
 import { describe, it, before, after } from "node:test";
 

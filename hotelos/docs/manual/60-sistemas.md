@@ -433,7 +433,7 @@ Es una pantalla de finanzas: los detalles (datos fiscales, series, IVA y ejercic
 |---|---|---|
 | `status` | Estado general: `healthy` (bien) o `degraded` (algo falla) | `healthy` |
 | `dependencies.postgres` / `dependencies.redis` | Base de datos y caché | `ok` / `ok` |
-| `dependencies.objectStorage` | Almacén de ficheros (adjuntos, documentos escaneados) | `unconfigured`: sin configurar en la demo |
+| `dependencies.objectStorage` | Almacén de los documentos capturados: `inline` (en la base de datos, solo demo), `disk` (ficheros cifrados en el servidor) o `s3`; `unconfigured` si la configuración es inválida | `inline` en la demo (sin `DOCUMENT_STORAGE_KIND`); en producción `disk` o `s3` |
 | `checks.verifactu` | Modo de envío a la AEAT y declaración del software | `mode=sandbox`; `software.ok=false` con los tres datos que faltan (razón social, NIF y número de instalación del productor) |
 | `checks.sesHospedajes` | Modo de envío de partes de viajeros | `mode=sandbox` (simulador) |
 | `checks.ai` | Proveedor de IA | `provider=none … reason=not_configured` |

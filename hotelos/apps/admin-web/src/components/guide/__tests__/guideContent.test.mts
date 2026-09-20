@@ -73,7 +73,7 @@ describe("guideContent · tours generated from the navigation tree", () => {
     const pisos = tourStepsFor(operaciones, { roleTokens: ["pisos"] });
     assert.deepEqual(
       pisos.filter((step) => step.navigateTo).map((step) => step.navigateTo),
-      ["HousekeepingDashboard", "WorkforceDashboard"]
+      ["HousekeepingDashboard", "WorkforceDashboard", "DocumentCaptureScreen"] // Tanda T9: Operaciones › Digitalizar (pisos captures too)
     );
     const direccion = tourStepsFor(operaciones, { roleTokens: ["direccion"] });
     assert.equal(direccion.length, operaciones.steps.length);

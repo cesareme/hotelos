@@ -249,6 +249,11 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "payables.create": "Register supplier bills and expenses",
   "payables.approve": "Approve supplier bills up to the role threshold",
   "payables.pay": "Order supplier payments and SEPA remittances",
+  // Tanda T9 (documentos y digitalización con IA, docs/design/DOCUMENTOS-DIGITALIZACION.md §6.2)
+  "documents.capture": "Capture incoming documents at the work centre (upload, photo, dispatch bag) and send them to the office",
+  "documents.review": "Review digitised documents at the office: assign, correct the extracted fields, approve the proposed action or reject",
+  "documents.archive.read": "Search and read the document archive (originals, metadata, retention)",
+  "documents.admin": "Administer the document module: retention, legal hold, block and purge, AI extraction settings of the organisation",
   "accounting.period.close": "Close fiscal periods and fiscal years",
   "payroll.approve": "Approve the monthly payroll register and salary changes",
   "revenue.rates.approve": "Approve bulk or out-of-band rate changes",
@@ -463,7 +468,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     // M23 IA · V C
     "ai_governance.read",
     "ai_incidents.read",
-    "ai.tool.execute"
+    "ai.tool.execute",
+    // Documentos y digitalización (Tanda T9) · C
+    "documents.capture"
   ],
   // Auditoría nocturna (N1 · property · token recepcion)
   night_auditor: [
@@ -652,7 +659,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "ai_governance.read",
     "ai_incidents.read",
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Documentos y digitalización (Tanda T9) · C
+    "documents.capture"
   ],
   // Pisos (N1 · property · token pisos)
   housekeeper: [
@@ -721,7 +730,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "modules.read",
     // M23 IA · C A
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Documentos y digitalización (Tanda T9) · C
+    "documents.capture"
   ],
   // Mantenimiento (N1 · property · token mantenimiento)
   maintenance: [
@@ -820,7 +831,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "modules.read",
     // M23 IA · C A
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Documentos y digitalización (Tanda T9) · C
+    "documents.capture"
   ],
   // Punto de venta (N1 · property · token fnb)
   fnb: [
@@ -918,7 +931,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "modules.read",
     // M23 IA · C A
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Documentos y digitalización (Tanda T9) · C
+    "documents.capture"
   ],
   // Comercial (N1 · property / group · token comercial)
   sales: [
@@ -1051,7 +1066,11 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     // M22 Módulos · V
     "modules.read",
     // M23 IA · C
-    "ai.tool.execute"
+    "ai.tool.execute",
+    // Documentos y digitalización (Tanda T9) · V C A
+    "documents.capture",
+    "documents.review",
+    "documents.archive.read"
   ],
   // Dirección de hotel (N3 · property · token direccion)
   manager: [
@@ -1285,7 +1304,10 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "onboarding.ai_map",
     "onboarding.review",
     "onboarding.apply",
-    "onboarding.manage_cutover"
+    "onboarding.manage_cutover",
+    // Documentos y digitalización (Tanda T9) · V C
+    "documents.capture",
+    "documents.archive.read"
   ],
   // Dirección de operaciones (N4 · property_group / organization · token direccion)
   operations_director: [
@@ -1424,7 +1446,10 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "onboarding.review",
     "onboarding.apply",
     "onboarding.manage_cutover",
-    "onboarding.go_live"
+    "onboarding.go_live",
+    // Documentos y digitalización (Tanda T9) · V C
+    "documents.capture",
+    "documents.archive.read"
   ],
   // Revenue corporativo (N4 · organization · token revenue)
   revenue: [
@@ -1567,7 +1592,10 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "ai_governance.read",
     "ai_incidents.read",
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Documentos y digitalización (Tanda T9) · V A
+    "documents.review",
+    "documents.archive.read"
   ],
   // Dirección financiera (N5 · legal_entity · token finanzas)
   controller: [
@@ -1673,7 +1701,11 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "ai_governance.read",
     "ai_incidents.read",
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Documentos y digitalización (Tanda T9) · V A E
+    "documents.review",
+    "documents.archive.read",
+    "documents.admin"
   ],
   // RRHH y nóminas (N7 · legal_entity · token rrhh)
   payroll_hr: [
@@ -1769,7 +1801,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "ai_evals.manage",
     "ai_incidents.manage",
     "ai_prompts.manage",
-    "ai_tool_registry.manage"
+    "ai_tool_registry.manage",
+    // Documentos y digitalización (Tanda T9) · V
+    "documents.archive.read"
   ],
   // Gestión del activo (N7 · legal_entity / organization · token activos)
   asset_manager: [
@@ -1963,7 +1997,12 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "onboarding.view_sensitive",
     "onboarding.go_live",
     // Emergencia · §4.8 / regla L0
-    "security.break_glass"
+    "security.break_glass",
+    // Documentos y digitalización (Tanda T9) · V C A E
+    "documents.capture",
+    "documents.review",
+    "documents.archive.read",
+    "documents.admin"
   ],
   // Propiedad (N6 · organization · token propiedad)
   owner: [
@@ -2053,7 +2092,11 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     // M23 IA · C
     "ai.tool.execute",
     "ai_governance.read",
-    "ai_incidents.read"
+    "ai_incidents.read",
+    // Documentos y digitalización (Tanda T9) · V A E
+    "documents.review",
+    "documents.archive.read",
+    "documents.admin"
   ],
   // Auditoría interna (N7 · organization · token auditoria · solo lectura)
   auditor: [
@@ -2150,7 +2193,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "ai_incidents.read",
     // M24 Puesta en marcha y migración · V
     "onboarding.read",
-    "onboarding.view_sensitive"
+    "onboarding.view_sensitive",
+    // Documentos y digitalización (Tanda T9) · V
+    "documents.archive.read"
   ],
   // Administración de sistema (N7 · organization · token sistemas · sin claves financieras ni operativas)
   admin: [
@@ -2235,7 +2280,12 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "onboarding.go_live",
     "onboarding.rollback",
     // Emergencia · §4.8 / regla L0
-    "security.break_glass"
+    "security.break_glass",
+    // Documentos y digitalización (Tanda T9) · V C A E
+    "documents.capture",
+    "documents.review",
+    "documents.archive.read",
+    "documents.admin"
   ],
   // Emergencia (break glass, §4.8)
   break_glass: [...ORG_PERMISSION_KEYS],
@@ -2380,8 +2430,12 @@ export const ORGANIZATION_TEMPLATE_ROLE_KEYS: readonly RoleKey[] = [
  * Version 3 (fusión TL, 2026-09-19): additive only — payroll_hr, asset_manager
  * and admin gain `pms.reservation.read` + `guests.read` (see the note above
  * ROLE_TEMPLATE_REVOCATIONS); no template loses a key.
+ * Version 4 (Tanda T9 · documentos y digitalización, 2026-09-19): aditiva —
+ * las cuatro claves `documents.*` (capture, review, archive.read, admin) se
+ * reparten entre 15 plantillas según el diseño §6.2; ninguna plantilla pierde
+ * claves y ROLE_TEMPLATE_REVOCATIONS no cambia.
  */
-export const ROLE_TEMPLATE_VERSION = 3;
+export const ROLE_TEMPLATE_VERSION = 4;
 
 /**
  * Keys that version 2 REMOVES from each template with respect to version 1
@@ -2405,6 +2459,10 @@ export const ROLE_TEMPLATE_VERSION = 3;
  * revocation is never also in the template). The bump lets
  * `rbac:sync --upgrade-templates` stamp v3 and deliver the two keys in one
  * audited run (ROLE_TEMPLATE_UPGRADED with revoked = []).
+ *
+ * Version 4 (Tanda T9 · documentos y digitalización, 2026-09-19) removes nothing
+ * either: it ADDS documents.capture / documents.review / documents.archive.read /
+ * documents.admin to 15 templates (design §6.2); this record is unchanged.
  */
 export const ROLE_TEMPLATE_REVOCATIONS: Record<RoleKey, PermissionKey[]> = {
   receptionist: [],

@@ -5,25 +5,43 @@
 // buckets (GET …/payables/aging) → CocoaToolbar (search + status) →
 // CocoaSection padding none → CocoaTable (a row opens the bill in a
 // CocoaDrawer: totals, lines, VAT rows, accrual and payment entries, attachment)
-// → «Nueva factura» drawer with the line-based form (supplier from the
-// directory or free name + NIF, 6xx / 20x-21x postable account picker without
-// headers, VAT per rate, quota, 15/7 % retention with its 111/115 row, printed
-// total check, inline attachment ≤ 512 KiB). Flow: borrador → Aprobar →
+// → «Nueva factura» drawer with the line-based form — since Tanda T9 (lote
+// T9-04) the component SupplierBillForm of ./SupplierBillForm.tsx, shared with
+// the review pane of Documentos y digitalización: supplier from the directory
+// or free name + NIF, 6xx / 20x-21x postable account picker without headers,
+// VAT per rate, quota, 15/7 % retention with its 111/115 row, printed total
+// check, inline attachment ≤ 512 KiB; this screen owns the BillForm state and
+// calls validateBillForm / billFormToRequest. Flow: borrador → Aprobar →
 // Contabilizar (CocoaDialog) → Pagar (date, 572/570 account, reference) or
 // Anular with a reason; every details.code lands in Spanish through
 // payablesErrorMessage.
 //
+// Tanda T9 · lote T9-11 (design §7.1 and §10 «Facturas recibidas»): column
+// «Origen» (Manual · Digitalizada · e-factura by `source`), «Cotejo» badge by
+// `matchStatus`, «Ver documento» (the digitised IncomingDocument at
+// /finanzas/proveedores/documentos?id=…), «Cotejar con albarán» (POST …/match,
+// procurement.manage) and the attachment opened by the binary route of the
+// document (`downloadPath`) instead of the JSON base64 when the bill comes from
+// the store. Approving above the caller's tier answers 403 RBAC_LEVEL_EXCEEDED:
+// the drawer offers «Autorizar con supervisor» (components/SupervisorPinDialog,
+// key payables.approve) and resends the approval with `supervisorAuthorizationId`;
+// 409 RBAC_SOD_CONFLICT and 409 SUPPLIER_BILL_MATCH_REQUIRED read in Spanish
+// with what the API knows (billApprovalBlock of payables-helpers.ts).
+//
 // Reads services/payablesApi.ts (listSupplierBills · getSupplierBill ·
 // createSupplierBill · approveSupplierBill · postSupplierBill · paySupplierBill
-// · cancelSupplierBill · getSupplierBillAttachment · getPayablesAging ·
-// listSuppliers) and GET /accounting/chart?postableOnly=1 for the pickers.
+// · cancelSupplierBill · getSupplierBillAttachment ·
+// downloadSupplierBillAttachment · getPayablesAging · listSuppliers),
+// services/goodsReceiptsApi.ts (matchSupplierBill) and GET
+// /accounting/chart?postableOnly=1 for the pickers.
 
 import { useMemo, useState, type CSSProperties } from "react";
-import type { InlineAttachment, LedgerEntryDto, RetentionRowCode, SupplierBillStatus } from "@hotelos/shared";
+import type { LedgerEntryDto, SupervisorAuthorizationDto, SupplierBillStatus } from "@hotelos/shared";
 import {
   approveSupplierBill,
   cancelSupplierBill,
   createSupplierBill,
+  downloadSupplierBillAttachment,
   getPayablesAging,
   getSupplierBill,
   getSupplierBillAttachment,
@@ -32,11 +50,13 @@ import {
   paySupplierBill,
   postSupplierBill,
   type SupplierBillDetailDto,
-  type SupplierBillDto,
-  type SupplierBillRequest,
-  type SupplierDto
+  type SupplierBillDto
 } from "../../services/payablesApi";
+import { goodsReceiptsApi } from "../../services/goodsReceiptsApi";
 import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { SupervisorPinDialog } from "../../components/SupervisorPinDialog";
+import { useNavGate } from "../../navigation/useEnabledModules";
+import { canDo } from "../accounting/accounting-ui";
 import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { useToast } from "../../components/Toast";
 import { useTabHost } from "../tabs/TabHost";
@@ -46,13 +66,11 @@ import {
   CocoaBadge,
   CocoaButton,
   CocoaCallout,
-  CocoaCard,
   CocoaDatePicker,
   CocoaDialog,
   CocoaDrawer,
   CocoaField,
   CocoaFormRow,
-  CocoaFormSection,
   CocoaInput,
   CocoaKpi,
   CocoaKpiStrip,
@@ -63,35 +81,32 @@ import {
   CocoaSelect,
   CocoaStat,
   CocoaState,
-  CocoaSwitch,
   CocoaTable,
   CocoaToolbar,
+  openTabPath,
   type CocoaTableColumn
 } from "../../components/cocoa";
 import {
   BILL_STATUS_LABELS,
   BILL_STATUS_TONES,
-  PAYABLE_ACCOUNT_OPTIONS,
-  RETENTION_ROW_OPTIONS,
-  TAX_RATE_OPTIONS,
   accountLabel,
   accountOptions,
-  addDays,
-  amountOf,
-  decimalInput,
+  billApprovalBlock,
+  billMatchLabel,
+  billMatchTone,
+  billSourceLabel,
+  billSourceTone,
   describeFailure,
-  isExpenseAccount,
-  isInvestmentAccount,
   isTreasuryAccount,
-  openInlineAttachment,
-  pickFile,
-  quotaOf,
-  readAttachment,
-  to2,
+  openBillAttachment,
   todayIso,
   useChartAccounts,
-  useLoader
+  useLoader,
+  type BillApprovalBlock
 } from "./payables-shared";
+// `bodyOf` stays the screen's name for the request builder: finance-scope-usage.test.mts pins
+// `createSupplierBill(bodyOf(form), propertyId)` as the call that carries the scope's centre.
+import { SupplierBillForm, billFormToRequest as bodyOf, emptyBillForm, validateBillForm, type BillForm } from "./SupplierBillForm";
 
 // Secondary line under a cell value (NIF, account, description): caption secondary.
 const subStyle: CSSProperties = {
@@ -105,111 +120,9 @@ const mutedStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
 
 const STATUS_OPTIONS = (["draft", "approved", "posted", "paid", "cancelled"] as SupplierBillStatus[]).map((value) => ({ value, label: BILL_STATUS_LABELS[value] }));
 
-type LineDraft = { key: string; description: string; expenseAccountCode: string; base: string; taxRate: string; quota: string; investmentGood: boolean };
-
-type BillForm = {
-  supplierId: string;
-  supplierName: string;
-  supplierTaxId: string;
-  invoiceNumber: string;
-  issueDate: string;
-  dueDate: string;
-  retentionRate: string;
-  retentionRowCode: string;
-  payableAccountCode: "" | "400" | "410" | "4100" | "4109";
-  expectedTotal: string;
-  attachment: InlineAttachment | null;
-  lines: LineDraft[];
-};
-
-let lineSeq = 0;
-function newLine(accountCode = ""): LineDraft {
-  lineSeq += 1;
-  return { key: `l${lineSeq}`, description: "", expenseAccountCode: accountCode, base: "", taxRate: "21", quota: "", investmentGood: false };
-}
-
-function emptyForm(): BillForm {
-  return { supplierId: "", supplierName: "", supplierTaxId: "", invoiceNumber: "", issueDate: todayIso(), dueDate: "", retentionRate: "", retentionRowCode: "", payableAccountCode: "", expectedTotal: "", attachment: null, lines: [newLine()] };
-}
-
-type LineTotals = { base: number; quota: number; retention: number };
-
-/** What the API will compute per line (cent-rounded base × rate, printed quota when given, base × retention). */
-function lineTotals(line: LineDraft, retentionRate: number): LineTotals {
-  const base = amountOf(line.base);
-  const quota = line.quota.trim() ? amountOf(line.quota) : quotaOf(base, Number(line.taxRate));
-  return { base, quota, retention: Math.round(base * retentionRate) / 100 };
-}
-
-function formTotals(form: BillForm): LineTotals & { total: number } {
-  const retentionRate = amountOf(form.retentionRate);
-  const sum = form.lines.reduce<LineTotals>(
-    (acc, line) => {
-      const t = lineTotals(line, retentionRate);
-      return { base: acc.base + t.base, quota: acc.quota + t.quota, retention: acc.retention + t.retention };
-    },
-    { base: 0, quota: 0, retention: 0 }
-  );
-  return { ...sum, total: Math.round((sum.base + sum.quota - sum.retention) * 100) / 100 };
-}
-
-type FieldErrors = Partial<Record<Exclude<keyof BillForm, "lines">, string>> & { lines?: Record<string, Partial<Record<keyof LineDraft, string>>> };
-
-function validate(form: BillForm): FieldErrors {
-  const errors: FieldErrors = {};
-  if (!form.supplierId && !form.supplierName.trim()) errors.supplierName = "Elige un proveedor del directorio o escribe su nombre.";
-  if (!form.invoiceNumber.trim()) errors.invoiceNumber = "El número de factura del proveedor es obligatorio.";
-  if (!form.issueDate) errors.issueDate = "Indica la fecha de emisión.";
-  if (form.dueDate && form.issueDate && form.dueDate < form.issueDate) errors.dueDate = "El vencimiento no puede ser anterior a la emisión.";
-  if (form.retentionRate.trim()) {
-    const rate = decimalInput(form.retentionRate);
-    if (rate === null || Number(rate) < 0 || Number(rate) > 100) errors.retentionRate = "Porcentaje entre 0 y 100.";
-    else if (!form.retentionRowCode) errors.retentionRowCode = "Indica en qué modelo se declara la retención.";
-  }
-  if (form.expectedTotal.trim() && decimalInput(form.expectedTotal) === null) errors.expectedTotal = "Importe con dos decimales como máximo.";
-  const lines: NonNullable<FieldErrors["lines"]> = {};
-  for (const line of form.lines) {
-    const e: Partial<Record<keyof LineDraft, string>> = {};
-    if (!line.description.trim()) e.description = "Obligatoria.";
-    const code = line.expenseAccountCode.trim();
-    if (!code) e.expenseAccountCode = "Elige la cuenta.";
-    else if (line.investmentGood ? !isInvestmentAccount(code) && !isExpenseAccount(code) : !isExpenseAccount(code)) e.expenseAccountCode = line.investmentGood ? "Cuenta 20x/21x (o del grupo 6)." : "Subcuenta del grupo 6.";
-    const base = decimalInput(line.base);
-    if (base === null || Number(base) <= 0) e.base = "Mayor que cero.";
-    if (line.quota.trim() && decimalInput(line.quota) === null) e.quota = "Dos decimales como máximo.";
-    if (Object.keys(e).length > 0) lines[line.key] = e;
-  }
-  if (Object.keys(lines).length > 0) errors.lines = lines;
-  return errors;
-}
-
-function bodyOf(form: BillForm): SupplierBillRequest {
-  const retentionRate = form.retentionRate.trim() ? decimalInput(form.retentionRate) : null;
-  const expectedTotal = form.expectedTotal.trim() ? decimalInput(form.expectedTotal) : null;
-  return {
-    supplierId: form.supplierId || null,
-    ...(form.supplierId ? {} : { supplierName: form.supplierName.trim(), supplierTaxId: form.supplierTaxId.trim().toUpperCase() || null }),
-    invoiceNumber: form.invoiceNumber.trim(),
-    issueDate: form.issueDate,
-    dueDate: form.dueDate || null,
-    retentionRate,
-    retentionRowCode: retentionRate && form.retentionRowCode ? (form.retentionRowCode as RetentionRowCode) : null,
-    ...(form.payableAccountCode ? { payableAccountCode: form.payableAccountCode } : {}),
-    ...(expectedTotal ? { expectedTotal } : {}),
-    ...(form.attachment ? { attachment: form.attachment } : {}),
-    lines: form.lines.map((line) => {
-      const quota = line.quota.trim() ? decimalInput(line.quota) : null;
-      return {
-        description: line.description.trim(),
-        expenseAccountCode: line.expenseAccountCode.trim(),
-        base: decimalInput(line.base) ?? "0.00",
-        taxRate: line.taxRate,
-        ...(quota ? { quota } : {}),
-        ...(line.investmentGood ? { investmentGood: true } : {})
-      };
-    })
-  };
-}
+// Bandeja de documentos de la oficina (Tanda T9 · T9-12, design §10 «Montaje»): a digitised bill links to its IncomingDocument there.
+const DOCUMENTS_URL = "/finanzas/proveedores/documentos";
+const POPUP_BLOCKED = "El navegador bloqueó la ventana del adjunto: permite las ventanas emergentes para esta página.";
 
 const COLUMNS: CocoaTableColumn<SupplierBillDto>[] = [
   {
@@ -228,6 +141,8 @@ const COLUMNS: CocoaTableColumn<SupplierBillDto>[] = [
   { key: "baseTotal", label: "Base", align: "right", hideOnNarrow: true, render: (b) => money(b.baseTotal) },
   { key: "taxTotal", label: "IVA", align: "right", hideOnNarrow: true, render: (b) => money(b.taxTotal) },
   { key: "total", label: FIELD_LABELS.total, align: "right", render: (b) => <strong>{money(b.total)}</strong> },
+  { key: "source", label: "Origen", hideOnNarrow: true, render: (b) => <CocoaBadge tone={billSourceTone(b.source)}>{billSourceLabel(b.source)}</CocoaBadge> },
+  { key: "matchStatus", label: "Cotejo", hideOnNarrow: true, render: (b) => <CocoaBadge tone={billMatchTone(b.matchStatus)}>{billMatchLabel(b.matchStatus)}</CocoaBadge> },
   { key: "status", label: FIELD_LABELS.status, render: (b) => <CocoaBadge tone={BILL_STATUS_TONES[b.status]}>{BILL_STATUS_LABELS[b.status]}</CocoaBadge> }
 ];
 
@@ -261,14 +176,18 @@ export function SupplierBillsScreen() {
   const aging = useLoader(() => getPayablesAging(undefined, propertyId), `aging|${propertyId}`, "No se pudo calcular la antigüedad de la deuda.");
   const suppliers = useLoader(() => listSuppliers({ active: true, limit: 500 }), "suppliers", "No se pudo cargar el directorio de proveedores.");
   const chart = useChartAccounts();
-  const expenseOptions = useMemo(() => accountOptions(chart.accounts, (code) => isExpenseAccount(code) || isInvestmentAccount(code)), [chart.accounts]);
   const treasuryOptions = useMemo(() => accountOptions(chart.accounts, isTreasuryAccount), [chart.accounts]);
+  // Tanda T9: «Cotejar con albarán» (POST …/match) needs procurement.manage; unknown grants do not hide it (the API answers 403 in Spanish).
+  const canMatch = canDo(useNavGate(propertyId), "procurement.manage");
 
   // Detail drawer + actions
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const detail = useLoader<SupplierBillDetailDto | null>(() => (selectedId ? getSupplierBill(selectedId, propertyId) : Promise.resolve(null)), `${propertyId}|${selectedId ?? ""}`, "No se pudo cargar la factura.");
   const [busy, setBusy] = useState(false);
   const [actionFailure, setActionFailure] = useState<string | null>(null);
+  // Approval gate of the last «Aprobar» (403 RBAC_LEVEL_EXCEEDED · 409 RBAC_SOD_CONFLICT · 409 SUPPLIER_BILL_MATCH_REQUIRED) and the supervisor PIN dialog.
+  const [approvalBlock, setApprovalBlock] = useState<BillApprovalBlock | null>(null);
+  const [pinOpen, setPinOpen] = useState(false);
   const [askPost, setAskPost] = useState(false);
   const [askCancel, setAskCancel] = useState(false);
   const [reason, setReason] = useState("");
@@ -282,22 +201,17 @@ export function SupplierBillsScreen() {
 
   // Create drawer
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState<BillForm>(emptyForm);
+  const [form, setForm] = useState<BillForm>(emptyBillForm);
   const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveFailure, setSaveFailure] = useState<string | null>(null);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const rows = bills.data ?? [];
   const supplierRows = suppliers.data ?? [];
   const selected = detail.data;
   const newBillLabel = newLabel("f", "factura recibida");
-  const errors = validate(form);
+  const errors = validateBillForm(form);
   const valid = Object.keys(errors).length === 0;
-  const totals = formTotals(form);
-  const expectedTotal = form.expectedTotal.trim() ? amountOf(form.expectedTotal) : null;
-  const totalMismatch = expectedTotal !== null && Math.abs(expectedTotal - totals.total) >= 0.005;
-  const chosenSupplier = supplierRows.find((s) => s.id === form.supplierId) ?? null;
 
   function refreshAll() {
     bills.refresh();
@@ -305,53 +219,18 @@ export function SupplierBillsScreen() {
     if (selectedId) detail.refresh();
   }
 
+  function select(id: string | null) {
+    setActionFailure(null);
+    setApprovalBlock(null);
+    setPinOpen(false);
+    setSelectedId(id);
+  }
+
   function openNew() {
-    setForm(emptyForm());
+    setForm(emptyBillForm());
     setTouched(false);
     setSaveFailure(null);
-    setAttachmentError(null);
     setCreating(true);
-  }
-
-  function set<K extends keyof BillForm>(key: K, value: BillForm[K]) {
-    setForm((current) => ({ ...current, [key]: value }));
-  }
-
-  /** Picking a supplier proposes its retention, its payment term and its usual account on empty lines. */
-  function chooseSupplier(id: string) {
-    const supplier: SupplierDto | undefined = supplierRows.find((s) => s.id === id);
-    setForm((current) => ({
-      ...current,
-      supplierId: id,
-      retentionRate: supplier?.retentionRate ? String(toNumber(supplier.retentionRate) ?? "") : id ? "" : current.retentionRate,
-      retentionRowCode: supplier?.retentionRowCode ?? (id ? "" : current.retentionRowCode),
-      dueDate: supplier?.paymentTermDays !== null && supplier?.paymentTermDays !== undefined && current.issueDate ? addDays(current.issueDate, supplier.paymentTermDays) : current.dueDate,
-      lines: current.lines.map((line) => (line.expenseAccountCode || !supplier?.defaultExpenseAccountCode ? line : { ...line, expenseAccountCode: supplier.defaultExpenseAccountCode }))
-    }));
-  }
-
-  function setLine(key: string, patch: Partial<LineDraft>) {
-    setForm((current) => ({ ...current, lines: current.lines.map((line) => (line.key === key ? { ...line, ...patch } : line)) }));
-  }
-
-  function addLine() {
-    setForm((current) => ({ ...current, lines: [...current.lines, newLine(chosenSupplier?.defaultExpenseAccountCode ?? "")] }));
-  }
-
-  function removeLine(key: string) {
-    setForm((current) => (current.lines.length <= 1 ? current : { ...current, lines: current.lines.filter((line) => line.key !== key) }));
-  }
-
-  async function attach() {
-    setAttachmentError(null);
-    const file = await pickFile();
-    if (!file) return;
-    try {
-      const attachment = await readAttachment(file);
-      set("attachment", attachment);
-    } catch (error: unknown) {
-      setAttachmentError(error instanceof Error ? error.message : "No se pudo leer el archivo.");
-    }
   }
 
   async function save() {
@@ -390,6 +269,55 @@ export function SupplierBillsScreen() {
     }
   }
 
+  /**
+   * Draft → approved. The plain call carries no body; after a 403
+   * RBAC_LEVEL_EXCEEDED the supervisor's authorisation (SupervisorPinDialog,
+   * key payables.approve, bound to this bill) is resent as
+   * `supervisorAuthorizationId`. The gates the drawer can act on land in
+   * `approvalBlock`; anything else reads through describeFailure.
+   */
+  async function approve(authorization?: SupervisorAuthorizationDto) {
+    if (!selected || busy) return;
+    setBusy(true);
+    setActionFailure(null);
+    setApprovalBlock(null);
+    try {
+      if (authorization) await approveSupplierBill(selected.id, { supervisorAuthorizationId: authorization.id }, propertyId);
+      else await approveSupplierBill(selected.id, propertyId);
+      showToast(authorization ? "Factura aprobada con autorización de supervisor." : "Factura aprobada.", { variant: "success" });
+      refreshAll();
+    } catch (error: unknown) {
+      const block = billApprovalBlock(error);
+      if (block) setApprovalBlock(block);
+      else setActionFailure(describeFailure(error, "No se pudo aprobar la factura.").message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** POST …/match with `auto: true`: the receipts of the same supplier and centre; the badge follows `matchStatus`. */
+  async function matchWithReceipts() {
+    if (!selected || busy) return;
+    setBusy(true);
+    setActionFailure(null);
+    try {
+      const result = await goodsReceiptsApi.matchSupplierBill(selected.id, { auto: true }, propertyId);
+      const lines = result.matches.length;
+      showToast(`Cotejo: ${billMatchLabel(result.matchStatus).toLowerCase()} · ${plural(lines, "línea casada", "líneas casadas")}.`, { variant: result.matchStatus === "variance" ? "warning" : "success" });
+      setApprovalBlock(null);
+      refreshAll();
+    } catch (error: unknown) {
+      setActionFailure(describeFailure(error, "No se pudo cotejar la factura con los albaranes.").message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openDocument() {
+    if (!selected?.incomingDocumentId) return;
+    openTabPath(`${DOCUMENTS_URL}?id=${encodeURIComponent(selected.incomingDocumentId)}`);
+  }
+
   async function confirmPost() {
     if (!selectedId) return;
     const ok = await run(() => postSupplierBill(selectedId, propertyId), "Factura contabilizada: asiento y libro de IVA recibidas anotados.", "No se pudo contabilizar la factura.");
@@ -424,16 +352,15 @@ export function SupplierBillsScreen() {
     setReason("");
   }
 
+  /** Inline attachment (base64 in the JSON) as before; a digitised one by the binary route of its document (`downloadPath`, `?inline=1`). */
   async function viewAttachment() {
     if (!selectedId) return;
     setActionFailure(null);
     try {
       const attachment = await getSupplierBillAttachment(selectedId, propertyId);
-      if (attachment.inline && attachment.base64 && attachment.mimeType) {
-        if (!openInlineAttachment(attachment.base64, attachment.mimeType)) showToast("El navegador bloqueó la ventana del adjunto: permite las ventanas emergentes.", { variant: "warning" });
-      } else {
-        showToast(attachment.documentObjectKey ? `El adjunto vive en el almacén de documentos (${attachment.documentObjectKey}).` : "La factura no tiene adjunto.", { variant: "info" });
-      }
+      const result = await openBillAttachment(attachment, { fetchBlob: downloadSupplierBillAttachment });
+      if (result.source === "none") showToast(attachment.documentObjectKey ? "El adjunto vive en el almacén de documentos y aún no tiene documento enlazado." : "La factura no tiene adjunto.", { variant: "info" });
+      else if (!result.opened) showToast(POPUP_BLOCKED, { variant: "warning" });
     } catch (error: unknown) {
       setActionFailure(describeFailure(error, "No se pudo abrir el adjunto.").message);
     }
@@ -450,8 +377,6 @@ export function SupplierBillsScreen() {
 
   const ready = !bills.loading && !bills.error && rows.length > 0;
   const filtered = Boolean(search || status);
-  const fieldError = (key: Exclude<keyof BillForm, "lines">) => (touched ? errors[key] : undefined);
-  const lineError = (key: string, field: keyof LineDraft) => (touched ? errors.lines?.[key]?.[field] : undefined);
   const agingTotals = aging.data?.totals;
   const agingStatus = (value: string | undefined, tone: "warning" | "critical") => ((toNumber(value) ?? 0) > 0 ? tone : "ok");
 
@@ -477,10 +402,7 @@ export function SupplierBillsScreen() {
         rows={rows}
         rowKey="id"
         selectedKey={selectedId ?? undefined}
-        onSelect={(b) => {
-          setActionFailure(null);
-          setSelectedId(b.id);
-        }}
+        onSelect={(b) => select(b.id)}
         rowTone={(b) => (b.cancelledAt ? "neutral" : b.status === "posted" && b.dueDate && b.dueDate < todayIso() ? "warning" : undefined)}
         caption="Facturas recibidas"
         aria-label="Facturas recibidas"
@@ -491,7 +413,7 @@ export function SupplierBillsScreen() {
   const primaryAction =
     selected && !busy
       ? selected.status === "draft"
-        ? { label: ACTIONS.approve, onClick: () => void run(() => approveSupplierBill(selected.id, propertyId), "Factura aprobada.", "No se pudo aprobar la factura.") }
+        ? { label: ACTIONS.approve, onClick: () => void approve() }
         : selected.status === "approved"
           ? { label: "Contabilizar", onClick: () => setAskPost(true) }
           : selected.status === "posted"
@@ -546,7 +468,7 @@ export function SupplierBillsScreen() {
       {/* Detail drawer */}
       <CocoaDrawer
         open={selectedId !== null}
-        onClose={() => (busy ? undefined : setSelectedId(null))}
+        onClose={() => (busy ? undefined : select(null))}
         title={selected ? `Factura ${selected.invoiceNumber ?? ""}`.trim() : "Factura recibida"}
         subtitle={selected ? `${selected.supplierName ?? "—"} · ${BILL_STATUS_LABELS[selected.status]}` : undefined}
         side="right"
@@ -554,7 +476,7 @@ export function SupplierBillsScreen() {
         dismissible={!busy}
         footer={
           <>
-            <CocoaButton variant="bordered" tone="neutral" onClick={() => setSelectedId(null)} disabled={busy}>
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => select(null)} disabled={busy}>
               {ACTIONS.close}
             </CocoaButton>
             {primaryAction ? (
@@ -576,6 +498,27 @@ export function SupplierBillsScreen() {
                 {actionFailure}
               </CocoaCallout>
             ) : null}
+            {approvalBlock ? (
+              <CocoaCallout
+                tone="warning"
+                role="alert"
+                title={approvalBlock.code === "RBAC_SOD_CONFLICT" ? "Separación de funciones" : approvalBlock.code === "RBAC_LEVEL_EXCEEDED" ? "Esta factura supera tu tramo de aprobación" : "Cotejo con albaranes pendiente"}
+                actions={
+                  approvalBlock.action === "supervisor" ? (
+                    <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setPinOpen(true)} disabled={busy}>
+                      Autorizar con supervisor
+                    </CocoaButton>
+                  ) : approvalBlock.action === "match" && canMatch ? (
+                    <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void matchWithReceipts()} disabled={busy}>
+                      Cotejar con albarán
+                    </CocoaButton>
+                  ) : undefined
+                }
+              >
+                {approvalBlock.message}
+                {approvalBlock.action === "supervisor" ? " Un supervisor presente con la clave de aprobación de facturas puede autorizar solo esta factura con su PIN." : ""}
+              </CocoaCallout>
+            ) : null}
             {selected.status === "cancelled" ? (
               <CocoaCallout tone="warning" title="Factura anulada">
                 Anulada el {dateTime(selected.cancelledAt)}. {selected.journalEntryId ? "El asiento de devengo quedó revertido." : "Nunca llegó a contabilizarse."}
@@ -590,13 +533,25 @@ export function SupplierBillsScreen() {
             <div className="cocoa-row" data-gap="2" data-justify="between">
               <span className="cocoa-cluster">
                 <CocoaBadge tone={BILL_STATUS_TONES[selected.status]}>{BILL_STATUS_LABELS[selected.status]}</CocoaBadge>
+                <CocoaBadge tone={billSourceTone(selected.source)}>{billSourceLabel(selected.source)}</CocoaBadge>
+                <CocoaBadge tone={billMatchTone(selected.matchStatus)}>{`Cotejo: ${billMatchLabel(selected.matchStatus).toLowerCase()}`}</CocoaBadge>
                 {selected.hasAttachment ? <CocoaBadge tone="neutral">Con adjunto</CocoaBadge> : null}
                 {selected.lines.some((l) => l.investmentGood) ? <CocoaBadge tone="info">Bien de inversión</CocoaBadge> : null}
               </span>
               <span className="cocoa-cluster">
+                {selected.incomingDocumentId ? (
+                  <CocoaButton variant="plain" tone="accent" size="small" onClick={openDocument} disabled={busy}>
+                    Ver documento
+                  </CocoaButton>
+                ) : null}
                 {selected.hasAttachment ? (
                   <CocoaButton variant="plain" tone="accent" size="small" onClick={() => void viewAttachment()} disabled={busy}>
                     Ver adjunto
+                  </CocoaButton>
+                ) : null}
+                {canMatch && selected.status !== "cancelled" ? (
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void matchWithReceipts()} disabled={busy}>
+                    Cotejar con albarán
                   </CocoaButton>
                 ) : null}
                 {selected.status === "draft" || selected.status === "approved" || selected.status === "posted" ? (
@@ -630,9 +585,11 @@ export function SupplierBillsScreen() {
                 <strong>{[selected.supplierName, selected.supplierTaxId].filter(Boolean).join(" · ") || "—"}</strong>
               </li>
               <li>
-                <span style={mutedStyle}>Emisión · vencimiento</span>
+                {/* Tanda T9: `receptionDate` (capture of the document; the VAT book uses it) joins the dates row — no extra inline style. */}
+                <span style={mutedStyle}>{selected.receptionDate ? "Emisión · vencimiento · recepción" : "Emisión · vencimiento"}</span>
                 <strong>
                   {date(selected.issueDate)} · {date(selected.dueDate)}
+                  {selected.receptionDate ? ` · ${date(selected.receptionDate)}` : ""}
                 </strong>
               </li>
               <li>
@@ -775,6 +732,24 @@ export function SupplierBillsScreen() {
         </CocoaField>
       </CocoaDialog>
 
+      {/* Supervisor PIN for an approval above the caller's tier (payables.approve, bound to this bill, 60 s) */}
+      {selected ? (
+        <SupervisorPinDialog
+          open={pinOpen}
+          onClose={() => setPinOpen(false)}
+          permissionKey="payables.approve"
+          entityType="supplier_bill"
+          entityId={selected.id}
+          propertyId={propertyId}
+          amount={Math.abs(toNumber(selected.total) ?? 0).toFixed(2)}
+          actionLabel={`Aprobar la factura ${selected.invoiceNumber ?? selected.id} de ${money(selected.total)}`}
+          onAuthorized={(granted) => {
+            setPinOpen(false);
+            void approve(granted);
+          }}
+        />
+      ) : null}
+
       {/* New bill drawer */}
       <CocoaDrawer
         open={creating}
@@ -801,146 +776,7 @@ export function SupplierBillsScreen() {
               {saveFailure}
             </CocoaCallout>
           ) : null}
-          {chart.error ? <CocoaCallout tone="warning">{chart.error}</CocoaCallout> : null}
-
-          <CocoaFormSection title="Proveedor y documento" description={suppliers.error ?? "Elige un proveedor del directorio o escribe su nombre y NIF; sin NIF la factura no podrá contabilizarse."}>
-            <CocoaFormRow columns={2}>
-              <CocoaField label="Proveedor del directorio" error={fieldError("supplierName")} fullWidth={Boolean(form.supplierId)}>
-                <CocoaSelect
-                  value={form.supplierId}
-                  onChange={chooseSupplier}
-                  options={[{ value: "", label: suppliers.error ? "Sin directorio: indica nombre y NIF" : "Sin ficha: indicar nombre y NIF" }, ...supplierRows.map((s) => ({ value: s.id, label: s.taxId ? `${s.name} · ${s.taxId}` : s.name }))]}
-                  disabled={saving || suppliers.loading}
-                />
-              </CocoaField>
-              {!form.supplierId ? (
-                <>
-                  <CocoaField label="Nombre del proveedor" required error={fieldError("supplierName")}>
-                    <CocoaInput value={form.supplierName} onChange={(v) => set("supplierName", v)} disabled={saving} />
-                  </CocoaField>
-                  <CocoaField label="NIF del proveedor" help="Necesario para contabilizar y deducir el IVA.">
-                    <CocoaInput value={form.supplierTaxId} onChange={(v) => set("supplierTaxId", v.toUpperCase())} maxLength={20} disabled={saving} />
-                  </CocoaField>
-                </>
-              ) : null}
-              <CocoaField label="Nº de factura" required error={fieldError("invoiceNumber")}>
-                <CocoaInput value={form.invoiceNumber} onChange={(v) => set("invoiceNumber", v)} placeholder="A-2026-0187" maxLength={60} disabled={saving} />
-              </CocoaField>
-              <CocoaField label="Fecha de emisión" required error={fieldError("issueDate")}>
-                <CocoaDatePicker value={form.issueDate} onChange={(v) => set("issueDate", v)} max={todayIso()} disabled={saving} />
-              </CocoaField>
-              <CocoaField label="Vencimiento" error={fieldError("dueDate")} hint={STATUS_LABELS.optional.toLowerCase()}>
-                <CocoaDatePicker value={form.dueDate} onChange={(v) => set("dueDate", v)} min={form.issueDate || undefined} disabled={saving} />
-              </CocoaField>
-              <CocoaField label="Cuenta de proveedor" help="400 para compras (60x), 410 para servicios.">
-                <CocoaSelect value={form.payableAccountCode} onChange={(v) => set("payableAccountCode", v as BillForm["payableAccountCode"])} options={PAYABLE_ACCOUNT_OPTIONS} disabled={saving} />
-              </CocoaField>
-            </CocoaFormRow>
-          </CocoaFormSection>
-
-          <CocoaFormSection title="Líneas" description="Una línea por concepto: cuenta del grupo 6 (o 20x/21x si es un bien de inversión), base y tipo de IVA. La cuota se calcula; escribe la impresa si difiere en céntimos.">
-            <div className="cocoa-stack" data-gap="3">
-              {form.lines.map((line, index) => {
-                const t = lineTotals(line, amountOf(form.retentionRate));
-                return (
-                  <CocoaCard key={line.key} variant="bordered" padding="sm" role="group" aria-label={`Línea ${index + 1}`}>
-                    <div className="cocoa-stack" data-gap="2">
-                      <div className="cocoa-row" data-gap="2" data-justify="between">
-                        <strong>Línea {index + 1}</strong>
-                        <span className="cocoa-cluster">
-                          <span className="cocoa-caption">{`Base ${money(t.base)} · IVA ${money(t.quota)}`}</span>
-                          <CocoaButton variant="plain" tone="destructive" size="small" onClick={() => removeLine(line.key)} disabled={saving || form.lines.length <= 1}>
-                            {ACTIONS.remove}
-                          </CocoaButton>
-                        </span>
-                      </div>
-                      <CocoaFormRow columns={2} min={180}>
-                        <CocoaField label={FIELD_LABELS.description} required error={lineError(line.key, "description")} fullWidth>
-                          <CocoaInput value={line.description} onChange={(v) => setLine(line.key, { description: v })} placeholder="Lavandería de ropa de cama, agosto" maxLength={300} disabled={saving} />
-                        </CocoaField>
-                        <CocoaField label="Cuenta" required error={lineError(line.key, "expenseAccountCode")}>
-                          {chart.accounts.length > 0 ? (
-                            <CocoaSelect value={line.expenseAccountCode} onChange={(v) => setLine(line.key, { expenseAccountCode: v })} options={expenseOptions} placeholder="Elige la cuenta" disabled={saving} />
-                          ) : (
-                            <CocoaInput value={line.expenseAccountCode} onChange={(v) => setLine(line.key, { expenseAccountCode: v })} placeholder="629" maxLength={12} disabled={saving || chart.loading} />
-                          )}
-                        </CocoaField>
-                        <CocoaField label="Bien de inversión" inline help="Da de alta un elemento de inmovilizado al contabilizar.">
-                          <CocoaSwitch checked={line.investmentGood} onChange={(v) => setLine(line.key, { investmentGood: v })} size="small" disabled={saving} />
-                        </CocoaField>
-                      </CocoaFormRow>
-                      <CocoaFormRow columns={3} min={120}>
-                        <CocoaField label="Base imponible" required error={lineError(line.key, "base")}>
-                          <CocoaInput value={line.base} onChange={(v) => setLine(line.key, { base: v })} inputMode="decimal" placeholder="100,00" disabled={saving} />
-                        </CocoaField>
-                        <CocoaField label="Tipo de IVA" required>
-                          <CocoaSelect value={line.taxRate} onChange={(v) => setLine(line.key, { taxRate: v })} options={TAX_RATE_OPTIONS} disabled={saving} />
-                        </CocoaField>
-                        <CocoaField label="Cuota impresa" error={lineError(line.key, "quota")} hint={STATUS_LABELS.optional.toLowerCase()}>
-                          <CocoaInput value={line.quota} onChange={(v) => setLine(line.key, { quota: v })} inputMode="decimal" placeholder={to2(quotaOf(amountOf(line.base), Number(line.taxRate))).replace(".", ",")} disabled={saving} />
-                        </CocoaField>
-                      </CocoaFormRow>
-                    </div>
-                  </CocoaCard>
-                );
-              })}
-              <div className="cocoa-row" data-gap="2">
-                <CocoaButton variant="tinted" tone="accent" size="small" onClick={addLine} disabled={saving}>
-                  Añadir línea
-                </CocoaButton>
-              </div>
-            </div>
-          </CocoaFormSection>
-
-          <CocoaFormSection title="Retención y totales" description="La retención se aplica a la base de cada línea y se declara en el modelo indicado.">
-            <CocoaFormRow columns={2}>
-              <CocoaField label="Retención IRPF (%)" error={fieldError("retentionRate")} hint={STATUS_LABELS.optional.toLowerCase()}>
-                <CocoaInput value={form.retentionRate} onChange={(v) => set("retentionRate", v)} inputMode="decimal" placeholder="15" disabled={saving} />
-              </CocoaField>
-              <CocoaField label="Modelo de la retención" error={fieldError("retentionRowCode")}>
-                <CocoaSelect value={form.retentionRowCode} onChange={(v) => set("retentionRowCode", v)} options={[{ value: "", label: "Sin retención" }, ...RETENTION_ROW_OPTIONS]} disabled={saving || !form.retentionRate.trim()} />
-              </CocoaField>
-            </CocoaFormRow>
-            <CocoaFormRow columns={4} min={110}>
-              <CocoaStat label="Base" value={money(totals.base)} />
-              <CocoaStat label="IVA" value={money(totals.quota)} />
-              <CocoaStat label="Retención" value={money(totals.retention)} />
-              <CocoaStat label={FIELD_LABELS.total} value={money(totals.total)} size="large" />
-            </CocoaFormRow>
-            <CocoaFormRow columns={2}>
-              <CocoaField label="Total impreso en la factura" error={fieldError("expectedTotal")} hint={STATUS_LABELS.optional.toLowerCase()} help="Si no coincide con las líneas, la factura no se guarda.">
-                <CocoaInput value={form.expectedTotal} onChange={(v) => set("expectedTotal", v)} inputMode="decimal" placeholder={to2(totals.total).replace(".", ",")} disabled={saving} />
-              </CocoaField>
-            </CocoaFormRow>
-            {totalMismatch ? (
-              <CocoaCallout tone="warning" role="status">
-                El total impreso ({money(expectedTotal)}) no coincide con la suma de las líneas ({money(totals.total)}): revisa las cuotas o el total.
-              </CocoaCallout>
-            ) : null}
-          </CocoaFormSection>
-
-          <CocoaFormSection title="Adjunto" description="PDF, JPEG o PNG de hasta 512 KiB; se guarda con la factura.">
-            <div className="cocoa-row" data-gap="2">
-              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void attach()} disabled={saving}>
-                {form.attachment ? "Cambiar archivo" : "Adjuntar archivo"}
-              </CocoaButton>
-              {form.attachment ? (
-                <>
-                  <span>{form.attachment.fileName}</span>
-                  <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => set("attachment", null)} disabled={saving}>
-                    {ACTIONS.remove}
-                  </CocoaButton>
-                </>
-              ) : (
-                <span style={mutedStyle}>Sin archivo</span>
-              )}
-            </div>
-            {attachmentError ? (
-              <CocoaCallout tone="danger" role="alert">
-                {attachmentError}
-              </CocoaCallout>
-            ) : null}
-          </CocoaFormSection>
+          <SupplierBillForm value={form} onChange={setForm} errors={touched ? errors : undefined} accounts={chart} suppliers={{ rows: supplierRows, loading: suppliers.loading, error: suppliers.error }} mode="create" disabled={saving} />
         </div>
       </CocoaDrawer>
     </CocoaPage>

@@ -32,5 +32,15 @@ export const payablesRoutePermissions: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/payables/expenses", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "POST", path: "/properties/:propertyId/payables/expenses", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "GET", path: "/properties/:propertyId/payables/expenses/:expenseId", permissions: ["accounting.read"], riskLevel: "medium" },
-  { method: "POST", path: "/properties/:propertyId/payables/expenses/:expenseId/reverse", permissions: ["accounting.journal.post"], riskLevel: "critical" }
+  { method: "POST", path: "/properties/:propertyId/payables/expenses/:expenseId/reverse", permissions: ["accounting.journal.post"], riskLevel: "critical" },
+  // Tanda T9 (documentos · T9-09, diseño §9): recepciones de mercancía (goods-receipts.routes.ts, registradas
+  // desde payables.routes.ts) y cotejo factura–albarán. Las lecturas van con inventory.read: el diseño dice
+  // «accounting.read | inventory.read», pero el manifiesto es una conjunción (assertPermissions) y accounting.read
+  // se remapea a accounting.reports.read en este partial (requireAccountingReportsKey), así que la clave de
+  // inventario es la que reparte el diseño entre recepción/economato y finanzas sin abrir los informes.
+  { method: "POST", path: "/properties/:propertyId/goods-receipts", permissions: ["procurement.manage"], riskLevel: "high" },
+  { method: "GET", path: "/properties/:propertyId/goods-receipts", permissions: ["inventory.read"], riskLevel: "medium" },
+  { method: "GET", path: "/properties/:propertyId/goods-receipts/:id", permissions: ["inventory.read"], riskLevel: "medium" },
+  { method: "POST", path: "/properties/:propertyId/goods-receipts/:id/dispute", permissions: ["procurement.manage"], riskLevel: "high" },
+  { method: "POST", path: "/properties/:propertyId/payables/supplier-bills/:billId/match", permissions: ["procurement.manage"], riskLevel: "high" }
 ];

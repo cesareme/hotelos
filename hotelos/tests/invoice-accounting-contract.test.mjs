@@ -21,17 +21,37 @@ describe("Invoicing and accounting contracts", () => {
     }
   });
 
-  it("exposes accounting and supplier bill draft routes", () => {
+  it("exposes accounting routes in server.ts and the canonical supplier bill routes in the payables and documents modules", () => {
     const server = readFileSync(new URL("../apps/api/src/server.ts", import.meta.url), "utf8");
     for (const route of [
       "/organizations/:organizationId/accounts",
       "/organizations/:organizationId/journal-entries",
       "/journal-entries/drafts",
-      "/journal-entries/:id/post",
-      "/properties/:propertyId/supplier-bills",
-      "/supplier-bills/drafts"
+      "/journal-entries/:id/post"
     ]) {
       assert.match(server, new RegExp(route.replace(/[/:]/g, "\\$&")));
+    }
+    // Tanda T9 (lote T9-15, dosier §3.4): the legacy header-only draft
+    // (POST /supplier-bills/drafts) and the property listing
+    // (GET /properties/:propertyId/supplier-bills) were retired from server.ts
+    // and from the manifest. Supplier bills are created with lines through
+    // modules/payables (payables.routes.ts, partial :22-23) or from a digitised
+    // document (POST …/documents/:id/approve, modules/documents/workflow.routes.ts).
+    const payablesRoutes = readFileSync(new URL("../apps/api/src/modules/payables/payables.routes.ts", import.meta.url), "utf8");
+    const payablesPartial = readFileSync(new URL("../apps/api/src/modules/payables/route-permissions.partial.ts", import.meta.url), "utf8");
+    const workflowRoutes = readFileSync(new URL("../apps/api/src/modules/documents/workflow.routes.ts", import.meta.url), "utf8");
+    const manifest = readFileSync(new URL("../apps/api/src/security/route-permissions.ts", import.meta.url), "utf8");
+    const escape = (route) => route.replace(/[/:]/g, "\\$&");
+    assert.match(payablesRoutes, new RegExp(`app\\.get\\("${escape("/properties/:propertyId/payables/supplier-bills")}"`));
+    assert.match(payablesRoutes, new RegExp(`app\\.post\\("${escape("/properties/:propertyId/payables/supplier-bills")}"`));
+    assert.match(payablesPartial, /method: "GET", path: "\/properties\/:propertyId\/payables\/supplier-bills", permissions: \["payables\.read"\]/);
+    assert.match(payablesPartial, /method: "POST", path: "\/properties\/:propertyId\/payables\/supplier-bills", permissions: \["payables\.create"\]/);
+    assert.match(workflowRoutes, new RegExp(`app\\.post\\("${escape("/properties/:propertyId/documents/:id/approve")}"`));
+    // Retired: no handler and no manifest entry (comments are not entries).
+    const code = (source) => source.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+    for (const retired of ["/properties/:propertyId/supplier-bills", "/supplier-bills/drafts"]) {
+      assert.doesNotMatch(code(server), new RegExp(`app\\.(get|post)\\("${escape(retired)}"`), `${retired} must not be registered in server.ts`);
+      assert.doesNotMatch(code(manifest), new RegExp(`path: "${escape(retired)}"`), `${retired} must not be in the manifest`);
     }
   });
 

@@ -12,6 +12,14 @@
 // than `maxBytes` goes to `onReject` with a Spanish message and never reaches
 // `onPick` — the pure `fileInputRejection` decides. The input's value is
 // reset after every pick so the same file can be chosen twice in a row.
+//
+// Tanda T9 (documentos · lote T9-04, DOCUMENTOS-DIGITALIZACION.md §4.1): with
+// `multiple` the picker admits several files per pick and hands the admitted
+// ones to `onPickMany(files)` — or the first one to `onPick` when the caller
+// gave no `onPickMany` — after applying `accept` / `maxBytes` to each file (one
+// `onReject` per refused file; the pure `selectAcceptedFiles` decides).
+// `capture="environment"` opens the rear camera in the mobile PWA (no
+// dependency). Without `multiple` nothing changes for the single-file callers.
 
 import { useId, useRef, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
 import { number as formatNumber } from "../../lib/format";
@@ -23,10 +31,16 @@ export interface CocoaFileInputProps {
   accept?: string;
   /** Upper bound in bytes; a heavier file is refused before `onPick`. */
   maxBytes?: number;
-  /** The chosen file (already within `accept` and `maxBytes`). */
-  onPick: (file: File) => void;
-  /** Spanish reason a file was refused (type or size); without it the refusal is silent. */
+  /** The chosen file (already within `accept` and `maxBytes`); with `multiple` and no `onPickMany`, the first admitted one. */
+  onPick?: (file: File) => void;
+  /** Spanish reason a file was refused (type or size); without it the refusal is silent. With `multiple`, once per refused file. */
   onReject?: (message: string) => void;
+  /** Several files per pick (native `multiple`); the admitted ones go to `onPickMany`. */
+  multiple?: boolean;
+  /** Every admitted file of a `multiple` pick (in the order the picker gave them); never called with an empty list. */
+  onPickMany?: (files: File[]) => void;
+  /** Native `capture`: `environment` (rear camera) or `user` (front camera) on a phone; ignored by desktop browsers. */
+  capture?: "environment" | "user";
   /** Button label; default «Elegir fichero». */
   label?: string;
   /** Name of the file currently loaded, painted next to the button (the caller owns it). */
@@ -85,6 +99,24 @@ export function fileInputRejection(file: { name: string; size: number; type: str
   return null;
 }
 
+export type FileSelection<T> = {
+  /** Files within `accept` and `maxBytes`, in the picker's order. */
+  accepted: T[];
+  /** Every refused file with its Spanish reason (same order). */
+  rejected: Array<{ file: T; reason: string }>;
+};
+
+/** Split a multiple pick into admitted files and refusals, applying `fileInputRejection` to each one (pure). */
+export function selectAcceptedFiles<T extends { name: string; size: number; type: string }>(files: readonly T[], limits: { accept?: string; maxBytes?: number }): FileSelection<T> {
+  const selection: FileSelection<T> = { accepted: [], rejected: [] };
+  for (const file of files) {
+    const reason = fileInputRejection(file, limits);
+    if (reason) selection.rejected.push({ file, reason });
+    else selection.accepted.push(file);
+  }
+  return selection;
+}
+
 const nameStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-callout)",
   color: "var(--cocoa-label-secondary)",
@@ -99,6 +131,9 @@ export function CocoaFileInput({
   maxBytes,
   onPick,
   onReject,
+  multiple = false,
+  onPickMany,
+  capture,
   label = "Elegir fichero",
   fileName,
   disabled = false,
@@ -115,20 +150,29 @@ export function CocoaFileInput({
   const describedBy = [fileName ? nameId : null, ariaDescribedBy].filter(Boolean).join(" ") || undefined;
 
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
-    if (!file) return;
-    const rejection = fileInputRejection(file, { accept, maxBytes });
-    if (rejection) {
-      onReject?.(rejection);
+    if (files.length === 0) return;
+    if (!multiple) {
+      const file = files[0];
+      const rejection = fileInputRejection(file, { accept, maxBytes });
+      if (rejection) {
+        onReject?.(rejection);
+        return;
+      }
+      onPick?.(file);
       return;
     }
-    onPick(file);
+    const { accepted, rejected } = selectAcceptedFiles(files, { accept, maxBytes });
+    for (const { reason } of rejected) onReject?.(reason);
+    if (accepted.length === 0) return;
+    if (onPickMany) onPickMany(accepted);
+    else onPick?.(accepted[0]);
   }
 
   return (
     <span className={["c22-file-input", "cocoa-row", className].filter(Boolean).join(" ")} data-gap="2" data-cocoa="file-input" style={style}>
-      <input ref={inputRef} type="file" accept={accept} className="cocoa-sr-only" tabIndex={-1} aria-hidden="true" disabled={disabled} onChange={handleChange} />
+      <input ref={inputRef} type="file" accept={accept} multiple={multiple} capture={capture} className="cocoa-sr-only" tabIndex={-1} aria-hidden="true" disabled={disabled} onChange={handleChange} />
       <CocoaButton
         id={id}
         variant="bordered"

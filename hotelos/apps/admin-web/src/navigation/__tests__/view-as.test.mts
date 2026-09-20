@@ -70,12 +70,12 @@ describe("view-as · applyViewAs (the gate every consumer reads)", () => {
     assert.equal(director.maxViewAsRank, 3);
   });
 
-  it("⌘K built from the simulated gate offers the pisos catalogue (7 items: §3 + Pendientes de aprobación + Live Timeline), not the administrator's 69", () => {
+  it("⌘K built from the simulated gate offers the pisos catalogue (8 items: §3 + Pendientes de aprobación + Live Timeline + Digitalizar), not the administrator's 70", () => {
     const simulated = applyViewAs(ADMIN, "pisos");
     const palette = flatMenuEntries(menuCategories(simulated.tokens, ALL_MODULES, { devMode: true }), { includeTabs: true });
-    assert.equal(countMenu(menuCategories(simulated.tokens, ALL_MODULES, { devMode: true })).items, 7);
-    // Tanda 5: 64 · Tanda 6 (Contabilidad, Proveedores y gastos): 66 · Tanda 6b (Estructura societaria): 67 · Tanda 8a (Pendientes de aprobación): 68 · fusión TL (Hoy › Live Timeline): 69.
-    assert.equal(countMenu(menuCategories(ADMIN.tokens, ALL_MODULES, { devMode: false })).items, 69);
+    assert.equal(countMenu(menuCategories(simulated.tokens, ALL_MODULES, { devMode: true })).items, 8);
+    // Tanda 5: 64 · Tanda 6 (Contabilidad, Proveedores y gastos): 66 · Tanda 6b (Estructura societaria): 67 · Tanda 8a (Pendientes de aprobación): 68 · fusión TL (Hoy › Live Timeline): 69 · Tanda T9 (Operaciones › Digitalizar): 70.
+    assert.equal(countMenu(menuCategories(ADMIN.tokens, ALL_MODULES, { devMode: false })).items, 70);
     assert.ok(palette.every((entry) => entry.categoryKey !== "desarrollo"), "no «Desarrollo» while simulating a hotel role");
     assert.ok(palette.every((entry) => entry.categoryKey !== "finanzas" && entry.categoryKey !== "configuracion"));
   });

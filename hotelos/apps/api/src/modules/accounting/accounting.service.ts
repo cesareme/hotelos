@@ -40,10 +40,11 @@
 // Money: Prisma.Decimal everywhere, rounded HALF_UP to 2 decimals; the wire
 // contract (packages/shared/src/accounting-types.ts) carries strings.
 // Legacy exports server.ts still imports (createJournalEntryDraft,
-// listJournalEntries, listAccounts, createSupplierBillDraft, listSupplierBills
-// and the draft-posting overload of postJournalEntry) are kept at the bottom
-// and routed through the engine; the integrator redirects the old routes to
-// ledger.routes.ts.
+// listJournalEntries, listAccounts and the draft-posting overload of
+// postJournalEntry) are kept at the bottom and routed through the engine; the
+// integrator redirects the old routes to ledger.routes.ts. Tanda T9 (T9-15):
+// the legacy supplier-bill routes were retired; createSupplierBillDraft stays
+// only as @deprecated (no caller) and listSupplierBills was removed.
 
 import { prisma } from "@hotelos/database";
 import { Prisma } from "@prisma/client";
@@ -1628,7 +1629,7 @@ async function postDraftJournalEntry(input: LegacyPostDraftInput): Promise<Journ
   return toDraftView(view!);
 }
 
-// ---- Supplier bill drafts (legacy; the proveedores lot replaces this flow) ----
+// ---- Supplier bill drafts (legacy; retired route — the payables module owns the flow) ----
 
 export type SupplierBillDraft = {
   id: string;
@@ -1691,10 +1692,15 @@ function hydrateBill(row: PrismaSupplierBillRow): SupplierBillDraft {
 }
 
 /**
- * Legacy draft (POST /supplier-bills/drafts). The draft is NOT posted to the
- * ledger (a draft is not an accounting event): the proveedores lot posts at
- * «posted» through posting-rules.buildSupplierBillEntry. The
- * SupplierBillCreated event still feeds the Modelo 111 withholding projection.
+ * @deprecated Tanda T9 (T9-15): its only caller, the legacy route
+ * `POST /supplier-bills/drafts`, was retired from server.ts and the manifest
+ * (dosier §3.4); supplier bills are created through
+ * modules/payables/supplier-bills.service.ts (createSupplierBill, with lines)
+ * or from a digitised document (POST …/documents/:id/approve). Kept only
+ * because tests/withholding-tax-posting-contract.test.mjs pins the retention
+ * fields it carries on the SupplierBillCreated event (Modelo 111 projection);
+ * delete together with that pin. The draft is NOT posted to the ledger (a
+ * draft is not an accounting event).
  */
 export async function createSupplierBillDraft(input: {
   context: UserContext;
@@ -1788,9 +1794,4 @@ export async function createSupplierBillDraft(input: {
   });
 
   return bill;
-}
-
-export async function listSupplierBills(propertyId: string): Promise<SupplierBillDraft[]> {
-  const rows = await prisma.supplierBill.findMany({ where: { propertyId }, orderBy: { issueDate: "desc" } });
-  return rows.map((row) => hydrateBill(row));
 }

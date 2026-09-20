@@ -8,7 +8,11 @@
 //   GET|POST  /properties/:propertyId/payables/supplier-bills              listSupplierBills · createSupplierBill  accounting.reports.read · procurement.manage
 //   GET|PATCH /properties/:propertyId/payables/supplier-bills/:billId      getSupplierBill · updateSupplierBill
 //   POST      …/supplier-bills/:billId/approve|post|pay|cancel             approve · post · pay · cancel (post/pay/cancel: accounting.journal.post, crítico)
-//   GET       …/supplier-bills/:billId/attachment                          getSupplierBillAttachment
+//             approve admite `{ supervisorAuthorizationId }` (Tanda T9 · T9-11): el 403 RBAC_LEVEL_EXCEEDED
+//             se reintenta con la autorización del PIN de supervisor (components/SupervisorPinDialog)
+//   GET       …/supplier-bills/:billId/attachment                          getSupplierBillAttachment (inline base64 o `downloadPath` del documento)
+//   GET       …/documents/:id/file?inline=1                                downloadSupplierBillAttachment (binario del almacén, T9-08)
+//   POST      …/supplier-bills/:billId/match                               goodsReceiptsApi.matchSupplierBill (services/goodsReceiptsApi.ts)
 //   GET       /properties/:propertyId/payables/aging?asOf=                 getPayablesAging
 //   GET|POST  /properties/:propertyId/payables/expenses                    listExpenses · createExpense
 //   GET       …/expenses/:expenseId · POST …/expenses/:expenseId/reverse   getExpense · reverseExpense
@@ -28,7 +32,7 @@ import type {
   SupplierDto,
   SupplierUpsertRequest
 } from "@hotelos/shared";
-import { apiRequest } from "./api-client";
+import { apiRequest, apiRequestBlob } from "./api-client";
 import { getActiveOrganizationId, getActivePropertyId } from "./activeProperty";
 import { compactQuery, expenseListQuery, financeErrorMessage, supplierBillListQuery, supplierListQuery, type ExpenseListInput, type SupplierBillListInput, type SupplierListInput } from "./finance-contracts";
 
@@ -76,8 +80,22 @@ export function updateSupplierBill(billId: string, body: Partial<SupplierBillReq
   return apiRequest<SupplierBillDto>(`/properties/${enc(propertyId)}/payables/supplier-bills/${enc(billId)}`, { method: "PATCH", body });
 }
 
-export function approveSupplierBill(billId: string, propertyId = getActivePropertyId()): Promise<SupplierBillDto> {
-  return apiRequest<SupplierBillDto>(`/properties/${enc(propertyId)}/payables/supplier-bills/${enc(billId)}/approve`, { method: "POST", body: {} });
+/** Body of POST …/approve (approveSchema of supplier-bills.service.ts): the supervisor authorisation that lifts a 403 RBAC_LEVEL_EXCEEDED. */
+export type ApproveSupplierBillRequest = { supervisorAuthorizationId?: string };
+
+/**
+ * Draft → approved (payables.approve; creator ≠ approver, tier by amount).
+ * 409 RBAC_SOD_CONFLICT · 403 RBAC_LEVEL_EXCEEDED { tier, maxTier, requestId? }
+ * · 409 SUPPLIER_BILL_MATCH_REQUIRED { reason, pendingReceipts }. The
+ * two-argument form `(billId, propertyId)` is the plain approval; the
+ * three-argument form carries the body (`supervisorAuthorizationId`) of the retry.
+ */
+export function approveSupplierBill(billId: string, propertyId?: string): Promise<SupplierBillDto>;
+export function approveSupplierBill(billId: string, body: ApproveSupplierBillRequest | undefined, propertyId?: string): Promise<SupplierBillDto>;
+export function approveSupplierBill(billId: string, bodyOrPropertyId?: ApproveSupplierBillRequest | string, maybePropertyId?: string): Promise<SupplierBillDto> {
+  const body: ApproveSupplierBillRequest = typeof bodyOrPropertyId === "object" && bodyOrPropertyId !== null ? bodyOrPropertyId : {};
+  const propertyId = typeof bodyOrPropertyId === "string" ? bodyOrPropertyId : (maybePropertyId ?? getActivePropertyId());
+  return apiRequest<SupplierBillDto>(`/properties/${enc(propertyId)}/payables/supplier-bills/${enc(billId)}/approve`, { method: "POST", body: body.supervisorAuthorizationId ? { supervisorAuthorizationId: body.supervisorAuthorizationId } : {} });
 }
 
 /** Posts the accrual entry (D 6xx / D 472 / H 400|410 / H 4751) and the VAT-book rows. Critical. */
@@ -101,10 +119,19 @@ export type SupplierBillAttachment = {
   fileName: string | null;
   /** Inline attachments (≤ 512 KiB) travel as base64; otherwise the object-store key is given. */
   base64?: string | null;
+  /** Tanda T9 (T9-08): a key `org/…` of the document store → the digitised document and its binary route (`GET …/documents/:id/file`). */
+  documentId?: string;
+  downloadPath?: string;
 };
 
 export function getSupplierBillAttachment(billId: string, propertyId = getActivePropertyId()): Promise<SupplierBillAttachment> {
   return apiRequest<SupplierBillAttachment>(`/properties/${enc(propertyId)}/payables/supplier-bills/${enc(billId)}/attachment`);
+}
+
+/** Bytes of a digitised attachment (`downloadPath` of getSupplierBillAttachment) as a Blob, `?inline=1` so the browser shows it instead of saving it. */
+export async function downloadSupplierBillAttachment(downloadPath: string): Promise<Blob> {
+  const { blob } = await apiRequestBlob(downloadPath, { query: { inline: "1" } });
+  return blob;
 }
 
 /** Outstanding supplier debt by bucket (notDue · 1-30 · 31-60 · 61-90 · 90+) at `asOf` (default today). */

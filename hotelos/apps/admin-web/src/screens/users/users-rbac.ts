@@ -130,6 +130,8 @@ export const MODULE_OF_PREFIX: Readonly<Record<string, ModuleCode>> = {
   pos: "M7",
   procurement: "M8", inventory: "M8", purchase_orders: "M8",
   payables: "M9",
+  // Tanda T9 · documentos y digitalización: pestaña «Documentos» de Finanzas › Proveedores y gastos (M9).
+  documents: "M9",
   accounting: "M10",
   banking: "M11",
   payroll: "M12", workforce: "M12",

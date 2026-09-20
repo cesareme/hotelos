@@ -5,6 +5,9 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 // Reputación (Tanda T8 · corrección ronda 1, HP-04): topicsJson guarda autor, fragmentos literales, resumen y borrador.
 import { scrubReviewMetaForErasure } from "../reputation/review-meta.store.js";
+// Documentos digitalizados (Tanda T9 · T9-13, diseño §3.4 / §7.5): documentos con guestId del sujeto →
+// searchText / campos extraídos pseudonimizados y, sin efecto fiscal, purga del fichero.
+import { eraseGuestDocuments } from "../documents/retention.service.js";
 
 export type GdprRequestType = "dsar" | "erasure" | "rectification" | "portability";
 
@@ -542,6 +545,36 @@ export async function executeErasure(
   }
   if (reviewsPseudonymized) {
     tables.push({ name: "GuestReview", rowsAffected: reviewsPseudonymized, action: "pseudonymized" });
+  }
+
+  // --- IncomingDocument (Tanda T9 · §3.4 / §7.5): documentos digitalizados del sujeto ---
+  // ANTES de pseudonimizar la fila Guest, para conocer los valores a suprimir
+  // (nombre, apellidos, DNI, e-mail, teléfono) en searchText / fieldsJson.
+  // Con efecto fiscal (invoice | delivery_note | receipt) solo se pseudonimiza;
+  // el resto pierde además el fichero (purga real, auditada DOCUMENT_PURGED).
+  if (guestIds.length) {
+    const subjectGuests = await prisma.guest.findMany({
+      where: { id: { in: guestIds } },
+      select: { firstName: true, surname1: true, surname2: true, email: true, phone: true, mobilePhone: true, documentNumber: true }
+    });
+    const subjectValues = subjectGuests.flatMap((guest) => [guest.firstName, guest.surname1, guest.surname2, guest.email, guest.phone, guest.mobilePhone, guest.documentNumber]);
+    const erasedDocuments = await eraseGuestDocuments({ organizationId: request.organizationId, guestIds, subjectValues, actorUserId: userId });
+    if (erasedDocuments.pseudonymized) {
+      tables.push({
+        name: "IncomingDocument",
+        rowsAffected: erasedDocuments.pseudonymized,
+        action: "pseudonymized",
+        note: "Documentos con efecto fiscal (factura, albarán, ticket): texto de búsqueda y campos extraídos pseudonimizados; fichero conservado (RD 1619/2012 art. 19, CCom art. 30)."
+      });
+    }
+    if (erasedDocuments.purged) {
+      tables.push({
+        name: "IncomingDocument",
+        rowsAffected: erasedDocuments.purged,
+        action: "deleted",
+        note: "Documentos sin efecto fiscal: fichero purgado del almacén y campos pseudonimizados; la fila conserva registro, hash y auditoría (deletedAt)."
+      });
+    }
   }
 
   // --- Guest table: pseudonymize PII ---

@@ -127,6 +127,34 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.deepEqual(echo.map((r) => `${r.method} ${r.path}`), []);
   });
 
+  // Documentos y digitalización (Tanda T9 · puerta de ola 2): las rutas del centro no
+  // devuelven segmentos en inglés («file», «pages», «image», «send-to-office», «recapture»).
+  it("Tanda T9 · the document capture routes read in Spanish", () => {
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/documents/:id/file"), "Obtener el fichero original del documento.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/documents/:id/pages/:n/image"), "Obtener la imagen de la página.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/documents/:id/send-to-office"), "Enviar el documento a la oficina.");
+    assert.equal(
+      describeEndpoint("POST", "/properties/:propertyId/documents/:id/recapture"),
+      "Recapturar el documento devuelto al centro (fichero nuevo, mismo número de registro)."
+    );
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/documents/:id/files"), "Crear o registrar un fichero del documento.");
+    assert.equal(describeEndpoint("GET", "/organizations/:organizationId/documents/queue"), "Obtener la cola.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/documents/:id/classify"), "Clasificar el documento.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/documents/:id/extract"), "Extraer los datos del documento.");
+  });
+
+  // Documentos y digitalización (Tanda T9 · puerta de ola 3): recepciones de mercancía y valija
+  // (goods-receipts.routes.ts y workflow.routes.ts) sin «goods receipts», «dispatch batches», «dispute» ni «sheet».
+  it("Tanda T9 · the goods receipt and dispatch batch routes read in Spanish", () => {
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/goods-receipts"), "Crear o registrar una recepción de mercancía.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/goods-receipts"), "Listar recepciones de mercancía.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/goods-receipts/:id"), "Obtener el detalle de la recepción de mercancía.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/goods-receipts/:id/dispute"), "Poner en disputa la recepción de mercancía.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/documents/dispatch-batches"), "Crear o registrar una valija.");
+    assert.equal(describeEndpoint("POST", "/properties/:propertyId/documents/dispatch-batches/:batchId/receive"), "Recibir la valija.");
+    assert.equal(describeEndpoint("GET", "/properties/:propertyId/documents/dispatch-batches/:batchId/sheet"), "Obtener la hoja de remesa de la valija.");
+  });
+
   it("the -settings suffix reads «los ajustes de …» even for an unlisted owner", () => {
     assert.equal(resourceLabel("housekeeping-settings").singular, "los ajustes de limpieza");
     const derived = resourceLabel("reservations-settings");

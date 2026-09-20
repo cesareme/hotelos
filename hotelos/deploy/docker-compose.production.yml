@@ -104,6 +104,15 @@ services:
       # in deploy/certs (gitignored, mkdir -p deploy/certs) and reference them as
       # /certs/<file> in .env.production.
       - ./certs:/certs:ro
+      # Documentos (Tanda T9): almacén en disco de los documentos capturados
+      # (DOCUMENT_STORAGE_KIND=disk + DOCUMENT_STORAGE_DIR=/var/lib/anfitorio/documents
+      # en .env.production; ficheros cifrados en reposo con HOTELOS_FIELD_KEY/ENCRYPTION_KEY).
+      # Solo la api lo monta (el worker no sirve documentos). BACKUP: el pg_dump de
+      # deploy/scripts/deploy.sh NO cubre este volumen — copiarlo junto al dump
+      # (docker run --rm -v <proyecto>_documents-data:/data -v $PWD/backups:/out alpine
+      # tar czf /out/documents-<fecha>.tgz -C /data .); sin la clave de cifrado los
+      # ficheros son ilegibles. Con DOCUMENT_STORAGE_KIND=s3 el volumen queda vacío.
+      - documents-data:/var/lib/anfitorio/documents
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
       interval: 15s
@@ -202,3 +211,6 @@ volumes:
   redis-data:
   caddy-data:
   caddy-config:
+  # Documentos (Tanda T9): almacén en disco del módulo de documentos (montado en api;
+  # incluir en el backup junto al dump de Postgres, ver el comentario del servicio api).
+  documents-data:
