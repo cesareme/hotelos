@@ -1108,6 +1108,7 @@
         "apps/api/src/server.ts",
         "packages/database/prisma/seed-checkin.ts",
         "packages/database/prisma/seed-real-estate.ts",
+        "packages/database/prisma/seed-ux-day-pisos.ts",
         "packages/database/prisma/seed-ux-day.ts",
         "packages/database/prisma/seed-ux-direccion.ts",
         "packages/database/src/client.ts",
@@ -1526,6 +1527,7 @@
       ],
       "doc": "seed-ux-day (Tanda UX-1, corrector R9): con NODE_ENV=production el seed aborta (crea un usuario admin con contraseña conocida); el literal 1 lo permite solo para una demo aislada. Nunca en un .env persistente.",
       "readBy": [
+        "packages/database/prisma/seed-ux-day-pisos.ts",
         "packages/database/prisma/seed-ux-day.ts",
         "packages/database/prisma/seed-ux-direccion.ts"
       ]
@@ -1538,6 +1540,7 @@
       ],
       "doc": "seed-ux-day (Tanda UX-1, corrector R9): contraseña de los tres usuarios *@uxday.test del tenant de prueba; sin ella, «uxday-demo». Nunca en producción.",
       "readBy": [
+        "packages/database/prisma/seed-ux-day-pisos.ts",
         "packages/database/prisma/seed-ux-day.ts",
         "packages/database/prisma/seed-ux-direccion.ts"
       ]

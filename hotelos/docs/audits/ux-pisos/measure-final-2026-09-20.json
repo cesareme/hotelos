@@ -1,0 +1,498 @@
+{
+  "generatedAt": "2026-09-20T11:53:42.630Z",
+  "baseUrl": "http://127.0.0.1:5201",
+  "apiUrl": "http://127.0.0.1:3931",
+  "tasks": {
+    "p1": {
+      "raton": {
+        "task": "p1",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P1 · Marcar limpia e inspeccionar una habitación",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 4,
+        "ms": 17302,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (camarera)",
+          "click:Limpia (tarjeta de Mi turno, camarera; optimista + «Deshacer» 8 s, cierra la tarea D1)",
+          "step:ventana de «Deshacer» 8 s (escritura diferida): la spec no toca nada hasta que el POST viaja",
+          "step:Tablero de pisos cargado (gobernanta; sus peticiones cuentan desde aquí): la habitación ya no está en Mi turno porque la tarea se cerró (D1)",
+          "click:Inspeccionar (tarjeta del tablero de pisos, gobernanta; optimista + «Deshacer» 8 s)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "room": "105",
+          "taskId": "hkt_uxday_p1_1",
+          "undoOfferedClean": true,
+          "undoOfferedInspect": true,
+          "deferredWriteMs": 8000
+        },
+        "note": "dos personas: camarera «Limpia» (Mi turno, cierra la tarea D1) + gobernanta «Inspeccionar» (tablero); optimistas con «Deshacer» 8 s y escritura diferida: ms incluye las dos ventanas",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:52:32.609Z"
+      },
+      "tablet": {
+        "task": "p1",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P1 · Marcar limpia e inspeccionar una habitación",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 4,
+        "ms": 17365,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (camarera)",
+          "tap:Limpia (tarjeta de Mi turno, camarera; optimista + «Deshacer» 8 s, cierra la tarea D1)",
+          "step:ventana de «Deshacer» 8 s (escritura diferida): la spec no toca nada hasta que el POST viaja",
+          "step:Tablero de pisos cargado (gobernanta; sus peticiones cuentan desde aquí): la habitación ya no está en Mi turno porque la tarea se cerró (D1)",
+          "tap:Inspeccionar (tarjeta del tablero de pisos, gobernanta; optimista + «Deshacer» 8 s)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "room": "106",
+          "taskId": "hkt_uxday_p1_2",
+          "undoOfferedClean": true,
+          "undoOfferedInspect": true,
+          "deferredWriteMs": 8000
+        },
+        "note": "dos personas: camarera «Limpia» (Mi turno, cierra la tarea D1) + gobernanta «Inspeccionar» (tablero); optimistas con «Deshacer» 8 s y escritura diferida: ms incluye las dos ventanas",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:52:51.610Z"
+      }
+    },
+    "p2": {
+      "raton": {
+        "task": "p2",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P2 · Ver mi turno y la siguiente habitación",
+        "clicks": 1,
+        "keys": 0,
+        "requests": 7,
+        "ms": 1202,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (peticiones desde la navegación, shell incluido)",
+          "step:ayuda sobre la lista (ratón, primera vez; se cierra una sola vez y queda recordada: no cuenta, §6)",
+          "click:Sección (chip «Planta 1 · n»; se recuerda como «Mi sección», D8)"
+        ],
+        "target": {
+          "clicks": 1,
+          "requests": 14
+        },
+        "context": {
+          "nextRoom": "107",
+          "section": "Planta 1",
+          "sectionChips": 3,
+          "helpCardVisible": true,
+          "nextActionVisible": true
+        },
+        "note": "chip de sección (1 toque, recordado) + tarjeta «Siguiente» arriba con el primario grande; al volver, 0 toques («Mi sección»)",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:52:53.222Z"
+      },
+      "tablet": {
+        "task": "p2",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P2 · Ver mi turno y la siguiente habitación",
+        "clicks": 1,
+        "keys": 0,
+        "requests": 7,
+        "ms": 1161,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (peticiones desde la navegación, shell incluido)",
+          "tap:Sección (chip «Planta 1 · n»; se recuerda como «Mi sección», D8)"
+        ],
+        "target": {
+          "clicks": 1,
+          "requests": 14
+        },
+        "context": {
+          "nextRoom": "107",
+          "section": "Planta 1",
+          "sectionChips": 3,
+          "helpCardVisible": false,
+          "nextActionVisible": true
+        },
+        "note": "chip de sección (1 toque, recordado) + tarjeta «Siguiente» arriba con el primario grande; al volver, 0 toques («Mi sección»)",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:52:55.560Z"
+      }
+    },
+    "p3": {
+      "raton": {
+        "task": "p3",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P3 · Crear una tarea de limpieza",
+        "clicks": 1,
+        "keys": 17,
+        "requests": 2,
+        "ms": 261,
+        "completed": true,
+        "path": [
+          "step:Tablero de pisos cargado",
+          "click:Nueva tarea (tarjeta del tablero)",
+          "fill:Asignar a (correo de la camarera; datalist con sugerencias)(16)",
+          "press:Intro crea la tarea (submitOnEnter del cajón)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "113",
+          "assignedToSessionEmail": true,
+          "submit": "Intro"
+        },
+        "note": "tarjeta → cajón → «Asignar a» (tecleo) → Intro (teclado primero, P2); aviso con número y asignación",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:52:58.174Z"
+      },
+      "tablet": {
+        "task": "p3",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P3 · Crear una tarea de limpieza",
+        "clicks": 2,
+        "keys": 16,
+        "requests": 2,
+        "ms": 322,
+        "completed": true,
+        "path": [
+          "step:Tablero de pisos cargado",
+          "tap:Nueva tarea (tarjeta del tablero)",
+          "fill:Asignar a (correo de la camarera; datalist con sugerencias)(16)",
+          "tap:Crear tarea (cajón; tipo y prioridad por defecto)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "114",
+          "assignedToSessionEmail": true,
+          "submit": "botón"
+        },
+        "note": "tarjeta → cajón → «Asignar a» (tecleo) → «Crear tarea»; aviso con número y asignación",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:52:59.919Z"
+      }
+    },
+    "p4": {
+      "raton": {
+        "task": "p4",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P4 · Reportar una avería con foto",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 2,
+        "ms": 411,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado",
+          "click:Reportar (tarjeta de Mi turno)",
+          "step:campos de foto en el cajón: 1",
+          "click:Motivo «Fuga de agua» (chip: el título del parte sale solo)",
+          "step:cámara: setInputFiles grifo.png (PNG 1.800 × 1.350, 466800 B; capture=environment en la tablet; no cuenta como toque ni tecla)",
+          "click:Enviar a mantenimiento (cajón; POST /work-orders con photos[])"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "107",
+          "photoInputs": 1,
+          "workOrderId": "cmu9rbx9q0006fygc4zcskq1i",
+          "postStatus": 201,
+          "photoMimeSent": "image/jpeg",
+          "photoBytesSent": 31554,
+          "photoBytesOriginal": 466800
+        },
+        "note": "chip de motivo + Foto (cámara, paso) + Enviar = 3 toques · 0 teclas; el título sale solo («Hab. NNN: Fuga de agua») y el parte nace con 1 foto",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:53:01.805Z"
+      },
+      "tablet": {
+        "task": "p4",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P4 · Reportar una avería con foto",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 2,
+        "ms": 371,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado",
+          "tap:Reportar (tarjeta de Mi turno)",
+          "step:campos de foto en el cajón: 1",
+          "tap:Motivo «Fuga de agua» (chip: el título del parte sale solo)",
+          "step:cámara: setInputFiles grifo.png (PNG 1.800 × 1.350, 466800 B; capture=environment en la tablet; no cuenta como toque ni tecla)",
+          "tap:Enviar a mantenimiento (cajón; POST /work-orders con photos[])"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "107",
+          "photoInputs": 1,
+          "workOrderId": "cmu9rbyrr0007fygcloyl0yy6",
+          "postStatus": 201,
+          "photoMimeSent": "image/jpeg",
+          "photoBytesSent": 31554,
+          "photoBytesOriginal": 466800
+        },
+        "note": "chip de motivo + Foto (cámara, paso) + Enviar = 3 toques · 0 teclas; el título sale solo («Hab. NNN: Fuga de agua») y el parte nace con 1 foto",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:53:03.742Z"
+      }
+    },
+    "p5": {
+      "raton": {
+        "task": "p5",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P5 · Tomar y resolver un parte",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 3,
+        "ms": 8211,
+        "completed": true,
+        "path": [
+          "step:Mis averías cargado",
+          "click:Todas (chip de alcance: la pantalla arranca en «Mías»)",
+          "click:Tomar (tarjeta de Mis averías → en curso, asignada a mí; optimista con «Deshacer»)",
+          "click:Resuelta (tarjeta; optimista + «Deshacer» 8 s, POST /resolve diferido)",
+          "step:ventana de «Deshacer» 8 s (escritura diferida): la spec no toca nada hasta que el POST viaja"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p5a",
+          "scopeChipTapped": true,
+          "undoOfferedTake": true,
+          "undoOfferedResolve": true,
+          "deferredWriteMs": 8000
+        },
+        "note": "«Todas» (la pantalla arranca en «Mías») + «Tomar» + «Resuelta»; ambas con «Deshacer», «Resuelta» diferida 8 s: ms incluye la ventana",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:53:13.380Z"
+      },
+      "tablet": {
+        "task": "p5",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P5 · Tomar y resolver un parte",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 3,
+        "ms": 8233,
+        "completed": true,
+        "path": [
+          "step:Mis averías cargado",
+          "tap:Todas (chip de alcance: la pantalla arranca en «Mías»)",
+          "tap:Tomar (tarjeta de Mis averías → en curso, asignada a mí; optimista con «Deshacer»)",
+          "tap:Resuelta (tarjeta; optimista + «Deshacer» 8 s, POST /resolve diferido)",
+          "step:ventana de «Deshacer» 8 s (escritura diferida): la spec no toca nada hasta que el POST viaja"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p5b",
+          "scopeChipTapped": true,
+          "undoOfferedTake": true,
+          "undoOfferedResolve": true,
+          "deferredWriteMs": 8000
+        },
+        "note": "«Todas» (la pantalla arranca en «Mías») + «Tomar» + «Resuelta»; ambas con «Deshacer», «Resuelta» diferida 8 s: ms incluye la ventana",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:53:23.003Z"
+      }
+    },
+    "p6": {
+      "raton": {
+        "task": "p6",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P6 · Bloquear y desbloquear una habitación",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 2,
+        "ms": 185,
+        "completed": true,
+        "path": [
+          "step:Tablero de mantenimiento cargado",
+          "click:Abrir la orden (lista del tablero)",
+          "click:Bloquear habitación (ficha → diálogo nominal)",
+          "click:Confirmar «Bloquear la NNN» (diálogo nominal)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p6a",
+          "room": "117",
+          "nominalDialog": true,
+          "undoOfferedResolve": true,
+          "deferredWriteMs": 8000,
+          "totalClicks": 4
+        },
+        "note": "bloquear = abrir la orden + «Bloquear habitación» + confirmar «Bloquear la NNN» (diálogo nominal, §5; aviso con número); desbloquear («Resolver» libera) se mide aparte en phases",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:53:24.581Z",
+        "phases": [
+          {
+            "name": "bloquear",
+            "clicks": 3,
+            "keys": 0,
+            "requests": 2,
+            "ms": 185,
+            "path": [
+              "step:Tablero de mantenimiento cargado",
+              "click:Abrir la orden (lista del tablero)",
+              "click:Bloquear habitación (ficha → diálogo nominal)",
+              "click:Confirmar «Bloquear la NNN» (diálogo nominal)"
+            ]
+          },
+          {
+            "name": "desbloquear",
+            "clicks": 1,
+            "keys": 0,
+            "requests": 1,
+            "ms": 8069,
+            "path": [
+              "click:Resolver (ficha; libera la habitación; optimista + «Deshacer» 8 s, POST /resolve diferido)",
+              "step:ventana de «Deshacer» 8 s (escritura diferida): la spec no toca nada hasta que el POST viaja"
+            ]
+          }
+        ]
+      },
+      "tablet": {
+        "task": "p6",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P6 · Bloquear y desbloquear una habitación",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 2,
+        "ms": 518,
+        "completed": true,
+        "path": [
+          "step:Tablero de mantenimiento cargado",
+          "tap:Abrir la orden (lista del tablero)",
+          "tap:Bloquear habitación (ficha → diálogo nominal)",
+          "tap:Confirmar «Bloquear la NNN» (diálogo nominal)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p6b",
+          "room": "118",
+          "nominalDialog": true,
+          "undoOfferedResolve": true,
+          "deferredWriteMs": 8000,
+          "totalClicks": 4
+        },
+        "note": "bloquear = abrir la orden + «Bloquear habitación» + confirmar «Bloquear la NNN» (diálogo nominal, §5; aviso con número); desbloquear («Resolver» libera) se mide aparte en phases",
+        "strict": true,
+        "measuredAt": "2026-09-20T11:53:34.543Z",
+        "phases": [
+          {
+            "name": "bloquear",
+            "clicks": 3,
+            "keys": 0,
+            "requests": 2,
+            "ms": 518,
+            "path": [
+              "step:Tablero de mantenimiento cargado",
+              "tap:Abrir la orden (lista del tablero)",
+              "tap:Bloquear habitación (ficha → diálogo nominal)",
+              "tap:Confirmar «Bloquear la NNN» (diálogo nominal)"
+            ]
+          },
+          {
+            "name": "desbloquear",
+            "clicks": 1,
+            "keys": 0,
+            "requests": 1,
+            "ms": 8086,
+            "path": [
+              "tap:Resolver (ficha; libera la habitación; optimista + «Deshacer» 8 s, POST /resolve diferido)",
+              "step:ventana de «Deshacer» 8 s (escritura diferida): la spec no toca nada hasta que el POST viaja"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

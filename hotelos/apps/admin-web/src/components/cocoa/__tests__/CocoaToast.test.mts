@@ -11,7 +11,7 @@ import { describe, it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CocoaToast, CocoaToastViewport, rectsIntersect, remainingAfterPause, toastStackObscures, toastTone, toastViewportStyle } from "../CocoaToast.tsx";
-import { ACTION_DURATION, DEFAULT_DURATION, MAX_VISIBLE, createToastStore, toastAnnouncement, toastDuration, undoableToast } from "../../Toast.tsx";
+import { ACTION_DURATION, DEFAULT_DURATION, MAX_VISIBLE, capToasts, createToastStore, toastAnnouncement, toastDuration, undoableToast } from "../../Toast.tsx";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cocoaCss = readFileSync(resolve(here, "../../../styles/cocoa-22.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -33,6 +33,22 @@ describe("CocoaToast · temporizador con pausa (F29)", () => {
   });
   it("máximo 3 visibles se mantiene", () => {
     assert.equal(MAX_VISIBLE, 3);
+  });
+  it("capToasts (UX-3-REV-01): el desbordamiento se EXPULSA del store, primero los más antiguos sin acción; los que llevan «Deshacer» sobreviven", () => {
+    const undo = { label: "Deshacer", onAction: () => undefined };
+    const record = (id: number, action?: typeof undo) => ({ id, message: `t${id}`, variant: "info" as const, duration: 4000, action, pauseOnHover: true, announced: false });
+    assert.deepEqual(capToasts([record(1), record(2), record(3)]).map((t) => t.id), [1, 2, 3], "sin desbordamiento nada cambia");
+    assert.deepEqual(capToasts([record(1, undo), record(2), record(3), record(4)]).map((t) => t.id), [1, 3, 4], "el 1.º con acción viva se queda; cae el 2.º (sin acción)");
+    assert.deepEqual(capToasts([record(1), record(2, undo), record(3, undo), record(4, undo), record(5, undo)]).map((t) => t.id), [3, 4, 5], "con más de 3 acciones cae la más antigua");
+    const store = createToastStore(() => undefined);
+    const a = store.push("Hab. 101 → Limpia", { action: undo });
+    store.push("Nota guardada");
+    store.push("Nota guardada");
+    store.push("Nota guardada");
+    assert.equal(store.getToasts().length, MAX_VISIBLE);
+    assert.equal(store.getToasts()[0]?.id, a, "el toast con «Deshacer» sigue en el store");
+    store.dismiss(store.getToasts()[2]!.id);
+    assert.equal(store.getToasts().length, 2, "un toast expulsado no vuelve al cerrarse otro");
   });
 });
 

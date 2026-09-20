@@ -26,7 +26,8 @@
     "db:seed:checkin": "node --env-file=../../.env --import tsx prisma/seed-checkin.ts",
     "db:seed:real-estate": "node --env-file=../../.env --import tsx prisma/seed-real-estate.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "db:seed:ux-day-pisos": "node --env-file=../../.env --import tsx prisma/seed-ux-day-pisos.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

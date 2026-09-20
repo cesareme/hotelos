@@ -64,3 +64,6 @@ apps/admin-web/e2e/measure/results-direccion.json
 worktrees/
 # Tanda 4: certificados montados en /certs (VeriFactu/SES/TBAI)
 deploy/certs/
+
+# Tanda UX-3: medida de pisos/mantenimiento p1…p6 (baseline copiada a docs/audits/ux-pisos/)
+apps/admin-web/e2e/measure/results-pisos.json

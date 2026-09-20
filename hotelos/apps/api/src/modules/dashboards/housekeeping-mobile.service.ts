@@ -28,6 +28,9 @@ export type HkMobileRoom = {
   roomNumber: string;
   floor?: string;
   roomTypeName?: string;
+  // Tanda UX-3 (P2, F5): sección de pisos de la habitación (chips «Mi sección» de Mi turno); ausentes sin sección.
+  sectionId?: string;
+  sectionName?: string;
   status: string;
   housekeepingStatus?: string;
   priority: HkMobilePriority;
@@ -49,6 +52,15 @@ export type HkMobileRoom = {
   lastEventNote?: string;
 };
 
+/** Sección de pisos (Tanda UX-3 · P2): chip de Mi turno con el recuento de habitaciones en cola. */
+export type HkMobileSection = {
+  id: string;
+  name: string;
+  code?: string;
+  /** Habitaciones de la sección que están en la cola (0 si ninguna: el chip sigue existiendo). */
+  total: number;
+};
+
 export type HkMobileResult = {
   generatedAt: string;
   summary: {
@@ -59,7 +71,9 @@ export type HkMobileResult = {
     total: number;
   };
   rooms: HkMobileRoom[];
-  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_orders"). */
+  /** Tanda UX-3 (P2, F5): secciones activas de la propiedad en orden (código, nombre) con su recuento; [] sin secciones o degradado. */
+  sections: HkMobileSection[];
+  /** Tanda L2 (L2-06, QC-06): secondary sources that fell back to empty in this response ("work_orders", "housekeeping_sections"). */
   degraded: string[];
 };
 
@@ -75,6 +89,41 @@ function priorityWeight(p: HkMobilePriority): number {
   return 3;
 }
 
+/** Fila del join secciones × habitaciones (una consulta; `roomId` null en una sección sin habitaciones). */
+export type HkSectionRow = { sectionId: string; sectionName: string; sectionCode: string | null; roomId: string | null };
+
+/**
+ * Agrupación pura (Tanda UX-3 · P2, F5): secciones activas en el orden de la
+ * consulta (sin repetir) y la sección de cada habitación; una habitación en
+ * dos secciones se queda con la primera (orden de la consulta: código, nombre).
+ */
+export function indexSections(rows: readonly HkSectionRow[]): {
+  sections: Array<Omit<HkMobileSection, "total">>;
+  byRoom: Map<string, { sectionId: string; sectionName: string }>;
+} {
+  const sections: Array<Omit<HkMobileSection, "total">> = [];
+  const seen = new Set<string>();
+  const byRoom = new Map<string, { sectionId: string; sectionName: string }>();
+  for (const row of rows) {
+    if (!seen.has(row.sectionId)) {
+      seen.add(row.sectionId);
+      sections.push({ id: row.sectionId, name: row.sectionName, ...(row.sectionCode ? { code: row.sectionCode } : {}) });
+    }
+    if (row.roomId && !byRoom.has(row.roomId)) byRoom.set(row.roomId, { sectionId: row.sectionId, sectionName: row.sectionName });
+  }
+  return { sections, byRoom };
+}
+
+/** Recuento puro de habitaciones en cola por sección (las secciones sin pendientes salen con 0). */
+export function sectionsWithCounts(
+  sections: ReadonlyArray<Omit<HkMobileSection, "total">>,
+  rooms: ReadonlyArray<Pick<HkMobileRoom, "sectionId">>
+): HkMobileSection[] {
+  const counts = new Map<string, number>();
+  for (const room of rooms) if (room.sectionId) counts.set(room.sectionId, (counts.get(room.sectionId) ?? 0) + 1);
+  return sections.map((section) => ({ ...section, total: counts.get(section.id) ?? 0 }));
+}
+
 export async function buildHousekeepingMobile(input: { propertyId: string }): Promise<HkMobileResult> {
   const propertyId = input.propertyId;
   const now = new Date();
@@ -82,7 +131,7 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
   const tomorrow = new Date(today.getTime() + 86400000);
 
   const { safe, degraded } = createDegradedCollector("dashboards.housekeeping-mobile", { propertyId });
-  const [rooms, roomTypes, arrivals, departures, inHouse, openTasks, workOrders] = await Promise.all([
+  const [rooms, roomTypes, arrivals, departures, inHouse, openTasks, workOrders, sectionRows] = await Promise.all([
     prisma.room.findMany({ where: { propertyId, active: true } }),
     prisma.roomType.findMany({ where: { propertyId } }),
     prisma.reservation.findMany({
@@ -116,11 +165,25 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
         select: { id: true, roomId: true, title: true }
       }),
       []
+    ),
+    // Tanda UX-3 (P2, F5): la sección de cada habitación en UNA consulta (join de
+    // las secciones activas de la propiedad con sus habitaciones; los modelos no
+    // declaran relación). Si falla, Mi turno sigue sin chips de sección (`degraded`).
+    safe(
+      "housekeeping_sections",
+      prisma.$queryRaw<HkSectionRow[]>`
+        SELECT s.id AS "sectionId", s.name AS "sectionName", s.code AS "sectionCode", r.room_id AS "roomId"
+        FROM housekeeping_sections s
+        LEFT JOIN housekeeping_section_rooms r ON r.housekeeping_section_id = s.id
+        WHERE s.property_id = ${propertyId} AND s.active = true
+        ORDER BY s.code ASC NULLS LAST, s.name ASC, r.room_id ASC`,
+      [] as HkSectionRow[]
     )
   ]);
 
   const roomTypeById = new Map(roomTypes.map((t) => [t.id, t]));
   const roomById = new Map(rooms.map((r) => [r.id, r]));
+  const { sections: sectionList, byRoom: sectionByRoom } = indexSections(sectionRows);
 
   // Index reservas por roomId.
   const arrivalByRoom = new Map<string, (typeof arrivals)[number]>();
@@ -261,6 +324,8 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
       roomNumber: room.number,
       floor: room.floor ?? undefined,
       roomTypeName: room.roomTypeId ? roomTypeById.get(room.roomTypeId)?.name : undefined,
+      sectionId: sectionByRoom.get(room.id)?.sectionId,
+      sectionName: sectionByRoom.get(room.id)?.sectionName,
       status: String(room.status),
       housekeepingStatus: state.cleanliness,
       priority,
@@ -299,5 +364,5 @@ export async function buildHousekeepingMobile(input: { propertyId: string }): Pr
     total: items.length
   };
 
-  return { generatedAt: now.toISOString(), summary, rooms: items, degraded };
+  return { generatedAt: now.toISOString(), summary, rooms: items, sections: sectionsWithCounts(sectionList, items), degraded };
 }

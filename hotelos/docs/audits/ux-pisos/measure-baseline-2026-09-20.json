@@ -1,0 +1,397 @@
+{
+  "generatedAt": "2026-09-20T09:53:43.892Z",
+  "baseUrl": "http://127.0.0.1:5201",
+  "apiUrl": "http://127.0.0.1:3931",
+  "tasks": {
+    "p1": {
+      "raton": {
+        "task": "p1",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P1 · Marcar limpia e inspeccionar una habitación",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 4,
+        "ms": 1397,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (camarera)",
+          "click:Limpia (tarjeta de Mi turno, camarera)",
+          "step:Mi turno cargado (gobernanta; sus peticiones cuentan desde aquí)",
+          "click:Inspeccionada (tarjeta de Mi turno, gobernanta)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "room": "105",
+          "taskId": "hkt_uxday_p1_1"
+        },
+        "note": "dos personas: camarera «Limpia» + gobernanta «Inspeccionada»; sin deshacer (F3)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:24.871Z"
+      },
+      "tablet": {
+        "task": "p1",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P1 · Marcar limpia e inspeccionar una habitación",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 4,
+        "ms": 1411,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (camarera)",
+          "tap:Limpia (tarjeta de Mi turno, camarera)",
+          "step:Mi turno cargado (gobernanta; sus peticiones cuentan desde aquí)",
+          "tap:Inspeccionada (tarjeta de Mi turno, gobernanta)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "room": "106",
+          "taskId": "hkt_uxday_p1_2"
+        },
+        "note": "dos personas: camarera «Limpia» + gobernanta «Inspeccionada»; sin deshacer (F3)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:27.810Z"
+      }
+    },
+    "p2": {
+      "raton": {
+        "task": "p2",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P2 · Ver mi turno y la siguiente habitación",
+        "clicks": 1,
+        "keys": 0,
+        "requests": 7,
+        "ms": 1183,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (peticiones desde la navegación, shell incluido)",
+          "click:Cerrar instrucciones (tarjeta de ayuda sobre la lista, F12)"
+        ],
+        "target": {
+          "clicks": 1,
+          "requests": 14
+        },
+        "context": {
+          "nextRoom": "107",
+          "helpCardDismissed": true,
+          "nextActionVisible": true
+        },
+        "note": "sin sección ni «Siguiente» (F5): la primera tarjeta por prioridad es la siguiente habitación; la lista es de todo el hotel",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:29.342Z"
+      },
+      "tablet": {
+        "task": "p2",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P2 · Ver mi turno y la siguiente habitación",
+        "clicks": 1,
+        "keys": 0,
+        "requests": 7,
+        "ms": 1155,
+        "completed": true,
+        "path": [
+          "step:Mi turno cargado (peticiones desde la navegación, shell incluido)",
+          "tap:Cerrar instrucciones (tarjeta de ayuda sobre la lista, F12)"
+        ],
+        "target": {
+          "clicks": 1,
+          "requests": 14
+        },
+        "context": {
+          "nextRoom": "107",
+          "helpCardDismissed": true,
+          "nextActionVisible": true
+        },
+        "note": "sin sección ni «Siguiente» (F5): la primera tarjeta por prioridad es la siguiente habitación; la lista es de todo el hotel",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:30.662Z"
+      }
+    },
+    "p3": {
+      "raton": {
+        "task": "p3",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P3 · Crear una tarea de limpieza",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 2,
+        "ms": 328,
+        "completed": true,
+        "path": [
+          "step:Tablero de pisos cargado",
+          "click:Nueva tarea (tarjeta del tablero)",
+          "click:Crear tarea (cajón; tipo y prioridad por defecto, sin asignar)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "113"
+        },
+        "note": "sin asignación a camarera ni Intro (F9)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:32.324Z"
+      },
+      "tablet": {
+        "task": "p3",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P3 · Crear una tarea de limpieza",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 2,
+        "ms": 336,
+        "completed": true,
+        "path": [
+          "step:Tablero de pisos cargado",
+          "tap:Nueva tarea (tarjeta del tablero)",
+          "tap:Crear tarea (cajón; tipo y prioridad por defecto, sin asignar)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "114"
+        },
+        "note": "sin asignación a camarera ni Intro (F9)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:34.108Z"
+      }
+    },
+    "p4": {
+      "raton": {
+        "task": "p4",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P4 · Reportar una avería con foto",
+        "clicks": 2,
+        "keys": 41,
+        "requests": 2,
+        "ms": 263,
+        "completed": false,
+        "path": [
+          "step:Mi turno cargado",
+          "click:Reportar (tarjeta de Mi turno)",
+          "step:campos de foto en el cajón: 0",
+          "fill:Incidencia (texto libre; sin chips de motivo)(41)",
+          "click:Enviar a mantenimiento (cajón)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "107",
+          "photoInputs": 0,
+          "workOrderCreated": true
+        },
+        "note": "sin foto: «Reportar» no admite adjuntar imagen ni POST /work-orders la acepta (F4); el parte se crea solo con texto",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:35.796Z"
+      },
+      "tablet": {
+        "task": "p4",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P4 · Reportar una avería con foto",
+        "clicks": 2,
+        "keys": 42,
+        "requests": 2,
+        "ms": 270,
+        "completed": false,
+        "path": [
+          "step:Mi turno cargado",
+          "tap:Reportar (tarjeta de Mi turno)",
+          "step:campos de foto en el cajón: 0",
+          "fill:Incidencia (texto libre; sin chips de motivo)(42)",
+          "tap:Enviar a mantenimiento (cajón)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "room": "107",
+          "photoInputs": 0,
+          "workOrderCreated": true
+        },
+        "note": "sin foto: «Reportar» no admite adjuntar imagen ni POST /work-orders la acepta (F4); el parte se crea solo con texto",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:37.480Z"
+      }
+    },
+    "p5": {
+      "raton": {
+        "task": "p5",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P5 · Tomar y resolver un parte",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 4,
+        "ms": 124,
+        "completed": true,
+        "path": [
+          "step:Mis averías cargado",
+          "click:Tomar (tarjeta de Mis averías → en curso, asignada a mí)",
+          "click:Resuelta (tarjeta; terminal, sin deshacer, F6)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p5a"
+        },
+        "note": "sin «Mías» (F7) ni deshacer (F6); refresh() completo entre toques (F1)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:39.098Z"
+      },
+      "tablet": {
+        "task": "p5",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P5 · Tomar y resolver un parte",
+        "clicks": 2,
+        "keys": 0,
+        "requests": 4,
+        "ms": 154,
+        "completed": true,
+        "path": [
+          "step:Mis averías cargado",
+          "tap:Tomar (tarjeta de Mis averías → en curso, asignada a mí)",
+          "tap:Resuelta (tarjeta; terminal, sin deshacer, F6)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 12
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p5b"
+        },
+        "note": "sin «Mías» (F7) ni deshacer (F6); refresh() completo entre toques (F1)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:40.595Z"
+      }
+    },
+    "p6": {
+      "raton": {
+        "task": "p6",
+        "variant": "raton",
+        "viewport": {
+          "width": 1280,
+          "height": 900
+        },
+        "touch": false,
+        "title": "P6 · Bloquear y desbloquear una habitación",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 4,
+        "ms": 206,
+        "completed": true,
+        "path": [
+          "step:Tablero de mantenimiento cargado",
+          "click:Abrir la orden (lista del tablero)",
+          "click:Bloquear habitación (ficha; sin diálogo nominal, F8)",
+          "click:Resolver (ficha; libera la habitación)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p6a",
+          "room": "117"
+        },
+        "note": "desbloquear = resolver la orden (releaseRoom); toasts sin número de habitación y sin diálogo nominal (F8)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:42.130Z"
+      },
+      "tablet": {
+        "task": "p6",
+        "variant": "tablet",
+        "viewport": {
+          "width": 820,
+          "height": 1180
+        },
+        "touch": true,
+        "title": "P6 · Bloquear y desbloquear una habitación",
+        "clicks": 3,
+        "keys": 0,
+        "requests": 4,
+        "ms": 428,
+        "completed": true,
+        "path": [
+          "step:Tablero de mantenimiento cargado",
+          "tap:Abrir la orden (lista del tablero)",
+          "tap:Bloquear habitación (ficha; sin diálogo nominal, F8)",
+          "tap:Resolver (ficha; libera la habitación)"
+        ],
+        "target": {
+          "clicks": 3,
+          "requests": 16
+        },
+        "context": {
+          "workOrderId": "wo_uxday_p6b",
+          "room": "118"
+        },
+        "note": "desbloquear = resolver la orden (releaseRoom); toasts sin número de habitación y sin diálogo nominal (F8)",
+        "strict": false,
+        "measuredAt": "2026-09-20T09:53:43.891Z"
+      }
+    }
+  }
+}

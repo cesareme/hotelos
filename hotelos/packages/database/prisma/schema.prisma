@@ -5156,6 +5156,13 @@ model WorkOrderMedia {
   workOrderId String @map("work_order_id")
   objectKey   String @map("object_key")
   mediaType   String @map("media_type")
+  // Tanda UX-3 (M1, diseño §4.6 D2): foto en la fila (almacén inline, sin S3). NULL en las filas
+  // legacy que solo guardan objectKey; migración 20260920170000_ux3_parte_fotos (aditiva, reversible).
+  contentBase64 String?  @map("content_base64")
+  mimeType      String?  @map("mime_type")
+  sizeBytes     Int?     @map("size_bytes")
+  createdAt     DateTime @default(now()) @map("created_at")
+  createdBy     String?  @map("created_by")
 
   @@index([workOrderId])
   @@map("work_order_media")
