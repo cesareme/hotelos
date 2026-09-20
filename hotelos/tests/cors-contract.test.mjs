@@ -132,6 +132,11 @@ describe("Tanda CHK (corrector SEC-6) · el token del portal del huésped no lle
     assert.equal(redact("/guest-portal/check-in?property=p&token=abc#x"), "/guest-portal/check-in?property=p&token=<redacted>#x");
     assert.equal(redact("/reservations/res_1/check-in"), "/reservations/res_1/check-in");
     assert.equal(redact(undefined), undefined);
+    // Corrector REV-L7-07: la familia legada lleva el token en el PATH (/guest-portal/session/:token[/folio|/pay]).
+    assert.equal(redact("/guest-portal/session/" + "b".repeat(64)), "/guest-portal/session/<redacted>");
+    assert.equal(redact("/guest-portal/session/" + "b".repeat(64) + "/folio"), "/guest-portal/session/<redacted>/folio");
+    assert.equal(redact("/guest-portal/session/" + "b".repeat(64) + "/pay?x=1"), "/guest-portal/session/<redacted>/pay?x=1");
+    assert.equal(redact("/guest-portal/sign-in"), "/guest-portal/sign-in");
   });
 });
 

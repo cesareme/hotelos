@@ -26,6 +26,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { prisma } from "@hotelos/database";
+import { GUEST_PORTAL_FULL_PURPOSES, GUEST_SESSION_PURPOSES, type GuestSessionPurpose } from "@hotelos/shared";
 import { recordDomainEvent } from "../audit/audit.service.js";
 import { createId } from "../../lib/ids.js";
 import { isEmailConfigured } from "../notifications/providers/email.provider.js";
@@ -46,7 +47,24 @@ export type VerifiedGuestSession = {
   reservationId: string;
   propertyId: string;
   guestId: string | null;
+  /** Ámbito de la sesión (corrector L7-REV-01): sign_in | invitation | survey. */
+  purpose: GuestSessionPurpose;
 };
+
+/**
+ * Corrector L7-REV-01: ámbitos que abren el portal completo (estancia, folio,
+ * facturas, peticiones, check-in, chat). Una sesión `survey` (enlace de 30 días
+ * de la encuesta post-estancia) SOLO vale para GET|POST /guest-portal/survey:
+ * `verifyGuestToken` la rechaza salvo que el llamador la admita explícitamente.
+ */
+export const GUEST_PORTAL_FULL_ACCESS: readonly GuestSessionPurpose[] = GUEST_PORTAL_FULL_PURPOSES;
+/** Todos los ámbitos (solo las rutas de la encuesta los admiten). */
+export const GUEST_PORTAL_ANY_PURPOSE: readonly GuestSessionPurpose[] = GUEST_SESSION_PURPOSES;
+
+/** `GuestPortalSession.purpose` leído de la fila: un valor desconocido se trata como sesión completa heredada (`sign_in`). */
+export function guestSessionPurposeOf(value: string | null | undefined): GuestSessionPurpose {
+  return (GUEST_SESSION_PURPOSES as readonly string[]).includes(value ?? "") ? (value as GuestSessionPurpose) : "sign_in";
+}
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -137,6 +155,7 @@ export async function requestSignIn(input: RequestSignInInput): Promise<RequestS
       guestId: match.guestId,
       tokenHash: hashToken(token),
       status: "active",
+      purpose: "sign_in",
       expiresAt: new Date(Date.now() + SESSION_TTL_MS)
     }
   });
@@ -200,7 +219,68 @@ export async function requestSignIn(input: RequestSignInInput): Promise<RequestS
   };
 }
 
-export async function verifyGuestToken(token: string | null | undefined): Promise<VerifiedGuestSession | null> {
+// ---------------------------------------------------------------------------
+// Tanda L7 · lote L7-04 (recon §19.7): sesión del portal emitida por el sistema
+// (invitación a la encuesta post-estancia). Misma forma que requestSignIn (token
+// aleatorio de 32 bytes, solo el hash en la fila, `guestId` = titular de la
+// reserva) pero sin sign-in del huésped: el token viaja en el enlace del correo
+// y el remitente lo redacta al persistir la entrega (dispatcher `redact`).
+// ---------------------------------------------------------------------------
+
+/** 30 días: vigencia del enlace de la encuesta post-estancia (REPUTACION-REVIEWS §6.4). */
+export const POST_STAY_SURVEY_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export type IssuedGuestPortalSession = {
+  sessionId: string;
+  /** Token en claro: solo para el enlace; nunca se persiste ni se audita. */
+  token: string;
+  reservationId: string;
+  propertyId: string;
+  guestId: string | null;
+  expiresAt: Date;
+  purpose: GuestSessionPurpose;
+};
+
+/**
+ * Emite una GuestPortalSession activa para la reserva (titular = ReservationGuest
+ * isPrimary, o el primer enlazado). `ttlMs` acota la vigencia (por defecto la de
+ * un sign-in, 24 h); `purpose` fija el ámbito (corrector L7-REV-01: la encuesta
+ * emite `survey`, que solo abre las rutas de la encuesta). null si la reserva no
+ * existe o está borrada: el llamador decide (el paso del tick lo cuenta como
+ * fallo, la ruta manual como 404).
+ */
+export async function issueGuestPortalSession(input: { reservationId: string; ttlMs?: number; now?: Date; purpose?: GuestSessionPurpose }): Promise<IssuedGuestPortalSession | null> {
+  const reservation = await prisma.reservation.findFirst({ where: { id: input.reservationId, deletedAt: null }, select: { id: true, propertyId: true } });
+  if (!reservation) return null;
+  const link =
+    (await prisma.reservationGuest.findFirst({ where: { reservationId: reservation.id, isPrimary: true }, select: { guestId: true } })) ??
+    (await prisma.reservationGuest.findFirst({ where: { reservationId: reservation.id }, orderBy: { id: "asc" }, select: { guestId: true } }));
+  const now = input.now ?? new Date();
+  const ttl = typeof input.ttlMs === "number" && Number.isFinite(input.ttlMs) && input.ttlMs > 0 ? input.ttlMs : SESSION_TTL_MS;
+  const expiresAt = new Date(now.getTime() + ttl);
+  const token = randomBytes(32).toString("hex");
+  const session = await prisma.guestPortalSession.create({
+    data: {
+      propertyId: reservation.propertyId,
+      reservationId: reservation.id,
+      guestId: link?.guestId ?? null,
+      tokenHash: hashToken(token),
+      status: "active",
+      purpose: input.purpose ?? "sign_in",
+      expiresAt
+    },
+    select: { id: true, purpose: true }
+  });
+  return { sessionId: session.id, token, reservationId: reservation.id, propertyId: reservation.propertyId, guestId: link?.guestId ?? null, expiresAt, purpose: guestSessionPurposeOf(session.purpose) };
+}
+
+/**
+ * Verifica el token opaco. `options.purposes` (por defecto GUEST_PORTAL_FULL_ACCESS:
+ * sign_in + invitation) acota los ámbitos admitidos: una sesión `survey` presentada
+ * a cualquier ruta que no sea la encuesta devuelve null (→ 401 GUEST_SESSION_INVALID),
+ * igual que un token caducado o revocado. Corrector L7-REV-01.
+ */
+export async function verifyGuestToken(token: string | null | undefined, options: { purposes?: readonly GuestSessionPurpose[] } = {}): Promise<VerifiedGuestSession | null> {
   if (!token || typeof token !== "string" || token.trim() === "") return null;
   const session = await prisma.guestPortalSession.findFirst({
     where: { tokenHash: hashToken(token.trim()), status: "active" }
@@ -214,10 +294,13 @@ export async function verifyGuestToken(token: string | null | undefined): Promis
     });
     return null;
   }
+  const purpose = guestSessionPurposeOf(session.purpose);
+  if (!(options.purposes ?? GUEST_PORTAL_FULL_ACCESS).includes(purpose)) return null;
   return {
     reservationId: session.reservationId ?? "",
     propertyId: session.propertyId,
-    guestId: session.guestId ?? null
+    guestId: session.guestId ?? null,
+    purpose
   };
 }
 

@@ -225,24 +225,12 @@ export function createIdleTimer(options: IdleTimerOptions): IdleTimer {
 }
 
 // ---------------------------------------------------------------------------
-// Ticket de handoff
+// Derivación al mostrador
 // ---------------------------------------------------------------------------
 
-/**
- * Número de ticket para el mostrador: «K-» + 4 dígitos deterministas a partir
- * de la sesión y el minuto (misma sesión y minuto → mismo ticket, para que el
- * huésped y el recepcionista lean el mismo número aunque la pantalla se repinte).
- */
-export function handoffTicket(seed: string, now: Date = new Date()): string {
-  const minute = Math.floor(now.getTime() / 60_000);
-  const input = `${seed}:${minute}`;
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return `K-${String(hash % 10_000).padStart(4, "0")}`;
-}
+// Corrector L7-REV-05: el ticket `K-nnnn` del mostrador ya no se calcula aquí.
+// Lo emite el servidor en POST /guest-portal/check-in/handoff (checkin-session.service.ts
+// handoffTicketFor) al derivar la sesión; la tablet solo pinta lo que devuelve esa ruta.
 
 /** Cabecera de autenticación del kiosco (client.ts la envía junto a x-guest-token). */
 export const KIOSK_TOKEN_HEADER = "x-kiosk-token";

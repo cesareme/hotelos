@@ -12,6 +12,8 @@ import {
   buildSteps,
   deriveGuestStatus,
   filterPreferences,
+  handoffReasonFor,
+  handoffTicketFor,
   isMinorAge,
   maskRecipient,
   mergeConsentJson,
@@ -235,5 +237,19 @@ describe("corrector CHK · menores, consentimientos y códigos de país", () => 
     assert.equal(paymentTypeForSession("link_sent"), "card");
     assert.equal(paymentTypeForSession("at_reception"), undefined);
     assert.equal(paymentTypeForSession("none"), undefined);
+  });
+});
+
+describe("corrector L7-REV-05 · ticket de derivación del servidor", () => {
+  it("handoffTicketFor: K-dddd determinista por sesión (mismo id → mismo ticket; ids distintos → distinto) y sin depender del minuto", () => {
+    const a = handoffTicketFor("cis_l7_1");
+    assert.match(a, /^K-\d{4}$/);
+    assert.equal(handoffTicketFor("cis_l7_1"), a);
+    assert.notEqual(handoffTicketFor("cis_l7_2"), a);
+    assert.equal(handoffTicketFor("cis_l7_1x").length, 6);
+  });
+
+  it("handoffReasonFor: texto que lee recepción con el ticket", () => {
+    assert.equal(handoffReasonFor("signature", "K-0042"), "Firma en recepción · ticket K-0042");
   });
 });

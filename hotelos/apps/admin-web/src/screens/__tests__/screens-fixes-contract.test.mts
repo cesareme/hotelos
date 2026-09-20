@@ -169,7 +169,10 @@ describe("screens · correcciones de Recepción (fix:3-C)", () => {
     const source = read("screens/guestJourney/GuestJourneyWorkspace.tsx");
     assert.match(source, /fetchRooms\(PROPERTY_ID\)/);
     assert.match(source, /rooms\.find\(\(r\) => r\.id === selected\.assignedRoomId\)\?\.number/);
-    assert.match(source, /assignedRoomNumber \? `Habitación \$\{assignedRoomNumber\}\.` : "Habitación asignada\."/);
+    // Tanda L7 · L7-07: computeJourney vive en screens/guestJourney/journey.ts (puro, probado bajo node --test).
+    const journey = read("screens/guestJourney/journey.ts");
+    assert.match(journey, /assignedRoomNumber \? `Habitación \$\{assignedRoomNumber\}\.` : "Habitación asignada\."/);
+    assert.doesNotMatch(journey, /Habitación \$\{res\.assignedRoomId\}/);
     assert.doesNotMatch(source, /Habitación \$\{res\.assignedRoomId\}/);
   });
 

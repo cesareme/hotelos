@@ -57,6 +57,10 @@ export * from "./checkin-types.js";
 // `integrations` de /health y catálogos (etiquetas, pantallas) compartidos por el
 // API y el admin-web.
 export * from "./integrations-status-types.js";
+// Portal del huésped · estancia y salida (Tanda L7 · L7-02): etapa de la estancia,
+// vista `GET /guest-portal/stay`, peticiones de salida, enlace de pago honesto y
+// códigos de error compartidos por el API, el portal del huésped y el admin-web.
+export * from "./guest-portal-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

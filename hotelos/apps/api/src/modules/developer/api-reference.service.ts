@@ -400,6 +400,8 @@ export const SINGLETON_LABELS: Record<string, string> = {
   otp: "el código de un solo uso (OTP)",
   // Tanda CHK · W4-D (routes/webhooks-whatsapp.routes.ts): «/webhooks/whatsapp» es público (sin JWT).
   whatsapp: "el webhook de WhatsApp",
+  // Tanda L7 · portal del huésped (modules/guest-portal): «/guest-portal/stay», «…/stay/requests» y «…/stay/payment-link».
+  stay: "la estancia del huésped",
   // OPERA Cloud modo sombra (Tanda 7b): «/integrations/pms-shadow/ingest» y «…/pms-shadow/reconciliation».
   "pms-shadow": "el modo sombra OPERA",
   reconciliation: "la conciliación diaria",
@@ -809,7 +811,9 @@ export const ACTION_LABELS: Record<string, string> = {
   "payment-link": "Generar el enlace de pago del saldo o depósito del check-in en línea (sin PSP: se cobra en recepción).",
   arrive: "Registrar la llegada del huésped (móvil o kiosco) y completar el check-in en línea.",
   // Tanda CHK · corrector (REV3-04): recepción resuelve la derivación (handed_off) y reabre la sesión.
-  "resolve-handoff": "Resolver la derivación a recepción de la sesión de check-in en línea (vuelve a lista para llegar o en curso)."
+  "resolve-handoff": "Resolver la derivación a recepción de la sesión de check-in en línea (vuelve a lista para llegar o en curso).",
+  // Corrector L7-REV-05 (checkin.routes.ts): «POST /guest-portal/check-in/handoff», el huésped pide terminar en el mostrador.
+  handoff: "Derivar el check-in en línea a recepción (firma en el mostrador; devuelve el ticket K-nnnn)."
 };
 
 /** Segmentos que delimitan el alcance («/properties/:propertyId/…») y no describen el recurso. */
@@ -960,6 +964,13 @@ export function describeEndpoint(method: string, path: string): string {
       ? "Verificar la suscripción del webhook de WhatsApp (reto de Meta: responde hub.challenge)."
       : "Recibir los mensajes entrantes de WhatsApp (firma HMAC de Meta; se entregan al bot del huésped).";
   }
+  // Tanda L7 · lote L7-04 (guest-portal/post-stay-survey): la encuesta post-estancia del portal («/guest-portal/survey»),
+  // su invitación desde la reserva («…/post-stay/survey-invite») y el recorrido del huésped («…/guest-journey»).
+  if (last === "survey" && parts[0] === "guest-portal") {
+    return verb === "POST" ? "Responder la encuesta post-estancia del huésped (dos preguntas, una sola vez por sesión)." : "Obtener la encuesta post-estancia de la sesión del huésped.";
+  }
+  if (last === "survey-invite" && parts[lastIndex - 1] === "post-stay") return "Invitar al huésped a la encuesta post-estancia (crea la sesión de 30 días y envía el enlace).";
+  if (last === "guest-journey" && parts[0] === "reservations") return "Obtener el recorrido del huésped de la reserva (etapas, sesiones y notificaciones, sin datos personales).";
   if (last === "check-in") return "Hacer check-in de la reserva.";
   if (last === "check-out") return "Hacer check-out de la reserva (cierra el folio y crea la tarea de limpieza de salida).";
   if (last === "assign-room") return "Asignar o reasignar habitación a la reserva.";

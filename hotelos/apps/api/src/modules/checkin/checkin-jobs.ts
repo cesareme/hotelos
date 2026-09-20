@@ -39,6 +39,14 @@
 //   4. Purga (global): purgeExpiredCaptures (W2-B; vacía fieldsJson/confidenceJson
 //      tras purgeAt) y sesiones `invited` cuya reserva ya salió → `expired`
 //      con auditoría CheckInSessionExpired (actor system:checkin:purge).
+//   5. Encuesta post-estancia (Tanda L7 · L7-04, recon §19.7): paso INDEPENDIENTE
+//      con su propio try/catch (guest-portal/post-stay-survey.service.ts ·
+//      runPostStaySurveyStep): propiedades con `postStaySurveyEnabled`, reservas
+//      checked_out con salida en [hoy − 3 d, día(ahora − delayHours)], titular
+//      con correo y consentimiento, una entrega por reserva (notificationId
+//      post_stay_survey:<reservationId>, token redactado); resumen en
+//      summary.postStaySurvey y los fallos por reserva en failed[] (step
+//      post_stay_survey). Sin proveedor de correo la entrega queda SIMULADO.
 //
 // Sin lecturas de entorno fuera de readCheckInConfig (checkin-config.ts);
 // shouldStartCheckinJobs es pura sobre opciones ya leídas por server.ts.
@@ -51,6 +59,7 @@ import { holdsSchedulerLease } from "../../lib/scheduler-leader.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { runBatchForDate, type AssignmentBatchResult } from "../pms/room-assignment.service.js";
 import { withAdvisoryLock, type LockDb } from "../reputation/reputation-lock.js";
+import { defaultPostStaySurveyDeps, runPostStaySurveyStep, type PostStaySurveyStepSummary } from "../guest-portal/post-stay-survey.service.js";
 import { CHECKIN_CONFIG_DEFAULTS, readCheckInConfig, type CheckInConfig } from "./checkin-config.js";
 import { inviteReservation, type InvitationResult } from "./checkin-session.service.js";
 import { purgeExpiredCaptures } from "./identity-capture.service.js";
@@ -139,6 +148,8 @@ export type CheckinJobsDeps = {
   invite: (input: { reservationId: string; channel: CheckInChannel; context: UserContext; correlationId: string; templateCode?: string }) => Promise<InvitationResult>;
   runBatch: (input: { context: UserContext; propertyId: string; date: string }) => Promise<Pick<AssignmentBatchResult, "suggested" | "skipped" | "failed">>;
   purgeCaptures: (now: Date) => Promise<{ purged: number }>;
+  /** Paso 5 (L7-04): encuesta post-estancia; recibe el reloj del tick y su zona (post-stay-survey.service.ts). */
+  postStaySurvey: (input: { clock: LocalClock; now: () => Date; timeZone: string }) => Promise<PostStaySurveyStepSummary>;
   audit: typeof recordAuditEvent;
   log: CheckinJobsLogger;
 };
@@ -154,6 +165,7 @@ export function defaultCheckinJobsDeps(): CheckinJobsDeps {
     invite: inviteReservation,
     runBatch: (input) => runBatchForDate(input),
     purgeCaptures: purgeExpiredCaptures,
+    postStaySurvey: (input) => runPostStaySurveyStep({ ...defaultPostStaySurveyDeps(), now: input.now, timeZone: input.timeZone }, input.clock),
     audit: recordAuditEvent,
     log: silentCheckinJobsLog
   };
@@ -165,7 +177,7 @@ export function withCheckinJobsDeps(deps?: Partial<CheckinJobsDeps>): CheckinJob
 
 // ── Resumen de una vuelta ────────────────────────────────────────────────────
 
-export type CheckinJobStep = "invite" | "remind" | "assign" | "purge";
+export type CheckinJobStep = "invite" | "remind" | "assign" | "purge" | "post_stay_survey";
 
 export type CheckinJobFailure = { propertyId: string | null; step: CheckinJobStep; entityId: string | null; error: string };
 
@@ -175,6 +187,8 @@ export type CheckinJobsTickSummary = {
   suggested: number;
   /** Capturas vaciadas + sesiones expiradas. */
   purged: number;
+  /** Paso 5 (L7-04): invitaciones a la encuesta post-estancia de esta vuelta. */
+  postStaySurvey: { invited: number; skipped: number; failed: number };
   failed: CheckinJobFailure[];
   details: {
     localDay: string;
@@ -368,6 +382,19 @@ async function purgeAll(d: CheckinJobsDeps, clock: LocalClock, summary: CheckinJ
   }
 }
 
+/** Paso 5 (L7-04): independiente del resto (propio try/catch); los fallos por reserva van a failed[]. */
+async function postStaySurveyAll(d: CheckinJobsDeps, clock: LocalClock, summary: CheckinJobsTickSummary): Promise<void> {
+  try {
+    const result = await d.postStaySurvey({ clock, now: d.now, timeZone: d.timeZone });
+    summary.postStaySurvey = { invited: result.invited, skipped: result.skipped, failed: result.failed };
+    for (const outcome of result.outcomes) {
+      if (outcome.status === "failed") summary.failed.push({ propertyId: outcome.propertyId, step: "post_stay_survey", entityId: outcome.reservationId || null, error: outcome.reason ?? "failed" });
+    }
+  } catch (error) {
+    summary.failed.push({ propertyId: null, step: "post_stay_survey", entityId: null, error: describeError(error) });
+  }
+}
+
 async function runTickWork(d: CheckinJobsDeps): Promise<CheckinJobsTickSummary> {
   const now = d.now();
   const clock = localClock(now, d.timeZone);
@@ -378,6 +405,7 @@ async function runTickWork(d: CheckinJobsDeps): Promise<CheckinJobsTickSummary> 
     reminded: 0,
     suggested: 0,
     purged: 0,
+    postStaySurvey: { invited: 0, skipped: 0, failed: 0 },
     failed: [],
     details: { localDay: clock.day, localTime: clock.time, assignmentRunAt: runAt, assignmentDue, properties: 0, purgedCaptures: 0, expiredSessions: 0, batchRuns: 0, batchSkipped: 0 }
   };
@@ -403,6 +431,7 @@ async function runTickWork(d: CheckinJobsDeps): Promise<CheckinJobsTickSummary> 
     }
   }
   await purgeAll(d, clock, summary);
+  await postStaySurveyAll(d, clock, summary);
   return summary;
 }
 
@@ -475,7 +504,7 @@ export function startCheckinJobs(options: StartCheckinJobsOptions = {}): { runNo
   };
   const timer = setInterval(() => void leaderTick(), intervalMs);
   timer.unref?.();
-  log.info({ intervalMs, runAtBoot }, `${LOG} enabled (every ${Math.round(intervalMs / 1000)}s · invitación J-3 + recordatorio J-1 + lote de asignación + purga)`);
+  log.info({ intervalMs, runAtBoot }, `${LOG} enabled (every ${Math.round(intervalMs / 1000)}s · invitación J-3 + recordatorio J-1 + lote de asignación + purga + encuesta post-estancia)`);
   if (runAtBoot) void leaderTick();
   return { runNow, stop: () => clearInterval(timer) };
 }

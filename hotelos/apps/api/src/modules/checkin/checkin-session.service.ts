@@ -686,6 +686,8 @@ export async function inviteReservation(input: {
       guestId: primaryProfile?.id ?? null,
       tokenHash: hashToken(token),
       status: "active",
+      // Corrector L7-REV-01: ámbito «invitation» (portal completo hasta la salida + 1 d).
+      purpose: "invitation",
       expiresAt
     }
   });
@@ -769,6 +771,91 @@ export async function inviteReservation(input: {
     ...(returnToken ? { token, checkInUrl } : {}),
     notification
   };
+}
+
+// ── Derivación al mostrador desde el kiosco (corrector L7-REV-05) ────────────
+
+/** `CheckInSession.handoffKind` de «Firmar en recepción» (kiosco): recepción recoge la firma con el pad del cajón. */
+export const HANDOFF_SIGNATURE_PENDING = "signature_pending";
+/** Derivaciones que puede pedir el huésped (POST /guest-portal/check-in/handoff). */
+export const GUEST_HANDOFF_KINDS = ["signature"] as const;
+export type GuestHandoffKind = (typeof GUEST_HANDOFF_KINDS)[number];
+const HANDOFF_KIND_BY_REQUEST: Record<GuestHandoffKind, string> = { signature: HANDOFF_SIGNATURE_PENDING };
+/** Sesiones que aún pueden derivarse (las cerradas del todo no). */
+const HANDOFF_ALLOWED_STATUSES: readonly string[] = Object.freeze(["invited", "in_progress", "ready_for_arrival", "arrived", "handed_off"]);
+
+/**
+ * Ticket `K-nnnn` del mostrador, determinista por sesión (FNV-1a 32 bits sobre
+ * el id): el huésped lo ve en la tablet y recepción lo lee en `handoffReason` y
+ * en la cola de Mi día. Antes lo calculaba el cliente (kiosk-mode.ts) sin que el
+ * servidor supiera nada; ahora SOLO existe cuando la sesión está `handed_off`.
+ */
+export function handoffTicketFor(sessionId: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < sessionId.length; index += 1) {
+    hash ^= sessionId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `K-${String(hash % 10_000).padStart(4, "0")}`;
+}
+
+/** «Firma en recepción · ticket K-1234»: texto de `handoffReason` que ve el personal. */
+export function handoffReasonFor(kind: GuestHandoffKind, ticket: string): string {
+  return `${kind === "signature" ? "Firma en recepción" : "Derivado a recepción"} · ticket ${ticket}`;
+}
+
+export type GuestHandoffResult = {
+  sessionId: string;
+  reservationId: string;
+  status: "handed_off";
+  handoffKind: string;
+  /** `K-nnnn`: el mismo número que lee recepción. */
+  ticket: string;
+  kioskDeviceId: string | null;
+  /** true si la sesión ya estaba derivada con el mismo motivo (segunda pulsación). */
+  idempotent: boolean;
+};
+
+/**
+ * POST /guest-portal/check-in/handoff (huésped; con `x-kiosk-token` el kiosco
+ * queda como origen): la sesión pasa a `handed_off` con `handoffKind
+ * signature_pending`, `handoffReason` con el ticket y `kioskDeviceId`; queda
+ * auditada (`CheckInHandedOff`) y entra en la cola de Mi día
+ * (`signature_pending`). Idempotente: una sesión ya derivada por el mismo
+ * motivo devuelve el mismo ticket sin escribir. 409 CHECKIN_SESSION_CLOSED si
+ * la sesión está `checked_in`, `expired` o `cancelled`.
+ */
+export async function handoffToReception(input: { token: string | null | undefined; kind: GuestHandoffKind; kioskDeviceId: string | null; correlationId: string }): Promise<GuestHandoffResult> {
+  const { session } = await requireSessionForToken(input.token);
+  const handoffKind = HANDOFF_KIND_BY_REQUEST[input.kind];
+  const ticket = handoffTicketFor(session.id);
+  if (!HANDOFF_ALLOWED_STATUSES.includes(session.status)) {
+    throw new ConflictError("La sesión de check-in ya no admite cambios desde el portal.", { code: "CHECKIN_SESSION_CLOSED", status: session.status });
+  }
+  if (session.status === "handed_off" && session.handoffKind === handoffKind) {
+    return { sessionId: session.id, reservationId: session.reservationId, status: "handed_off", handoffKind, ticket, kioskDeviceId: session.kioskDeviceId ?? null, idempotent: true };
+  }
+  const now = new Date();
+  const updated = await prisma.checkInSession.update({
+    where: { id: session.id },
+    data: {
+      status: "handed_off",
+      handoffKind,
+      handoffReason: handoffReasonFor(input.kind, ticket),
+      ...(input.kioskDeviceId ? { kioskDeviceId: input.kioskDeviceId, arrivedAt: session.arrivedAt ?? now } : {})
+    }
+  });
+  const context = await checkInServiceContext(session.propertyId, input.kioskDeviceId ? { kind: "kiosk", deviceId: input.kioskDeviceId } : { kind: "guest", sessionId: session.id });
+  audit(context, {
+    action: "CheckInHandedOff",
+    entityType: "checkin_session",
+    entityId: session.id,
+    actorType: "system",
+    beforeJson: { status: session.status, handoffKind: session.handoffKind ?? null, handoffReason: session.handoffReason ?? null },
+    afterJson: { status: "handed_off", handoffKind, ticket, requestedKind: input.kind, kioskDeviceId: input.kioskDeviceId ?? null, reservationId: session.reservationId },
+    correlationId: input.correlationId
+  });
+  return { sessionId: updated.id, reservationId: updated.reservationId, status: "handed_off", handoffKind, ticket, kioskDeviceId: updated.kioskDeviceId ?? null, idempotent: false };
 }
 
 // ── Sesión por token ─────────────────────────────────────────────────────────

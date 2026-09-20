@@ -3,16 +3,22 @@ import { defineConfig, devices } from "@playwright/test";
 /**
  * Playwright config for admin-web E2E (Tanda UX-1 · lote U1).
  *
- *  - Tres proyectos: `measure` (e2e/measure/t1…t6, medida automatizada del
+ *  - Cuatro proyectos: `measure` (e2e/measure/t1…t6, medida automatizada del
  *    camino óptimo, docs/design/UX-RECEPCION-FEEL.md §8.6) con trace "on" para
  *    que cada tarea deje su traza completa; `chromium` (specs de humo de
  *    recepción, e2e/*.spec.ts) y `touch` (U10 · e2e/target-size.spec.ts:
  *    tablet emulada con `hasTouch` —Chromium pasa a `pointer: coarse`—, iPad
  *    apaisado 1024 × 768 y vertical 820 × 1180, claro y oscuro con
  *    `colorScheme`; contrato de tamaño de objetivos §7.1 2.5.8 y contraste de
- *    badges en oscuro). `measure` va primero para que la medida canónica use
- *    UXDAY-T1 y la spec de humo la otra llegada sin habitación; `touch` va el
- *    último porque solo lee.
+ *    badges en oscuro) y `guest` (Tanda L7 · L7-03 · e2e/guest-portal: portal del
+ *    huésped apps/guest-web en móvil emulado Pixel 5 —393 × 851, `hasTouch`,
+ *    `isMobile`— es-ES, sobre el tenant aislado CHK de seed-checkin; su base es
+ *    `E2E_GUEST_BASE_URL`, por defecto http://127.0.0.1:5237). `measure` va
+ *    primero para que la medida canónica use UXDAY-T1 y la spec de humo la otra
+ *    llegada sin habitación; `touch` va después porque solo lee; `guest` el
+ *    último: necesita además el portal en marcha y el seed CHK, así que
+ *    normalmente se lanza solo (`e2e --project=guest`; sin «--»: pnpm lo pasaría
+ *    literal y Playwright ignoraría --project, corrector L7-REV-06).
  *  - Secuencial (1 worker, 0 reintentos): los flujos escriben en el tenant
  *    aislado UXDAY (seed-ux-day) y una tarea depende del estado que deja la
  *    anterior; el login de e2e tiene límite 10/min por IP.
@@ -23,8 +29,13 @@ import { defineConfig, devices } from "@playwright/test";
  *        corepack pnpm --filter @hotelos/admin-web e2e
  *      corepack pnpm --filter @hotelos/admin-web e2e:measure   (solo measure)
  *    Ejecuta antes el seed rearmado: corepack pnpm --filter @hotelos/database db:seed:ux-day -- --reset
+ *    Portal del huésped (docs/runbooks/ux-recepcion-pruebas.md §7): seed CHK (API parado), API con
+ *    GUEST_WEB_BASE_URL, guest-web en :5237 con VITE_GUEST_API_BASE y:
+ *      E2E_API_URL=http://127.0.0.1:3937 E2E_GUEST_BASE_URL=http://127.0.0.1:5237 \
+ *        corepack pnpm --filter @hotelos/admin-web e2e --project=guest
+ *      (una spec: `… e2e --project=guest survey`)
  *  - Navegador (CIERRE-1 · C4a): `E2E_CHROMIUM_EXECUTABLE` (opcional) fija el
- *    binario Chromium de los proyectos `chromium` y `touch` (`launchOptions.executablePath`)
+ *    binario Chromium de los proyectos `chromium`, `touch` y `guest` (`launchOptions.executablePath`)
  *    cuando la caché `~/Library/Caches/ms-playwright` no tiene la build que pide la
  *    versión instalada de @playwright/test y no se puede descargar (p. ej. la
  *    `chromium_headless_shell-1228/chrome-headless-shell-mac-arm64/chrome-headless-shell`
@@ -69,8 +80,8 @@ export default defineConfig({
     {
       name: "chromium",
       testIgnore: /measure/,
-      // U10: la spec de tablet (target-size) corre solo en el proyecto `touch`.
-      testMatch: /^(?!.*target-size).*\.spec\.ts$/,
+      // U10: la spec de tablet (target-size) corre solo en `touch`; L7-03: las de e2e/guest-portal solo en `guest`.
+      testMatch: /^(?!.*target-size)(?!.*guest-portal).*\.spec\.ts$/,
       use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 900 }, ...chromiumLaunch }
     },
     {
@@ -78,6 +89,12 @@ export default defineConfig({
       name: "touch",
       testMatch: /target-size\.spec\.ts$/,
       use: { browserName: "chromium", viewport: { width: 1024, height: 768 }, hasTouch: true, deviceScaleFactor: 2, colorScheme: "light", ...chromiumLaunch }
+    },
+    {
+      // L7-03: portal del huésped (apps/guest-web) en móvil emulado; specs de e2e/guest-portal sobre el tenant CHK (_guest-helpers.ts).
+      name: "guest",
+      testDir: "./e2e/guest-portal",
+      use: { ...devices["Pixel 5"], locale: "es-ES", baseURL: process.env.E2E_GUEST_BASE_URL ?? "http://127.0.0.1:5237", ...chromiumLaunch }
     }
   ]
 });

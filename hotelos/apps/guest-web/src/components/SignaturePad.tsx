@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { t } from "../checkin/wizard";
 import type { Lang } from "../checkin/wizard";
@@ -10,6 +10,12 @@ import type { Lang } from "../checkin/wizard";
 // POST /guest-portal/check-in/guests/:id/signature (GuestSignatureSchema).
 // Pointer events con `t`, `x`, `y` (sin presión); el trazo se exporta a PNG por
 // `canvas.toDataURL` y a SVG por polilíneas.
+//
+// Tanda L7 · L7-05 (WCAG 2.2 · 2.5.7 Dragging Movements, recon §18 D6): la firma
+// manuscrita es esencial (no se sustituye por teclado), así que el lienzo es
+// `role="img"` con nombre y descripción, y el componente ofrece una alternativa
+// operable por teclado —«Firmar en recepción» (`onDefer`)— que el asistente
+// convierte en handoff (kiosco) o en aviso (móvil).
 
 export type SignaturePayload = {
   pngBase64: string;
@@ -25,9 +31,18 @@ export type SignaturePadProps = {
   /** null cuando el lienzo está vacío. */
   onChange: (payload: SignaturePayload | null) => void;
   height?: number;
+  /** Alternativa sin arrastre (2.5.7): «Firmar en recepción». Sin callback no se pinta. */
+  onDefer?: () => void;
+  /** Texto del botón alternativo (por defecto «Firmar en recepción», derivado del copy existente). */
+  deferLabel?: string;
 };
 
 const STROKE_WIDTH = 2.2;
+
+/** «Firmar en recepción» / «Sign at reception» a partir de claves existentes de wizard.ts. */
+export function deferSignatureLabel(lang: Lang): string {
+  return `${t(lang, "sign")} ${t(lang, "statusHandedOff").toLowerCase()}`;
+}
 
 function buildSvg(strokes: Point[][], width: number, height: number): string {
   const paths = strokes
@@ -60,11 +75,14 @@ function buildMeta(strokes: Point[][]): SignaturePayload["strokeMeta"] {
   return { points: all.length, durationMs: Math.max(0, Math.round(maxT - minT)), bbox: { x: Math.round(minX), y: Math.round(minY), width: Math.round(maxX - minX), height: Math.round(maxY - minY) } };
 }
 
-export function SignaturePad({ lang, disabled = false, onChange, height = 180 }: SignaturePadProps) {
+export function SignaturePad({ lang, disabled = false, onChange, height = 180, onDefer, deferLabel }: SignaturePadProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokesRef = useRef<Point[][]>([]);
   const drawingRef = useRef(false);
   const [empty, setEmpty] = useState(true);
+  const id = useId();
+  const toolsId = `${id}-tools`;
+  const hintId = `${id}-hint`;
 
   // Resize the backing store to the CSS size × devicePixelRatio and redraw.
   const redraw = useCallback(() => {
@@ -162,13 +180,14 @@ export function SignaturePad({ lang, disabled = false, onChange, height = 180 }:
   }
 
   return (
-    <div className={`gp-signature${disabled ? " is-disabled" : ""}`}>
+    <div className={`gp-signature${disabled ? " is-disabled" : ""}`} aria-disabled={disabled || undefined}>
       <canvas
         ref={canvasRef}
         className="gp-signature-canvas"
         height={height}
         role="img"
         aria-label={t(lang, "signHere")}
+        aria-describedby={`${hintId} ${toolsId}`}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -176,10 +195,17 @@ export function SignaturePad({ lang, disabled = false, onChange, height = 180 }:
         onPointerLeave={onPointerUp}
       />
       {empty ? <span className="gp-signature-placeholder" aria-hidden>{t(lang, "signHere")}</span> : null}
-      <div className="gp-signature-tools">
+      {/* Descripción del lienzo para lectores de pantalla (la alternativa sin arrastre va en las herramientas). */}
+      <p id={hintId} className="gp-visually-hidden">{t(lang, "signatureIntro")}</p>
+      <div className="gp-signature-tools" id={toolsId}>
         <button type="button" className="gp-link" onClick={clear} disabled={disabled || empty}>
           {t(lang, "clearSignature")}
         </button>
+        {onDefer ? (
+          <button type="button" className="gp-link" onClick={onDefer} disabled={disabled}>
+            {deferLabel ?? deferSignatureLabel(lang)}
+          </button>
+        ) : null}
       </div>
     </div>
   );

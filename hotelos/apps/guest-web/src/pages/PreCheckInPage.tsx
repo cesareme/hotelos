@@ -1,36 +1,43 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { Layout } from "../components/Layout";
+import { Layout, useLang } from "../components/Layout";
 import { submitPreCheckIn } from "../api/client";
 import type { PreCheckInPayload } from "../api/client";
 import { useGuestSession } from "../auth/GuestSessionContext";
+import { t } from "../checkin/wizard";
+import type { CopyKey, Lang } from "../checkin/wizard";
 
-const DOC_TYPES: { value: PreCheckInPayload["documentType"]; label: string }[] = [
-  { value: "passport", label: "Passport" },
-  { value: "dni", label: "DNI" },
-  { value: "nie", label: "NIE" },
-  { value: "other", label: "Other" }
+// Tanda L7 · L7-01: etiquetas por clave de copy (mismas que el asistente).
+const DOC_TYPES: { value: PreCheckInPayload["documentType"]; key: CopyKey }[] = [
+  { value: "passport", key: "docPassport" },
+  { value: "dni", key: "docDni" },
+  { value: "nie", key: "docTie" },
+  { value: "other", key: "docOther" }
 ];
 
-const COUNTRIES = [
-  "Spain",
-  "France",
-  "Portugal",
-  "Germany",
-  "United Kingdom",
-  "Italy",
-  "United States",
-  "Mexico",
-  "Argentina",
-  "Other"
-];
+// Países como código ISO 3166-1 alfa-2 (valor que viaja al registro de viajeros);
+// el nombre se pinta en el idioma del portal con Intl.DisplayNames.
+const COUNTRY_CODES = ["ES", "FR", "PT", "DE", "GB", "IT", "US", "MX", "AR"] as const;
+const COUNTRY_OTHER = "other";
+
+const LOCALE: Record<Lang, string> = { es: "es-ES", en: "en-GB" };
+
+export function countryLabel(code: string, lang: Lang): string {
+  if (code === COUNTRY_OTHER) return t(lang, "countryOther");
+  try {
+    return new Intl.DisplayNames([LOCALE[lang]], { type: "region" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
 
 export function PreCheckInPage({ onBack }: { onBack: () => void }) {
   const { session } = useGuestSession();
+  const lang = useLang();
   const [documentType, setDocumentType] = useState<PreCheckInPayload["documentType"]>("passport");
   const [documentNumber, setDocumentNumber] = useState("");
   const [residenceAddress, setResidenceAddress] = useState("");
-  const [country, setCountry] = useState("Spain");
+  const [country, setCountry] = useState<string>("ES");
   const [arrivalEta, setArrivalEta] = useState("");
   const [specialRequests, setSpecialRequests] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -54,7 +61,7 @@ export function PreCheckInPage({ onBack }: { onBack: () => void }) {
       const result = await submitPreCheckIn(session.reservationId, payload);
       setConfirmation({ number: result.confirmationNumber, eta: arrivalEta });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "We couldn't save your pre-check-in. Please try again.");
+      setError(err instanceof Error && err.message ? err.message : t(lang, "preCheckInSaveError"));
     } finally {
       setSubmitting(false);
     }
@@ -62,70 +69,66 @@ export function PreCheckInPage({ onBack }: { onBack: () => void }) {
 
   return (
     <Layout
-      eyebrow="Pre-check-in"
-      title="Speed up your arrival"
-      subtitle="Share your details now and skip the queue at reception."
+      eyebrow={t(lang, "preCheckInBlock")}
+      title={t(lang, "preCheckInTitle")}
+      subtitle={t(lang, "preCheckInSubtitle")}
       reservationCode={session?.reservationCode}
-      back={{ label: "Back to my stay", onClick: onBack }}
-      footer={
-        <p className="gp-disclosure">
-          Your data is encrypted and only used for the legal guest register (RD 933/2021). Three-year retention applies.
-        </p>
-      }
+      back={{ label: t(lang, "backToStay"), onClick: onBack }}
+      footer={<p className="gp-disclosure">{t(lang, "retention")}</p>}
     >
       {confirmation ? (
-        <section className="gp-card gp-success" role="status">
-          <h2>You&apos;re all set</h2>
+        <section className="gp-card gp-success" role="status" aria-live="polite">
+          <h2>{t(lang, "preCheckInDoneTitle")}</h2>
           <p>
-            Welcome! Your check-in is ready
-            {confirmation.eta ? <> See you on {new Date(confirmation.eta).toLocaleDateString()}.</> : "."}
+            {t(lang, "preCheckInDoneBody")}
+            {confirmation.eta ? <> {t(lang, "seeYouOn", { date: new Date(confirmation.eta).toLocaleDateString(LOCALE[lang]) })}</> : null}
           </p>
-          <p className="gp-meta">Confirmation number</p>
+          <p className="gp-meta">{t(lang, "confirmationNumber")}</p>
           <p className="gp-confirmation">{confirmation.number}</p>
           <button type="button" className="gp-button gp-button-primary" onClick={onBack}>
-            Back to my stay
+            {t(lang, "backToStay")}
           </button>
         </section>
       ) : (
-        <form className="gp-card gp-form" onSubmit={onSubmit} noValidate>
+        <form className="gp-card gp-form" onSubmit={onSubmit} noValidate aria-busy={submitting}>
           <label className="gp-field">
-            <span>Document type</span>
+            <span>{t(lang, "documentType")}</span>
             <select value={documentType} onChange={(e) => setDocumentType(e.target.value as PreCheckInPayload["documentType"])}>
               {DOC_TYPES.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                <option key={opt.value} value={opt.value}>{t(lang, opt.key)}</option>
               ))}
             </select>
           </label>
           <label className="gp-field">
-            <span>Document number</span>
+            <span>{t(lang, "documentNumber")}</span>
             <input
               type="text"
               value={documentNumber}
               onChange={(e) => setDocumentNumber(e.target.value)}
-              placeholder="Enter the number on your ID"
+              placeholder={t(lang, "documentNumberPlaceholder")}
               required
             />
           </label>
           <label className="gp-field">
-            <span>Residence address</span>
+            <span>{t(lang, "residenceFullAddress")}</span>
             <textarea
               rows={3}
               value={residenceAddress}
               onChange={(e) => setResidenceAddress(e.target.value)}
-              placeholder="Street, city, postal code"
+              placeholder={t(lang, "addressPlaceholder")}
               required
             />
           </label>
           <label className="gp-field">
-            <span>Country of residence</span>
+            <span>{t(lang, "countryOfResidence")}</span>
             <select value={country} onChange={(e) => setCountry(e.target.value)}>
-              {COUNTRIES.map((c) => (
-                <option key={c} value={c}>{c}</option>
+              {[...COUNTRY_CODES, COUNTRY_OTHER].map((code) => (
+                <option key={code} value={code}>{countryLabel(code, lang)}</option>
               ))}
             </select>
           </label>
           <label className="gp-field">
-            <span>Estimated arrival</span>
+            <span>{t(lang, "arrivalEta")}</span>
             <input
               type="datetime-local"
               value={arrivalEta}
@@ -134,17 +137,17 @@ export function PreCheckInPage({ onBack }: { onBack: () => void }) {
             />
           </label>
           <label className="gp-field">
-            <span>Special requests <small>(optional)</small></span>
+            <span>{t(lang, "specialRequests")} <small>{t(lang, "optional")}</small></span>
             <textarea
               rows={3}
               value={specialRequests}
               onChange={(e) => setSpecialRequests(e.target.value)}
-              placeholder="Quiet room, early arrival, dietary needs…"
+              placeholder={t(lang, "specialRequestsPlaceholder")}
             />
           </label>
-          {error ? <p className="gp-error" role="alert">{error}</p> : null}
+          <div aria-live="polite">{error ? <p className="gp-error" role="alert">{error}</p> : null}</div>
           <button type="submit" className="gp-button gp-button-primary" disabled={submitting}>
-            {submitting ? "Saving…" : "Submit pre-check-in"}
+            {submitting ? t(lang, "saving") : t(lang, "submitPreCheckIn")}
           </button>
         </form>
       )}

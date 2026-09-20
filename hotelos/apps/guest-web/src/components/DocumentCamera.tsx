@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { MAX_DOCUMENT_BYTES, dataUrlByteSize, formatDocumentHint, looksLikeMrz, normalizeMrzText, t } from "../checkin/wizard";
 import type { Lang } from "../checkin/wizard";
@@ -12,6 +12,13 @@ import type { Lang } from "../checkin/wizard";
 //     no superar CHECKIN_DOCUMENT_MAX_BYTES (6 MiB), se entrega como data: URL
 //     y se DESCARTA en cliente en cuanto `onImage` resuelve (§7.3);
 //   · «Pegar MRZ»: lector hardware o teclado → `onMrz(lines)`.
+//
+// Tanda L7 · L7-05 (WCAG 2.2 · 2.1.1 Keyboard, 4.1.3 Status Messages): el
+// selector de archivo se abre desde un <button> real (el input de fichero queda
+// fuera del orden de tabulación y oculto para el lector), el vídeo en directo es
+// decorativo (`aria-hidden`), el desplegable de la MRZ enlaza su panel con
+// `aria-controls` y la textarea lleva etiqueta; los errores y el estado
+// «leyendo…» se anuncian en regiones vivas.
 
 const MAX_SIDE_PX = 1600;
 const JPEG_QUALITY = 0.85;
@@ -70,6 +77,10 @@ export function DocumentCamera({ lang, documentType, busy, onImage, onMrz, showM
   const [mrzText, setMrzText] = useState("");
   const [mrzOpen, setMrzOpen] = useState(showMrzFallback);
   const canUseCamera = typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
+  const id = useId();
+  const hintId = `${id}-hint`;
+  const mrzPanelId = `${id}-mrz`;
+  const mrzInputId = `${id}-mrz-input`;
 
   useEffect(() => {
     if (showMrzFallback) setMrzOpen(true);
@@ -153,12 +164,12 @@ export function DocumentCamera({ lang, documentType, busy, onImage, onMrz, showM
   }
 
   return (
-    <div className="gp-camera">
-      <p className="gp-camera-hint">{formatDocumentHint(documentType, lang)}</p>
+    <div className="gp-camera" aria-busy={busy}>
+      <p className="gp-camera-hint" id={hintId}>{formatDocumentHint(documentType, lang)}</p>
 
       {cameraOpen ? (
-        <div className="gp-camera-live">
-          <video ref={videoRef} className="gp-camera-video" playsInline muted autoPlay />
+        <div className="gp-camera-live" role="group" aria-label={t(lang, "useCamera")}>
+          <video ref={videoRef} className="gp-camera-video" playsInline muted autoPlay aria-hidden />
           <div className="gp-camera-guide" aria-hidden>
             <span className="gp-camera-guide-mrz" />
           </div>
@@ -173,10 +184,11 @@ export function DocumentCamera({ lang, documentType, busy, onImage, onMrz, showM
         </div>
       ) : (
         <div className="gp-camera-actions">
-          <label className={`gp-button gp-button-primary gp-file-button${busy ? " is-disabled" : ""}`}>
-            <input ref={fileInputRef} type="file" accept="image/*" capture="environment" onChange={(event) => void onFile(event)} disabled={busy} />
+          {/* El input de fichero no se tabula ni se lee: lo abre el botón (teclado, puntero y lector). */}
+          <input ref={fileInputRef} type="file" accept="image/*" capture="environment" className="gp-visually-hidden" tabIndex={-1} aria-hidden onChange={(event) => void onFile(event)} disabled={busy} />
+          <button type="button" className="gp-button gp-button-primary" onClick={() => fileInputRef.current?.click()} disabled={busy} aria-describedby={hintId}>
             {busy ? t(lang, "processing") : t(lang, "takePhoto")}
-          </label>
+          </button>
           {canUseCamera ? (
             <button type="button" className="gp-button gp-button-ghost" onClick={() => void openCamera()} disabled={busy}>
               {t(lang, "useCamera")}
@@ -185,20 +197,22 @@ export function DocumentCamera({ lang, documentType, busy, onImage, onMrz, showM
         </div>
       )}
 
-      {localError ? <p className="gp-error" role="alert">{localError}</p> : null}
+      <p className="gp-visually-hidden" role="status">{busy ? t(lang, "processing") : ""}</p>
+      <div aria-live="polite">{localError ? <p className="gp-error" role="alert">{localError}</p> : null}</div>
 
       <div className="gp-mrz">
-        <button type="button" className="gp-link" onClick={() => setMrzOpen((open) => !open)} aria-expanded={mrzOpen}>
+        <button type="button" className="gp-link" onClick={() => setMrzOpen((open) => !open)} aria-expanded={mrzOpen} aria-controls={mrzPanelId}>
           {t(lang, "pasteMrz")}
         </button>
-        {mrzOpen ? (
-          <div className="gp-stacked">
-            <textarea className="gp-mrz-input" rows={3} value={mrzText} onChange={(event) => setMrzText(event.target.value)} placeholder={t(lang, "mrzPlaceholder")} spellCheck={false} autoCapitalize="characters" disabled={busy} />
-            <button type="button" className="gp-button gp-button-ghost" onClick={() => void submitMrz()} disabled={busy || mrzText.trim() === ""}>
-              {t(lang, "sendMrz")}
-            </button>
-          </div>
-        ) : null}
+        <div className="gp-stacked" id={mrzPanelId} hidden={!mrzOpen}>
+          <label htmlFor={mrzInputId} className="gp-visually-hidden">
+            {t(lang, "sendMrz")}
+          </label>
+          <textarea id={mrzInputId} className="gp-mrz-input" rows={3} value={mrzText} onChange={(event) => setMrzText(event.target.value)} placeholder={t(lang, "mrzPlaceholder")} spellCheck={false} autoCapitalize="characters" disabled={busy} />
+          <button type="button" className="gp-button gp-button-ghost" onClick={() => void submitMrz()} disabled={busy || mrzText.trim() === ""}>
+            {t(lang, "sendMrz")}
+          </button>
+        </div>
       </div>
     </div>
   );

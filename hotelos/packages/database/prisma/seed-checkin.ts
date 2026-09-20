@@ -29,6 +29,8 @@
 // través de los servicios del módulo con el contexto de servicio (R17) para que
 // las filas sean coherentes con lo que produce el producto:
 //
+//   · Lote L7-04: la política lleva postStaySurveyEnabled (24 h) y prop_chk tiene la
+//     Survey post_stay `chk_survey_post_stay`; --reset borra sus respuestas.
 //   · PropertyCheckInPolicy de prop_chk: selfCheckInEnabled, depositPolicy
 //     balance, métodos visual_reception + mrz_checksum + otp_email, textos de
 //     consentimiento y de aviso de IA marcados «(texto provisional)» y
@@ -93,7 +95,7 @@ import { applyRoleTemplate, provisionDefaultTemplateRoles, syncPermissionCatalog
 import { provisionOrganizationChart } from "../../../apps/api/src/modules/accounting/chart-of-accounts.service.js";
 import { ensurePropertySettings } from "../../../apps/api/src/lib/tenant-hydration.js";
 import { buildMrz, type MrzSex } from "../../compliance/src/spain/mrz.js";
-import type { PermissionKey } from "../../shared/src/index.js";
+import { DEFAULT_GUEST_SURVEY_QUESTIONS, type PermissionKey } from "../../shared/src/index.js";
 import type { UserContext } from "../../../apps/api/src/lib/demo-store.js";
 import { flushAuditQueues, hydrateAuditChainFromPostgres, recordAuditEvent } from "../../../apps/api/src/modules/audit/audit.service.js";
 import { CHECKIN_SERVICE_PERMISSIONS, buildServiceContext, checkInServiceContext } from "../../../apps/api/src/modules/checkin/service-context.js";
@@ -118,6 +120,8 @@ export const EMAIL_DOMAIN = "chk.test";
 /** Contraseña común de los tres usuarios de prueba (solo demo local; nunca real). `SEED_CHK_PASSWORD` la sustituye. */
 export const DEMO_PASSWORD = process.env.SEED_CHK_PASSWORD?.trim() || "chk-demo";
 export const RESERVATION_PREFIX = "CHK-";
+/** Titulares inventados de las corridas e2e del portal (apps/admin-web/e2e/guest-portal/_guest-helpers.ts createSyntheticReservation). */
+export const E2E_BOOKER_EMAIL_PREFIX = "prueba.portal.";
 /** Grupo de las reservas CHK-03/04/05. */
 export const GROUP_CODE = "CHK-G1";
 /** Número de registro SES.HOSPEDAJES de SANDBOX (no es un registro real). */
@@ -150,6 +154,10 @@ export const GUEST_CONSENT_TEXT = `Tratamos tus datos para el registro de viajer
 export const AI_DISCLOSURE_TEXT = `Parte de la lectura de tu documento y de las respuestas del asistente las genera un sistema de inteligencia artificial supervisado por el personal del hotel. ${PROVISIONAL_TEXT_MARK}`;
 /** Métodos de verificación admitidos en prop_chk (los mismos que POLICY_DEFAULTS, fijados explícitamente). */
 export const POLICY_VERIFICATION_METHODS = ["visual_reception", "mrz_checksum", "otp_email"] as const;
+/** Tanda L7 (L7-04): encuesta post-estancia activa en prop_chk (el tick invita el día siguiente a la salida). */
+export const POST_STAY_SURVEY_DELAY_HOURS = 24;
+export const SURVEY_ID = "chk_survey_post_stay";
+export const SURVEY_NAME = "Encuesta post-estancia CHK (prueba)";
 /** Sesión que se rearma con --reset: solo se crea si la reserva no tiene ninguna y está en el estado esperado. */
 export type SessionScenario = "invited" | "in_progress" | "ready_for_arrival" | "checked_in" | "handed_off";
 export type CheckInScenario = {
@@ -678,11 +686,25 @@ async function resetDay(): Promise<void> {
   counts.roomBlock = await deleteScoped("roomBlock");
   counts.notificationDelivery = await deleteScoped("notificationDelivery");
   counts.workerJobRun = await deleteScoped("workerJobRun", { jobName: "checkin.assignment" });
+  // Lote L7-04: respuestas de la encuesta post-estancia de las encuestas de prop_chk (survey_responses no
+  // tiene property_id: se acota por las encuestas del hotel de prueba). La encuesta en sí es fija (upsert).
+  const chkSurveys = await prisma.survey.findMany({ where: { propertyId: PROPERTY_ID }, select: { id: true } });
+  counts.surveyResponse = (await prisma.surveyResponse.deleteMany({ where: { surveyId: { in: chkSurveys.map((s) => s.id) } } })).count;
   // Kioscos de prueba de otros lotes (ids cuid): solo queda el del seed, que conserva su emparejamiento.
   counts.kioskDevice = await deleteScoped("kioskDevice", { id: { not: KIOSK_ID } });
   // SOLO las reservas CHK-* del hotel de prueba (cascada: folios, líneas, pagos,
   // huéspedes de reserva, estancias); nunca las que tengan factura con verifactu_hash.
   counts.reservation = await deleteScoped("reservation", { code: { startsWith: RESERVATION_PREFIX }, id: { notIn: protectedIds } });
+  // Corrector L7-REV-10: las RES-* que dejan las corridas e2e del portal (titular
+  // `prueba.portal.<sello>@chk.test`) se acumulaban en prop_chk hasta agotar las Dobles
+  // (409 «No hay disponibilidad»). Se purgan SOLO las de prop_chk con ese titular y sin
+  // ninguna factura (las facturadas se conservan, como las CHK-* con VeriFactu).
+  const e2eReservations = await prisma.reservation.findMany({ where: { propertyId: PROPERTY_ID, bookerEmail: { startsWith: E2E_BOOKER_EMAIL_PREFIX } }, select: { id: true } });
+  const e2eIds = e2eReservations.map((row) => row.id);
+  const invoicedE2e = e2eIds.length > 0 ? await prisma.invoice.findMany({ where: { propertyId: PROPERTY_ID, reservationId: { in: e2eIds } }, select: { reservationId: true } }) : [];
+  const invoicedIds = new Set(invoicedE2e.map((row) => row.reservationId).filter((id): id is string => Boolean(id)));
+  const purgeIds = e2eIds.filter((id) => !invoicedIds.has(id) && !protectedReservationIds.has(id));
+  counts.e2eReservation = purgeIds.length > 0 ? await deleteScoped("reservation", { id: { in: purgeIds }, bookerEmail: { startsWith: E2E_BOOKER_EMAIL_PREFIX } }) : 0;
   // Huéspedes ficticios de org_chk que ya no enlaza ninguna reserva (los del seed se
   // reutilizan por id fijo y vuelven a enlazarse). Único borrado sin propertyId, acotado a org_chk.
   const orphanGuests = await prisma.guest.deleteMany({ where: { organizationId: ORG_ID, reservationGuests: { none: {} } } });
@@ -979,7 +1001,9 @@ async function ensurePolicy(contexts: SeedContexts): Promise<"created" | "update
     sameSet(current.allowedVerificationMethods, POLICY_VERIFICATION_METHODS) &&
     current.requireVisualCheckAtKiosk === false &&
     current.guestConsentText === GUEST_CONSENT_TEXT &&
-    current.aiDisclosureText === AI_DISCLOSURE_TEXT;
+    current.aiDisclosureText === AI_DISCLOSURE_TEXT &&
+    current.postStaySurveyEnabled === true &&
+    current.postStaySurveyDelayHours === POST_STAY_SURVEY_DELAY_HOURS;
   if (unchanged) return "unchanged";
   await upsertPolicy({
     context: contexts.admin,
@@ -993,11 +1017,28 @@ async function ensurePolicy(contexts: SeedContexts): Promise<"created" | "update
       // valor por defecto (true) y el kiosco deriva a recepción (IDENTITY_NOT_VERIFIED kiosk_visual_check).
       requireVisualCheckAtKiosk: false,
       guestConsentText: GUEST_CONSENT_TEXT,
-      aiDisclosureText: AI_DISCLOSURE_TEXT
+      aiDisclosureText: AI_DISCLOSURE_TEXT,
+      postStaySurveyEnabled: true,
+      postStaySurveyDelayHours: POST_STAY_SURVEY_DELAY_HOURS
     },
     correlationId: corr("policy")
   });
   return row ? "updated" : "created";
+}
+
+/**
+ * Lote L7-04: Survey `post_stay` de prop_chk por id fijo (cuestionario por defecto
+ * del portal: NPS + comentario). El portal la lee en GET /guest-portal/survey y
+ * el dashboard /dashboards/surveys agrega sus respuestas.
+ */
+async function ensureSurvey(): Promise<"created" | "updated"> {
+  const existing = await prisma.survey.findUnique({ where: { id: SURVEY_ID }, select: { id: true } });
+  await prisma.survey.upsert({
+    where: { id: SURVEY_ID },
+    create: { id: SURVEY_ID, propertyId: PROPERTY_ID, name: SURVEY_NAME, surveyType: "post_stay", questionsJson: DEFAULT_GUEST_SURVEY_QUESTIONS.map((question) => ({ ...question })), active: true },
+    update: { propertyId: PROPERTY_ID, name: SURVEY_NAME, surveyType: "post_stay", active: true }
+  });
+  return existing ? "updated" : "created";
 }
 
 export type KioskOutcome = { status: string; paired: "now" | "already"; deviceToken: string | null };
@@ -1291,7 +1332,7 @@ async function main(): Promise<void> {
     { table: "room_types / rooms / rate_plans / rate_days", op: "upsert", where: `property_id = ${PROPERTY_ID}`, count: ROOM_TYPES.length + roomsTotal + 1 + ROOM_TYPES.length * (RATE_DAYS_BEFORE + RATE_DAYS_AFTER + 1) },
     { table: "guests", op: "upsert", where: `organization_id = ${ORG_ID} AND id LIKE 'chk_guest_%'`, count: guestsTotal },
     { table: "reservations (+ reservation_guests, folios, folio_lines, payments, stays)", op: "create", where: `property_id = ${PROPERTY_ID} AND code LIKE '${RESERVATION_PREFIX}%'`, count: plan.length },
-    { table: `property_checkin_policies / kiosk_devices (+ emparejamiento) / room_blocks (${BLOCKED_ROOM} mañana) / room_connections (${CONNECTED_ROOMS.join("-")})`, op: "upsert", where: `property_id = ${PROPERTY_ID}`, count: 4 },
+    { table: `property_checkin_policies (encuesta post-estancia activa, ${POST_STAY_SURVEY_DELAY_HOURS} h) / kiosk_devices (+ emparejamiento) / room_blocks (${BLOCKED_ROOM} mañana) / room_connections (${CONNECTED_ROOMS.join("-")}) / surveys (${SURVEY_ID})`, op: "upsert", where: `property_id = ${PROPERTY_ID}`, count: 5 },
     {
       table: "checkin_sessions (+ checkin_guests, document_captures, signatures, guest_register_records, assignment_suggestions, guest_portal_sessions, notification_deliveries SIMULADO, guest_portal_actions mobile_key) por los servicios del check-in",
       op: "create",
@@ -1303,9 +1344,11 @@ async function main(): Promise<void> {
     planned.unshift(
       { table: "reservations conservadas con factura verifactu_hash (+ stays)", op: "update", where: `property_id = ${PROPERTY_ID} → checked_in → checked_out · confirmed → cancelled` },
       { table: "reservations CHK-* (cascada: folios, líneas, pagos, huéspedes de reserva, estancias)", op: "deleteMany", where: `property_id = ${PROPERTY_ID} AND code LIKE '${RESERVATION_PREFIX}%' AND sin factura con verifactu_hash` },
+      { table: "reservations RES-* de las corridas e2e del portal (cascada)", op: "deleteMany", where: `property_id = ${PROPERTY_ID} AND booker_email LIKE '${E2E_BOOKER_EMAIL_PREFIX}%' AND sin ninguna factura` },
       { table: "guests huérfanos (sin reserva enlazada)", op: "deleteMany", where: `organization_id = ${ORG_ID} AND sin reservation_guests` },
       { table: "guest_register_records / ses_hospedajes_submissions / tourist_tax_applications / payment_intents / housekeeping_tasks / work_orders / guest_portal_sessions / guest_portal_actions / invoices (verifactu_hash IS NULL)", op: "deleteMany", where: `property_id = ${PROPERTY_ID}` },
       { table: `checkin_sessions (cascada checkin_guests) / document_captures / signatures / assignment_suggestions / room_blocks / notification_deliveries / worker_job_runs (checkin.assignment) / kiosk_devices (id ≠ ${KIOSK_ID})`, op: "deleteMany", where: `property_id = ${PROPERTY_ID}` },
+      { table: "survey_responses de las encuestas de prop_chk", op: "deleteMany", where: `survey_id IN (surveys.property_id = ${PROPERTY_ID})` },
       { table: "rooms", op: "update", where: `property_id = ${PROPERTY_ID} → estado inicial (limpieza mixta · ${OUT_OF_ORDER_ROOM} out_of_order)`, count: roomsTotal }
     );
   }
@@ -1329,6 +1372,7 @@ async function main(): Promise<void> {
   // Lote W5-B: política, kiosco, bloqueo y comunicadas; después las sesiones por los servicios.
   const contexts = await seedContexts();
   const policy = await ensurePolicy(contexts);
+  const survey = await ensureSurvey();
   const kiosk = await ensureKiosk(contexts);
   const block = await ensureRoomBlock(contexts, today);
   const connection = await ensureRoomConnection(contexts);
@@ -1341,7 +1385,7 @@ async function main(): Promise<void> {
       `usuarios ${USERS.map((u) => `${u.local}@${EMAIL_DOMAIN}`).join(", ")} (contraseña ${DEMO_PASSWORD}) · ` +
       `sociedad ${LEGAL_ENTITY_TAX_ID} · SES sandbox ${SES_REGISTRY_NUMBER}`
   );
-  log(`[seed-checkin] política ${policy} · kiosco ${KIOSK_ID} ${kiosk.status} (${kiosk.paired === "now" ? "emparejado ahora" : "ya emparejado"}) · bloqueo ${BLOCKED_ROOM} mañana ${block} · comunicadas ${CONNECTED_ROOMS.join("-")} ${connection}`);
+  log(`[seed-checkin] política ${policy} (encuesta post-estancia activa, ${POST_STAY_SURVEY_DELAY_HOURS} h) · encuesta ${SURVEY_ID} ${survey} · kiosco ${KIOSK_ID} ${kiosk.status} (${kiosk.paired === "now" ? "emparejado ahora" : "ya emparejado"}) · bloqueo ${BLOCKED_ROOM} mañana ${block} · comunicadas ${CONNECTED_ROOMS.join("-")} ${connection}`);
   if (kiosk.deviceToken) log(`[seed-checkin] token del kiosco (una sola vez; la tablet lo guarda en localStorage): ${kiosk.deviceToken}`);
   const counts = { created: 0, existing: 0, skipped: 0 };
   for (const outcome of outcomes) {

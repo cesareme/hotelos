@@ -1881,6 +1881,8 @@ model GuestPortalSession {
   guestId       String?  @map("guest_id")
   tokenHash     String   @map("token_hash")
   status        String   @default("active")
+  /// Ámbito de la sesión (corrector L7-REV-01): sign_in | invitation | survey. `survey` solo abre GET|POST /guest-portal/survey.
+  purpose       String   @default("sign_in")
   expiresAt     DateTime @map("expires_at")
   createdAt     DateTime @default(now()) @map("created_at")
 
@@ -2138,6 +2140,10 @@ model PropertyCheckInPolicy {
   welcomeChannelOrderJson        Json     @default("[\"whatsapp\",\"email\",\"sms\"]") @map("welcome_channel_order_json")
   guestConsentText               String?  @map("guest_consent_text")
   aiDisclosureText               String?  @map("ai_disclosure_text")
+  /// Tanda L7 (L7-04): invitación a la encuesta post-estancia desde el tick del check-in (opt-in por propiedad).
+  postStaySurveyEnabled          Boolean  @default(false) @map("post_stay_survey_enabled")
+  /// Horas desde las 00:00 (hora local del tick) del día de salida hasta la invitación (0-72).
+  postStaySurveyDelayHours       Int      @default(24) @map("post_stay_survey_delay_hours")
   createdAt                      DateTime @default(now()) @map("created_at")
   updatedAt                      DateTime @updatedAt @map("updated_at")
 

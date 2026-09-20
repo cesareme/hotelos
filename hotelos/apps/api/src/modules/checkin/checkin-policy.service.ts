@@ -8,6 +8,8 @@
 //     manifiesto (defensa en profundidad para llamadas desde otros servicios),
 //     patch parcial validado por PolicyPutSchema, auditoría CheckInPolicyUpdated
 //     con before/after (sin PII: la política no lleva datos de huéspedes).
+//   · Tanda L7 (L7-04): postStaySurveyEnabled / postStaySurveyDelayHours gobiernan
+//     el paso de encuesta post-estancia del tick (guest-portal/post-stay-survey.service.ts).
 
 import type {
   AutoAssignLevel,
@@ -45,7 +47,9 @@ export const POLICY_DEFAULTS: Readonly<PolicyValues> = Object.freeze({
   assignmentWeights: {},
   welcomeChannelOrder: ["whatsapp", "email", "sms"] as CheckInChannel[],
   guestConsentText: null,
-  aiDisclosureText: null
+  aiDisclosureText: null,
+  postStaySurveyEnabled: false,
+  postStaySurveyDelayHours: 24
 });
 
 function stringArray<T extends string>(value: unknown, allowed: readonly T[], fallback: T[]): T[] {
@@ -79,6 +83,8 @@ export function toPolicyDto(row: PolicyRow | null, propertyId: string): Property
     welcomeChannelOrder: stringArray(row.welcomeChannelOrderJson, CHECKIN_CHANNELS, [...POLICY_DEFAULTS.welcomeChannelOrder]),
     guestConsentText: row.guestConsentText ?? null,
     aiDisclosureText: row.aiDisclosureText ?? null,
+    postStaySurveyEnabled: row.postStaySurveyEnabled,
+    postStaySurveyDelayHours: Math.max(0, row.postStaySurveyDelayHours),
     updatedAt: row.updatedAt.toISOString()
   };
 }
@@ -106,6 +112,8 @@ function columnsFromPatch(patch: PolicyPutInput): Prisma.PropertyCheckInPolicyUn
   if (patch.welcomeChannelOrder !== undefined) data.welcomeChannelOrderJson = [...new Set(patch.welcomeChannelOrder)];
   if (patch.guestConsentText !== undefined) data.guestConsentText = patch.guestConsentText;
   if (patch.aiDisclosureText !== undefined) data.aiDisclosureText = patch.aiDisclosureText;
+  if (patch.postStaySurveyEnabled !== undefined) data.postStaySurveyEnabled = patch.postStaySurveyEnabled;
+  if (patch.postStaySurveyDelayHours !== undefined) data.postStaySurveyDelayHours = patch.postStaySurveyDelayHours;
   return data;
 }
 

@@ -223,10 +223,15 @@ type FakeOptions = {
   emptyCheckIn?: boolean;
   /** Hace fallar `checkInSession.findMany` (tabla rota → degraded). */
   brokenSessions?: boolean;
+  /** La sesión derivada (cs_hand) lo está por «Firmar en recepción» (corrector L7-REV-05) en vez de por identidad. */
+  signatureHandoff?: boolean;
 };
 
 function fakeDb(options: FakeOptions = {}) {
   const empty = options.emptyCheckIn === true;
+  const sessionRows = options.signatureHandoff
+    ? sessions.map((row) => (row.id === "cs_hand" ? { ...row, handoffKind: "signature_pending", handoffReason: "Firma en recepción · ticket K-0042" } : row))
+    : sessions;
   const tables: Record<string, Row[]> = {
     reservation: reservations as unknown as Row[],
     reservationGuest: reservationGuests,
@@ -234,7 +239,7 @@ function fakeDb(options: FakeOptions = {}) {
     room: rooms,
     roomType: roomTypes,
     workOrder: [],
-    checkInSession: empty ? [] : (sessions as unknown as Row[]),
+    checkInSession: empty ? [] : (sessionRows as unknown as Row[]),
     checkInGuest: empty ? [] : checkInGuests,
     assignmentSuggestion: empty ? [] : (suggestions as unknown as Row[]),
     guestPortalAction: empty ? [] : (portalActions as unknown as Row[]),
@@ -298,7 +303,7 @@ function fakeDb(options: FakeOptions = {}) {
   return { dashboardDeps, queueDeps, calls };
 }
 
-const NEW_KINDS: FrontDeskQueueKind[] = ["precheckin_ready", "assignment_suggested", "self_checkin_done", "identity_review", "minor_without_guardian", "room_not_ready", "payment_failed", "ses_rejected"];
+const NEW_KINDS: FrontDeskQueueKind[] = ["precheckin_ready", "assignment_suggested", "self_checkin_done", "identity_review", "minor_without_guardian", "room_not_ready", "payment_failed", "ses_rejected", "signature_pending"];
 
 const byId = (items: FrontDeskQueueItem[], id: string): FrontDeskQueueItem => {
   const item = items.find((candidate) => candidate.id === id);
@@ -422,6 +427,20 @@ describe("front-desk-queue.service.ts · kinds de check-in (W3-D)", () => {
     assert.equal(result.items.indexOf(item) < result.items.findIndex((i) => i.priority === "today"), true, "los urgentes van antes que los de hoy");
     // El detector previo de habitación lista sigue vivo para esa reserva (problema distinto).
     assert.equal(byId(result.items, "checkin_ready_r_handoff").kind, "checkin_ready");
+  });
+
+  it("corrector L7-REV-05: handoff signature_pending («Firmar en recepción» desde el kiosco) → ítem de hoy con el ticket en el contexto", async () => {
+    const { queueDeps } = fakeDb({ signatureHandoff: true });
+    const result = await buildFrontDeskQueue({ propertyId: PROPERTY, now: NOW }, queueDeps);
+    const item = byId(result.items, "signature_pending_r_handoff");
+    assert.equal(item.kind, "signature_pending");
+    assert.equal(item.priority, "today");
+    assert.equal(item.title, "Firma en recepción · Derivada Prueba");
+    assert.equal(item.context, "Derivado desde el kiosco · Hab. 120 · Firma en recepción · ticket K-0042.");
+    assert.match(item.recommendation, /pad del cajón/);
+    assert.deepEqual(item.primaryAction, { label: "Abrir pre-check-in", kind: "open_precheckin", payload: { reservationId: "r_handoff" } });
+    assert.equal(result.counts.signature_pending, 1);
+    assert.equal(result.counts.identity_review, 0);
   });
 
   it("precheckin_ready sustituye a checkin_ready para esa reserva y lleva start_checkin", async () => {

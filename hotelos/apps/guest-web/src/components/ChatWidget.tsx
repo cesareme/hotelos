@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { chat } from "../api/client";
 import type { ChatResponse } from "../api/client";
@@ -11,6 +11,12 @@ import type { Lang } from "../checkin/wizard";
 // (`disclosureShown`) y el resultado de cada turno (`action`): respondido, actualizado,
 // pendiente de confirmación por recepción, derivado a una persona, sin identificar o
 // desactivado. Sin `localStorage`: la conversación vive en la página.
+//
+// Tanda L7 · L7-05 (WCAG 2.2 · 1.3.1, 4.1.3): la sección se nombra por su título
+// (`aria-labelledby`), el campo lleva etiqueta explícita (`<label htmlFor>` + `id`)
+// y describe su propósito, el registro es `role="log"` con `aria-busy` mientras
+// se espera la respuesta, el estado «enviando…» y los errores se anuncian en
+// regiones vivas.
 
 type Turn = { id: string; role: "guest" | "bot"; text: string; action?: ChatResponse["action"] };
 
@@ -30,6 +36,10 @@ export function ChatWidget({ lang, propertyName }: { lang: Lang; propertyName?: 
   const [disclosure, setDisclosure] = useState(false);
   const conversationRef = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const id = useId();
+  const titleId = `${id}-title`;
+  const introId = `${id}-intro`;
+  const inputId = `${id}-input`;
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -57,11 +67,11 @@ export function ChatWidget({ lang, propertyName }: { lang: Lang; propertyName?: 
   }
 
   return (
-    <section className="gp-card gp-chat" aria-label={t(lang, "chatTitle")}>
-      <p className="gp-label">{t(lang, "chatTitle")}</p>
-      <p className="gp-meta">{t(lang, "chatIntro")}</p>
-      {disclosure ? <p className="gp-disclosure">{t(lang, "chatDisclosure", { property: propertyName ?? "" })}</p> : null}
-      <div className="gp-chat-log" ref={listRef} role="log" aria-live="polite">
+    <section className="gp-card gp-chat" aria-labelledby={titleId} aria-busy={busy}>
+      <p className="gp-label" id={titleId}>{t(lang, "chatTitle")}</p>
+      <p className="gp-meta" id={introId}>{t(lang, "chatIntro")}</p>
+      {disclosure ? <p className="gp-disclosure" role="status">{t(lang, "chatDisclosure", { property: propertyName ?? "" })}</p> : null}
+      <div className="gp-chat-log" ref={listRef} role="log" aria-live="polite" aria-busy={busy}>
         {turns.map((turn) => (
           <div key={turn.id} className={`gp-chat-turn gp-chat-${turn.role}`}>
             <p className="gp-chat-bubble">{turn.text}</p>
@@ -69,11 +79,12 @@ export function ChatWidget({ lang, propertyName }: { lang: Lang; propertyName?: 
           </div>
         ))}
       </div>
-      {error ? <p className="gp-error" role="alert">{error}</p> : null}
+      <p className="gp-visually-hidden" role="status">{busy ? t(lang, "chatSending") : ""}</p>
+      <div aria-live="polite">{error ? <p className="gp-error" role="alert">{error}</p> : null}</div>
       <form className="gp-chat-form" onSubmit={onSubmit}>
-        <label className="gp-field gp-chat-field">
+        <label className="gp-field gp-chat-field" htmlFor={inputId}>
           <span className="gp-visually-hidden">{t(lang, "chatPlaceholder")}</span>
-          <input type="text" value={text} onChange={(event) => setText(event.target.value)} placeholder={t(lang, "chatPlaceholder")} maxLength={4000} disabled={busy} autoComplete="off" />
+          <input id={inputId} type="text" value={text} onChange={(event) => setText(event.target.value)} placeholder={t(lang, "chatPlaceholder")} maxLength={4000} disabled={busy} autoComplete="off" aria-describedby={introId} />
         </label>
         <button type="submit" className="gp-button gp-button-primary" disabled={busy || !text.trim()}>
           {busy ? t(lang, "chatSending") : t(lang, "chatSend")}

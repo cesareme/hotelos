@@ -212,6 +212,7 @@ export const HANDOFF_KIND_LABELS: Readonly<Record<string, string>> = {
   minor_without_guardian: "Menor sin adulto",
   room_not_ready: "Habitación no lista",
   payment_failed: "Pago rechazado",
+  signature_pending: "Firma en recepción",
   group_arrival: "Llegada de grupo",
   walk_in: "Walk-in",
   expired_document: "Documento caducado"

@@ -80,6 +80,8 @@ Con la plantilla «Recepción» el pie de la barra lateral dice **«9 categoría
 
 Registrar la llegada de un huésped con reserva: comprobar sus datos, dejarle una habitación **limpia**, cobrar el saldo si lo hay y encolar el parte de viajeros. Todo ocurre en un cajón lateral que se abre desde Mi día (fila o cola), desde la ficha de la reserva («Hacer check-in») o desde el panel del Live Timeline («Check-in»).
 
+**Si el huésped ha hecho el pre-check-in desde el portal.** Cuando el hotel envía la invitación al check-in en línea (ficha de la reserva › pestaña «Recorrido» › «Invitar al check-in en línea»; sin proveedor de correo configurado el aviso queda marcado «Simulado» y el enlace se muestra para dárselo por otro medio), el huésped rellena desde su móvil los viajeros, el documento, la dirección, los consentimientos, la firma y la hora de llegada, y elige pagar en recepción si el hotel no tiene pasarela. En Mi día la columna «Pre-check-in» de la llegada pasa a «Listo» y el cajón de check-in ya trae los viajeros y la firma: solo queda comprobar el documento, asignar la habitación limpia y cobrar. Si el huésped pulsó «Firmar en recepción» en el portal o en el kiosco, la firma se toma en el pad del cajón; el ticket «K-» que ve en pantalla no llega todavía a la cola de Mi día. El detalle de cada paso (invitación, viajeros completos, identidad, pago, habitación, llave, bienvenida, peticiones, salida y encuesta) está en la pestaña «Recorrido» de la ficha; el procedimiento completo, en `docs/runbooks/portal-huesped.md`.
+
 ### Check-in de una llegada con habitación limpia (con o sin cobro)
 
 1. En **Menú › Hoy › Mi día**, pestaña «Llegan hoy», localiza la fila (si hace falta, escribe el nombre o la habitación en «Buscar por nombre o habitación (⌥F)») y pulsa **«Hacer check-in»**. En la captura: Elena Sigma, UXDAY-A5, habitación 111, «128,00 € pendiente».
@@ -125,6 +127,8 @@ Una reserva nueva con llegada anterior a hoy no se puede crear desde recepción:
 ## Salidas y check-out
 
 Cerrar la estancia: revisar el folio, cobrar el saldo, decidir la factura y marcar la salida. Desde Mi día (pestaña «Salen hoy»), desde la ficha de la reserva o desde el panel del Live Timeline («Check-out»).
+
+**Peticiones que llegan desde el portal del huésped.** El huésped no hace el check-out solo: desde «Salida y cuenta» del portal ve su folio real, pide «Salida exprés», «Salida tardía», «Factura por correo» o «Consigna de equipaje» (con nota y hora preferida) y recibe un número de petición «SRQ-…». En recepción esa petición aparece en la ficha de la reserva › «Actividad» (departamento «Recepción») y se cierra cuando se atiende; la salida se hace como siempre desde Mi día o la ficha. Si el huésped pulsa «Quiero pagar ahora» sin pasarela de pago, el portal le dice «Se cobra en recepción» y no registra ningún cobro. Tras la salida, si el hotel tiene activa la encuesta post-estancia (Comercial › Ventas adicionales › «Portal del huésped»), el huésped recibe al día siguiente un enlace de 30 días para puntuar de 0 a 10 y dejar un comentario; desde la pestaña «Recorrido» de la ficha se puede «Enviar encuesta ahora» y ver la puntuación cuando responde.
 
 ### Check-out con cobro y factura
 

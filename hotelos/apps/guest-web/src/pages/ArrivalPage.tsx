@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Layout } from "../components/Layout";
 import { QrCode } from "../components/QrCode";
 import { StatusPill } from "../components/StatusPill";
@@ -10,11 +11,30 @@ import type { ArrivalErrorView, Lang } from "../checkin/wizard";
 // llave (QR / Apple / Google Wallet) o «recoge tu llave en recepción»; 409 →
 // mensaje por código (ROOM_NOT_READY «lista a las HH:MM», ventana de fechas,
 // identidad, saldo, firmas) y, en modo kiosco, ticket de handoff para el
-// mostrador (kiosk/kiosk-mode.ts handoffTicket).
+// mostrador (SOLO el `K-nnnn` que devuelve POST /guest-portal/check-in/handoff,
+// corrector L7-REV-05; sin ticket del servidor se pide terminar en recepción sin número).
+//
+// Tanda L7 · L7-05 (WCAG 2.2 · 2.4.3, 4.1.3): al montarse el foco pasa al
+// contenido (`#gp-main`, tabIndex -1 en Layout) para que el lector anuncie el
+// resultado (`role="status"`); la llave se ofrece como QR con nombre accesible
+// (SVG con <title>) Y como número de serie en texto; el asistente puede forzar
+// el handoff del kiosco (`handoff: true`, «Firmar en recepción») aunque el
+// código de error no lo implique por sí mismo.
 
 export type ArrivalOutcome =
   | { ok: true; data: ArriveResponse; at: string; /** Zona horaria de la propiedad (corrector REV3-14). */ timeZone?: string }
-  | { ok: false; code: string | null; message: string; details: Record<string, unknown> | null; at: string; timeZone?: string };
+  | {
+      ok: false;
+      code: string | null;
+      message: string;
+      details: Record<string, unknown> | null;
+      at: string;
+      timeZone?: string;
+      /** true: el huésped pidió terminar en recepción (kiosco → ticket aunque el código no sea de handoff). */
+      handoff?: boolean;
+      /** Ticket `K-nnnn` devuelto por POST /guest-portal/check-in/handoff (corrector L7-REV-05); sin él no se pinta ningún número. */
+      ticket?: string;
+    };
 
 /** «22/09/2026 02:00» en la zona de la propiedad (o del navegador si no se conoce); null si la fecha no es válida. */
 export function formatKeyValidity(iso: string, lang: Lang, timeZone?: string): string | null {
@@ -33,8 +53,6 @@ export type ArrivalPageProps = {
   onBack: () => void;
   backLabel?: string;
   kiosk?: boolean;
-  /** Ticket de handoff (kiosco) cuando recepción debe intervenir. */
-  ticket?: string | null;
   propertyName?: string;
   reservationCode?: string;
   timeZone?: string;
@@ -49,6 +67,15 @@ function walletHref(payload: unknown): string | null {
     }
   }
   return null;
+}
+
+/** Lleva el foco al contenido al montarse (navegación dentro de la SPA sin recarga). */
+function useFocusMain() {
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const main = document.getElementById("gp-main");
+    if (main instanceof HTMLElement) main.focus({ preventScroll: true });
+  }, []);
 }
 
 function KeyBlock({ lang, data, timeZone }: { lang: Lang; data: ArriveResponse; timeZone?: string }) {
@@ -92,9 +119,10 @@ function KeyBlock({ lang, data, timeZone }: { lang: Lang; data: ArriveResponse; 
   );
 }
 
-export function ArrivalPage({ lang, outcome, onBack, backLabel, kiosk = false, ticket = null, propertyName, reservationCode, timeZone: timeZoneProp }: ArrivalPageProps) {
+export function ArrivalPage({ lang, outcome, onBack, backLabel, kiosk = false, propertyName, reservationCode, timeZone: timeZoneProp }: ArrivalPageProps) {
   const back = { label: backLabel ?? (kiosk ? t(lang, "kioskFinish") : t(lang, "backToStay")), onClick: onBack };
   const timeZone = timeZoneProp ?? outcome.timeZone;
+  useFocusMain();
 
   if (outcome.ok) {
     const { data } = outcome;
@@ -111,7 +139,7 @@ export function ArrivalPage({ lang, outcome, onBack, backLabel, kiosk = false, t
         </section>
         <KeyBlock lang={lang} data={data} timeZone={timeZone} />
         {data.warnings.length > 0 ? (
-          <section className="gp-card">
+          <section className="gp-card" role="note">
             {data.warnings.map((line) => (
               <p key={line} className="gp-meta">
                 {line}
@@ -127,16 +155,22 @@ export function ArrivalPage({ lang, outcome, onBack, backLabel, kiosk = false, t
   }
 
   const view: ArrivalErrorView = describeArrivalError(outcome.details as never, outcome.message, lang, timeZone);
-  const showTicket = kiosk && view.handoff && ticket;
+  // Corrector L7-REV-05: recepción tiene que intervenir (kiosco); el número SOLO existe si lo devolvió el servidor.
+  const showHandoff = kiosk && (view.handoff || outcome.handoff === true);
+  const ticket = showHandoff && typeof outcome.ticket === "string" && outcome.ticket.trim() ? outcome.ticket.trim() : null;
   return (
-    <Layout eyebrow={t(lang, "stepArrival")} title={view.done ? t(lang, "arrivalWelcome") : showTicket ? t(lang, "handoffTitle") : t(lang, "stepArrival")} propertyName={propertyName} reservationCode={reservationCode} back={back}>
+    <Layout eyebrow={t(lang, "stepArrival")} title={view.done ? t(lang, "arrivalWelcome") : showHandoff ? t(lang, "handoffTitle") : t(lang, "stepArrival")} propertyName={propertyName} reservationCode={reservationCode} back={back}>
       <section className={`gp-card ${view.done ? "gp-success" : "gp-arrival-pending"}`} role="status">
         <p className="gp-arrival-message">{view.message}</p>
-        {outcome.code ? <p className="gp-meta">{outcome.code}</p> : null}
-        {showTicket ? (
+        {outcome.code ? (
+          <p className="gp-meta">
+            <code>{outcome.code}</code>
+          </p>
+        ) : null}
+        {showHandoff ? (
           <div className="gp-handoff">
-            <p className="gp-confirmation">{t(lang, "handoffTicket", { ticket })}</p>
-            <p className="gp-meta">{t(lang, "handoffHint")}</p>
+            {ticket ? <p className="gp-confirmation">{t(lang, "handoffTicket", { ticket })}</p> : null}
+            <p className="gp-meta">{t(lang, ticket ? "handoffHint" : "handoffNoTicket")}</p>
           </div>
         ) : null}
       </section>

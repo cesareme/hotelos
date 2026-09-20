@@ -1,5 +1,6 @@
 // Tanda CHK · W2-D — plantillas de sistema del check-in automatizado y
-// proveedor de WhatsApp con plantillas aprobadas. Sin base de datos ni red:
+// proveedor de WhatsApp con plantillas aprobadas. Tanda L7 · L7-04: plantilla
+// `post_stay_survey` (encuesta post-estancia). Sin base de datos ni red:
 //   node --import tsx --test src/modules/notifications/__tests__/checkin-templates.test.mts
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -25,6 +26,11 @@ const CHECKIN_VARIABLES = new Set([
 ]);
 
 const checkinTemplates = SYSTEM_TEMPLATES.filter((tpl) => (CHECKIN_CODES as readonly string[]).includes(tpl.code));
+
+// L7-04: encuesta post-estancia (recon §19.7) — variables cerradas y sin enlace al asistente.
+const SURVEY_CODE = "post_stay_survey";
+const SURVEY_VARIABLES = ["guestFirstName", "propertyName", "surveyUrl"] as const;
+const surveyTemplates = SYSTEM_TEMPLATES.filter((tpl) => tpl.code === SURVEY_CODE);
 
 describe("system templates — check-in automatizado (W2-D)", () => {
   it("resolveSystemTemplate devuelve checkin_invitation email es (y en) y whatsapp es", () => {
@@ -67,6 +73,11 @@ describe("system templates — check-in automatizado (W2-D)", () => {
     // Las dos plantillas previas (Tanda 3) siguen en cabeza, intactas.
     assert.equal(SYSTEM_TEMPLATES[0]?.code, "user_invitation");
     assert.equal(SYSTEM_TEMPLATES[1]?.code, "password_reset");
+    // Fuera de checkin_* y post_stay_survey solo existen esas dos (inventario cerrado).
+    assert.deepEqual(
+      SYSTEM_TEMPLATES.filter((tpl) => !tpl.code.startsWith("checkin_") && tpl.code !== SURVEY_CODE).map((tpl) => `${tpl.code}:${tpl.channel}:${tpl.language}`),
+      ["user_invitation:email:es", "password_reset:email:es"]
+    );
   });
 
   it("guest_magic_link sigue siendo null en todos los canales", () => {
@@ -162,6 +173,50 @@ describe("system templates — check-in automatizado (W2-D)", () => {
     // Con propiedad: la fila de la propiedad gana a la de la organización y ambas a la de sistema.
     const propertyRow = { ...orgRow, id: "tpl_prop_welcome", propertyId: "prop_1" };
     assert.equal(pickTemplate([orgRow, propertyRow], { propertyId: "prop_1", code: "checkin_welcome", channel: "whatsapp" })?.id, "tpl_prop_welcome");
+  });
+});
+
+describe("system templates — encuesta post-estancia (L7-04)", () => {
+  it("cubre email es/en, whatsapp es y sms es; el idioma sin plantilla cae en es", () => {
+    assert.deepEqual(surveyTemplates.map((tpl) => `${tpl.code}:${tpl.channel}:${tpl.language}`).sort(), [
+      "post_stay_survey:email:en",
+      "post_stay_survey:email:es",
+      "post_stay_survey:sms:es",
+      "post_stay_survey:whatsapp:es"
+    ]);
+    assert.equal(resolveSystemTemplate({ code: SURVEY_CODE, channel: "email" })?.language, "es");
+    assert.equal(resolveSystemTemplate({ code: SURVEY_CODE, channel: "email", language: "en" })?.language, "en");
+    assert.equal(resolveSystemTemplate({ code: SURVEY_CODE, channel: "email", language: "fr" })?.language, "es");
+    assert.equal(resolveSystemTemplate({ code: SURVEY_CODE, channel: "whatsapp" })?.subject, "");
+    assert.equal(pickTemplate([], { code: SURVEY_CODE, channel: "email", language: "es" })?.id, "system:post_stay_survey:email:es");
+  });
+
+  it("variables exactamente guestFirstName/propertyName/surveyUrl (todas en el cuerpo, ninguna sin declarar), texto plano, marca solo en el pie, sin asunto con marca, sin IA", () => {
+    for (const tpl of surveyTemplates) {
+      const label = `${tpl.code}:${tpl.channel}:${tpl.language}`;
+      assert.deepEqual([...tpl.variables].sort(), [...SURVEY_VARIABLES].sort(), `${label}: vocabulario cerrado`);
+      const bodyTokens = new Set(listTemplateTokensForTemplate({ body: tpl.body }));
+      for (const variable of tpl.variables) assert.ok(bodyTokens.has(variable), `${label}: {{${variable}}} ausente del cuerpo`);
+      for (const token of listTemplateTokensForTemplate({ body: tpl.body, subject: tpl.subject })) assert.ok(tpl.variables.includes(token), `${label}: {{${token}}} sin declarar`);
+      assert.equal(tpl.body.includes("<"), false, `${label}: texto plano`);
+      const lines = tpl.body.split("\n");
+      assert.deepEqual(lines.map((line, i) => (line.includes(BRAND.name) ? i : -1)).filter((i) => i >= 0), [lines.length - 1], `${label}: marca solo en la última línea`);
+      assert.equal(tpl.subject.includes(BRAND.name), false, `${label}: sin marca en el asunto`);
+      assert.doesNotMatch(tpl.body, /inteligencia artificial|asistente|botUrl/i, `${label}: la encuesta no enlaza al asistente`);
+      assert.match(tpl.body, /30 días|30 days/, `${label}: declara la caducidad del enlace`);
+      assert.deepEqual(systemTemplateToRecord(tpl).tokens, listTemplateTokensForTemplate({ body: tpl.body, subject: tpl.subject }));
+    }
+  });
+
+  it("se renderiza con el enlace completo y sin huecos", () => {
+    const tpl = resolveSystemTemplate({ code: SURVEY_CODE, channel: "email" });
+    assert.ok(tpl);
+    const url = "https://huesped.example.test/?survey=1&token=abc&property=prop_1";
+    const rendered = renderTemplate({ template: { body: tpl.body, subject: tpl.subject }, variables: { guestFirstName: "Prueba", propertyName: "Hotel Ensayo", surveyUrl: url } });
+    assert.equal(rendered.subject, "¿Qué tal tu estancia en Hotel Ensayo?");
+    assert.match(rendered.body, /^Hola Prueba,/);
+    assert.ok(rendered.body.includes(url));
+    assert.doesNotMatch(rendered.body, /\{\{/);
   });
 });
 

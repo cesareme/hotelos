@@ -874,6 +874,7 @@
       "doc": "Origen público del portal de huéspedes (magic links). Sin barra final.",
       "readBy": [
         "apps/api/src/modules/checkin/checkin-session.service.ts",
+        "apps/api/src/modules/guest-portal/post-stay-survey.service.ts",
         "apps/api/src/modules/messaging/messaging.service.ts",
         "apps/api/src/modules/notifications/event-hooks.service.ts"
       ]

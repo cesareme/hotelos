@@ -131,7 +131,11 @@ export const PolicyPutSchema = z
     assignmentWeights: weightsSchema.optional(),
     welcomeChannelOrder: z.array(z.enum(CHECKIN_CHANNELS)).max(CHECKIN_CHANNELS.length).optional(),
     guestConsentText: z.string().trim().max(4000).nullable().optional(),
-    aiDisclosureText: z.string().trim().max(4000).nullable().optional()
+    aiDisclosureText: z.string().trim().max(4000).nullable().optional(),
+    /** Tanda L7 (L7-04): invitación automática a la encuesta post-estancia (paso del tick del check-in). */
+    postStaySurveyEnabled: z.boolean().optional(),
+    /** Horas desde las 00:00 (hora local) del día de salida; tope 72 h para que la ventana de 3 días del paso nunca quede vacía. */
+    postStaySurveyDelayHours: z.number().int().min(0).max(72).optional()
   })
   .strict();
 export type PolicyPutInput = z.infer<typeof PolicyPutSchema>;
@@ -213,10 +217,13 @@ export const StaffSignatureSchema = GuestSignatureSchema.extend({
 }).strict();
 export type StaffSignatureInput = z.infer<typeof StaffSignatureSchema>;
 
+/** URL de retorno del PSP: SOLO http(s) (corrector REV-L7-08: `z.url()` admitía `javascript:` / `data:`). */
+const HTTP_URL_PATTERN = /^https?:\/\//i;
+
 /** POST /guest-portal/check-in/payment-link */
 export const PaymentLinkSchema = z
   .object({
-    returnUrl: z.string().trim().url().max(500).optional(),
+    returnUrl: z.string().trim().url().regex(HTTP_URL_PATTERN, "URL http(s)").max(500).optional(),
     clientRequestId: z.string().trim().min(1).max(120).optional()
   })
   .strict();
@@ -273,3 +280,8 @@ export type CompleteCheckInBody = z.infer<typeof CompleteCheckInSchema>;
 /** POST /reservations/:id/check-in/resolve-handoff (corrector REV3-04): recepción resuelve la derivación y reabre la sesión. */
 export const ResolveHandoffSchema = z.object({ note: z.string().trim().max(500).optional() }).strict();
 export type ResolveHandoffInput = z.infer<typeof ResolveHandoffSchema>;
+
+/** POST /guest-portal/check-in/handoff (corrector L7-REV-05): «Firmar en recepción» desde el kiosco o el móvil. */
+export const GUEST_HANDOFF_REQUEST_KINDS = ["signature"] as const;
+export const GuestHandoffSchema = z.object({ kind: z.enum(GUEST_HANDOFF_REQUEST_KINDS) }).strict();
+export type GuestHandoffInput = z.infer<typeof GuestHandoffSchema>;

@@ -52,7 +52,6 @@ import {
   KIOSK_STORAGE_KEY,
   clearKioskDevice,
   createIdleTimer,
-  handoffTicket,
   idleTimeoutMs,
   parseKioskParams,
   readKioskDevice,
@@ -309,6 +308,45 @@ describe("wizard · copy en español e inglés (sin i18n nueva)", () => {
     }
   });
 
+  // Tanda L7 · L7-01: copy del portal fuera del asistente (sesión, estancia,
+  // pre-check-in clásico, peticiones, cabecera) por clave, español por defecto.
+  it("L7-01: las claves del portal base existen en es y en, y el español es el idioma por defecto de t()", () => {
+    const portalKeys = [
+      "signingIn", "linkExpired", "skipToContent", "signOut", "langSelector", "langEs", "langEn",
+      "signInEyebrow", "signInTitle", "signInSubtitle", "signInHelp", "missingProperty", "signInFailed", "signInNotFound", "signingInButton", "previewAnyCode",
+      "stayEyebrow", "hello", "loadingStay", "staySubtitle", "loadingReservation", "reservationLoadError", "dates", "datesPending", "room", "guestsLabel", "balanceDueLabel",
+      "resConfirmed", "resCheckedOut", "resCancelled", "preCheckInHint", "requestService", "requestServiceHint", "contactLabel", "contactAtReception",
+      "preCheckInTitle", "preCheckInSubtitle", "documentNumberPlaceholder", "addressPlaceholder", "countryOfResidence", "countryOther", "arrivalEta", "specialRequests", "optional",
+      "specialRequestsPlaceholder", "preCheckInSaveError", "submitPreCheckIn", "preCheckInDoneTitle", "preCheckInDoneBody", "seeYouOn", "confirmationNumber",
+      "serviceEyebrow", "serviceTitle", "serviceSubtitle", "category", "catHousekeeping", "catHousekeepingHint", "catFood", "catFoodHint", "catConcierge", "catConciergeHint",
+      "catMaintenance", "catMaintenanceHint", "whatDoYouNeed", "serviceExample", "preferredTime", "serviceSendError", "sendRequest", "requestReceived", "requestReceivedBody", "ticketNumber", "anotherRequest"
+    ] as const;
+    for (const key of portalKeys) {
+      assert.ok(typeof COPY.es[key] === "string" && COPY.es[key].trim().length > 0, `es.${key}`);
+      assert.ok(typeof COPY.en[key] === "string" && COPY.en[key].trim().length > 0, `en.${key}`);
+    }
+    // Español e inglés difieren salvo en los marcadores compartidos (placeholder del código, nombres de idioma).
+    const sameInBoth = new Set(["reservationCodePlaceholder", "langEs", "langEn"]);
+    for (const key of portalKeys) {
+      if (!sameInBoth.has(key)) assert.notEqual(COPY.es[key], COPY.en[key], `${key} traducido`);
+    }
+    assert.equal(t("es", "signOut"), "Cerrar sesión");
+    assert.equal(t("en", "signOut"), "Sign out");
+    assert.equal(t("es", "hello", { name: "Ana" }), "Hola, Ana");
+    assert.equal(t("en", "hello", { name: "Ana" }), "Hello, Ana");
+    assert.match(t("es", "missingProperty", { param: "?property=" }), /\?property=/);
+    assert.match(t("es", "seeYouOn", { date: "20/9/2026" }), /20\/9\/2026/);
+    // El estado de la reserva reutiliza «Check-in hecho» del asistente para checked_in.
+    assert.equal(t("es", "statusCheckedIn"), "Check-in hecho");
+    // Honestidad: el aviso «cualquier código entra» nombra la vista previa sin API y niega el envío de enlace.
+    assert.match(t("es", "previewAnyCode"), /sin API/);
+    assert.match(t("es", "previewAnyCode"), /no se envía ningún enlace/);
+    assert.match(t("en", "previewAnyCode"), /without API/);
+    // Sin teléfono: «pregunta en recepción», nunca un número inventado.
+    assert.equal(t("es", "contactAtReception"), "Pregunta en recepción");
+    assert.doesNotMatch(COPY.es.contactAtReception + COPY.en.contactAtReception, /\+34|\d{6,}/);
+  });
+
   it("pickLanguage: español por defecto (es/gl/ca/eu), inglés para el resto", () => {
     assert.equal(pickLanguage("es-ES"), "es");
     assert.equal(pickLanguage("gl"), "es");
@@ -427,7 +465,7 @@ describe("kiosk-mode · parseKioskParams y credencial del dispositivo", () => {
   });
 });
 
-describe("kiosk-mode · temporizador de inactividad de 90 s y ticket de handoff", () => {
+describe("kiosk-mode · temporizador de inactividad de 90 s y derivación al mostrador", () => {
   it("idleTimeoutMs es 90 000 y el aviso llega 15 s antes", () => {
     assert.equal(idleTimeoutMs, 90_000);
     assert.equal(IDLE_TIMEOUT_MS, 90_000);
@@ -495,11 +533,14 @@ describe("kiosk-mode · temporizador de inactividad de 90 s y ticket de handoff"
     assert.deepEqual(scheduled, [5_000]);
   });
 
-  it("handoffTicket: K-dddd determinista por sesión y minuto, distinto entre sesiones", () => {
-    const at = new Date("2026-09-20T10:15:30.000Z");
-    const a = handoffTicket("cis_1", at);
-    assert.match(a, /^K-\d{4}$/);
-    assert.equal(handoffTicket("cis_1", new Date("2026-09-20T10:15:59.000Z")), a, "mismo minuto → mismo ticket");
-    assert.notEqual(handoffTicket("cis_2", at), a);
+  it("corrector L7-REV-05: el ticket K-nnnn ya no se calcula en el cliente (lo devuelve POST /guest-portal/check-in/handoff); SIGNATURE_AT_RECEPTION es una derivación honesta", () => {
+    const view = describeArrivalError({ code: "SIGNATURE_AT_RECEPTION" }, "x", "es");
+    assert.equal(view.handoff, true);
+    assert.equal(view.done, false);
+    assert.equal(view.step, null);
+    assert.equal(view.message, "Has pedido firmar en recepción: tu check-in continúa en el mostrador.");
+    assert.equal(describeArrivalError({ code: "SIGNATURE_AT_RECEPTION" }, "x", "en").message, "You asked to sign at reception: your check-in continues at the desk.");
+    assert.equal(t("es", "handoffNoTicket"), "Un compañero de recepción terminará tu check-in en el mostrador.");
+    assert.equal(t("es", "handoffError"), "No se pudo avisar a recepción. Inténtalo de nuevo o acércate al mostrador.");
   });
 });

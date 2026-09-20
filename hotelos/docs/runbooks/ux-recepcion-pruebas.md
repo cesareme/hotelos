@@ -140,3 +140,40 @@ alojado; U7 lo añadió). El velo de los drawers (`styles/cocoa-22-shell.css` oc
 El tenant `UXDAY` es compartido por todas las instancias sobre la misma base de datos: antes de dar por buena una medida,
 comprueba que nadie más usa `prop_uxday` (`lsof -nP -iTCP:3913 -iTCP:5183`, y los `audit_events` del tenant en la ventana de
 la corrida); dos suites a la vez se consumen mutuamente UXDAY-T1/T3 (R6).
+
+## 7 · Portal del huésped (proyecto `guest`)
+
+Tanda L7 · lote L7-03: el mismo arnés Playwright de admin-web tiene un cuarto proyecto, `guest`
+(`apps/admin-web/playwright.config.ts`), que recorre el portal del huésped `apps/guest-web` en un móvil emulado
+(Pixel 5, 393 × 851, `hasTouch`, es-ES) con las specs de `apps/admin-web/e2e/guest-portal/` y los helpers
+`_guest-helpers.ts` (`loginAsChk`, `createSyntheticReservation`, `invite`, `guestUrl`, `syntheticMrz`, `assertTargets`,
+`shot`, `watchConsole`). Tenant: el aislado `CHK` de `packages/database/prisma/seed-checkin.ts` (`org_chk` / `prop_chk`,
+`recepcion@chk.test` · `direccion@chk.test`, contraseña `chk-demo` o `E2E_CHK_PASSWORD`); cada corrida crea por API una
+reserva nueva con titular INVENTADO («Prueba Portal») y la invita: nunca datos de Faranda ni nombres reales, ni en capturas
+ni en los JSON de objetivos. `precheckin.spec.ts`: enlace mágico → token fuera de la URL → viajeros → «foto» sin proveedor
+de visión (400 `DOCUMENT_UNREADABLE`) → MRZ sintética válida → datos y consentimientos → cierre del pre-check-in y firma →
+pago honesto sin PSP (`no_folio` / `at_reception` / `settled` solo con saldo 0) → llegada (409
+`CHECK_IN_DATE_OUT_OF_RANGE` con la llegada a 3 días; `E2E_GUEST_ARRIVAL_OFFSET_DAYS=0` espera 200 con habitación y
+llave). En cada paso mide el tamaño de los objetivos (§7.1 · 2.5.8: 0 < 24 px afirmado; los < 44 px a
+`targets-<paso>.json` en `TARGET_SIZE_OUT` o el outputDir) y captura a `E2E_SHOTS_DIR` (por defecto
+`apps/admin-web/test-results/guest-portal-shots`, ignorado por git); al final exige 0 excepciones de página, ninguna
+respuesta ≥ 400 fuera de las dos esperadas y que el token no viaje en ninguna URL.
+
+```bash
+# 1) seed CHK con el API parado (idempotente; --reset lo rearma)
+corepack pnpm --filter @hotelos/database db:seed:checkin -- --reset
+# 2) API propio (GUEST_WEB_BASE_URL = base del portal para el enlace de invitación) y portal en :5237
+(cd apps/api && PORT=3937 RUN_SCHEDULERS=false TENANT_BOOTSTRAP_SKIP=true RATE_LIMIT_MAX=5000 \
+  GUEST_WEB_BASE_URL=http://127.0.0.1:5237 node --env-file-if-exists=../../.env --import tsx src/server.ts &)
+(VITE_GUEST_API_BASE=http://127.0.0.1:3937 VITE_GUEST_PROPERTY_ID=prop_chk \
+  corepack pnpm --filter @hotelos/guest-web dev --host 127.0.0.1 --port 5237 --strictPort &)
+# 3) solo el portal (sin «--» antes de las opciones: pnpm lo pasaría literal y Playwright ignoraría --project)
+E2E_API_URL=http://127.0.0.1:3937 E2E_GUEST_BASE_URL=http://127.0.0.1:5237 \
+  corepack pnpm --filter @hotelos/admin-web e2e --project guest
+```
+
+`corepack pnpm --filter @hotelos/admin-web e2e` sin `--project` ejecuta AHORA los cuatro proyectos (measure, chromium, touch y
+guest): para las suites de recepción solas, `--project measure --project chromium --project touch`. El proyecto `chromium`
+excluye `e2e/guest-portal` por su `testMatch`. Playwright 1.63 necesita el build `chromium_headless_shell-1243`
+(`PLAYWRIGHT_BROWSERS_PATH` si está instalado fuera de la caché por defecto). Sin API, seed o portal la spec falla con el
+motivo: no hay skip.
