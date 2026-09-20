@@ -46,7 +46,7 @@ export type VerifactuSoftwareHealth = {
   indicadorMultiplesOT: "S" | "N";
 };
 
-type IntegrationHealth = {
+export type IntegrationHealth = {
   integration: string;
   enabled: boolean;
   mode: IntegrationMode;
@@ -139,9 +139,15 @@ function getSesHospedajesHealth(): IntegrationHealth {
 
 // ───────────────────────────────────────────────── TBAI (País Vasco / Navarra)
 
-const FORAL_TERRITORIES = new Set(["bizkaia", "gipuzkoa", "araba", "navarra"]);
+export const FORAL_TERRITORIES: ReadonlySet<string> = new Set(["bizkaia", "gipuzkoa", "araba", "navarra"]);
 
-function getTbaiHealth(foralPropertyIds: string[]): IntegrationHealth {
+/**
+ * `foralPropertyIds: null` = lectura del PROCESO (sin organización ni BD, corrector
+ * L8 · REV-03 para `/health`): la integración se declara por su modo y certificado
+ * y la aplicabilidad (territorio foral) se evalúa por establecimiento en
+ * GET /integrations/status.
+ */
+function getTbaiHealth(foralPropertyIds: string[] | null): IntegrationHealth {
   const mode = pickMode(process.env.TBAI_MODE);
   const tbaiMode: "sandbox" | "production" = mode === "production" ? "production" : "sandbox";
   const cert = checkCert(process.env.TBAI_CERT_PATH, process.env.TBAI_CERT_PASSPHRASE);
@@ -150,7 +156,7 @@ function getTbaiHealth(foralPropertyIds: string[]): IntegrationHealth {
     sandbox: "stub://tbai-{bizkaia|gipuzkoa|araba}",
     production: "https://sarrerak.bizkaia.eus + tbai-z.egoitza.gipuzkoa.eus + ticketbai.araba.eus"
   };
-  const enabled = foralPropertyIds.length > 0;
+  const enabled = foralPropertyIds === null || foralPropertyIds.length > 0;
   const readyForReal = enabled && tbaiMode === "production" && cert.configured && cert.certPathExists;
   return {
     integration: "tbai",
@@ -159,10 +165,23 @@ function getTbaiHealth(foralPropertyIds: string[]): IntegrationHealth {
     readyForReal,
     cert,
     endpoint: endpoints[tbaiMode],
-    notes: enabled
-      ? `TicketBAI activo: ${foralPropertyIds.length} propiedad(es) con territorio foral.`
-      : "TicketBAI no aplica: ninguna propiedad declara territorio foral (Bizkaia, Gipuzkoa, Araba o Navarra)."
+    notes:
+      foralPropertyIds === null
+        ? "Modo del proceso: TicketBAI aplica solo a los establecimientos con territorio foral (se evalúa por propiedad)."
+        : enabled
+          ? `TicketBAI activo: ${foralPropertyIds.length} propiedad(es) con territorio foral.`
+          : "TicketBAI no aplica: ninguna propiedad declara territorio foral (Bizkaia, Gipuzkoa, Araba o Navarra)."
   };
+}
+
+/**
+ * Lectores solo-configuración (entorno + existencia del certificado; sin Prisma ni
+ * organización) para el bloque `integrations` de GET /health, que es público: nunca
+ * mezcla datos de todos los tenants (corrector L8 · REV-03). El informe completo
+ * por organización sigue siendo getComplianceHealth(organizationId).
+ */
+export function describeComplianceEnvironment(): IntegrationHealth[] {
+  return [getVerifactuHealth(), getSesHospedajesHealth(), getTbaiHealth(null), getIgicHealth()];
 }
 
 // ───────────────────────────────────────────────── IGIC (Canarias)

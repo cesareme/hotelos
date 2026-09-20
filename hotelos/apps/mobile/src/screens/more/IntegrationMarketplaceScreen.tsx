@@ -14,7 +14,7 @@ export function IntegrationMarketplaceScreen() {
             key={provider.code}
             name={provider.name}
             category={category?.name ?? provider.categoryCode}
-            status={provider.code === "mock_payments" ? "connected" : "available"}
+            status={provider.demo ? "demostración" : "available"}
             capabilities={provider.capabilities}
           />
         );

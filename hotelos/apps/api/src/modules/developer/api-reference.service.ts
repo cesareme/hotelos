@@ -731,7 +731,7 @@ export const ACTION_LABELS: Record<string, string> = {
   "apply-preview": "Previsualizar la aplicación de cambios.",
   rollback: "Deshacer la migración.",
   "migrate-legacy": "Migrar los datos heredados.",
-  "pull-reservations": "Descargar las reservas del canal.",
+  "pull-reservations": "Traer las reservas del canal al buzón de reservas externas (no crea reservas; en modo de pruebas vienen del simulador).",
   "push-rates": "Publicar las tarifas en el canal.",
   "push-availability": "Publicar la disponibilidad en el canal.",
   "push-restrictions": "Publicar las restricciones en el canal.",

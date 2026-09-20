@@ -33,7 +33,7 @@ import { navigateTo } from "../../lib/navigate";
 import { dateTime, number, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS as UI_STATUS } from "../../content/actions";
 import { useTabHost } from "../tabs/TabHost";
-import { SUBMISSION_PENDING_STATUSES } from "../fiscal/fiscal-shared";
+import { SIMULATED_ENDPOINT_LABEL, SUBMISSION_PENDING_STATUSES, isSimulatedSubmission, simulatorAwareStatusLabel } from "../fiscal/fiscal-shared";
 import {
   CocoaBadge,
   CocoaButton,
@@ -172,7 +172,8 @@ const errorStyle: CSSProperties = { color: toneInk("danger"), overflowWrap: "any
 const SUBMISSION_COLUMNS: CocoaTableColumn<SesSubmissionRow>[] = [
   { key: "submissionType", label: "Tipo", fit: true, showFrom: "desktop", render: (s) => (s.submissionType ?? "—").replace(/_/g, " ") },
   { key: "reservationId", label: "Reserva", fit: true, hideOnNarrow: true, render: (s) => (s.reservationId ? <span className="cocoa-mono">{s.reservationId}</span> : "—") },
-  { key: "status", label: "Estado", fit: true, render: (s) => <CocoaBadge tone={statusTone(s.status)}>{STATUS_LABELS[s.status] ?? s.status}</CocoaBadge> },
+  // Acuses del simulador (`endpoint stub://`): «Aceptado (simulador)», nunca un acuse del Ministerio (corrector L8 · REV-02).
+  { key: "status", label: "Estado", fit: true, render: (s) => <CocoaBadge tone={statusTone(s.status)}>{simulatorAwareStatusLabel(s, STATUS_LABELS)}</CocoaBadge> },
   {
     key: "reference",
     label: "Referencia o error",
@@ -781,7 +782,7 @@ function SesSubmissionDrawer({ submissionId, onClose, onRetried }: { submissionI
       ) : (
         <div className="cocoa-stack" data-gap="4">
           <div className="cocoa-cluster">
-            <CocoaBadge tone={statusTone(sub.status)}>{STATUS_LABELS[sub.status] ?? sub.status}</CocoaBadge>
+            <CocoaBadge tone={statusTone(sub.status)}>{simulatorAwareStatusLabel(sub, STATUS_LABELS)}</CocoaBadge>
             {sub.submissionType ? <CocoaBadge tone="neutral" size="small">{sub.submissionType.replace(/_/g, " ")}</CocoaBadge> : null}
             {sub.signatureMode ? <CocoaBadge tone="neutral" size="small">{`XAdES ${sub.signatureMode}`}</CocoaBadge> : null}
             <CocoaBadge tone="neutral" size="small">{plural(sub.attempts ?? 0, "intento", "intentos")}</CocoaBadge>
@@ -813,7 +814,7 @@ function SesSubmissionDrawer({ submissionId, onClose, onRetried }: { submissionI
                 </CocoaSection>
                 <CocoaSection title="Transporte">
                   <ul className="c22-section__list" aria-label="Transporte del envío">
-                    <KvRow label="Punto de acceso" value={sub.endpoint} mono />
+                    <KvRow label="Punto de acceso" value={isSimulatedSubmission(sub) ? SIMULATED_ENDPOINT_LABEL : sub.endpoint} mono={!isSimulatedSubmission(sub)} />
                     <KvRow label="Modo de firma" value={sub.signatureMode} />
                   </ul>
                 </CocoaSection>

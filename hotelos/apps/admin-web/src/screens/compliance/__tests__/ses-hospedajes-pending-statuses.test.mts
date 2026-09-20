@@ -20,7 +20,8 @@ const screen = readFileSync(join(here, "..", "SesHospedajesSettingsScreen.tsx"),
 
 describe("SES.Hospedajes · estados pendientes del drawer", () => {
   it("imports the shared pending set instead of keeping its own", () => {
-    assert.match(screen, /import \{ SUBMISSION_PENDING_STATUSES \} from "\.\.\/fiscal\/fiscal-shared";/);
+    // Named import from fiscal-shared (siblings allowed: the corrector L8 added the simulator helpers to the same statement).
+    assert.match(screen, /import \{ (?:[A-Za-z_]+, )*SUBMISSION_PENDING_STATUSES(?:, [A-Za-z_]+)* \} from "\.\.\/fiscal\/fiscal-shared";/);
     assert.match(screen, /const PENDING_STATUSES = SUBMISSION_PENDING_STATUSES;/);
     assert.doesNotMatch(screen, /const PENDING_STATUSES = new Set\(/, "the screen must not redefine the pending statuses");
   });

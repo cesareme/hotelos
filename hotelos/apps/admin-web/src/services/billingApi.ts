@@ -5,6 +5,9 @@
 //   GET       /backoffice/properties/:propertyId/accounting-settings
 //   GET       /accounting/fiscal-periods?propertyId=
 //   GET       /backoffice/properties/:propertyId/integrations
+// The gateway state (GET /integrations/status) is served by ./integrationsApi.ts
+// (Tanda L8 · L8-06); this module only reads its `psp` row.
+import type { IntegrationStatusDto, IntegrationsStatusResponse } from "@hotelos/shared";
 import { apiRequest } from "./api-client";
 import { getActivePropertyId } from "./activeProperty";
 
@@ -111,9 +114,14 @@ export type PropertyIntegration = {
     authType: string;
     supportedRegions: string[];
     capabilitiesJson: Record<string, unknown>;
+    /** Tanda L8 (L8-01): demo providers of the legacy hub («… (demostración)») never charge nor sync. */
+    demo?: boolean;
+    /** Tanda L8 (L8-01): `sandbox` for every demo provider. */
+    mode?: string;
   };
 };
 
+/** Legacy integrations hub: catalogue connections of the property (demo providers included); never the source of a gateway state. */
 export function fetchPropertyIntegrations(propertyId = getActivePropertyId()) {
   return apiRequest<PropertyIntegration[]>(`/backoffice/properties/${propertyId}/integrations`);
 }
@@ -122,6 +130,19 @@ export function fetchPropertyIntegrations(propertyId = getActivePropertyId()) {
 export function isPaymentIntegration(integration: PropertyIntegration): boolean {
   const code = `${integration.provider?.code ?? ""} ${integration.provider?.categoryId ?? ""} ${integration.provider?.name ?? ""}`.toLowerCase();
   return /payment|psp|pago|stripe|redsys|adyen|paypal/.test(code);
+}
+
+// --- Pasarela de pago en GET /integrations/status (Tanda L8 · L8-07) ---
+//
+// The `psp` row (contract packages/shared/src/integrations-status-types.ts) is
+// derived by the API from pspStatusFor(propertyId) — configured · mode
+// (`none | sandbox | real`) · message · missingForReal — never from the legacy
+// hub above, whose demo providers are not a payment gateway. The request itself
+// is fetchIntegrationsStatus of ./integrationsApi.ts (not duplicated here).
+
+/** The payment gateway row of GET /integrations/status (null when the API did not include it). */
+export function pspIntegrationStatus(response: IntegrationsStatusResponse | null | undefined): IntegrationStatusDto | null {
+  return response?.integrations?.find((item) => item.key === "psp") ?? null;
 }
 
 // --- Readiness (GET /backoffice/properties/:propertyId/readiness) -----------

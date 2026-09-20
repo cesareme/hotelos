@@ -1282,6 +1282,45 @@ tenant aislado `org_chk` / `prop_chk` («Hotel CHK (prueba)») con tres usuarios
     (migración `20260920160000_checkin_pago_en_recepcion`), recepción cierra sesiones que el
     huésped no cerró (`PATCH …/check-in/guests/:guestId`, `POST …/check-in/resolve-handoff`,
     `dryRun` en `/complete`).
+19. **Tanda L8 · Integraciones honestas (2026-09-20):** (a) Redis sin consumidor:
+    `REDIS_URL` es una variable reservada (`lib/env.ts:207`); ningún componente del API
+    abre un cliente (rate limit en memoria, lease de schedulers en Postgres), así que
+    `/health` dice `checks.redis` «configured (sin consumidor en este build)» y
+    `dependencies.redis` `unconfigured`, y `redis` es `mode none` en
+    `GET /integrations/status` aunque esté configurado — decidir si entra (cola o
+    limitador multi-réplica) o se retira del contrato (runbook
+    `docs/runbooks/integraciones.md` §4 D-16); (b) hub heredado `IntegrationConnection` /
+    marketplace en modo demostración: proveedores ficticios «… (demostración)»
+    (`demo:true`, `mode:"sandbox"` en `lib/demo-store.ts`), prueba de conexión siempre
+    `{ status: "simulated" }` + evento `IntegrationTestSimulated`, `PATCH` de estado
+    persistido y auditado, catálogo vacío (`marketplace_listings` 0); las 6 rutas y
+    `credentialsSecretRef` siguen por contrato (`tests/modular-suite-contract.test.mjs`);
+    `packages/integrations/src/registry/integration-provider-manifest.ts` (lo consume
+    `apps/mobile`) y `docs/manual/10-direccion.md` / `20-administracion.md` ya dicen
+    «(demostración)» / «DEMOSTRACIÓN · NO COBRA» (corrector L8; D-17 sigue abierta para el
+    catálogo); (c) Google Business Profile sin ruta OAuth:
+    `GOOGLE_BUSINESS_*` se leen pero no existe `authorize` / `callback` (T8-L5), así que
+    `gbp` solo es `real` por CSV o correo y arrastra «Ruta de autorización OAuth de Google
+    en el producto (no existe todavía: decisión)» en `missingForReal`; (d) almacén S3 sin
+    comprobación de red: `documents/storage/s3-storage.ts` solo firma SigV4 y
+    `DOCUMENT_STORAGE_KIND=s3` se declara «configurado, no comprobado» (`missingForReal`
+    «Comprobación de acceso al bucket»); `inline` y `disk` cuentan como `sandbox` para el
+    contrato de estado; (e) VeriFactu con la declaración del software incompleta:
+    `/health` `checks.verifactu.software.ok:false` con 3 errores (razón social y NIF del
+    productor, número de instalación) que el servicio proyecta a `missingForReal`; fuera
+    de `sandbox` el API no arranca sin el bloque (D-09). La tanda no añadió migraciones
+    (24/24, drift 0), claves RBAC (`integrations.read` existente), rutas de front (panel en
+    `/configuracion/modulos/integraciones`; `IntegrationsStatusPanel` en la whitelist de
+    discoverability) ni dependencias. Corrector L8 (misma fecha): `ses` / `verifactu` /
+    `tbai` de `GET /integrations/status` aplican el interruptor del establecimiento o el
+    uso real (`complianceGates`; apagado y sin uso ⇒ `none` «Desactivado para este
+    establecimiento…»), `/health.integrations` ya no consulta la BD
+    (`describeComplianceEnvironment()`), `missingForReal` sin punto final, `propertyId`
+    sin `trim` (espacios ⇒ 404), `sage200` «en la sociedad», `CocoaStatusBar` borrado y las
+    fixtures del hub solo se siembran para la propiedad demo. Textos pendientes de
+    `scratchpad/L8/audit-textos.md`: B2-B6 (`GuestRegisterSettingsScreen` sin el criterio
+    `stub://`, canales y parrilla «conectado / enviado» sin nombrar el simulador, KPI de
+    Concierge); A8, A9 y B1 (SES «(simulador)») cerrados por el corrector.
 
 ## Docs prioritarios
 
@@ -1318,6 +1357,8 @@ Antes de tomar decisiones de producto, lee:
 - `docs/runbooks/documentos-digitalizacion.md` — operación del módulo de documentos (Tanda T9): almacén (inline / disk cifrado / S3, backup), buzón por centro, flujo centro → oficina paso a paso, IA con y sin proveedor, tabla exacta de rutas y claves (§6.1), códigos de error, retención / purga / GDPR, seed de demo, puertas y lo que solo César puede aportar
 - `docs/design/DOCUMENTOS-DIGITALIZACION.md` — diseño de la digitalización por centro: marco legal (Orden EHA/962/2007, RD 1619/2012, e-factura B2B RD 238/2026), captura, pipeline IA con fallback, flujo y RBAC, contabilización y archivo, modelo de datos, API (§9), front (§10), lotes; con las correcciones «[actualizado 2026-09-19]» de la implementación
 - `docs/design/olas/T9-MERGE-LINES.md` — mergeLines de la Tanda T9 (anclas de texto por fichero compartido, orden de la migración tras fix1, post-fusión: tools/sync, rbac:sync, env:census:write, drift heredado)
+- `docs/runbooks/integraciones.md` — operación de las integraciones honestas (Tanda L8): vocabulario `none | sandbox | real`, tabla de estados de las 18 claves con la línea base real del carril, lectura de `/health.integrations` y de `GET /integrations/status` (permiso, códigos, `degraded`), la pestaña Integraciones, activación por integración con las variables exactas, lo que solo César puede aportar (D-01…D-18), SQL solo lectura y puertas con comandos exactos
+- `docs/audits/TANDA-L8-INTEGRACIONES-2026-09-20.md` — cierre de la Tanda L8 · Integraciones honestas: qué construyó cada lote (contrato y servicio, hub heredado, `simulated` en Comunicaciones, runbook, cableado, panel, pantallas vecinas y manual, tests), puertas por ola, hallazgos de la auditoría de textos y su estado, pendientes con dueño y decisiones para César
 
 ## Primera tarea en cada sesión nueva
 

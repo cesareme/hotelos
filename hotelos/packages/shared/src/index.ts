@@ -47,6 +47,11 @@ export * from "./rbac-types.js";
 // PII, resultado de lectura de documentos, candidatas de asignación y códigos de error
 // compartidos por el API, el portal del huésped, el kiosco y el admin-web.
 export * from "./checkin-types.js";
+// Estado honesto de las integraciones (Tanda L8 · L8-01): modo none|sandbox|real,
+// claves fijas del inventario, DTO de estado por integración, entrada del bloque
+// `integrations` de /health y catálogos (etiquetas, pantallas) compartidos por el
+// API y el admin-web.
+export * from "./integrations-status-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

@@ -4,6 +4,9 @@ import {
   KPI_KEYS,
   KPI_LABEL_MAX_CHARS,
   QUARTER_OPTIONS,
+  SIMULATED_ENDPOINT_LABEL,
+  isSimulatedSubmission,
+  simulatorAwareStatusLabel,
   SUBMISSION_PENDING_STATUSES,
   SUBMISSION_RETRYABLE_STATUSES,
   SUBMISSION_STATUS_LABELS,
@@ -71,6 +74,31 @@ const row = (over: Record<string, unknown> = {}) => ({
   deductible: true,
   propertyId: "prop_1",
   ...over
+});
+
+describe("fiscal-shared · acuses del simulador (corrector L8 · REV-02)", () => {
+  const LABELS = { sent: "Enviado", accepted: "Aceptado", accepted_with_warnings: "Aceptado con avisos", rejected: "Rechazado", queued: "En cola" };
+
+  it("isSimulatedSubmission: solo el endpoint stub:// es del simulador", () => {
+    assert.equal(isSimulatedSubmission({ endpoint: "stub://ses-hospedajes-mock" }), true);
+    assert.equal(isSimulatedSubmission({ endpoint: "https://hospedajes-pre.mir.es/hospedajes/api/v1/comunicaciones" }), false);
+    assert.equal(isSimulatedSubmission({ endpoint: null }), false);
+    assert.equal(isSimulatedSubmission({}), false);
+  });
+
+  it("simulatorAwareStatusLabel: «Enviado» / «Aceptado» llevan «(simulador)» bajo el stub; los fallos y los reales no cambian", () => {
+    assert.equal(simulatorAwareStatusLabel({ status: "accepted", endpoint: "stub://ses-hospedajes-mock" }, LABELS), "Aceptado (simulador)");
+    assert.equal(simulatorAwareStatusLabel({ status: "sent", endpoint: "stub://ses-hospedajes-mock" }, LABELS), "Enviado (simulador)");
+    assert.equal(simulatorAwareStatusLabel({ status: "accepted_with_warnings", endpoint: "stub://x" }, LABELS), "Aceptado con avisos (simulador)");
+    assert.equal(simulatorAwareStatusLabel({ status: "rejected", endpoint: "stub://ses-hospedajes-mock" }, LABELS), "Rechazado");
+    assert.equal(simulatorAwareStatusLabel({ status: "accepted", endpoint: "https://sede.mir.es/hospedajes/api/v1/comunicaciones" }, LABELS), "Aceptado");
+    assert.equal(simulatorAwareStatusLabel({ status: "unknown_state", endpoint: "stub://x" }, LABELS), "unknown_state", "sin etiqueta: el estado tal cual");
+  });
+
+  it("el simulador no tiene punto de acceso real", () => {
+    assert.match(SIMULATED_ENDPOINT_LABEL, /^Simulador local/);
+    assert.doesNotMatch(SIMULATED_ENDPOINT_LABEL, /stub|:\/\//);
+  });
 });
 
 describe("fiscal-shared · periodos", () => {

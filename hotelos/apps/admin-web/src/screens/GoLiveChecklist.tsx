@@ -69,7 +69,7 @@ const CHECK_META: Record<string, CheckMeta> = {
   admin_user_exists: { label: "Al menos un usuario administrador o responsable activo", screen: "UserRoleManager" },
   invoice_sequence_configured: { label: "Serie de facturación activa (módulo Facturación y cumplimiento)", screen: "BillingSettings" },
   invoice_series_current_year: { label: "Serie de facturas del ejercicio en curso", screen: "BillingSettings" },
-  payment_provider_connected: { label: "Proveedor de pago conectado (módulo Payment Vault)", screen: "PaymentSettings" },
+  payment_provider_connected: { label: "PSP configurado (Stripe o Redsys · módulo Payment Vault)", screen: "PaymentSettings" },
   ses_establishment_profile: { label: "Datos del establecimiento para SES.HOSPEDAJES (registro, código INE, código postal)", screen: "SesHospedajesSettings" },
   ses_hospedajes_credentials: { label: "Modo de envío y certificado de SES.HOSPEDAJES", screen: "SesHospedajesSettings", action: "Ver estado" },
   verifactu_software_declared: { label: "Datos del software VeriFactu (productor, versión, instalación)", screen: "FiscalDashboard", action: "Ver estado" },

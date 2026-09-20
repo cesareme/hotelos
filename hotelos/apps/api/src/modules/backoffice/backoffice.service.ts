@@ -36,6 +36,11 @@ import { bumpRbacVersion, coversProperty, loadUserScope, maxRankOf, rankOfAssign
 import { ensurePropertyModulePersisted, listPropertyModules } from "../product-modules/product-modules.service.js";
 import { getPropertyTaxProfile, invalidateTaxCache } from "../accounting/tax-rate.service.js";
 import { resolveSesEstablishment } from "../compliance/ses-submission.service.js";
+// Tanda L8 (hub honesto): the payment gateway truth is the PSP resolver (Stripe/Redsys
+// credentials or a connected PaymentProviderConnection), never the legacy hub's fixture
+// connection; the dashboard error counter comes from Prisma and skips demo providers.
+import { countPropertyIntegrationErrors } from "../integrations/integrations.service.js";
+import { pspStatusFor } from "../payments/psp/index.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, RbacForbiddenError } from "../../lib/http-error.js";
 import { assertWhatsappPhoneIdFree } from "../ai-operations/property-ai.service.js";
@@ -2835,14 +2840,10 @@ export async function getBackOfficeDashboard(propertyId: string) {
   )
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, RECENT_AUDIT_EVENTS_LIMIT);
-  const integrationErrors = demoStore.integrationConnections.filter(
-    (connection) => connection.propertyId === propertyId && connection.status === "error"
-  );
-  const failedIntegrationEvents = demoStore.integrationEvents.filter((event) => event.status === "failed");
-  const paymentProviderConnected = demoStore.integrationConnections.some((connection) => {
-    const provider = demoStore.integrationProviders.find((candidate) => candidate.id === connection.providerId);
-    return connection.propertyId === propertyId && connection.status === "connected" && provider?.code.includes("payments");
-  });
+  // Tanda L8: Prisma-backed counters — errors of real connections only (demo providers
+  // excluded, events scoped to this property) and the PSP resolver for the gateway.
+  const [integrationErrors, pspStatus] = await Promise.all([countPropertyIntegrationErrors(propertyId), pspStatusFor(propertyId)]);
+  const paymentProviderConnected = pspStatus.configured;
   const blockingIssues = readiness.checks.filter((check) => check.severity === "blocking" && check.status !== "pass");
 
   return {
@@ -2852,7 +2853,7 @@ export async function getBackOfficeDashboard(propertyId: string) {
     blockingIssues,
     activeModules: modules.filter((module) => module.status === "enabled").length,
     modulesNeedingConfiguration: modules.filter((module) => module.healthStatus !== "ok"),
-    integrationErrors: integrationErrors.length + failedIntegrationEvents.length,
+    integrationErrors,
     complianceWarnings: readiness.checks.filter((check) => check.severity !== "info").length,
     usersPendingInvitation,
     roomsMapped,
@@ -3545,7 +3546,7 @@ async function evaluateReadiness(propertyId: string): Promise<ReadinessCheckInpu
   // environment — no in-memory mirrors, no flags nobody writes. Each check carries a
   // relatedEntityType/Id so the UI can deep-link to the form that fixes it.
   const sesUsageSince = new Date(Date.now() - SES_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  const [legalIdentity, fiscalColumns, complianceRow, activeSequences, connectedIntegrations, sesSubmissionCount, issuedInvoiceCount] =
+  const [legalIdentity, fiscalColumns, complianceRow, activeSequences, pspStatus, sesSubmissionCount, issuedInvoiceCount] =
     await Promise.all([
       // Tanda 6b (R2): the issuer identity is the legal entity's (single reader), never Property.legalName.
       resolveLegalIdentity(property.organizationId),
@@ -3558,13 +3559,15 @@ async function evaluateReadiness(propertyId: string): Promise<ReadinessCheckInpu
         where: { propertyId, active: true },
         select: { sequenceCode: true, prefix: true, year: true, invoiceType: true }
       }),
-      prisma.integrationConnection.findMany({ where: { propertyId, status: "connected" }, select: { providerId: true } }),
+      // Tanda L8: the PSP truth (Stripe/Redsys credentials or a connected
+      // PaymentProviderConnection), never the legacy hub's fixture connections.
+      pspStatusFor(propertyId),
       // Real usage (any status: a queued or rejected parte is still an obligation in flight).
       prisma.sesHospedajesSubmission.count({ where: { propertyId, createdAt: { gte: sesUsageSince } } }),
       // Issued, cancelled and rectified invoices all exist in the fiscal chain; drafts do not.
       prisma.invoice.count({ where: { propertyId, status: { in: ["issued", "cancelled", "rectified"] } } })
     ]);
-  const paymentProviderConnected = await paymentProviderConnectedFor(propertyId, connectedIntegrations.map((row) => row.providerId));
+  const paymentProviderConnected = pspStatus.configured;
 
   // Applicability = flag OR real usage (resolveComplianceApplicability, unit-tested). When
   // it applies by usage only, every check of that obligation carries the note.
@@ -3789,8 +3792,8 @@ async function evaluateReadiness(propertyId: string): Promise<ReadinessCheckInpu
       message: !modules.includes("payment_vault")
         ? "No aplica: el módulo Payment Vault no está activado."
         : paymentProviderConnected
-          ? "Pasarela de pago conectada."
-          : "Se necesita una pasarela de pago conectada con el módulo Payment Vault activado.",
+          ? `Pasarela de pago configurada (${pspStatus.provider ?? "psp"} · ${pspStatus.mode ?? "test"}).`
+          : "Se necesita una pasarela de pago (PSP) configurada —Stripe o Redsys con credenciales— con el módulo Payment Vault activado; el proveedor de demostración del hub heredado no cuenta.",
       relatedEntityType: "integration_connection",
       relatedEntityId: undefined
     },
@@ -3927,31 +3930,6 @@ function certificateEnvStatus(pathEnv: string | undefined, passEnv: string | und
   if (placeholder(pathEnv)) return { configured: false, exists: false, reason: "falta la ruta del certificado" };
   if (placeholder(passEnv)) return { configured: false, exists: false, reason: "falta la contraseña del certificado" };
   return { configured: true, exists: existsSync(pathEnv!) };
-}
-
-/**
- * Payment gateway connected: Prisma first (integration_connections/providers/categories);
- * the in-memory seed connection (iconn_mock_payments of prop_123) is only a fallback for
- * the seed-only property, never for a real hotel.
- */
-async function paymentProviderConnectedFor(propertyId: string, connectedProviderIds: string[]): Promise<boolean> {
-  if (connectedProviderIds.length > 0) {
-    const providers = await prisma.integrationProvider.findMany({
-      where: { id: { in: connectedProviderIds } },
-      select: { code: true, categoryId: true }
-    });
-    if (providers.some((provider) => provider.code.toLowerCase().includes("payment"))) return true;
-    const categoryIds = providers.map((provider) => provider.categoryId);
-    if (categoryIds.length > 0) {
-      const categories = await prisma.integrationCategory.findMany({ where: { id: { in: categoryIds } }, select: { code: true } });
-      if (categories.some((category) => category.code.toLowerCase().includes("payment"))) return true;
-    }
-  }
-  if (propertyId !== demoStore.property.id) return false;
-  return demoStore.integrationConnections.some((connection) => {
-    const provider = demoStore.integrationProviders.find((candidate) => candidate.id === connection.providerId);
-    return connection.propertyId === propertyId && connection.status === "connected" && Boolean(provider?.code.includes("payments"));
-  });
 }
 
 export type GoLiveApprovalResult =

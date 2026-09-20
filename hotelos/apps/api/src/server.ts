@@ -106,6 +106,15 @@ import { registerReservationImportRoutes } from "./modules/pms/reservation-impor
 // modules/pms-shadow/route-permissions.partial.ts); job del líder
 // (modules/pms-shadow/pms-shadow.job.ts) en el bloque de schedulers.
 import { registerPmsShadowRoutes } from "./modules/pms-shadow/pms-shadow.routes.js";
+// Estado honesto de las integraciones (Tanda L8 · L8-05): bloque `integrations` de
+// /health (describeIntegrationsHealth, sin BD) y GET /integrations/status
+// (integrations-status.routes.ts → collectIntegrationsStatus). Solo lectores YA
+// existentes; Sentry y Redis se derivan aquí (platformIntegrationsConfigured).
+import { describeIntegrationsHealth, type ComplianceIntegrationInput } from "./modules/integrations/integrations-status.service.js";
+import { registerIntegrationsStatusRoutes } from "./modules/integrations/integrations-status.routes.js";
+import { describeComplianceEnvironment, getComplianceHealth } from "./modules/compliance/compliance-health.service.js";
+import { isSmsConfigured } from "./modules/notifications/providers/sms.provider.js";
+import { isWhatsappConfigured } from "./modules/notifications/providers/whatsapp.provider.js";
 import { registerLedgerImportRoutes } from "./modules/accounting/ledger-import.routes.js";
 import { startPmsShadowJob } from "./modules/pms-shadow/pms-shadow.job.js";
 // Reputación y reseñas (Tanda T8): /reputation/properties/:propertyId/{inbox,sources,runs,imports,
@@ -390,7 +399,7 @@ import { accessDecision } from "./security/access-decision.js";
 import { registerRbacRoutes } from "./modules/rbac/rbac.routes.js";
 import { PermissionDeniedError } from "@hotelos/shared";
 import { createCheckInFromScanConfirmation, executeConfirmation } from "./modules/ai/check-in.command.js";
-import { describeAiHealthCheck } from "./lib/ai-config.js";
+import { aiConfigSummary, describeAiHealthCheck } from "./lib/ai-config.js";
 import { confirmToolCall } from "./modules/ai-operations/tool-runner.service.js";
 import { scanIdDocumentCommand } from "./modules/ai/scan-id-document.command.js";
 import { suggestMappingCommand } from "./modules/onboarding/suggest-mapping.command.js";
@@ -735,7 +744,7 @@ import { globalSearch, type SearchHit } from "./modules/search/search.service.js
 import { webhooksRoutes } from "./routes/webhooks.routes.js";
 import { assistantRoutes } from "./routes/assistant.routes.js";
 import { touristTaxRoutes } from "./routes/tourist-tax.routes.js";
-import { registerWhatsappWebhookRoutes } from "./routes/webhooks-whatsapp.routes.js";
+import { registerWhatsappWebhookRoutes, unsignedWebhookMode } from "./routes/webhooks-whatsapp.routes.js";
 import { answerQuestion as assistantAnswer, getAvailableTools as assistantTools } from "./modules/assistant/assistant.service.js";
 import {
   computeTouristTax,
@@ -886,7 +895,8 @@ import {
   listIntegrationEvents,
   listIntegrationProviders,
   listPropertyIntegrations,
-  testIntegrationConnection
+  testIntegrationConnection,
+  updateIntegrationConnectionStatus
 } from "./modules/integrations/integrations.service.js";
 import {
   approveGoLive,
@@ -1695,6 +1705,16 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: kind, id });
   }
 
+  // Tanda L8 (L8-05): Sentry y Redis no tienen lector propio (recon «Restricciones»):
+  // se derivan aquí una sola vez con la regla de checks.sentry / checks.redis y se
+  // comparten con el bloque `integrations` de /health y con GET /integrations/status
+  // (integrations-status.routes.ts). Solo «hay valor»: nunca «alcanzable» ni «en uso».
+  const isConfiguredValue = (value: string | undefined): boolean => Boolean(value && value !== "change-me");
+  const platformIntegrationsConfigured = (): { sentryConfigured: boolean; redisConfigured: boolean } => ({
+    sentryConfigured: isConfiguredValue(process.env.SENTRY_DSN),
+    redisConfigured: isConfiguredValue(process.env.REDIS_URL)
+  });
+
   app.get("/health", async () => {
     // Production-grade health: ejecuta sub-checks reales y combina su estado.
     // Mantenemos el shape antiguo (`buildHealthResponse`) además del nuevo
@@ -1724,17 +1744,22 @@ export async function buildApiServer() {
       };
     }
 
-    // redis: si REDIS_URL está configurada (y no es placeholder), reportamos OK
-    const redisUrl = process.env.REDIS_URL;
-    if (redisUrl && redisUrl !== "change-me" && redisUrl !== "") {
-      checks.redis = { ok: true, message: "configured" };
+    // redis (Tanda L8 · honesto): REDIS_URL solo se refleja aquí; NINGÚN código
+    // de este build abre un cliente Redis (rate-limit en memoria, lease de
+    // schedulers en Postgres). Comprobación:
+    //   grep -rn -i 'ioredis\|bullmq\|from "redis"' apps packages --include='*.ts' → 0
+    //   grep -rn -i redis apps/api/src --include='*.ts' → este bloque, server.ts (comentario del lease) y lib/env.ts (doc de REDIS_URL)
+    // Por eso «configured» nunca significa «alcanzable» ni «en uso», y
+    // dependencies.redis queda `unconfigured` mientras no exista consumidor.
+    const { sentryConfigured, redisConfigured } = platformIntegrationsConfigured();
+    if (redisConfigured) {
+      checks.redis = { ok: true, message: "configured (sin consumidor en este build)" };
     } else {
-      checks.redis = { ok: true, message: "not configured (optional)" };
+      checks.redis = { ok: true, message: "not configured (optional · sin consumidor)" };
     }
 
     // sentry: configured/disabled según SENTRY_DSN
-    const sentryDsn = process.env.SENTRY_DSN;
-    if (sentryDsn && sentryDsn !== "change-me" && sentryDsn !== "") {
+    if (sentryConfigured) {
       checks.sentry = { ok: true, message: "configured" };
     } else {
       checks.sentry = { ok: true, message: "disabled" };
@@ -1832,12 +1857,47 @@ export async function buildApiServer() {
     // recibe ok/unconfigured y la respuesta expone el tipo real.
     const objectStorage = describeDocumentStorageHealth();
 
+    // Integraciones (Tanda L8 · L8-05): modo declarado `none | sandbox | real` y una
+    // frase veraz por integración, clave SUPERIOR (como `schedulers`), nunca dentro
+    // de `checks`: none/sandbox es un modo, no un fallo, y no degrada `status`. Solo
+    // las 14 claves sin propiedad (INTEGRATION_HEALTH_KEYS); el modo efectivo por
+    // propiedad lo da GET /integrations/status. /health es público: el servicio no
+    // escribe URLs, buckets, endpoints ni nombres de variables secretas (contrato
+    // integrations-status.test.mts). El modo y el certificado de VeriFactu / SES /
+    // TicketBAI salen de describeComplianceEnvironment(): solo entorno y existencia
+    // del certificado, SIN Prisma ni organización (corrector L8 · REV-03: el informe
+    // completo de cumplimiento sin organizationId leía las propiedades de TODOS los
+    // tenants en cada petición pública); TicketBAI habla del modo del proceso y su
+    // aplicabilidad por territorio foral se evalúa en GET /integrations/status. Si
+    // fallara, esas tres quedan «no disponible» (mode none), nunca un éxito.
+    let complianceIntegrations: ComplianceIntegrationInput[] = [];
+    try {
+      complianceIntegrations = describeComplianceEnvironment();
+    } catch (err) {
+      app.log.warn({ err }, "[health] describeComplianceEnvironment failed: integrations.verifactu/ses/tbai degraded to none");
+    }
+    const production = process.env.NODE_ENV === "production";
+    const integrations = describeIntegrationsHealth({
+      channelMaxMode: readChannelEnv().maxMode,
+      whatsapp: { configured: isWhatsappConfigured(), webhookMode: unsignedWebhookMode(process.env), production },
+      sms: { configured: isSmsConfigured(), production },
+      emailOut: emailStatus(),
+      emailIn: emailProvidersStatus(),
+      compliance: complianceIntegrations,
+      storage: objectStorage,
+      ai: aiConfigSummary(),
+      sentryConfigured,
+      redisConfigured
+    });
+
     // Construimos también la respuesta legacy para los consumidores actuales.
     const legacy = buildHealthResponse({
       service: SERVICE_NAMES.api,
       dependencies: {
         postgres: checks.database.ok ? "ok" : "degraded",
-        redis: checks.redis.message === "configured" ? "ok" : "unconfigured",
+        // Sin consumidor Redis en este build (ver checks.redis): nunca "ok"
+        // aunque REDIS_URL esté fijada; pasará a ok/degraded cuando exista cliente.
+        redis: "unconfigured",
         objectStorage: objectStorage === "unconfigured" ? "unconfigured" : "ok"
       }
     });
@@ -1854,6 +1914,8 @@ export async function buildApiServer() {
       // `hostname:pid` of the leader and is not exposed; `held` says whether a
       // live lease exists and `thisInstance` whether this process holds it.
       schedulers: { leader: schedulerLease.leader, held: schedulerLease.holder !== null, thisInstance: schedulerLease.thisInstance, expiresAt: schedulerLease.expiresAt },
+      // Tanda L8 (L8-05): modo + frase por integración (14 claves sin propiedad); fuera de `checks`.
+      integrations,
       // Contract (C) of Tanda 4: `env: { ok, warnings }` at the top level as
       // well as inside `checks` (the latter drives `status`).
       env: envCheck,
@@ -2986,6 +3048,10 @@ export async function buildApiServer() {
   // panel, perfil, cortes, alertas, reconciliación e ingresos diarios
   // (/integrations/pms-shadow/ingest y /properties/:propertyId/pms-shadow/*).
   registerPmsShadowRoutes(app);
+  // Estado honesto de las integraciones (Tanda L8 · L8-05): GET /integrations/status
+  // (integrations.read, low) → collectIntegrationsStatus por propiedad; Sentry y
+  // Redis con la misma derivación que /health (platformIntegrationsConfigured).
+  registerIntegrationsStatusRoutes(app, { platform: platformIntegrationsConfigured });
   // Importación contable desde Sage 200 (Tanda 7c · L3): previsualizar, crear y
   // contabilizar lotes (plan, ejercicios, diario, IVA, terceros, saldos), mapas de
   // cuentas y analítico, plantilla canónica, reconciliación y reverso
@@ -4555,14 +4621,15 @@ export async function buildApiServer() {
     // from the path property); the mirror miss below is a 404, never a 500.
     await assertEntityAccess(request, { entity: "integrationConnection", id: params.connectionId, propertyId: params.propertyId });
     const body = (request.body ?? {}) as { status?: "connected" | "disconnected" | "error" };
-    const connection = demoStore.integrationConnections.find(
-      (candidate) => candidate.propertyId === params.propertyId && candidate.id === params.connectionId
-    );
-    if (!connection) {
-      throw new NotFoundError("Integración no encontrada.");
-    }
-    connection.status = body.status ?? connection.status;
-    return connection;
+    // Tanda L8: persisted through the service (Prisma first, mirror second,
+    // audited) — before it only patched the in-memory mirror.
+    return updateIntegrationConnectionStatus({
+      context: request.userContext,
+      propertyId: params.propertyId,
+      connectionId: params.connectionId,
+      status: body.status,
+      correlationId: createId("corr")
+    });
   });
 
   app.delete("/properties/:propertyId/integrations/:connectionId", async (request) => {
@@ -5916,10 +5983,8 @@ export async function buildApiServer() {
   // PILOT-D4 · Salud agregada de las integraciones ES (VeriFactu/SES/TBAI/IGIC).
   // Devuelve modo (sandbox/preprod/prod), estado de certificados y stats 24h.
   // Útil para que el cliente piloto verifique su entorno antes de go-live.
-  app.get("/compliance/health", async (request) => {
-    const { getComplianceHealth } = await import("./modules/compliance/compliance-health.service.js");
-    return getComplianceHealth(request.userContext.organizationId);
-  });
+  // Tanda L8 (L8-05): import estático compartido con el bloque `integrations` de /health.
+  app.get("/compliance/health", async (request) => getComplianceHealth(request.userContext.organizationId));
 
   app.get("/compliance/properties/:propertyId/center", async (request) => {
     return getComplianceCenter((request.params as { propertyId: string }).propertyId);

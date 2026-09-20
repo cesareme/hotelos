@@ -344,7 +344,7 @@ export function CampaignManagerScreen() {
         <CocoaKpi label="Campañas" value={number(stats.total)} caption="en la organización" polarity="neutral" status="ok" />
         <CocoaKpi label="Programadas" value={number(stats.scheduled)} caption="pendientes de envío" polarity="neutral" status="ok" />
         <CocoaKpi label="Borradores" value={number(stats.draft)} caption="sin programar" polarity="neutral" status={stats.draft > 0 ? "warning" : "ok"} />
-        <CocoaKpi label="Enviadas" value={number(stats.sent)} caption="ya entregadas" polarity="neutral" status="ok" />
+        <CocoaKpi label="Enviadas" value={number(stats.sent)} caption="registradas como enviadas (sin motor de envío)" polarity="neutral" status="ok" />
       </CocoaKpiStrip>
 
       <CocoaToolbar

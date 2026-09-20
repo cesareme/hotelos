@@ -262,9 +262,25 @@ Texto literal: «Estado de configuración y comprobaciones de cada módulo activ
 
 **Menú › Configuración › Módulos e integraciones › Integraciones** · `/configuracion/modulos/integraciones`
 
-Texto literal: «Aplicaciones certificadas que extienden tu PMS: gestores de canales, herramientas de revenue, llaves digitales, asistentes IA… Cada aplicación pide los permisos (OAuth) que necesita y tú apruebas exactamente qué datos puede leer o escribir.» Filtro por categoría (Channel Manager, Revenue Management, Pagos, Mensajería, Cerraduras inteligentes, Contabilidad, Cumplimiento, Energía, Marketing, CRM, Operaciones, Analítica, Asistentes IA), bloques «Catálogo» y «Aplicaciones instaladas».
+Es la pantalla que dice la verdad sobre cada conexión de ehotelOS con el exterior (entrega de integraciones honestas del 20/09/2026). Subtítulo literal: «Estado real de cada integración; debajo, el catálogo de aplicaciones de terceros, hoy vacío.» Tiene dos bloques:
 
-> **En construcción:** el catálogo está vacío («0 aplicaciones publicadas»; «Las aplicaciones verificadas aparecerán aquí en cuanto un socio publique. Mientras tanto, puedes crear tu propia aplicación en Configuración › Sistema › Aplicaciones.»). Las integraciones reales de hoy son las de Sistema › Webhooks y Aplicaciones (apartado 4), los canales de venta (guía [50-comercial-revenue.md](50-comercial-revenue.md)) y la importación de Sage 200 (guía [20-administracion.md](20-administracion.md)).
+- **Panel de estado** (arriba). Una línea «Estado leído el <fecha y hora> · 18 integraciones» con el botón «Actualizar estado», tres contadores («REALES · los datos cruzan de verdad», «EN PRUEBAS · ningún resultado tiene efecto real», «SIN INTEGRACIÓN · nada cruza al sistema externo») y una tabla por área: «PMS y contabilidad» (OPERA Cloud (modo sombra), Sage 200 (importación contable), Exportación a gestoría), «Ventas, cobros y reputación» (Canales de venta (OTAs), Pasarela de pago (PSP), Google Business Profile), «Comunicaciones» (WhatsApp, Correo saliente, SMS, Correo entrante (OAuth)), «Cumplimiento» (SES.Hospedajes, VeriFactu, TicketBAI, IGIC (Canarias)) y «Plataforma» (Almacén de documentos (S3), Proveedor de IA, Sentry, Redis). Columnas «INTEGRACIÓN · MODO · ESTADO · QUÉ FALTA PARA REAL · ÚLTIMA ACTIVIDAD · ÚLTIMO ERROR» y el botón «Configurar», que abre la pantalla donde se opera esa integración (Sentry y Redis no tienen pantalla y no lo muestran):
+  - **Integración**: el nombre y, debajo, el **transporte**: «Ficheros» (informes o lotes reales que se cargan a mano, como los de OPERA o Sage 200), «API (red)», «Manual» o «Ninguno».
+  - **Modo**, con una etiqueta de color: «Sin integración» (gris: no hay credenciales, perfil ni datos), «Pruebas (sin efecto real)» (ámbar: simulador local o entorno de pruebas del proveedor; ningún resultado sale de verdad) o «Real» (verde: los datos cruzan de verdad). El verde solo aparece en «Real»; una integración real a la que aún le falta algo lleva debajo «con requisitos pendientes».
+  - **Estado**: una frase del API (por ejemplo «Ningún PSP configurado: sin cobros con tarjeta en línea ni enlaces de pago»).
+  - **Qué falta para real**: la credencial, el contrato o la decisión que solo puede aportar quien contrata el servicio, separados por « · »; «Nada pendiente: opera en real» cuando no falta nada.
+  - **Última actividad** («Sin actividad» si no hay ninguna registrada) y **último error** (la fila se marca en rojo con la etiqueta «Error»).
+  - Si alguna lectura falla, el panel lo anuncia con el aviso «n consultas sin datos» («Estas lecturas fallaron y se muestran como «sin datos», nunca como un éxito»).
+- **Catálogo de aplicaciones** (abajo): filtro por categoría (Channel Manager, Revenue Management, Pagos, Mensajería, Cerraduras inteligentes, Contabilidad, Cumplimiento, Energía, Marketing, CRM, Operaciones, Analítica, Asistentes IA), contador «0 aplicaciones publicadas» y bloques «Catálogo de aplicaciones» («Sin aplicaciones de terceros publicadas · Hoy no hay ninguna aplicación de terceros en el catálogo. Puedes crear tu propia aplicación en Configuración › Sistema › Aplicaciones.») y «Aplicaciones instaladas». No existe todavía un proceso de publicación ni de certificación de aplicaciones de terceros, así que no esperes nada en él; las aplicaciones propias se crean en Sistema › Aplicaciones (apartado 4.3).
+
+Cómo leerlo:
+
+1. Si una fila no está en «Real», nada de esa integración sale a Internet ni llega a la Administración, aunque otras pantallas muestren envíos: esos envíos están marcados «simulado» y cuentan aparte de los reales.
+2. «Qué falta para real» es tu lista de tareas hacia el proveedor técnico o hacia quien contrata el servicio (cuenta de Stripe o Redsys, certificado de la AEAT, credenciales de WhatsApp, decisión de pasar a producción…). La pantalla no permite escribir credenciales: se cargan en el servidor.
+3. Las integraciones que funcionan por ficheros (OPERA Cloud en modo sombra, Sage 200) aparecen «Real» con transporte «Ficheros» en cuanto se ha cargado el primer informe o lote de verdad; no hay conexión directa con esos sistemas y la pantalla no la simula.
+4. Las conexiones de prueba del catálogo heredado (nombres terminados en «(demostración)», visibles también en Configuración › Facturación y pagos › Pagos) no cuentan como integración: no cobran ni sincronizan nada.
+
+Las integraciones reales de hoy siguen siendo las de Sistema › Webhooks y Aplicaciones (apartado 4), los canales de venta (guía [50-comercial-revenue.md](50-comercial-revenue.md)) y la importación de Sage 200 (guía [20-administracion.md](20-administracion.md)); el panel las lista con su modo real.
 
 ## 4. Seguridad y auditoría (Sistema)
 
@@ -437,7 +453,7 @@ Es una pantalla de finanzas: los detalles (datos fiscales, series, IVA y ejercic
 | Campo | Qué significa | Valor en la demo (19/09/2026) |
 |---|---|---|
 | `status` | Estado general: `healthy` (bien) o `degraded` (algo falla) | `healthy` |
-| `dependencies.postgres` / `dependencies.redis` | Base de datos y caché | `ok` / `ok` |
+| `dependencies.postgres` / `dependencies.redis` | Base de datos y caché. Redis está reservado: ningún componente lo usa todavía, así que figura `unconfigured` aunque el servidor tenga la dirección configurada; no es una incidencia | `ok` / `unconfigured` (20/09/2026) |
 | `dependencies.objectStorage` | Almacén de los documentos capturados: `inline` (en la base de datos, solo demo), `disk` (ficheros cifrados en el servidor) o `s3`; `unconfigured` si la configuración es inválida | `inline` en la demo (sin `DOCUMENT_STORAGE_KIND`); en producción `disk` o `s3` |
 | `checks.verifactu` | Modo de envío a la AEAT y declaración del software | `mode=sandbox`; `software.ok=false` con los tres datos que faltan (razón social, NIF y número de instalación del productor) |
 | `checks.sesHospedajes` | Modo de envío de partes de viajeros | `mode=sandbox` (simulador) |
@@ -446,7 +462,7 @@ Es una pantalla de finanzas: los detalles (datos fiscales, series, IVA y ejercic
 | `checks.schedulers` | Procesos programados (envíos SES, VeriFactu, cierres) | `leader (…)`: esta instancia los ejecuta |
 | `env` | Variables de entorno | `ok (6 avisos)` |
 
-Si `status` no es `healthy`, o `checks.audit` acumula fallos, o `postgres` / `redis` no están `ok`, es una incidencia del proveedor técnico: copia el JSON completo en el aviso.
+Si `status` no es `healthy`, o `checks.audit` acumula fallos, o `postgres` no está `ok`, es una incidencia del proveedor técnico: copia el JSON completo en el aviso.
 
 ## Errores frecuentes
 
@@ -471,7 +487,7 @@ Si `status` no es `healthy`, o `checks.audit` acumula fallos, o `postgres` / `re
 - **Integración OPERA real**: solo por ficheros (correo, SFTP o manual) y sin cortes en la demo; nunca escribe en OPERA; no hay conexión por API (OHIP).
 - **Webhooks**: los eventos del PMS no se publican automáticamente (solo el evento de prueba).
 - **Correo entrante**: Gmail, Microsoft 365 e IMAP sin configurar; solo el conector manual.
-- **Integraciones**: catálogo vacío; sin aplicaciones certificadas de terceros.
+- **Integraciones**: el catálogo de aplicaciones de terceros está vacío (sin proceso de publicación ni de certificación); el panel de estado de la pestaña sí funciona y es la referencia del modo real de cada integración.
 - **Inteligencia artificial**: sin proveedor; todo lo «IA» funciona por reglas.
 - **Clientes y fidelización** y **Compras e inventario**: datos en memoria, se pierden al reiniciar el servidor.
 - **Punto de venta**: módulo apagado en la demo; sin guía en esta entrega.

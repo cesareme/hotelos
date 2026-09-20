@@ -153,13 +153,15 @@ describe("Medida automatizada del camino óptimo (U1 · §8.6)", () => {
     assert.doesNotMatch(helpers, /testInfo\.skip\(/, "el login tras el bypass es fallo, no skip");
   });
 
-  it("las 11 specs de recepción no se saltan y usan las rutas del árbol de navegación", () => {
+  it("las 12 specs e2e (11 de recepción + integraciones L8) no se saltan y usan las rutas del árbol de navegación", () => {
     const dir = new URL("../apps/admin-web/e2e/", import.meta.url);
     const specs = readdirSync(dir).filter((f) => f.endsWith(".spec.ts"));
     // U6: quick-checkout · walk-in · U7: reservation-workspace (ficha) · U8: reservations-list · U9b: timeline (Live Timeline) · U10: target-size (tablet, proyecto `touch`).
+    // L8: integrations-status (Configuración › Integraciones, estado veraz de cada integración).
     assert.deepEqual(specs.sort(), [
       "compliance-center.spec.ts",
       "frontdesk-cockpit.spec.ts",
+      "integrations-status.spec.ts",
       "login.spec.ts",
       "quick-checkin.spec.ts",
       "quick-checkout.spec.ts",
@@ -183,6 +185,7 @@ describe("Medida automatizada del camino óptimo (U1 · §8.6)", () => {
     assert.match(read("../apps/admin-web/e2e/reservation-create.spec.ts"), /Confirmar y crear reserva/);
     assert.match(read("../apps/admin-web/e2e/reservation-create.spec.ts"), /\/recepcion\/reservas\/nueva/);
     assert.match(read("../apps/admin-web/e2e/compliance-center.spec.ts"), /\/cumplimiento\/centro/);
+    assert.match(read("../apps/admin-web/e2e/integrations-status.spec.ts"), /\/configuracion\/modulos\/integraciones/);
   });
 
   it("hay 6 specs de medida t1…t6 sobre el helper con contadores y results.json ignorado", () => {
