@@ -922,6 +922,22 @@ const RESOLVERS = {
       return row.propertyId ? { propertyId: row.propertyId } : { organizationId: row.organizationId };
     }
   } satisfies Resolver,
+  // Tanda L6b (L6b-06): conversation of the unified assistant
+  // (assistant_conversations; GET/DELETE /assistant/conversations/:id). The
+  // memory is PRIVATE per user: only a row of the CALLER (userContext.userId)
+  // resolves; another user's, another property's or another organisation's
+  // conversation is the same opaque 404 («Conversación no encontrada.», no
+  // existence oracle) even when the id is known. Owner = the row's property,
+  // so the entity wins over the x-property-id header (Tanda 8a) and the
+  // handler reads the conversation in ITS property.
+  assistantConversation: {
+    notFound: "Conversación no encontrada.",
+    resolve: async (id, request) => {
+      const row = await prisma.assistantConversation.findUnique({ where: { id }, select: { propertyId: true, userId: true } });
+      if (!row || row.userId !== request.userContext.userId) return null;
+      return { propertyId: row.propertyId };
+    }
+  } satisfies Resolver,
   // Tanda L2 (L2-01): composite Prisma resolver for the generic by-id legs of
   // the advanced-modules engine (server.ts purchase-orders, anomalies,
   // reviews…). Tried in order over the concrete tables; L2-02 replaces every

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 // Tanda UX-1 · lote U5 (docs/design/UX-RECEPCION-FEEL.md §4 «Paleta ⌘K
@@ -20,6 +20,7 @@ registerHooks({
 });
 
 const palette = await import("../CommandPalette.tsx");
+const assistantStore = await import("../assistant/assistant-panel-store.ts");
 const PALETTE_SOURCE = readFileSync(new URL("../CommandPalette.tsx", import.meta.url), "utf8");
 
 const noop = () => undefined;
@@ -149,7 +150,7 @@ describe("CommandPalette · orden final y accesibilidad", () => {
       actionItems: [item("action", "Ver avisos")]
     };
     assert.deepEqual(palette.buildPaletteItems({ ...input, query: "" }).map((it) => it.label), ["Crear reserva", "UXDAY-t1", "Mi día", "Reservas", "Ver avisos"]);
-    assert.deepEqual(palette.buildPaletteItems({ ...input, query: "re" }).map((it) => it.label), ["Crear reserva", "UXDAY-t1", "Reservas", "Ver avisos"]);
+    assert.deepEqual(palette.buildPaletteItems({ ...input, query: "re" }).map((it) => it.label), ["Crear reserva", "UXDAY-t1", "Reservas", "Ver avisos", "Preguntar al asistente: “re”"]);
   });
 
   it("filtra pantallas por etiqueta o categoría y respeta el tope", () => {
@@ -172,5 +173,89 @@ describe("CommandPalette · orden final y accesibilidad", () => {
     assert.match(PALETTE_SOURCE, /subscribePageCommands\(/);
     assert.match(PALETTE_SOURCE, /<CocoaKbd>\{item\.shortcut\}<\/CocoaKbd>/);
     assert.doesNotMatch(PALETTE_SOURCE, /style=\{/, "0 style= nuevos (contrato Cocoa 22)");
+  });
+});
+
+// Tanda L6b · lote L6b-07 (asistente unificado, objetivo 3; nav-tree fila 79
+// «también en ⌘K»): con texto en el buscador la paleta ofrece siempre
+// «Preguntar al asistente: “…”», que abre el panel del shell con la pregunta
+// pendiente (store de components/assistant/assistant-panel-store.ts).
+describe("CommandPalette · «Preguntar al asistente» (L6b-07)", () => {
+  const item = (source: string, label: string, group = "G"): never => ({ source, id: `${source}:${label}`, label, screen: "", group }) as never;
+  const QUESTION = "cuántas llegadas tengo hoy";
+  const empty = { pageItems: [], liveItems: [], recentItems: [item("recent", "Mi día")], screenItems: [], actionItems: [] };
+
+  beforeEach(() => assistantStore.resetAssistantPanel());
+
+  it("con texto y sin hits el ítem del asistente es el único", () => {
+    const items = palette.buildPaletteItems({ ...empty, query: QUESTION });
+    assert.equal(items.length, 1, "un solo resultado: la paleta nunca queda vacía con texto");
+    const [ask] = items;
+    assert.equal(ask.source, "assistant");
+    assert.equal(ask.id, palette.ASSISTANT_ITEM_ID);
+    assert.equal(ask.group, palette.ACTIONS_GROUP);
+    assert.equal(ask.label, `Preguntar al asistente: “${QUESTION}”`);
+    assert.equal(ask.screen, "", "no navega: solo abre el panel");
+    assert.equal(typeof ask.run, "function");
+    assert.equal(palette.assistantAskLabel(QUESTION), ask.label);
+  });
+
+  it("con hits va en Acciones, el último de la lista, detrás de las acciones del shell", () => {
+    const items = palette.buildPaletteItems({
+      pageItems: [item("page", "Crear reserva")],
+      liveItems: [item("entity", "UXDAY-t1"), item("hit-action", "Check-in")],
+      recentItems: [item("recent", "Mi día")],
+      screenItems: [item("screen", "Reservas")],
+      actionItems: [item("action", "Ver avisos", palette.ACTIONS_GROUP)],
+      query: "reserva"
+    });
+    assert.deepEqual(
+      items.map((it) => [it.source, it.group]),
+      [
+        ["page", "G"],
+        ["entity", "G"],
+        ["hit-action", "G"],
+        ["screen", "G"],
+        ["action", palette.ACTIONS_GROUP],
+        ["assistant", palette.ACTIONS_GROUP]
+      ]
+    );
+    assert.equal(items.at(-1)?.label, "Preguntar al asistente: “reserva”");
+    assert.equal(items.filter((it) => it.source === "assistant").length, 1, "un único ítem del asistente");
+  });
+
+  it("sin texto (vacío o solo espacios) no hay ítem del asistente; el texto se normaliza (espacios) y no se recorta la puntuación", () => {
+    assert.equal(palette.assistantAskItem(""), null);
+    assert.equal(palette.assistantAskItem("   "), null);
+    assert.ok(palette.buildPaletteItems({ ...empty, query: "" }).every((it) => it.source !== "assistant"));
+    assert.equal(palette.assistantAskItem("  ¿Cuál es   la ocupación\nahora mismo?  ")?.label, "Preguntar al asistente: “¿Cuál es la ocupación ahora mismo?”");
+  });
+
+  it("`run` abre el panel del asistente con la pregunta pendiente (una sola vez) y sin fijar superficie", () => {
+    const ask = palette.assistantAskItem(`  ${QUESTION} `);
+    assert.ok(ask?.run);
+    assert.equal(assistantStore.getAssistantPanelState().open, false);
+    ask.run();
+    const state = assistantStore.getAssistantPanelState();
+    assert.equal(state.open, true);
+    assert.equal(state.pendingQuestion, QUESTION);
+    assert.equal(state.surface, null, "la superficie la decide el shell por la categoría de la pantalla");
+    assert.equal(state.requestId, 1);
+    assert.equal(assistantStore.takePendingQuestion(), QUESTION);
+    assert.equal(assistantStore.takePendingQuestion(), null);
+  });
+
+  it("la fuente pinta el ítem con el badge IA, mantiene «Buscando…» mientras solo está el asistente y no añade atajos (D9)", () => {
+    assert.match(PALETTE_SOURCE, /import \{ openAssistantWith \} from "\.\/assistant\/assistant-panel-store"/);
+    assert.match(PALETTE_SOURCE, /item\.source === "assistant" \? <CocoaBadge tone="ai" size="small">IA<\/CocoaBadge>/);
+    assert.match(PALETTE_SOURCE, /liveLoading && \(filtered\.length === 0 \|\| onlyAssistant\)/);
+    assert.doesNotMatch(PALETTE_SOURCE, /registerShortcut|useCocoaShortcuts/, "D9: la paleta no registra atajos nuevos");
+    assert.doesNotMatch(PALETTE_SOURCE, /style=\{/, "0 style= nuevos (contrato Cocoa 22)");
+  });
+
+  it("el foco vuelve al buscador si otro overlay lo roba mientras la paleta está abierta (⌘K sobre el panel: el cajón devuelve el foco a su disparador al cerrarse)", () => {
+    assert.match(PALETTE_SOURCE, /document\.addEventListener\("focusin", onFocusIn\)/);
+    assert.match(PALETTE_SOURCE, /root\.contains\(event\.target as Node\) \|\| document\.activeElement === input\) return;\s*input\.focus\(\);/);
+    assert.match(PALETTE_SOURCE, /<div ref=\{overlayRef\} className="c22-cmdk-overlay" role="dialog" aria-modal="true"/);
   });
 });

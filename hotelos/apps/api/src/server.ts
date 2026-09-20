@@ -748,7 +748,8 @@ import { webhooksRoutes } from "./routes/webhooks.routes.js";
 import { assistantRoutes } from "./routes/assistant.routes.js";
 import { touristTaxRoutes } from "./routes/tourist-tax.routes.js";
 import { registerWhatsappWebhookRoutes, unsignedWebhookMode } from "./routes/webhooks-whatsapp.routes.js";
-import { answerQuestion as assistantAnswer, getAvailableTools as assistantTools } from "./modules/assistant/assistant.service.js";
+import { answerQuestion as assistantAnswer } from "./modules/assistant/assistant.service.js";
+import { ASSISTANT_RETENTION_DAYS, purgeAssistantConversations } from "./modules/assistant/assistant-memory.service.js";
 import {
   computeTouristTax,
   applyTouristTaxToFolio,
@@ -7605,9 +7606,12 @@ export async function buildApiServer() {
   app.get("/copilot/presets", async () => ({ items: COPILOT_PRESET_QUESTIONS }));
   app.post("/copilot/ask", async (request) => {
     const body = (request.body ?? {}) as { propertyId?: string; question?: string };
+    // Corrector L6b (L6B-REV-04): el alias corre con el contexto REAL del usuario (sus claves y su memoria), no con
+    // el actor sintético de lectura; el núcleo filtra el catálogo por RBAC como en POST /assistant/chat.
     return answerCopilot({
       propertyId: body.propertyId ?? request.userContext.propertyId,
-      question: (body.question ?? "").trim()
+      question: (body.question ?? "").trim(),
+      context: request.userContext
     });
   });
   app.get("/dashboards/maintenance", async (request) => {
@@ -8829,6 +8833,26 @@ if (entryFile === argFile) {
     // Se detiene por el coordinador de apagado (E2), no por process.once.
     shutdown.register("channel.drain", () => clearInterval(drainTimer));
     app.log.info({ intervalMs: drainIntervalMs }, "[channel.drain] enabled (lease-gated)");
+  }
+
+  // Asistente unificado (Tanda L6b · corrector L6B-REV-07): purga por retención de la memoria del
+  // asistente (assistant_conversations con last_message_at anterior a ASSISTANT_MEMORY_RETENTION_DAYS,
+  // defecto 90; los mensajes caen por la FK en cascada). Mismo patrón lease-gated que SES/VeriFactu.
+  // Disable with ASSISTANT_MEMORY_PURGE_DISABLED=true.
+  if (schedulerLeader && process.env.ASSISTANT_MEMORY_PURGE_DISABLED !== "true") {
+    const purgeIntervalMs = Number(process.env.ASSISTANT_MEMORY_PURGE_INTERVAL_MS ?? 6 * 60 * 60 * 1000);
+    const retentionDays = Number(process.env.ASSISTANT_MEMORY_RETENTION_DAYS ?? ASSISTANT_RETENTION_DAYS);
+    const purgeTick = async () => {
+      if (!(await holdsSchedulerLease())) return;
+      const r = await purgeAssistantConversations({ retentionDays });
+      if (r.deleted > 0) app.log.info({ assistantMemory: r }, "[assistant.purge] tick");
+    };
+    const purgeTimer = setInterval(() => {
+      void purgeTick().catch((error) => app.log.error({ err: error }, "[assistant.purge] failed"));
+    }, purgeIntervalMs);
+    purgeTimer.unref();
+    shutdown.register("assistant.purge", () => clearInterval(purgeTimer));
+    app.log.info(`[assistant.purge] enabled (every ${Math.round(purgeIntervalMs / 1000)}s · retención ${retentionDays} días · lease-gated)`);
   }
 
   // Revenue pace scheduler: capture a daily OTB snapshot per property so PACE has

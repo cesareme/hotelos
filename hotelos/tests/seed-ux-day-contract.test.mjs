@@ -154,12 +154,14 @@ describe("Medida automatizada del camino óptimo (U1 · §8.6)", () => {
     assert.doesNotMatch(helpers, /testInfo\.skip\(/, "el login tras el bypass es fallo, no skip");
   });
 
-  it("las 12 specs e2e (11 de recepción + integraciones L8) no se saltan y usan las rutas del árbol de navegación", () => {
+  it("las 13 specs e2e (11 de recepción + integraciones L8 + panel del asistente L6b) no se saltan y usan las rutas del árbol de navegación", () => {
     const dir = new URL("../apps/admin-web/e2e/", import.meta.url);
     const specs = readdirSync(dir).filter((f) => f.endsWith(".spec.ts"));
     // U6: quick-checkout · walk-in · U7: reservation-workspace (ficha) · U8: reservations-list · U9b: timeline (Live Timeline) · U10: target-size (tablet, proyecto `touch`).
     // L8: integrations-status (Configuración › Integraciones, estado veraz de cada integración).
+    // L6b-10: assistant-panel (panel del asistente unificado).
     assert.deepEqual(specs.sort(), [
+      "assistant-panel.spec.ts",
       "compliance-center.spec.ts",
       "frontdesk-cockpit.spec.ts",
       "integrations-status.spec.ts",

@@ -344,6 +344,12 @@ kiosco decida (pago por enlace al móvil, sin ticket impreso). La llave móvil d
 
 ## 10 · Recepcionista IA: bot del huésped y copiloto
 
+> **Tanda L6b (2026-09-20)**: el bot y el copiloto consumen ahora el núcleo conversacional único (`modules/assistant/assistant-core.service.ts`,
+> `runAssistantTurn`) con su propio prompt (`assistant_guest` / `assistant_reception`) y permisos: la respuesta con modelo del bot
+> (`answerWithModelViaCore`) y su clasificación (`classifyWithCore`, misma puerta de propiedad `assistant-gate.ts`) y el alias `/copilot/ask`
+> (con el `UserContext` real de la petición). Lo que sigue describe el flujo de reglas, identidad, HITL y canales, que no cambia; el detalle
+> del núcleo está en `docs/runbooks/asistente-ia.md` (§5 memoria y privacidad, §12 límites).
+
 **Bot** (`guest-bot.service.ts`, `handleGuestMessage`): un punto de entrada para dos canales — web (`POST /guest-portal/chat`,
 el token identifica la reserva) y WhatsApp (`POST /webhooks/whatsapp`: número resuelto por `Guest.phoneLookupHash` +
 reserva activa de la propiedad, con respaldo `CheckInGuest.phoneMobileLookupHash`; sin coincidencia pide código de reserva

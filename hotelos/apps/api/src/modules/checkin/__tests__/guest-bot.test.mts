@@ -1,26 +1,44 @@
 // Unit tests · Tanda CHK · lote W4-D — bot del huésped (guest-bot.service.ts) con
 // dobles: conversaciones y mensajes en memoria, runner grabado en una lista,
 // sin modelo (llmConfigured false → mode "rules"), sin base de datos ni red.
+// Tanda L6b (L6b-08): el último bloque ejercita las dependencias REALES `classify`
+// y `answerWithModel` sobre el núcleo (ai-core con fetch simulado, núcleo con
+// memoria en memoria y telemetría capturada): prompt assistant_guest, catálogo
+// reducido a answerGuestQuestion, actor guest:<conversationId>, avisos filtrados.
 // Desde apps/api:
 //   node --import tsx --test src/modules/checkin/__tests__/guest-bot.test.mts
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
+import { createAiCore, resolveAiConfig } from "@hotelos/ai-core";
+import type { AiCore } from "@hotelos/ai-core";
+import type { RecordToolCallInput, ToolRunResult } from "@hotelos/ai-core/runner";
+import { resetAiCoreForTests, setAiPromptSource } from "../../../lib/ai-client.js";
 import type { UserContext } from "../../../lib/demo-store.js";
-import { NotFoundError } from "../../../lib/http-error.js";
+import { ForbiddenError, NotFoundError } from "../../../lib/http-error.js";
+import { catalogFor, getAssistantTool } from "../../assistant/assistant-catalog.js";
+import { ASSISTANT_TURN_TOOL_NAME, resetAssistantCoreForTests } from "../../assistant/assistant-core.service.js";
+import { createInMemoryAssistantMemoryStore, resetAssistantMemoryForTests } from "../../assistant/assistant-memory.service.js";
+import { ASSISTANT_SYSTEM_PROMPTS } from "../../assistant/assistant-prompts.js";
 import { GuestPortalAuthError } from "../../guest-portal/guest-portal.service.js";
 import { GUEST_AI_DISCLOSURE } from "../../messaging/messaging.service.js";
 import {
+  GUEST_ASSISTANT_PERMISSIONS,
+  GUEST_BOT_CLASSIFY_TOOL_NAME,
   GUEST_BOT_HANDOFF_ACTION,
   GUEST_BOT_HANDOFF_EVENT,
+  GUEST_BOT_INTENTS,
   GUEST_BOT_MAX_UNRESOLVED_TURNS,
   answerFaqByRules,
   classifyByRules,
+  defaultGuestBotDeps,
   detectServiceRequestType,
   extractCodeAndEmail,
+  guestAssistantContext,
   guestLanguageOf,
   handleGuestMessage,
   normalizePhone,
   parseEtaTime,
+  stripAssistantNotices,
   type GuestBotConversation,
   type GuestBotDeps,
   type GuestBotMessage,
@@ -380,5 +398,291 @@ describe("handleGuestMessage · canal whatsapp", () => {
     const result = await handleGuestMessage(wa("llegamos sobre las 21:15", "+34600000001", "wamid_eta"), deps);
     assert.equal(result.action, "updated");
     assert.deepEqual(state.etaUpdates, [{ reservationId: "res_a", eta: "21:15", token: null }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tanda L6b (L6b-08): dependencias reales `classify` y `answerWithModel` sobre el núcleo
+// ---------------------------------------------------------------------------
+
+type Captured = { body: Record<string, unknown> };
+
+function anthropicMessage(content: unknown[], options: { model?: string; stopReason?: string } = {}) {
+  return { id: "msg_1", type: "message", role: "assistant", model: options.model ?? "claude-sonnet-5", content, stop_reason: options.stopReason ?? "end_turn", usage: { input_tokens: 30, output_tokens: 20 } };
+}
+const textBlock = (value: string) => ({ type: "text", text: value });
+const toolUseBlock = (id: string, name: string, input: Record<string, unknown> = {}) => ({ type: "tool_use", id, name, input });
+
+/** fetch simulado: devuelve las respuestas en orden y captura cada cuerpo enviado. */
+function fakeFetch(responders: unknown[], captured: Captured[]): typeof fetch {
+  return (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    captured.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+    const next = responders.shift();
+    if (!next) throw new Error("sin respuesta simulada");
+    return new Response(JSON.stringify(next), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+}
+
+function configuredCore(responders: unknown[], captured: Captured[]): AiCore {
+  return createAiCore({ config: resolveAiConfig({ provider: "anthropic", apiKey: "sk-test-not-a-real-key", usdEurRate: "0.9" }), fetchImpl: fakeFetch(responders, captured), sleep: async () => undefined });
+}
+
+type CoreHarness = { captured: Captured[]; rows: RecordToolCallInput[]; runnerCalls: string[]; memory: ReturnType<typeof createInMemoryAssistantMemoryStore> };
+
+/** Núcleo con memoria en memoria, telemetría capturada y el catálogo real de la superficie guest para el actor del huésped. */
+function setupCore(options: { responders?: unknown[]; configured?: boolean; runner?: (toolName: string) => Promise<ToolRunResult> } = {}): CoreHarness {
+  const harness: CoreHarness = { captured: [], rows: [], runnerCalls: [], memory: createInMemoryAssistantMemoryStore() };
+  resetAssistantMemoryForTests(harness.memory);
+  resetAssistantCoreForTests({
+    getAiCore: () => (options.configured === false ? createAiCore({ config: resolveAiConfig({ provider: "none" }) }) : configuredCore(options.responders ?? [], harness.captured)),
+    // Catálogo REAL de la superficie guest para las claves del actor (sin filtro de módulos: no hay espejo de módulos en el test).
+    catalogFor: ({ context, surface }) => catalogFor({ permissions: context.permissions, surface }),
+    writeToolsFor: () => [],
+    runAiTool: async (input) => {
+      harness.runnerCalls.push(input.toolName);
+      if (!options.runner) throw new Error(`runner no esperado para ${input.toolName}`);
+      return options.runner(input.toolName);
+    },
+    recordToolCall: async (input) => {
+      harness.rows.push(input);
+      return { id: `call_${harness.rows.length}` };
+    },
+    // Puerta de propiedad del camino con modelo (la real lee Prisma): abierta en estos tests.
+    propertyGate: async () => ({ allowed: true }),
+    now: () => new Date("2026-09-20T10:00:00.000Z")
+  });
+  return harness;
+}
+
+describe("bot del huésped sobre el núcleo (L6b-08)", () => {
+  afterEach(() => {
+    resetAssistantCoreForTests();
+    resetAssistantMemoryForTests();
+    resetAiCoreForTests({ env: {} });
+  });
+
+  it("actor del huésped: guest:<conversationId> con solo ai.tool.execute → el catálogo de la superficie guest es exactamente answerGuestQuestion; los avisos del núcleo se recortan", () => {
+    assert.deepEqual([...GUEST_ASSISTANT_PERMISSIONS], ["ai.tool.execute"]);
+    assert.deepEqual(catalogFor({ permissions: GUEST_ASSISTANT_PERMISSIONS, surface: "guest" }).map((tool) => tool.name), ["answerGuestQuestion"]);
+    // Con las claves del canal (pms.reservation.read) el modelo vería findReservation: por eso el actor del huésped no las hereda.
+    assert.ok(catalogFor({ permissions: ["ai.tool.execute", "pms.reservation.read"] as UserContext["permissions"], surface: "guest" }).some((tool) => tool.name === "findReservation"));
+    const scoped = guestAssistantContext(CONTEXT, "conv_9");
+    assert.equal(scoped.userId, "guest:conv_9");
+    assert.equal(scoped.organizationId, "org_1");
+    assert.equal(scoped.propertyId, PROPERTY);
+    assert.deepEqual(scoped.permissions, ["ai.tool.execute"]);
+    assert.equal(scoped.orgScope, false);
+    assert.deepEqual(scoped.assignedPropertyIds, [PROPERTY]);
+
+    assert.equal(stripAssistantNotices("Hola.\n\nAviso: uno\nAviso: dos", ["uno", "dos"]), "Hola.");
+    assert.equal(stripAssistantNotices("Hola.", []), "Hola.");
+    assert.equal(stripAssistantNotices("Hola. Aviso: uno", ["otro"]), "Hola. Aviso: uno");
+  });
+
+  it("L6B-REV-01: con clave pero la puerta de propiedad cerrada (IA apagada, nivel off o presupuesto agotado) classify no llama al proveedor y el bot sigue por reglas", async () => {
+    setAiPromptSource(null);
+    let fetches = 0;
+    resetAiCoreForTests({
+      env: {},
+      overrides: { provider: "anthropic", apiKey: "sk-test-not-a-real-key", usdEurRate: "0.9" },
+      fetchImpl: (async () => {
+        fetches += 1;
+        throw new Error("no debe llamarse al proveedor con la puerta cerrada");
+      }) as typeof fetch
+    });
+    resetAssistantCoreForTests({ propertyGate: async (input) => ({ allowed: false, reason: "budget_exceeded", notice: `presupuesto agotado para ${input.toolName}` }) });
+    assert.equal(defaultGuestBotDeps.llmConfigured(), true);
+    assert.equal(await defaultGuestBotDeps.classify({ text: "hola, buenas tardes", organizationId: "org_1", propertyId: PROPERTY, conversationId: "conv_x", correlationId: "corr" }), null);
+    assert.equal(fetches, 0);
+    const bot = fakeDeps({ classify: defaultGuestBotDeps.classify, llmConfigured: defaultGuestBotDeps.llmConfigured });
+    const result = await handleGuestMessage(web("hola, buenas tardes"), bot.deps);
+    assert.equal(result.mode, "rules");
+    assert.equal(fetches, 0, "ninguna llamada facturable");
+  });
+
+  it("classify del núcleo con confianza < 0,85 deriva: ai-core (rol classify) con el prompt assistant_guest y las 9 etiquetas; ≥ 0,85 responde con mode llm; salida inválida → reglas", async () => {
+    const captured: Captured[] = [];
+    // Sin fuente de prompts publicados (gobernanza la registra sobre Prisma al importar el API): promptFrom usa el respaldo en código.
+    setAiPromptSource(null);
+    // La puerta de propiedad real lee Prisma: aquí abierta (la cerrada se prueba arriba).
+    resetAssistantCoreForTests({ propertyGate: async () => ({ allowed: true }) });
+    resetAiCoreForTests({
+      env: {},
+      overrides: { provider: "anthropic", apiKey: "sk-test-not-a-real-key", usdEurRate: "0.9" },
+      fetchImpl: fakeFetch(
+        [
+          anthropicMessage([textBlock(JSON.stringify({ label: "faq", confidence: 0.6, rationale: "saludo sin pregunta" }))], { model: "claude-haiku-4-5-20251001" }),
+          anthropicMessage([textBlock(JSON.stringify({ label: "reservation_status", confidence: 0.93, rationale: "pregunta por su reserva" }))], { model: "claude-haiku-4-5-20251001" }),
+          anthropicMessage([textBlock("esto no es JSON")], { model: "claude-haiku-4-5-20251001" })
+        ],
+        captured
+      )
+    });
+    assert.equal(defaultGuestBotDeps.llmConfigured(), true, "llmConfigured real lee el núcleo de ai-core");
+
+    const low = fakeDeps({ classify: defaultGuestBotDeps.classify, llmConfigured: defaultGuestBotDeps.llmConfigured });
+    const derived = await handleGuestMessage(web("hola, buenas tardes"), low.deps);
+    assert.equal(derived.action, "handoff");
+    assert.equal(derived.mode, "llm");
+    assert.equal(derived.intent, "faq");
+    assert.equal(derived.confidence, 0.6);
+    assert.equal(low.state.conversations[0]!.status, "handoff");
+    assert.deepEqual(low.state.audits.filter((a) => a.action === GUEST_BOT_HANDOFF_ACTION).map((a) => (a.afterJson as { reason: string }).reason), ["low_confidence:0.60"]);
+    assert.equal(captured.length, 1);
+    const request = captured[0]!.body;
+    assert.equal(request.model, "claude-haiku-4-5-20251001", "rol classify (Haiku)");
+    const system = Array.isArray(request.system) ? (request.system as Array<{ text: string }>).map((block) => block.text).join("") : String(request.system);
+    assert.ok(system.startsWith(ASSISTANT_SYSTEM_PROMPTS.guest), "prompt assistant_guest (respaldo en código) por delante");
+    assert.match(system, /clasificador de intención/);
+    const schema = (request.output_config as { format: { schema: { properties: { label: { enum: string[] } } } } }).format.schema;
+    assert.deepEqual(schema.properties.label.enum, [...GUEST_BOT_INTENTS]);
+    assert.match(String((request.messages as Array<{ content: string }>)[0]!.content), /hola, buenas tardes/);
+
+    const high = fakeDeps({ classify: defaultGuestBotDeps.classify, llmConfigured: defaultGuestBotDeps.llmConfigured });
+    const answered = await handleGuestMessage(web("hola, buenas tardes"), high.deps);
+    assert.equal(answered.intent, "reservation_status");
+    assert.equal(answered.mode, "llm");
+    assert.equal(answered.action, "answered");
+    assert.match(answered.reply, /CHK-A1/);
+
+    // Salida no válida del modelo (AiError invalid_output, no reintentable): sin clasificación → reglas, nunca un 500 al huésped.
+    const invalid = fakeDeps({ classify: defaultGuestBotDeps.classify, llmConfigured: defaultGuestBotDeps.llmConfigured });
+    const clarified = await handleGuestMessage(web("hola, buenas tardes"), invalid.deps);
+    assert.equal(clarified.mode, "rules");
+    assert.equal(clarified.intent, "unknown");
+    assert.match(clarified.reply, /No estoy seguro/);
+    assert.equal(captured.length, 3);
+
+    // Sin proveedor: classify real devuelve null sin tocar la red y llmConfigured es false.
+    resetAiCoreForTests({ env: {} });
+    assert.equal(defaultGuestBotDeps.llmConfigured(), false);
+    assert.equal(await defaultGuestBotDeps.classify({ text: "hola", organizationId: "org_1", propertyId: PROPERTY, conversationId: "conv_x", correlationId: "corr" }), null);
+    assert.equal(captured.length, 3);
+  });
+
+  it("answerWithModel del núcleo: prompt assistant_guest, tools = [answerGuestQuestion], contexto de pantalla con la conversación, memoria y telemetría del actor guest:<conversationId>, historial en el 2.º turno y una conversación por huésped", async () => {
+    const h = setupCore({
+      responders: [
+        anthropicMessage([textBlock("El desayuno se sirve de 07:30 a 10:30. ¡Buen provecho!")]),
+        anthropicMessage([textBlock("La red wifi es HotelCHK.")]),
+        anthropicMessage([textBlock("Breakfast is served from 07:30 to 10:30.")])
+      ]
+    });
+    const { deps, state } = fakeDeps({ answerWithModel: defaultGuestBotDeps.answerWithModel }, { llm: true });
+
+    const first = await handleGuestMessage(web("¿a qué hora es el desayuno?"), deps);
+    assert.equal(first.mode, "llm");
+    assert.equal(first.action, "answered");
+    assert.equal(first.intent, "faq");
+    assert.equal(first.reply, `${GUEST_AI_DISCLOSURE}\n\nEl desayuno se sirve de 07:30 a 10:30. ¡Buen provecho!`);
+    assert.equal(first.conversationId, "conv_1");
+    assert.equal(state.toolCalls.length, 0, "ninguna escritura");
+    assert.equal(h.runnerCalls.length, 0, "el modelo respondió sin herramientas");
+
+    assert.equal(h.captured.length, 1);
+    const request = h.captured[0]!.body;
+    assert.equal(request.model, "claude-sonnet-5");
+    const system = Array.isArray(request.system) ? (request.system as Array<{ text: string }>).map((block) => block.text).join("") : String(request.system);
+    assert.equal(system, ASSISTANT_SYSTEM_PROMPTS.guest);
+    assert.deepEqual((request.tools as Array<{ name: string }>).map((tool) => tool.name), ["answerGuestQuestion"], "catálogo del actor del huésped");
+    assert.deepEqual(request.tool_choice, { type: "auto" });
+    const messages = request.messages as Array<{ role: string; content: unknown }>;
+    assert.equal(messages.length, 1);
+    const content = String(messages[0]!.content);
+    assert.match(content, /Pantalla actual: guest\.chat/);
+    assert.match(content, /Entidad en pantalla: conversation conv_1/);
+    assert.match(content, /Datos del hotel/);
+    assert.match(content, /07:30 a 10:30/);
+    assert.match(content, /Reserva del huésped: código CHK-A1/);
+    assert.match(content, /Idioma de la respuesta: español\./);
+
+    // Memoria y telemetría del núcleo: actor guest:conv_1 (nunca system:checkin:guest-bot-web), superficie guest, coste real.
+    assert.equal(h.memory.conversations.length, 1);
+    assert.equal(h.memory.conversations[0]!.userId, "guest:conv_1");
+    assert.equal(h.memory.conversations[0]!.surface, "guest");
+    assert.deepEqual(h.memory.messages.map((m) => m.role), ["user", "assistant"]);
+    assert.equal(h.rows.length, 1);
+    assert.equal(h.rows[0]!.toolName, ASSISTANT_TURN_TOOL_NAME);
+    assert.equal(h.rows[0]!.userId, "guest:conv_1");
+    assert.equal(h.rows[0]!.propertyId, PROPERTY);
+    assert.equal(h.rows[0]!.model, "claude-sonnet-5");
+    assert.ok((h.rows[0]!.costEur ?? 0) > 0, "coste real de la llamada");
+    assert.equal((h.rows[0]!.outputJson as { routedBy: string }).routedBy, "model");
+
+    // 2.º turno del mismo huésped: misma conversación del núcleo y el historial viaja al modelo.
+    const second = await handleGuestMessage(web("¿y el wifi?"), deps);
+    assert.equal(second.mode, "llm");
+    assert.match(second.reply, /HotelCHK/);
+    assert.equal(h.memory.conversations.length, 1, "reutiliza la conversación del huésped");
+    assert.equal(h.memory.messages.length, 4);
+    const secondMessages = h.captured[1]!.body.messages as Array<{ role: string }>;
+    assert.deepEqual(secondMessages.map((m) => m.role), ["user", "assistant", "user"]);
+
+    // Otro huésped (tok_b, inglés): otra conversación del núcleo y respuesta en su idioma.
+    const other = await handleGuestMessage(web("what time is breakfast?", "tok_b"), deps);
+    assert.equal(other.language, "en");
+    assert.equal(other.mode, "llm");
+    assert.match(other.reply, /Breakfast is served/);
+    assert.equal(h.memory.conversations.length, 2);
+    assert.notEqual(other.conversationId, first.conversationId);
+    assert.equal(h.memory.conversations[1]!.userId, `guest:${other.conversationId}`);
+    assert.match(String((h.captured[2]!.body.messages as Array<{ content: unknown }>)[0]!.content), /Idioma de la respuesta: inglés\./);
+    assert.ok(!JSON.stringify(h.captured[2]!.body).includes("CHK-A1"), "el huésped B nunca ve la reserva de A");
+  });
+
+  it("herramientas: answerGuestQuestion por el runner queda citada; una herramienta fuera del catálogo se deniega y el aviso del núcleo NO llega al huésped", async () => {
+    const h = setupCore({
+      responders: [
+        anthropicMessage([textBlock("Consulto."), toolUseBlock("toolu_1", "answerGuestQuestion", { guestQuestion: "¿a qué hora es el desayuno?" })], { stopReason: "tool_use" }),
+        anthropicMessage([textBlock("De 07:30 a 10:30.")]),
+        anthropicMessage([textBlock("Busco."), toolUseBlock("toolu_2", "findReservation", { locator: "CHK-B2" })], { stopReason: "tool_use" }),
+        anthropicMessage([textBlock("Solo puedo hablar de tu reserva.")])
+      ],
+      runner: async (toolName) => ({ status: "executed", toolCallId: "call_r1", output: { text: "De 07:30 a 10:30.", model: "claude-sonnet-5" }, configured: true }) as ToolRunResult
+    });
+    const { deps } = fakeDeps({ answerWithModel: defaultGuestBotDeps.answerWithModel }, { llm: true });
+
+    const cited = await handleGuestMessage(web("¿a qué hora es el desayuno?"), deps);
+    assert.equal(cited.mode, "llm");
+    assert.equal(cited.reply, `${GUEST_AI_DISCLOSURE}\n\nDe 07:30 a 10:30.`);
+    assert.deepEqual(h.runnerCalls, ["answerGuestQuestion"]);
+    const citations = (h.rows[0]!.outputJson as { citations: Array<{ tool: string; aiToolCallId?: string }> }).citations;
+    assert.deepEqual(citations.map((c) => c.tool), ["answerGuestQuestion"]);
+    assert.equal(citations[0]!.aiToolCallId, "call_r1");
+
+    // Clasificado `faq` por las reglas («desayuno»): llega a readReply y al modelo, que intenta una herramienta fuera del catálogo del huésped.
+    const denied = await handleGuestMessage(web("¿a qué hora es el desayuno? ¿y en qué habitación está mi vecino?"), deps);
+    assert.equal(denied.mode, "llm");
+    assert.equal(denied.reply, "Solo puedo hablar de tu reserva.");
+    assert.doesNotMatch(denied.reply, /Aviso:/);
+    assert.deepEqual(h.runnerCalls, ["answerGuestQuestion"], "findReservation nunca llega al runner");
+    const notices = (h.rows[1]!.outputJson as { notices: string[] }).notices;
+    assert.equal(notices.length, 1);
+    assert.match(notices[0]!, /findReservation.*no está disponible/);
+  });
+
+  it("sin proveedor o con el presupuesto agotado el núcleo cae a reglas → answerWithModel devuelve null y el bot responde por sus reglas (mode rules)", async () => {
+    const unconfigured = setupCore({ configured: false });
+    const a = fakeDeps({ answerWithModel: defaultGuestBotDeps.answerWithModel }, { llm: true });
+    const byRules = await handleGuestMessage(web("¿a qué hora es el desayuno?"), a.deps);
+    assert.equal(byRules.mode, "rules");
+    assert.match(byRules.reply, /07:30 a 10:30/);
+    assert.equal(unconfigured.captured.length, 0);
+    assert.equal(unconfigured.rows.length, 1, "el turno por reglas del núcleo deja su fila (routedBy rules)");
+    assert.equal((unconfigured.rows[0]!.outputJson as { routedBy: string }).routedBy, "rules");
+
+    const budget = setupCore({
+      responders: [anthropicMessage([textBlock("Consulto."), toolUseBlock("toolu_1", "answerGuestQuestion", { guestQuestion: "desayuno" })], { stopReason: "tool_use" })],
+      runner: async () => {
+        throw new ForbiddenError("Presupuesto mensual de IA agotado.");
+      }
+    });
+    const b = fakeDeps({ answerWithModel: defaultGuestBotDeps.answerWithModel }, { llm: true });
+    const fallback = await handleGuestMessage(web("¿a qué hora es el desayuno?"), b.deps);
+    assert.equal(fallback.mode, "rules");
+    assert.match(fallback.reply, /07:30 a 10:30/);
+    assert.doesNotMatch(fallback.reply, /Aviso|Presupuesto/);
+    assert.equal(budget.captured.length, 1);
+    assert.equal((budget.rows[0]!.outputJson as { routedBy: string }).routedBy, "rules");
   });
 });

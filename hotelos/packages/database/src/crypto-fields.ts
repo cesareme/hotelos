@@ -170,6 +170,16 @@ export const PII_FIELDS: Record<string, readonly string[]> = {
   // carry PII and are encrypted at rest with the same envelope (strings of
   // ~10 KB). A real object store (T9) will replace them with opaque keys.
   Signature: ["objectKey", "pdfObjectKey"],
+  // Asistente unificado (Tanda L6b · L6b-01): el texto de cada mensaje de la
+  // conversación puede contener nombres, documentos o teléfonos de huéspedes
+  // escritos por el usuario o citados por el asistente, así que va cifrado con
+  // el mismo envelope. Sin lookup hash: nunca se busca por igualdad de contenido.
+  AssistantMessage: ["content"],
+  // Corrector L6b (REV-02): el título es la primera pregunta recortada y el
+  // redactor solo reconoce nombres con tratamiento («Sra.») o fórmula de
+  // presentación, así que «¿Tiene reserva Nombre Apellido?» llegaría en claro:
+  // mismo envelope que el contenido. Sin lookup hash: nunca se busca por título.
+  AssistantConversation: ["title"],
   // OAuth refresh token + IMAP password for email connectors, encrypted at rest.
   EmailConnection: ["oauthRefreshToken", "imapPassword"],
   // Payment Service Provider references — opaque tokens that can be replayed

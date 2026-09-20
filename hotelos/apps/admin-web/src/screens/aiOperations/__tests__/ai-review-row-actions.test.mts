@@ -11,6 +11,10 @@ import { fileURLToPath } from "node:url";
 // the POST leaves on expiry, unmount or beforeunload; «Deshacer» cancels it —
 // the API has no reopen route). Source contract + the pure toast helper; the
 // controller itself is unit-tested in ai-review-deferred.test.mts.
+// Merge with Tanda L6b (L6b-09): the label of the primary comes from
+// `approveLabel(item)` — «Aprobar» (ACTIONS.approve) for every review-only item,
+// «Aprobar y ejecutar» for an `ai_tool_call` item, which goes to POST
+// /ai/tool-calls/:id/confirm instead of the deferred commit.
 // The module reaches services/api-client → `import.meta.env` (Vite): same hook
 // as reservation-primary-action.test.mts.
 registerHooks({
@@ -23,7 +27,9 @@ registerHooks({
   }
 });
 
-const { actionToast } = await import("../AiHumanReviewQueueScreen.tsx");
+const { actionToast, approveLabel } = await import("../AiHumanReviewQueueScreen.tsx");
+const { ACTIONS } = await import("../../../content/actions.ts");
+const { AI_TOOL_CALL_ACTION_LABELS } = await import("../ai-review-labels.ts");
 
 const stripComments = (source: string) =>
   source
@@ -51,6 +57,23 @@ describe("actionToast · names the decision and the type of the item", () => {
   });
 });
 
+describe("approveLabel · «Aprobar» for the queue, «Aprobar y ejecutar» for an ai_tool_call item (UX-2 P1 × L6b-09)", () => {
+  it("falls back to ACTIONS.approve and names the execution only for the runner's items", () => {
+    assert.equal(ACTIONS.approve, "Aprobar");
+    assert.equal(approveLabel({ relatedEntityType: "rate_plan", relatedEntityId: "rp_1" }), ACTIONS.approve);
+    assert.equal(approveLabel({}), ACTIONS.approve);
+    assert.equal(approveLabel({ relatedEntityType: "ai_tool_call", relatedEntityId: "" }), ACTIONS.approve, "without a row id nothing executes");
+    assert.equal(approveLabel({ relatedEntityType: "ai_tool_call", relatedEntityId: "cmu_tool_call_1" }), AI_TOOL_CALL_ACTION_LABELS.approve);
+    assert.equal(AI_TOOL_CALL_ACTION_LABELS.approve, "Aprobar y ejecutar");
+  });
+
+  it("an ai_tool_call item is decided through the confirm route, never through the deferred commit or the queue's approve/reject", () => {
+    assert.match(SCREEN, /const approve = \(item: ReviewItem, withNotes: boolean\) => \{\s*if \(isAiToolCallReview\(item\)\) return decideToolCall\(item, "approve"\);/);
+    assert.match(SCREEN, /isAiToolCallReview\(item\) \? decideToolCall\(item, "reject"\) : runAction\(`\/ai-operations\/review\/\$\{item\.id\}\/reject`/);
+    assert.match(SCREEN, /await confirmToolCall\(toolCallId, decision, /);
+  });
+});
+
 describe("AiHumanReviewQueueScreen · row = «Aprobar» (tinted) + «Rechazar», always visible (P1)", () => {
   const row = region(SCREEN, "rowActions={(item) => {", "\n        }}");
 
@@ -59,7 +82,9 @@ describe("AiHumanReviewQueueScreen · row = «Aprobar» (tinted) + «Rechazar»,
     assert.equal((row.match(/variant="tinted"/g) ?? []).length, 1);
     assert.equal((row.match(/variant="filled"/g) ?? []).length, 0);
     assert.match(row, /variant="tinted" tone="accent" size="small" loading=\{isRunning\("approve", item\.id\)\}[^\n]*onClick=\{\(\) => void approve\(item, false\)\}/);
-    assert.match(row, /\{ACTIONS\.approve\}/);
+    // L6b-09: the label is `approveLabel(item)` = ACTIONS.approve unless the item is an `ai_tool_call` («Aprobar y ejecutar»).
+    assert.match(row, /\{approveLabel\(item\)\}/);
+    assert.doesNotMatch(row, /approveLabel\(selected\)/);
     assert.match(row, /\{ACTIONS\.reject\}/);
     assert.match(row, /if \(decided\) return null;/);
     assert.match(SCREEN, /rowActionsVisible="always"/);
@@ -71,7 +96,7 @@ describe("AiHumanReviewQueueScreen · row = «Aprobar» (tinted) + «Rechazar»,
     assert.match(footer, /\{ACTIONS\.assignToMe\}/);
     assert.match(footer, /\{ACTIONS\.escalate\}/);
     assert.match(footer, /\{ACTIONS\.reject\}/);
-    assert.match(footer, /\{ACTIONS\.approve\}/);
+    assert.match(footer, /\{approveLabel\(selected\)\}/);
     assert.equal((footer.match(/variant="filled"/g) ?? []).length, 1);
     const decisionForm = region(SCREEN, '<CocoaFormSection title="Decisión"', "</CocoaFormSection>");
     assert.doesNotMatch(decisionForm, /actions=\{/);

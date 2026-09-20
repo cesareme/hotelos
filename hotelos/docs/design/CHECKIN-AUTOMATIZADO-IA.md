@@ -191,6 +191,11 @@ Salida: `{ candidates: [{ roomId, number, score, reasons: [{ rule, weight, detai
 
 ## §5 · Recepcionista IA: bot para el huésped y copiloto de recepción
 
+> **Nota Tanda L6b (2026-09-20)**: desde la fusión del asistente unificado, el bot del huésped y el copiloto de recepción consumen el
+> núcleo conversacional único (`modules/assistant/assistant-core.service.ts`) con su propio prompt (`assistant_guest` / `assistant_reception`)
+> y permisos (actor `guest:<conversationId>` solo con `ai.tool.execute`; `/copilot/ask` con el `UserContext` real). La matriz de riesgo, el
+> HITL y el runner descritos aquí siguen vigentes por debajo; ver `docs/runbooks/asistente-ia.md`.
+
 Ambos se apoyan en el **tool-runner** de la Tanda 5 L6 (`modules/ai-operations/tool-runner.service.ts`): `getToolDefinition` + `canExecuteToolForModules` (`registry.ts:185-201`) → `evaluateAiSafety` (`safety.ts:23-86`) → `PropertyAiToolSetting` (`enabled`, `automationLevel`) → `evaluatePolicyGate` → si requiere confirmación, `AiToolCall status awaiting_confirmation` (estado ya previsto, `pipeline.service.ts:29-34`) y, si `requiresHumanReview`, `enqueueReview` → `POST /ai/tool-calls/:id/confirm` ejecuta el servicio de dominio y cierra la review tolerando «ya decidida» (patrón `email-reservation.service.ts:732-741`, porque `AiHumanReviewApproved` no tiene consumidor) → `recordToolCall` con `costEur` desde `usage` + auditoría `actorType:"ai"`. Sin clave: los intents deterministas actuales (`copilot.service.ts`, 10 intents; `assistant.service.ts`) con etiqueta `mode: "rules"` (hoy `assistant.service.ts:139` marca `llm` sin llamar al modelo).
 
 | Herramienta (nombre en `tool-names.ts`) | Lectura/escritura | Riesgo · nivel | Quién la usa | Límite |

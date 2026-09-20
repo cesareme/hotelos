@@ -25,23 +25,44 @@
 // («Aprobada: Recomendación de tarifa»). ⌘K: «Aprobar la propuesta seleccionada»
 // while the drawer shows a pending item. One live region of its own
 // (CocoaLiveRegion; the undo bar is the announcement of the change).
+//
+// Tanda L6b (lote L6b-09 · L6A audit §6.16, AI-CORE §10.3): an item whose
+// relatedEntityType is `ai_tool_call` is a write the tool runner left
+// awaiting_confirmation. Approving it in the queue used to close only the
+// review; now «Aprobar y ejecutar» / «Rechazar» go to POST /ai/tool-calls/:id
+// /confirm (services/assistantApi.confirmToolCall), which executes the tool
+// or closes the row and closes the review itself with the notes / reason.
+// The outcome (succeeded · failed · rejected · 403 sin permiso · 409 caducada)
+// is shown as a callout and a badge; nothing else changes for the other items.
+// Merge UX-2 × L6b: the deferred commit + undo bar applies to the review-only
+// items; an `ai_tool_call` item is decided at once through the confirm route
+// (executing IS the decision and its outcome has to be shown), so it never
+// enters the deferred controller.
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { getActiveOrganizationId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { useToast } from "../../components/Toast";
+import { useToast, type ToastVariant } from "../../components/Toast";
+import { confirmToolCall, type AssistantToolCallDecision } from "../../services/assistantApi";
 import { toArray } from "../../utils/toArray";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { dateTime, number, plural } from "../../lib/format";
 import {
+  AI_TOOL_CALL_ACTION_LABELS,
+  aiToolCallDecisionHint,
+  confirmErrorOutcome,
+  confirmResultOutcome,
   entityTypeLabel,
   formatPayloadValue,
+  isAiToolCallReview,
   payloadKeyLabel,
   reviewEnvelopeRows,
   reviewHistoryRows,
   reviewTypeLabel,
-  splitReviewPayload
+  splitReviewPayload,
+  type ConfirmOutcome,
+  type ConfirmOutcomeTone
 } from "./ai-review-labels";
 import { DEFERRED_APPROVAL_NOTE, createDeferredCommit, type DeferredApproval, type DeferredCommitReason } from "./ai-review-deferred";
 import {
@@ -146,6 +167,28 @@ function statusBadge(status: ReviewStatus) {
   );
 }
 
+/** Toast variant of a confirm outcome tone (L6b-09). */
+const OUTCOME_TOAST_VARIANT: Record<ConfirmOutcomeTone, ToastVariant> = {
+  success: "success",
+  danger: "error",
+  warning: "warning",
+  neutral: "info"
+};
+
+/** `payloadJson.toolName` of an `ai_tool_call` item (written by the runner), if any. */
+function toolNameOf(item: ReviewItem): string | null {
+  const value = item.payloadJson?.toolName;
+  return typeof value === "string" && value ? value : null;
+}
+
+/** Label of the approve button: «Aprobar» (ACTIONS.approve, UX-2 P1); an `ai_tool_call` item executes the tool on approval, so «Aprobar y ejecutar» (L6b-09). */
+export function approveLabel(item: Pick<ReviewItem, "relatedEntityType" | "relatedEntityId">): string {
+  return isAiToolCallReview(item) ? AI_TOOL_CALL_ACTION_LABELS.approve : ACTIONS.approve;
+}
+
+/** Outcome of the last confirm call, tied to its item (badge in the drawer, callout in the feedback slot). */
+type ItemOutcome = { itemId: string; outcome: ConfirmOutcome };
+
 // Text styles (tokens only; layout comes from the utilities).
 const secondaryStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
 
@@ -188,9 +231,16 @@ const COLUMNS: CocoaTableColumn<ReviewItem>[] = [
     hideOnNarrow: true,
     render: (item) =>
       item.relatedEntityType ? (
-        <span>
-          {entityTypeLabel(item.relatedEntityType)}
-          {item.relatedEntityId ? <span style={secondaryStyle}> · {item.relatedEntityId}</span> : null}
+        <span className="cocoa-cluster">
+          <span>
+            {entityTypeLabel(item.relatedEntityType)}
+            {item.relatedEntityId ? <span style={secondaryStyle}> · {item.relatedEntityId}</span> : null}
+          </span>
+          {isAiToolCallReview(item) ? (
+            <CocoaBadge tone="ai" variant="tinted" size="small">
+              Ejecuta al aprobar
+            </CocoaBadge>
+          ) : null}
         </span>
       ) : (
         <span style={secondaryStyle}>—</span>
@@ -220,6 +270,8 @@ export function AiHumanReviewQueueScreen() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   // Aprobación en espera (commit diferido, UX2-REV-04): la fila ya se pinta «Aprobada»; el POST sale al expirar la barra.
   const [deferred, setDeferred] = useState<DeferredApproval<ReviewItem> | null>(null);
+  // Resultado de la última confirmación de un ítem ai_tool_call (L6b-09), atado a su ítem hasta la siguiente acción.
+  const [itemOutcome, setItemOutcome] = useState<ItemOutcome | null>(null);
 
   const query = useMemo(
     () => ({
@@ -327,6 +379,7 @@ export function AiHumanReviewQueueScreen() {
     setRunningAction(key);
     setActionError(null);
     setActionMessage(null);
+    setItemOutcome(null);
     try {
       await apiRequest(path, { method: "POST", body });
       setActionMessage("Hecho.");
@@ -345,26 +398,68 @@ export function AiHumanReviewQueueScreen() {
     }
   }
 
-  const assign = (item: ReviewItem) => runAction(`/ai-operations/review/${item.id}/assign`, { userId: CURRENT_USER_ID }, `assign-${item.id}`, item);
-  // «Aprobar» (fila, cajón o ⌘K): commit diferido — nada se envía hasta que la barra expira (o la pantalla se va).
-  const approve = (item: ReviewItem, withNotes: boolean) => {
+  // Tanda L6b (L6b-09): the decision of an `ai_tool_call` item goes to the confirm
+  // route. `approve` re-checks the permissions and the gates, claims the row and
+  // executes the tool with the recorded input; `reject` closes the row. Both close
+  // the review with the notes / reason (runner closeReview), so the queue's own
+  // approve/reject is NOT called: it would only mark the review and leave the
+  // tool pending (or, on a 403 / 409 here, leave «aprobada» next to a row that
+  // never ran). The outcome stays tied to the item until the next action.
+  async function decideToolCall(item: ReviewItem, decision: AssistantToolCallDecision) {
+    const toolCallId = item.relatedEntityId;
+    if (!toolCallId) return;
+    setRunningAction(`${decision}-${item.id}`);
     setActionError(null);
     setActionMessage(null);
+    setItemOutcome(null);
+    const toolName = toolNameOf(item);
+    try {
+      const result = await confirmToolCall(toolCallId, decision, decision === "approve" ? notes.trim() || undefined : reason.trim());
+      const outcome = confirmResultOutcome(result, toolName);
+      setItemOutcome({ itemId: item.id, outcome });
+      setNotes("");
+      setReason("");
+      setRejectHint(false);
+      showToast(outcome.label, { variant: OUTCOME_TOAST_VARIANT[outcome.tone] });
+    } catch (err) {
+      const outcome = confirmErrorOutcome(err);
+      setItemOutcome({ itemId: item.id, outcome });
+      showToast(outcome.label, { variant: OUTCOME_TOAST_VARIANT[outcome.tone] });
+    } finally {
+      setRunningAction(null);
+      // 409 (caducada) rejects the row and closes the review on the API side; 403 leaves everything as it was.
+      refreshAll();
+    }
+  }
+
+  const assign = (item: ReviewItem) => runAction(`/ai-operations/review/${item.id}/assign`, { userId: CURRENT_USER_ID }, `assign-${item.id}`, item);
+  // «Aprobar» (fila, cajón o ⌘K): commit diferido — nada se envía hasta que la barra expira (o la pantalla se va).
+  // Un ítem ai_tool_call (L6b-09) se decide en el acto por la ruta de confirmación: ejecutar ES la decisión y su resultado se muestra.
+  const approve = (item: ReviewItem, withNotes: boolean) => {
+    if (isAiToolCallReview(item)) return decideToolCall(item, "approve");
+    setActionError(null);
+    setActionMessage(null);
+    setItemOutcome(null);
     if (withNotes) setNotes("");
     if (selectedId === item.id) closeDetail();
     return deferredCommit.schedule(item, withNotes && notes ? { notes } : {});
   };
-  const reject = (item: ReviewItem) => runAction(`/ai-operations/review/${item.id}/reject`, { reason }, `reject-${item.id}`, item);
+  const reject = (item: ReviewItem) =>
+    isAiToolCallReview(item) ? decideToolCall(item, "reject") : runAction(`/ai-operations/review/${item.id}/reject`, { reason }, `reject-${item.id}`, item);
   const escalate = (item: ReviewItem) => runAction(`/ai-operations/review/${item.id}/escalate`, { toRole: escalateRole || undefined }, `escalate-${item.id}`, item);
   const selectedPending = selected !== null && !isDecided(selected.status);
 
-  // Static callout: the CocoaLiveRegion below already announces the same text (one live region of its own).
-  const feedback =
-    actionError || actionMessage ? (
-      <CocoaCallout tone={actionError ? "danger" : "success"}>
-        {actionError ?? actionMessage}
-      </CocoaCallout>
-    ) : null;
+  // Static callouts: the CocoaLiveRegion below already announces the same text (one live region of its own).
+  const feedback = itemOutcome ? (
+    <CocoaCallout tone={itemOutcome.outcome.tone} title={itemOutcome.outcome.label}>
+      {itemOutcome.outcome.message}
+    </CocoaCallout>
+  ) : actionError || actionMessage ? (
+    <CocoaCallout tone={actionError ? "danger" : "success"}>
+      {actionError ?? actionMessage}
+    </CocoaCallout>
+  ) : null;
+  const liveMessage = itemOutcome ? `${itemOutcome.outcome.label}: ${itemOutcome.outcome.message}` : (actionError ?? actionMessage ?? "");
 
   let body;
   if (loading && !queueData) {
@@ -390,8 +485,8 @@ export function AiHumanReviewQueueScreen() {
           if (decided) return null;
           return (
             <>
-              <CocoaButton variant="tinted" tone="accent" size="small" loading={isRunning("approve", item.id)} disabled={runningAction !== null} onClick={() => void approve(item, false)} title={`Aprobar: ${reviewTypeLabel(item.reviewType)}`}>
-                {ACTIONS.approve}
+              <CocoaButton variant="tinted" tone="accent" size="small" loading={isRunning("approve", item.id)} disabled={runningAction !== null} onClick={() => void approve(item, false)} title={`${approveLabel(item)}: ${reviewTypeLabel(item.reviewType)}`}>
+                {approveLabel(item)}
               </CocoaButton>
               <CocoaButton variant="bordered" tone="destructive" size="small" disabled={runningAction !== null} onClick={() => openDetail(item.id, true)} title={`Rechazar: ${reviewTypeLabel(item.reviewType)}`}>
                 {ACTIONS.reject}
@@ -423,7 +518,7 @@ export function AiHumanReviewQueueScreen() {
         ...(selected && selectedPending ? [{ id: "ai-review-approve-selected", label: "Aprobar la propuesta seleccionada", run: () => void approve(selected, true) }] : [])
       ]}
     >
-      <CocoaLiveRegion message={actionError ?? actionMessage ?? ""} announceKey={runningAction ?? undefined} />
+      <CocoaLiveRegion message={liveMessage} announceKey={runningAction ?? undefined} />
 
       {/* Deshacer antes que confirmar (P4): the bar IS the announcement of the pending approval; «Cerrar» or the countdown sends it. */}
       <CocoaUndoBar
@@ -489,7 +584,7 @@ export function AiHumanReviewQueueScreen() {
                 loading={isRunning("approve", selected.id)}
                 onClick={() => void approve(selected, true)}
               >
-                {ACTIONS.approve}
+                {approveLabel(selected)}
               </CocoaButton>
             </>
           ) : undefined
@@ -502,6 +597,11 @@ export function AiHumanReviewQueueScreen() {
               {selected.slaBreached ? (
                 <CocoaBadge tone="danger" variant="tinted" size="small">
                   Fuera de plazo
+                </CocoaBadge>
+              ) : null}
+              {itemOutcome && itemOutcome.itemId === selected.id ? (
+                <CocoaBadge tone={itemOutcome.outcome.tone} variant="tinted" size="small" title={itemOutcome.outcome.message}>
+                  {itemOutcome.outcome.label}
                 </CocoaBadge>
               ) : null}
             </div>
@@ -556,6 +656,11 @@ export function AiHumanReviewQueueScreen() {
             ) : null}
 
             <CocoaFormSection title="Decisión" columns={1}>
+              {isAiToolCallReview(selected) && !isDecided(selected.status) ? (
+                <CocoaCallout tone="ai" title={AI_TOOL_CALL_ACTION_LABELS.approve}>
+                  {aiToolCallDecisionHint(toolNameOf(selected))}
+                </CocoaCallout>
+              ) : null}
               <CocoaField label="Notas de aprobación" hint={STATUS_LABELS.optional}>
                 <CocoaInput value={notes} onChange={setNotes} multiline rows={2} placeholder="Notas adjuntas a la aprobación…" />
               </CocoaField>

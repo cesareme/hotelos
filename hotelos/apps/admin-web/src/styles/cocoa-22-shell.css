@@ -110,9 +110,29 @@
 .cocoa-shell .cocoa-sidebar-host .c22-sidebar-close { display: none; }
 /* El selector de propiedad trunca su nombre dentro del <span> hijo de CocoaButton. */
 .cocoa-shell .cocoa-toolbar-property > span { min-width: 0; overflow: hidden; }
-/* Filas crudas de los menús flotantes de la toolbar (role=menuitem / option). */
-.cocoa-shell .cocoa-menu-item { transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+/* Filas crudas de los menús flotantes de la toolbar (role=menuitem / option): geometría de la fila aquí
+   (antes `menuItemStyle` en línea en BackOfficeLayout; corrector L6b · L6B-REV-08) y hover. */
+.cocoa-shell .cocoa-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  text-align: left;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--cocoa-radius-sm);
+  color: var(--cocoa-label);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
 .cocoa-shell .cocoa-menu-item:hover { background: var(--cocoa-fill-tertiary); }
+
+/* Panel del asistente (components/assistant/AssistantPanel.tsx): el compositor del pie del CocoaDrawer
+   (footer flex, alineado al final) se estira a todo el ancho del cajón (corrector L6b · REV-09). */
+.c22-drawer__foot > .c22-assistant-composer { flex: 1 1 100%; min-width: 0; }
 
 /* ------------------------------------------------------------
    Drawer < 900 px (COMPACT_BREAKPOINT_PX): el layout pinta el sidebar como

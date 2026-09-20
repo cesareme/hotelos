@@ -9,8 +9,10 @@
 // CocoaPage → «Cómo trabaja la IA» section (headline + CocoaCallout) →
 // guarantees as CocoaCallout tiles → decisions and cost as CocoaKpi strips →
 // «Qué hace y qué no hace» in a two-column CocoaGrid of section lists.
-// Data: GET /ai-operations/property/settings, /ai-operations/review/stats and
-// /ai-operations/governance/cost (30 days).
+// Data: GET /ai-operations/property/settings, /ai-operations/review/stats,
+// /ai-operations/governance/cost (30 days) and /ai-operations/property/readiness
+// (Tanda L6b · lote 04: «En uso» only with real tool calls, «Sin modelo» while
+// the `provider` check is not ok, and no fabricated euro when the API says null).
 
 import type { CSSProperties } from "react";
 import { getActiveOrganizationId, getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
@@ -18,6 +20,7 @@ import { useApiData } from "../../hooks/useApiData";
 import { navigateTo } from "../../lib/navigate";
 import { ACTIONS } from "../../content/actions";
 import { money } from "../../lib/format";
+import { aiUsageStatus, costCallsTotal } from "./ai-operations-labels";
 import { CheckCircleIcon, ExclamationCircleIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
   CocoaBadge,
@@ -52,8 +55,19 @@ type ReviewStats = {
 
 type CostDashboard = {
   totalCostEur: number;
-  projectedMonthlyEur: number;
+  /** null while no call of the window has a real cost (never fabricated, AI-CORE §6). */
+  projectedMonthlyEur: number | null;
+  /** true only if some call has model and cost_eur (rules-based zeros do not count). */
+  hasRealCost: boolean;
+  byTool: Array<{ toolName: string; calls: number; costEur: number; tokens: number }>;
   windowDays: number;
+};
+
+/** GET /ai-operations/property/readiness: `provider` is ok only with a usable model (Tanda L6a). */
+type AiReadiness = {
+  propertyId: string;
+  ready: boolean;
+  checks: Array<{ key: string; status: "ok" | "warn" | "error" }>;
 };
 
 const AUTOMATION_PLAIN: Record<AutomationLevel, { headline: string; detail: string; humanReview: boolean }> = {
@@ -95,8 +109,9 @@ const DOES_NOT = [
 
 type Guarantee = { id: string; label: string; value: string; caption: string; ok: boolean };
 
-function eur(n: number | undefined): string {
-  return money(n ?? 0);
+// «—» when the API has no figure (null / not loaded): a euro amount is never invented.
+function eur(n: number | null | undefined): string {
+  return money(n);
 }
 
 // Text styles (tokens only; layout comes from the utilities).
@@ -129,19 +144,27 @@ export function AiOwnerSummaryScreen() {
   const cost = useApiData<CostDashboard>("/ai-operations/governance/cost", {
     query: { organizationId, days: 30 }
   });
+  const readiness = useApiData<AiReadiness>("/ai-operations/property/readiness", {
+    query: { propertyId }
+  });
 
   const level: AutomationLevel = settings.data?.defaultAutomationLevel ?? "suggest_and_confirm";
   const plain = AUTOMATION_PLAIN[level];
   const aiEnabled = settings.data?.aiEnabled ?? false;
+  const providerCheck = readiness.data?.checks.find((check) => check.key === "provider");
+  const providerOk = providerCheck ? providerCheck.status === "ok" : undefined;
+  const callsTotal = costCallsTotal(cost.data);
+  const usage = aiUsageStatus({ aiEnabled, providerOk, callsTotal, windowDays: cost.data?.windowDays });
   const disclosureSet = Boolean(settings.data?.guestFacingDisclosure && settings.data.guestFacingDisclosure.trim());
   const decisions = stats.data;
-  const partialError = Boolean(settings.error || stats.error || cost.error);
+  const partialError = Boolean(settings.error || stats.error || cost.error || readiness.error);
   const state = settings.loading && !settings.data ? "loading" : settings.error && !settings.data ? "error" : "ready";
 
   function refreshAll() {
     settings.refresh();
     stats.refresh();
     cost.refresh();
+    readiness.refresh();
   }
 
   const guarantees: Guarantee[] = [
@@ -162,9 +185,9 @@ export function AiOwnerSummaryScreen() {
     {
       id: "enabled",
       label: "Estado de la IA",
-      value: aiEnabled ? "Encendida" : "Apagada",
-      caption: aiEnabled ? "En uso" : "Sin uso",
-      ok: aiEnabled
+      value: usage.value,
+      caption: usage.caption,
+      ok: usage.ok
     }
   ];
 
@@ -255,8 +278,22 @@ export function AiOwnerSummaryScreen() {
 
       <CocoaSection title="Coste de la IA" meta="últimos 30 días">
         <CocoaKpiStrip min={200} aria-label="Coste de la IA">
-          <CocoaKpi label="Gasto en IA (30 días)" value={eur(cost.data?.totalCostEur)} polarity="neutral" status="ok" degraded={!cost.data} />
-          <CocoaKpi label="Proyección mensual" value={eur(cost.data?.projectedMonthlyEur)} polarity="neutral" status="ok" degraded={!cost.data} />
+          <CocoaKpi
+            label="Gasto en IA (30 días)"
+            value={eur(cost.data?.totalCostEur)}
+            caption={cost.data && !cost.data.hasRealCost ? "sin coste real registrado" : undefined}
+            polarity="neutral"
+            status="ok"
+            degraded={!cost.data}
+          />
+          <CocoaKpi
+            label="Proyección mensual"
+            value={eur(cost.data?.projectedMonthlyEur)}
+            caption={cost.data && cost.data.projectedMonthlyEur === null ? "sin coste real todavía: no se proyecta" : undefined}
+            polarity="neutral"
+            status="ok"
+            degraded={!cost.data}
+          />
         </CocoaKpiStrip>
       </CocoaSection>
 

@@ -13,6 +13,7 @@ import { getPageCommands, subscribePageCommands, type CocoaPageCommand } from ".
 import type { CocoaTone } from "./cocoa/cocoa-tones";
 import { reservationStatus, roomStatus, sourceLabel } from "../content/status-dictionary";
 import { date as formatDate } from "../lib/format";
+import { openAssistantWith } from "./assistant/assistant-panel-store";
 
 // Skin: styles/cocoa-22-guide.css (`c22-cmdk-*`); the selected row is keyed on
 // aria-selected and the entity badge is a CocoaBadge. This palette (screen
@@ -34,6 +35,14 @@ import { date as formatDate } from "../lib/format";
 //   · the search box carries `aria-activedescendant` → the active option.
 // The pure ordering / filtering lives in the exported helpers below
 // (components/__tests__/CommandPalette.test.mts).
+//
+// Tanda L6b · lote L6b-07 (asistente unificado, objetivo 3; nav-tree fila 79
+// «también en ⌘K»): whenever the box has text, the LAST item is «Preguntar al
+// asistente: “…”» under «Acciones» (`assistantAskItem`), so a question that
+// matches nothing is never a dead end — with no hits it is the ONLY item and
+// Enter sends it. It opens the assistant panel of the shell (BackOfficeLayout)
+// through the store of components/assistant/assistant-panel-store.ts with the
+// question pending; no new shortcut (D9: ⌘K stays the single entry point).
 
 type CommandPaletteProps = {
   open: boolean;
@@ -52,7 +61,7 @@ type CommandPaletteProps = {
   initialQuery?: string;
 };
 
-export type CommandItemSource = "screen" | "entity" | "action" | "recent" | "page" | "hit-action";
+export type CommandItemSource = "screen" | "entity" | "action" | "recent" | "page" | "hit-action" | "assistant";
 
 export type CommandItem = {
   source: CommandItemSource;
@@ -201,7 +210,37 @@ export function liveHitItems(hits: readonly SearchHit[], query: string, today: s
   return items;
 }
 
-/** Final order: page commands · live hits (+ actions) · recents (empty query only) · screens · shell actions. */
+/** Id of the «Preguntar al asistente» item (one per palette). */
+export const ASSISTANT_ITEM_ID = "assistant:ask";
+
+/** Label of the assistant item (pure): the question as typed, between Spanish quotes. */
+export function assistantAskLabel(question: string): string {
+  return `Preguntar al asistente: “${question}”`;
+}
+
+/**
+ * «Preguntar al asistente: “…”» (pure): null without text; otherwise an
+ * action item of the «Acciones» group whose `run` opens the assistant panel
+ * with the (whitespace-collapsed) question pending.
+ */
+export function assistantAskItem(query: string): CommandItem | null {
+  const question = query.replace(/\s+/g, " ").trim();
+  if (!question) return null;
+  return {
+    source: "assistant",
+    id: ASSISTANT_ITEM_ID,
+    label: assistantAskLabel(question),
+    screen: "",
+    group: ACTIONS_GROUP,
+    run: () => openAssistantWith({ question })
+  };
+}
+
+/**
+ * Final order: page commands · live hits (+ actions) · recents (empty query
+ * only) · screens · shell actions · «Preguntar al asistente» (with text only:
+ * the single item when nothing else matches).
+ */
 export function buildPaletteItems(input: {
   pageItems: readonly CommandItem[];
   liveItems: readonly CommandItem[];
@@ -210,7 +249,8 @@ export function buildPaletteItems(input: {
   actionItems: readonly CommandItem[];
   query: string;
 }): CommandItem[] {
-  return [...input.pageItems, ...input.liveItems, ...(input.query.trim() ? [] : input.recentItems), ...input.screenItems, ...input.actionItems];
+  const ask = assistantAskItem(input.query);
+  return [...input.pageItems, ...input.liveItems, ...(input.query.trim() ? [] : input.recentItems), ...input.screenItems, ...input.actionItems, ...(ask ? [ask] : [])];
 }
 
 /** Screens filtered by the query (label or category), capped. */
@@ -247,6 +287,7 @@ export function CommandPalette(props: CommandPaletteProps) {
   const [liveError, setLiveError] = useState<string | null>(null);
   const [pageCommands, setPageCommands] = useState<readonly CocoaPageCommand[]>(() => getPageCommands());
   const inputRef = useRef<HTMLInputElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   const { recent } = useSidebarRecent();
   // Same role/module gate as the tab containers and the sidebar (Tanda 5 · L1b):
@@ -285,6 +326,22 @@ export function CommandPalette(props: CommandPaletteProps) {
     // Keep the caret after the handed-over text so the user just keeps typing.
     const end = input.value.length;
     input.setSelectionRange(end, end);
+  }, [props.open]);
+
+  // The focus stays inside the palette while it is open (aria-modal): an
+  // overlay closing underneath — the assistant drawer restoring the focus to
+  // its trigger at the end of its 400 ms exit transition after ⌘K (L6b-07) —
+  // must not leave the operator typing into the toolbar.
+  useEffect(() => {
+    if (!props.open) return;
+    function onFocusIn(event: FocusEvent) {
+      const root = overlayRef.current;
+      const input = inputRef.current;
+      if (!root || !input || root.contains(event.target as Node) || document.activeElement === input) return;
+      input.focus();
+    }
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
   }, [props.open]);
 
   // Screen catalogue — the same nine categories the sidebar renders from the
@@ -437,9 +494,11 @@ export function CommandPalette(props: CommandPaletteProps) {
   }, {});
   // Show the page's commands first, then entity groups, then screens. Keep insertion order otherwise.
   const groupOrder = Array.from(new Set(filtered.map((it) => it.group)));
+  // With text the assistant item is always listed: «Buscando…» must still show while /search is in flight and nothing else matched yet.
+  const onlyAssistant = filtered.length > 0 && filtered.every((it) => it.source === "assistant");
 
   return (
-    <div className="c22-cmdk-overlay" role="dialog" aria-modal="true" aria-label="Buscar en la aplicación" onClick={props.onClose}>
+    <div ref={overlayRef} className="c22-cmdk-overlay" role="dialog" aria-modal="true" aria-label="Buscar en la aplicación" onClick={props.onClose}>
       <div className="c22-cmdk" onClick={(e) => e.stopPropagation()}>
         <input
           ref={inputRef}
@@ -455,7 +514,7 @@ export function CommandPalette(props: CommandPaletteProps) {
           onChange={(e) => { setQuery(e.target.value); setActiveIdx(0); }}
         />
         <div id={listId} className="c22-cmdk-list" role="listbox" aria-label="Resultados de búsqueda">
-          {liveLoading && filtered.length === 0 ? (
+          {liveLoading && (filtered.length === 0 || onlyAssistant) ? (
             <div role="status" aria-live="polite" className="c22-cmdk-status">Buscando…</div>
           ) : null}
           {liveError ? (
@@ -463,7 +522,7 @@ export function CommandPalette(props: CommandPaletteProps) {
           ) : null}
           {!liveLoading && filtered.length === 0 ? (
             <div className="c22-cmdk-empty">
-              {query.trim() ? `Sin resultados para "${query}"` : "Empieza a escribir para buscar"}
+              {query.trim() ? `Sin resultados para "${query}"` : "Empieza a escribir para buscar o para preguntar al asistente"}
             </div>
           ) : (
             groupOrder.map((group) => {
@@ -479,6 +538,7 @@ export function CommandPalette(props: CommandPaletteProps) {
                       item.source === "recent" ? "Reciente"
                         : item.source === "page" ? (item.shortcut ? <CocoaKbd>{item.shortcut}</CocoaKbd> : "Comando")
                         : item.source === "hit-action" ? "Acción"
+                        : item.source === "assistant" ? <CocoaBadge tone="ai" size="small">IA</CocoaBadge>
                         : item.group;
                     return (
                       <div

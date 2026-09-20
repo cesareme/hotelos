@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { SIDEBAR_ELEMENT_ID, Sidebar } from "../navigation/Sidebar";
-import { devQueryFrom, findByScreen } from "../navigation/nav-tree";
+import { activeMenuItemFor, devQueryFrom, findByScreen } from "../navigation/nav-tree";
 import { useNavGate } from "../navigation/useEnabledModules";
 import { useIsCompactViewport } from "../navigation/viewport";
 import { itemUrlForScreen, pathForScreen, urlForScreenWithParams } from "../routes/backoffice.routes";
@@ -47,9 +47,31 @@ import { fetchPropertyReadiness, type PropertyReadiness } from "../services/bill
 import { setupBannerMessage, shouldShowSetupBanner } from "./setup-banner";
 import { PROPERTY_KIND_LABELS, type StructuredPropertyRow } from "../services/financeScope";
 import { BRAND } from "../config/brand";
+import { AssistantPanel, useAssistantPanel } from "../components/assistant/AssistantPanel";
+import { closeAssistant, openAssistant } from "../components/assistant/assistant-panel-store";
+import type { AssistantSurface } from "../services/assistantApi";
 
 /** Screen the «Nueva reserva» quick action opens (pilots/tanda5-nav-tree.md §11 #5: one click from anywhere). */
 export const NEW_RESERVATION_SCREEN = "ReservationCreate";
+
+/** Full-page assistant (/asistente, nav-tree row 79) the panel's «Abrir asistente completo» opens. */
+export const ASSISTANT_SCREEN = "AssistantChat";
+
+/** Category of the navigation tree whose screens ask the assistant with the reception prompt and suggestions. */
+const RECEPTION_CATEGORY_KEY = "recepcion";
+
+/**
+ * Surface of the assistant panel for a screen (pure, Tanda L6b · L6b-07): the
+ * screens of «Recepción» (Mi día, reservas, huéspedes, cobros…) get the
+ * `reception` prompt + suggestions of the copilot; every other category (and
+ * an unknown or public screen) gets the back-office one. Only the two staff
+ * surfaces of services/assistantApi.ts exist here — `guest` belongs to the
+ * portal bot.
+ */
+export function assistantSurfaceForScreen(screenKey: string | null | undefined): AssistantSurface {
+  if (!screenKey) return "backoffice";
+  return activeMenuItemFor(screenKey)?.categoryKey === RECEPTION_CATEGORY_KEY ? "reception" : "backoffice";
+}
 
 /** Public login URL the explicit logout lands on (a 401 keeps the deep link; «Cerrar sesión» does not). */
 const LOGIN_PATH = pathForScreen("LoginScreen") ?? "/acceso";
@@ -110,8 +132,10 @@ const dropdownSurfaceStyle: CSSProperties = {
 };
 
 // Rows of those menus stay raw <button>s (role="menuitem" / "option" and
-// aria-selected are not props of CocoaButton yet); they share the focus ring
-// class and the hover wash of styles/cocoa-22-shell.css (`.cocoa-menu-item`).
+// aria-selected are not props of CocoaButton yet); the row geometry, the focus
+// ring and the hover wash live in styles/cocoa-22-shell.css (`.cocoa-menu-item`,
+// corrector L6b · L6B-REV-08). `menuItemStyle` only remains as the base of the
+// property option rows below, which override direction and colours per row.
 const menuItemStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
@@ -732,6 +756,35 @@ function HelpButton() {
   );
 }
 
+/** Sparkles: the AI mark of the toolbar (same idea as the `ai` tone of CocoaBadge). */
+const assistantIcon = (
+  <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
+    <path d="M7.5 2.5l1.35 3.65L12.5 7.5l-3.65 1.35L7.5 12.5 6.15 8.85 2.5 7.5l3.65-1.35L7.5 2.5Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    <path d="M13.5 10.5l.75 1.75 1.75.75-1.75.75-.75 1.75-.75-1.75-1.75-.75 1.75-.75.75-1.75Z" fill="currentColor" />
+  </svg>
+);
+
+/** Accessible name of the assistant control (toolbar button and compact menu row). */
+const ASSISTANT_LABEL = `Asistente ${BRAND.name}`;
+
+function AssistantButton() {
+  // Tanda L6b · L6b-07: the unified assistant panel (components/assistant) opens
+  // from every screen with the context of the page; the button reflects the
+  // panel's state (store) and carries the guide hook of its own.
+  const { open } = useAssistantPanel();
+  return (
+    <ToolbarIconButton
+      data-tour="assistant"
+      aria-label={ASSISTANT_LABEL}
+      title={`${ASSISTANT_LABEL} · pregunta sobre esta pantalla (también desde ⌘K)`}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      onClick={() => openAssistant()}
+      icon={assistantIcon}
+    />
+  );
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
@@ -823,10 +876,21 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
                 data-tour="theme-toggle"
                 className="cocoa-menu-item cocoa-focus-ring"
                 onClick={() => setTheme(cycleThemePreference())}
-                style={menuItemStyle}
               >
                 Tema: {THEME_SHORT_LABELS[theme]}
                 <span style={{ marginLeft: "auto", fontSize: "var(--cocoa-fs-callout)", color: "var(--cocoa-label-secondary)" }}>Cambiar</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-tour="assistant"
+                className="cocoa-menu-item cocoa-focus-ring"
+                onClick={() => {
+                  setOpen(false);
+                  openAssistant();
+                }}
+              >
+                {ASSISTANT_LABEL}
               </button>
               <button
                 type="button"
@@ -837,7 +901,6 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
                   setOpen(false);
                   openHelpCenter();
                 }}
-                style={menuItemStyle}
               >
                 Centro de ayuda
               </button>
@@ -852,7 +915,6 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
                 setOpen(false);
                 setPinOpen(true);
               }}
-              style={menuItemStyle}
             >
               Mi PIN de supervisor
             </button>
@@ -865,7 +927,6 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
               setOpen(false);
               logoutFromShell();
             }}
-            style={menuItemStyle}
           >
             Cerrar sesión
           </button>
@@ -876,14 +937,19 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
   );
 }
 
-/** The session may open «Nueva reserva» (roles/module of the tree item, «Ver como…» applied). */
-function useCanCreateReservation(): boolean {
+/** The session may open the menu item of `screen` (roles/module of the tree item, «Ver como…» applied). */
+function useCanOpenItem(screen: string): boolean {
   const gate = useNavGate();
   const isVisible = gate.isVisible;
   return useMemo(() => {
-    const match = findByScreen(NEW_RESERVATION_SCREEN);
+    const match = findByScreen(screen);
     return match?.kind === "item" && isVisible(match.item);
-  }, [isVisible]);
+  }, [isVisible, screen]);
+}
+
+/** The session may open «Nueva reserva». */
+function useCanCreateReservation(): boolean {
+  return useCanOpenItem(NEW_RESERVATION_SCREEN);
 }
 
 /**
@@ -997,6 +1063,11 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
   // sidebar column) the layout owns the navigation drawer and the toolbar.
   const compact = useIsCompactViewport();
   const canCreateReservation = useCanCreateReservation();
+  // Tanda L6b · L6b-07: the assistant panel is mounted here (any screen, the
+  // page's context) — its surface follows the category of the active screen and
+  // «Abrir asistente completo» is offered only when /asistente is in the menu.
+  const canOpenFullAssistant = useCanOpenItem(ASSISTANT_SCREEN);
+  const assistantSurface = useMemo(() => assistantSurfaceForScreen(props.activeScreen), [props.activeScreen]);
   const { showToast } = useToast();
   const { register: registerShortcut } = useCocoaShortcuts();
   const gate = useNavGate();
@@ -1078,6 +1149,9 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
       const isMeta = event.metaKey || event.ctrlKey;
       if (isMeta && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        // One overlay at a time: ⌘K over the open assistant panel closes the
+        // panel (its focus trap would fight the palette's search box).
+        closeAssistant();
         setCmdkQuery("");
         setCmdkOpen((open) => !open);
       }
@@ -1086,6 +1160,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
     function onOpenSearch(event: Event) {
       // Screens may hand over a query: `new CustomEvent("hotelos-open-search", { detail: "García" })`.
       const detail = (event as CustomEvent<string | undefined>).detail;
+      closeAssistant();
       setCmdkQuery(typeof detail === "string" ? detail : "");
       setCmdkOpen(true);
     }
@@ -1113,6 +1188,14 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
   function openNewReservation() {
     pushRecent(NEW_RESERVATION_SCREEN);
     selectAndClose(NEW_RESERVATION_SCREEN);
+  }
+
+  // «Abrir asistente completo» of the panel: the drawer closes and /asistente
+  // opens like any menu item (recents, drawer of the phone closed).
+  function openFullAssistant() {
+    closeAssistant();
+    pushRecent(ASSISTANT_SCREEN);
+    selectAndClose(ASSISTANT_SCREEN);
   }
 
   // The drawer closes when the viewport grows back to the split view.
@@ -1144,6 +1227,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
   // with that text, which owns the shared search index + hit routing; the
   // field is cleared so it never holds a stale query.
   function openPaletteWith(query: string) {
+    closeAssistant();
     setCmdkQuery(query);
     setCmdkOpen(true);
     setSearchValue("");
@@ -1230,6 +1314,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
             </CocoaButton>
             <ThemeToggle />
             <NotificationsBell />
+            <AssistantButton />
             <HelpButton />
             <UserAvatar />
           </>
@@ -1265,6 +1350,10 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
         onSelect={(screen) => selectAndClose(screen)}
         onSelectHit={(hit) => selectHit(hit)}
       />
+      {/* Unified assistant (Tanda L6b · L6b-07): one panel for every screen, opened from the toolbar, the compact
+          user menu, ⌘K («Preguntar al asistente…») or the `hotelos-open-assistant` event; each question travels
+          with the active screen key (URL and ⌘K commands are read by the panel itself). */}
+      <AssistantPanel screenKey={props.activeScreen || null} surface={assistantSurface} onOpenFullAssistant={canOpenFullAssistant ? openFullAssistant : undefined} />
       <GuideProvider />
       {/* The page's ONE live region (UX-1 · U4, R5): `announce()` from anywhere, toasts with `announce`, `mutate({ announce })`. */}
       <CocoaShellLiveRegion />

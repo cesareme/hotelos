@@ -12,29 +12,29 @@
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
     "files": 253,
-    "lines": 114389,
+    "lines": 114641,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1323,
+    "cocoaButtons": 1325,
     "rawTables": 1,
     "cocoaTables": 330,
     "rawInputs": 0,
     "cocoaInputs": 1352,
-    "inlineStyles": 620,
-    "cocoaCards": 36,
+    "inlineStyles": 605,
+    "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
     "withPageHeader": 216,
     "withTabHost": 99,
-    "debtPoints": 174
+    "debtPoints": 170
   },
   "bySize": {
-    "S": 100,
-    "M": 118,
+    "S": 99,
+    "M": 119,
     "L": 27,
     "XL": 8
   },
@@ -92,7 +92,7 @@
     "configuracion": {
       "label": "Configuración",
       "files": 45,
-      "lines": 17464,
+      "lines": 17474,
       "debtPoints": 22,
       "sizes": {
         "S": 18,
@@ -171,11 +171,11 @@
     "hoy": {
       "label": "Hoy",
       "files": 13,
-      "lines": 8856,
-      "debtPoints": 16,
+      "lines": 9098,
+      "debtPoints": 12,
       "sizes": {
-        "S": 3,
-        "M": 6,
+        "S": 2,
+        "M": 7,
         "L": 3,
         "XL": 1
       },
@@ -974,9 +974,9 @@
         "hoy"
       ],
       "archetype": "dashboard",
-      "lines": 588,
+      "lines": 693,
       "metrics": {
-        "lines": 588,
+        "lines": 693,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1012,9 +1012,9 @@
         "hoy"
       ],
       "archetype": "dashboard",
-      "lines": 301,
+      "lines": 338,
       "metrics": {
-        "lines": 301,
+        "lines": 338,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1050,9 +1050,9 @@
         "configuracion"
       ],
       "archetype": "dashboard",
-      "lines": 525,
+      "lines": 535,
       "metrics": {
-        "lines": 525,
+        "lines": 535,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1240,20 +1240,20 @@
         "hoy"
       ],
       "archetype": "chat",
-      "lines": 255,
+      "lines": 355,
       "metrics": {
-        "lines": 255,
+        "lines": 355,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 2,
+        "cocoaButtons": 4,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
         "cocoaInputs": 1,
-        "inlineStyles": 15,
-        "cocoaCards": 3,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
         "colourLiterals": 0,
         "colourFallbacks": 0,
         "rawH1": 0,
@@ -1264,8 +1264,8 @@
         "emoji": 0
       },
       "headerExempt": false,
-      "debtPoints": 4,
-      "size": "S"
+      "debtPoints": 0,
+      "size": "M"
     },
     {
       "path": "apps/admin-web/src/screens/AuditLogViewer.tsx",

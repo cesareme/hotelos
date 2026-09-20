@@ -263,8 +263,18 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // la firma X-Hub-Signature-256 (WHATSAPP_APP_SECRET) sobre el cuerpo crudo. Prefijo en PUBLIC_PREFIXES.
   { method: "GET", path: "/webhooks/whatsapp", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/webhooks/whatsapp", permissions: [], riskLevel: "public" },
+  // Asistente unificado (Tanda L6b · L6b-06, routes/assistant.routes.ts): catálogo,
+  // chat y memoria por usuario son `authenticated` (el catálogo se filtra por las
+  // claves reales del usuario y la memoria es privada: resolver assistantConversation
+  // de lib/tenancy.ts); las escrituras propuestas pendientes exigen ai.tool.execute,
+  // la misma clave que las confirma (POST /ai/tool-calls/:id/confirm), porque
+  // recepción no tiene el audit.read de GET /ai/tool-calls.
   { method: "GET", path: "/assistant/tools", permissions: [], riskLevel: "authenticated" },
   { method: "POST", path: "/assistant/chat", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/assistant/conversations", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/assistant/conversations/:id", permissions: [], riskLevel: "authenticated" },
+  { method: "DELETE", path: "/assistant/conversations/:id", permissions: [], riskLevel: "authenticated" },
+  { method: "GET", path: "/assistant/pending", permissions: ["ai.tool.execute"], riskLevel: "low" },
   // Tanda 5 (L1b · api-side): GET routes carry READ keys (folio.read, pos.read,
   // tourist_tax.read, billing.compliance.view, guest_register.read); the write
   // keys they used to require stay on the mutations only.
