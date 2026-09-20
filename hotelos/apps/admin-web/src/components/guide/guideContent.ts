@@ -91,7 +91,7 @@ const ITEM_NARRATION: Record<string, string> = {
   LiveTimeline:
     "Reservas en casa y proyectadas por habitación en un calendario: pasa el ratón para ver la ficha rápida, haz clic para abrir el detalle con folio y actividad, y arrastra para mover o alargar la estancia. Toda acción crítica pide confirmación y se puede deshacer.",
   FrontDeskDashboard:
-    "Tu punto de partida. Llegadas y salidas de hoy, huéspedes alojados y la cola de acciones del turno. Según tu puesto aterrizas en la pestaña Recepción, Operaciones, Dirección o Propietario.",
+    "Tu punto de partida. Llegadas y salidas de hoy, huéspedes alojados y la cola de acciones del turno. Según tu puesto aterrizas en la pestaña Recepción, Operaciones, Dirección o Propietario. Costes de personal: lo que cuesta la plantilla frente a las ventas, con la fuente de cada cifra.",
   AssistantChat:
     "Pregunta en lenguaje natural sobre tu hotel (ocupación, una reserva, un huésped) y obtén una respuesta con la fuente del dato. Nunca ejecuta cambios sin tu confirmación.",
   ShiftManagerScreen: "El turno de recepción de un vistazo: productividad del equipo, caja del día y bloqueos que impiden avanzar.",
@@ -144,7 +144,8 @@ const ITEM_NARRATION: Record<string, string> = {
   TrialBalanceScreen: "Sumas y saldos, balance de situación, pérdidas y ganancias, flujos de efectivo, cuentas anuales y la presentación USALI para comparar con otros hoteles.",
   SupplierBillsScreen: "Facturas de proveedores por líneas, gastos menores, directorio de proveedores e inmovilizado con su amortización mensual.",
   CommissionsScreen: "Comisiones que cobra cada canal de venta y su devengo automático al facturar.",
-  PayrollScreen: "Contratos y periodos de nómina para exportar a la gestoría.",
+  PayrollScreen:
+    "Nóminas: contratos, periodos que dirección aprueba antes de exportar a la gestoría, recibos, coste de personal e incidencias. Plantilla: el expediente de cada persona (contrato, baja, datos cifrados). Previsión: cuánta gente hace falta cada día según la ocupación. Panel RRHH: la foto de la plantilla y sus alertas.",
   RealEstateAssetScreen: "La finca de cada centro: unidades registrales y catastrales, cargas y tenencia vigente, valoraciones, documentación con vigencia, tributos (IBI, IAE, tasas) con su asiento propuesto, obras capitalizables, inspecciones y pólizas, y la vista del grupo.",
   // Cumplimiento
   ComplianceInbox: "Tu lista de tareas legales: envíos rechazados, plazos a punto de vencer y certificados que caducan, en un solo sitio.",

@@ -92,6 +92,10 @@ const revocations = parseArrayRecord(permissionsSource, "ROLE_TEMPLATE_REVOCATIO
 const permissionKeyUnion = parseUnion(typesSource, "PermissionKey");
 
 const DOCUMENT_KEYS = ["documents.capture", "documents.review", "documents.archive.read", "documents.admin"];
+/** Tanda RRHH (v5, posterior a T9): claves hr.* que tampoco existían en v3; se descuentan del tamaño v3 igual que documents.*. */
+const HR_KEYS_V5 = ["hr.employee.read", "hr.employee.manage", "hr.config.manage", "hr.standards.manage", "hr.staffing.approve"];
+/** v5 también suma compliance.read a payroll_hr (resumen de cumplimiento laboral, permissions.ts «Tanda RRHH»); única adición fuera de hr.*. */
+const V5_EXTRA_KEYS = { payroll_hr: ["compliance.read"] };
 
 /** Diseño §6.2 adaptado a las 24 plantillas de la Tanda 8a (brief T9-02); break_glass = todo el ámbito org. */
 const HOLDERS = {
@@ -134,8 +138,8 @@ const TEMPLATE_SIZES_V3 = {
 // ---------------------------------------------------------------------------
 
 describe("Documentos T9 · claves documents.* en el catálogo (§6.2)", () => {
-  it("las 4 claves existen en PERMISSIONS (254 = 250 + 4) y en PermissionKey, con descripción, y no son de plataforma", () => {
-    assert.equal(catalog.length, 254);
+  it("las 4 claves existen en PERMISSIONS (259 = 250 + 4 + 5 hr.* de la Tanda RRHH) y en PermissionKey, con descripción, y no son de plataforma", () => {
+    assert.equal(catalog.length, 259);
     assert.deepEqual([...catalog].sort(), [...permissionKeyUnion].sort());
     for (const key of DOCUMENT_KEYS) {
       assert.ok(catalogSet.has(key), `${key} not in PERMISSIONS`);
@@ -168,15 +172,17 @@ describe("Documentos T9 · claves documents.* en el catálogo (§6.2)", () => {
     }
   });
 
-  it("ROLE_TEMPLATE_VERSION === 4 (aditiva): cada plantilla conserva sus claves v3 y solo suma documents.*; sin revocaciones nuevas", () => {
-    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 4;/);
+  it("ROLE_TEMPLATE_VERSION === 5 (v4 y v5 aditivas): cada plantilla conserva sus claves v3 y solo suma documents.* (v4) y hr.* (v5); sin revocaciones nuevas", () => {
+    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 5;/);
     assert.match(permissionsSource, /Version 4 \(Tanda T9/);
     assert.doesNotMatch(permissionsSource, /Keep any change additive/);
     assert.deepEqual(Object.keys(templates).sort(), Object.keys(TEMPLATE_SIZES_V3).sort());
     for (const [template, sizeV3] of Object.entries(TEMPLATE_SIZES_V3)) {
       const held = templates[template];
       const documentsHeld = DOCUMENT_KEYS.filter((key) => held.has(key)).length;
-      assert.equal(held.size - documentsHeld, sizeV3, `${template}: keys other than documents.* changed (v3 had ${sizeV3})`);
+      const hrHeld = HR_KEYS_V5.filter((key) => held.has(key)).length;
+      const extraHeld = (V5_EXTRA_KEYS[template] ?? []).filter((key) => held.has(key)).length;
+      assert.equal(held.size - documentsHeld - hrHeld - extraHeld, sizeV3, `${template}: keys other than documents.* / hr.* changed (v3 had ${sizeV3})`);
       for (const permission of held) assert.ok(catalogSet.has(permission), `${template}: ${permission} not in PERMISSIONS`);
       for (const key of DOCUMENT_KEYS) assert.equal(revocations[template].has(key), false, `${template}: ${key} revoked`);
       for (const permission of revocations[template]) assert.equal(held.has(permission), false, `${template}: ${permission} both held and revoked`);

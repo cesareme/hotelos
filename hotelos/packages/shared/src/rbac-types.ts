@@ -405,6 +405,8 @@ export const SOD_STATIC_PAIRS: readonly SodStaticPair[] = [
   { a: "accounting.journal.post", b: "payables.pay" },
   { a: "banking.reconcile", b: "payables.pay" },
   { a: "payroll.manage", b: "payroll.approve" },
+  // Tanda RRHH (corrector SEC-06): quien gestiona la nómina no aprueba la plantilla máxima (recon §3.2).
+  { a: "payroll.manage", b: "hr.staffing.approve" },
   { a: "purchase_orders.create", b: "purchase_orders.approve" },
   { a: "purchase_orders.receive", b: "purchase_orders.approve" },
   { a: "night_audit.run", b: "night_audit.review" },

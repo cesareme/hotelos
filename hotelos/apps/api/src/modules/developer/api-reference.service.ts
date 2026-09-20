@@ -257,6 +257,12 @@ export const SEGMENT_LABELS: Record<string, string> = {
   responses: "la respuesta",
   shifts: "el turno",
   absences: "la ausencia",
+  // Tanda RRHH (ola 3): plantilla, convenios, estándares y planes de dotación («/hr/…») e incidencias de nómina.
+  incidences: "la incidencia de nómina",
+  employees: "el empleado",
+  agreements: "el convenio",
+  standards: "el estándar de dotación",
+  "staffing-plans": "el plan de dotación",
   slips: "la nómina",
   // F&B, compras e inventario
   outlets: "el punto de venta",
@@ -451,6 +457,7 @@ export const SINGLETON_LABELS: Record<string, string> = {
   "property-overview": "la visión general del establecimiento",
   report: "el informe",
   "cost-report": "el informe de costes",
+  "labor-cost-panel": "el panel de costes de personal", // Tanda RRHH · PANEL-A: GET /payroll/labor-cost-panel
   stats: "las estadísticas",
   "template-stats": "las estadísticas de plantillas",
   "period-metrics": "las métricas del periodo",
@@ -638,6 +645,10 @@ export const ACTION_LABELS: Record<string, string> = {
   // Tanda ACT · ola 3: el asiento se propone en borrador (nunca se contabiliza automáticamente).
   "propose-entry": "Proponer el asiento contable en borrador de",
   capitalize: "Capitalizar",
+  // Tanda RRHH (ola 3): baja del empleado, restablecer estándares y decidir la ausencia.
+  terminate: "Dar de baja",
+  "reset-defaults": "Restablecer los valores por defecto de",
+  decide: "Decidir",
   revert: "Revertir",
   deactivate: "Desactivar",
   disable: "Desactivar",

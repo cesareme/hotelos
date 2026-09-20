@@ -74,7 +74,9 @@ describe("Flagship demo seed contract", () => {
       "seed-allotments.ts",
       "seed-fnb-inventory.ts",
       // Tanda ACT (L7): tenant aislado org_act del activo inmobiliario.
-      "seed-real-estate.ts"
+      "seed-real-estate.ts",
+      // Tanda RRHH (RRHH-7): tenant aislado org_hr / prop_hr (nunca Faranda).
+      "seed-hr.ts"
     ];
     for (const file of guarded) {
       const source = readFileSync(new URL(file, seedsDir), "utf8");

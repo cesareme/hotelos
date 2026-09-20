@@ -173,8 +173,8 @@ describe("Seed de dirección UX-2 (D1)", () => {
 
   it("prop_uxday_b está en la allowlist demo y existe el script db:seed:ux-direccion", () => {
     assert.match(guard, /export const UX2_DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_uxday_b"\]/);
-    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk"\]\.concat\(UX2_DEMO_PROPERTY_IDS\)/);
-    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk", "org_act"\]/);
+    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr"\]\.concat\(UX2_DEMO_PROPERTY_IDS\)/);
+    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk", "org_act", "org_hr"\]/);
     assert.equal(databasePackage.scripts["db:seed:ux-direccion"], "node --env-file=../../.env --import tsx prisma/seed-ux-direccion.ts");
     assert.equal(databasePackage.scripts["db:seed:ux-day"], "node --env-file=../../.env --import tsx prisma/seed-ux-day.ts", "el script de UX-1 sigue intacto");
   });

@@ -13,11 +13,12 @@ import {
   STAFF_PROFILE_ERROR_CODES,
   createStaffProfile,
   listStaffProfiles,
+  listWorkforceStaffProfiles,
   normaliseStaffProfileInput,
   type StaffProfileDeps
 } from "../staff-profiles.service.js";
 
-type Row = { id: string; userId: string; propertyId: string; employeeCode: string | null; departmentId: string | null; employmentType: string | null; hourlyCost: string | null; active: boolean; createdAt: Date };
+type Row = { id: string; userId: string; propertyId: string; employeeId?: string | null; employeeCode: string | null; departmentId: string | null; employmentType: string | null; hourlyCost: string | null; active: boolean; createdAt: Date; usaliDepartment?: string | null; jobTitle?: string | null };
 type AuditCall = Parameters<StaffProfileDeps["audit"]>[0];
 
 const ORG = "org_sp_test";
@@ -31,8 +32,9 @@ const reader = { ...manager, permissions: ["payroll.read"] } as unknown as UserC
 const assignedToHa = { ...manager, assignedPropertyIds: [HA], orgScope: false } as unknown as UserContext;
 
 /** Fakes mínimos que entienden SOLO las formas de `where` que usa el servicio. */
-function fakeDeps(seed: { profiles?: Row[]; departmentsInDb?: Array<{ id: string; propertyId: string; name: string }>; demoDepartments?: Array<{ id: string; propertyId: string; name: string }> } = {}) {
+function fakeDeps(seed: { profiles?: Row[]; departmentsInDb?: Array<{ id: string; propertyId: string; name: string }>; demoDepartments?: Array<{ id: string; propertyId: string; name: string }>; employees?: Array<{ id: string; organizationId: string; legalEntityId: string; usaliDepartment: string | null; jobTitle: string | null }> } = {}) {
   const profiles: Row[] = [...(seed.profiles ?? [])];
+  const employees = seed.employees ?? [];
   const users = [
     { id: "usr_sp_a", organizationId: ORG, fullName: "Persona Alfa", email: "alfa@sp.test" },
     { id: "usr_sp_b", organizationId: ORG, fullName: "Persona Beta", email: "beta@sp.test" },
@@ -65,8 +67,14 @@ function fakeDeps(seed: { profiles?: Row[]; departmentsInDb?: Array<{ id: string
         findMany: async ({ where }) => users.filter((user) => where.id.in.includes(user.id))
       },
       property: {
-        findFirst: async ({ where }) => properties.find((property) => property.id === where.id && property.organizationId === where.organizationId) ?? null,
+        findFirst: async ({ where }) => {
+          const row = properties.find((property) => property.id === where.id && property.organizationId === where.organizationId);
+          return row ? { id: row.id, legalEntityId: row.id === HA || row.id === HB ? "le_sp_a" : "le_sp_foreign" } : null;
+        },
         findMany: async ({ where }) => properties.filter((property) => property.organizationId === where.organizationId).map((property) => ({ id: property.id }))
+      },
+      employee: {
+        findFirst: async ({ where }) => employees.find((employee) => employee.id === where.id && employee.organizationId === where.organizationId) ?? null
       },
       department: {
         findFirst: async ({ where }) => departments.find((department) => department.id === where.id && department.propertyId === where.propertyId) ?? null,
@@ -102,7 +110,7 @@ async function expectHttp<T>(promise: Promise<T>, statusCode: number, code?: str
 describe("F10 · normaliseStaffProfileInput (reglas puras)", () => {
   it("recorta, vacía a null y convierte el coste hora «12,5» → «12.50»", () => {
     const out = normaliseStaffProfileInput({ propertyId: ` ${HA} `, userId: " usr_sp_a ", employeeCode: "  ", departmentId: "", employmentType: "", hourlyCost: "12,5" });
-    assert.deepEqual(out, { propertyId: HA, userId: "usr_sp_a", employeeCode: null, departmentId: null, employmentType: null, hourlyCost: "12.50" });
+    assert.deepEqual(out, { propertyId: HA, userId: "usr_sp_a", employeeId: null, employeeCode: null, departmentId: null, employmentType: null, hourlyCost: "12.50" });
     assert.equal(normaliseStaffProfileInput({ propertyId: HA, userId: "u", hourlyCost: 9.999 }).hourlyCost, "10.00");
     assert.equal(normaliseStaffProfileInput({ propertyId: HA, userId: "u", hourlyCost: 0 }).hourlyCost, "0.00");
     assert.equal(normaliseStaffProfileInput({ propertyId: HA, userId: "u" }).hourlyCost, null);
@@ -181,7 +189,20 @@ describe("F10 · createStaffProfile (fakes en memoria)", () => {
     assert.equal(audit.correlationId, "corr_sp_1");
     const after = JSON.stringify(audit.afterJson);
     assert.doesNotMatch(after, /Persona Alfa|alfa@sp\.test|12\.50/, "la auditoría no lleva datos personales ni el coste");
-    assert.deepEqual(audit.afterJson, { id: "sp_1", propertyId: HA, userId: "usr_sp_a", departmentId: "dep_sp_rec", employeeCode: "EMP-001", employmentType: "indefinido" });
+    assert.deepEqual(audit.afterJson, { id: "sp_1", propertyId: HA, userId: "usr_sp_a", employeeId: null, departmentId: "dep_sp_rec", employeeCode: "EMP-001", employmentType: "indefinido" });
+  });
+
+  it("employeeId (SEC-01): enlaza el expediente de la organización y la sociedad del centro y hereda departamento USALI y puesto; ajeno → 404; otra sociedad → 400 STAFF_PROFILE_EMPLOYEE_MISMATCH", async () => {
+    const { deps, profiles, audits } = fakeDeps({ employees: [{ id: "emp_sp_1", organizationId: ORG, legalEntityId: "le_sp_a", usaliDepartment: "rooms", jobTitle: "Camarera de pisos" }, { id: "emp_sp_other", organizationId: ORG, legalEntityId: "le_sp_z", usaliDepartment: null, jobTitle: null }] });
+    const created = await createStaffProfile({ context: manager, body: { propertyId: HA, userId: "usr_sp_a", employeeId: " emp_sp_1 " }, correlationId: "corr" }, deps);
+    assert.equal(created.employeeId, "emp_sp_1");
+    assert.equal(profiles[0]!.employeeId, "emp_sp_1");
+    assert.equal(profiles[0]!.usaliDepartment, "rooms");
+    assert.equal(profiles[0]!.jobTitle, "Camarera de pisos");
+    assert.equal((audits[0]!.afterJson as { employeeId: string }).employeeId, "emp_sp_1");
+    await expectHttp(createStaffProfile({ context: manager, body: { propertyId: HB, userId: "usr_sp_b", employeeId: "emp_inexistente" }, correlationId: "corr" }, deps), 404);
+    await expectHttp(createStaffProfile({ context: manager, body: { propertyId: HB, userId: "usr_sp_b", employeeId: "emp_sp_other" }, correlationId: "corr" }, deps), 400, STAFF_PROFILE_ERROR_CODES.employeeMismatch);
+    assert.equal(profiles.length, 1, "nada escrito tras el 404 / 400");
   });
 
   it("duplicado ACTIVO (userId, propertyId) → 409 STAFF_PROFILE_EXISTS con el id existente; una ficha inactiva no bloquea", async () => {
@@ -225,6 +246,34 @@ describe("F10 · createStaffProfile (fakes en memoria)", () => {
     await expectHttp(createStaffProfile({ context: reader, body: { propertyId: HA, userId: "usr_sp_a" }, correlationId: "corr" }, deps), 403);
     assert.equal(profiles.length, 0);
     assert.equal(audits.length, 0);
+  });
+});
+
+describe("SEC-02 · listWorkforceStaffProfiles (fichas para fichar y planificar)", () => {
+  const seeded = (): Row[] => [
+    { id: "sp_w1", userId: "usr_sp_a", propertyId: HA, employeeId: "emp_sp_1", employeeCode: "W-1", departmentId: "dep_sp_rec", employmentType: "indefinido", hourlyCost: "12.50", active: true, createdAt: new Date("2026-09-01T00:00:00Z") },
+    { id: "sp_w2", userId: "usr_sp_b", propertyId: HB, employeeId: null, employeeCode: "W-2", departmentId: null, employmentType: null, hourlyCost: "9.00", active: true, createdAt: new Date("2026-09-01T00:00:00Z") }
+  ];
+  const housekeeper = { ...manager, permissions: ["workforce.read", "workforce.timeclock.use"] } as unknown as UserContext;
+
+  it("con workforce.read (sin payroll.read) devuelve las fichas del centro SIN coste hora ni correo y con employeeId", async () => {
+    const { deps } = fakeDeps({ profiles: seeded() });
+    const rows = await listWorkforceStaffProfiles({ context: housekeeper, propertyId: HA }, deps);
+    assert.deepEqual(rows.map((row) => row.id), ["sp_w1"]);
+    const row = rows[0]! as Record<string, unknown>;
+    assert.equal("hourlyCost" in row, false, "sin coste hora");
+    assert.equal("userEmail" in row, false, "sin correo");
+    assert.equal(row.userFullName, "Persona Alfa");
+    assert.equal(row.employeeId, "emp_sp_1");
+    assert.equal(row.departmentName, "Recepción");
+  });
+
+  it("sin ninguna clave de personal → 403; centro ajeno o fuera del ámbito → 404 opaco; propertyId vacío → 400", async () => {
+    const { deps } = fakeDeps({ profiles: seeded() });
+    await expectHttp(listWorkforceStaffProfiles({ context: { ...manager, permissions: ["payroll.read"] } as unknown as UserContext, propertyId: HA }, deps), 403);
+    await expectHttp(listWorkforceStaffProfiles({ context: housekeeper, propertyId: FOREIGN }, deps), 404);
+    await expectHttp(listWorkforceStaffProfiles({ context: { ...housekeeper, assignedPropertyIds: [HA], orgScope: false } as unknown as UserContext, propertyId: HB }, deps), 404);
+    await expectHttp(listWorkforceStaffProfiles({ context: housekeeper, propertyId: " " }, deps), 400, STAFF_PROFILE_ERROR_CODES.invalid);
   });
 });
 

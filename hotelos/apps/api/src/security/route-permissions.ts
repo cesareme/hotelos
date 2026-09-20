@@ -25,6 +25,13 @@ import { structureRoutePermissions } from "../modules/structure/route-permission
 // /payroll/cost-report (modules/payroll/cost-import.routes.ts). payroll.read /
 // payroll.manage only (never accounting.read), so the remap below is a no-op.
 import { payrollRoutePermissions } from "../modules/payroll/route-permissions.partial.js";
+// RRHH · plantilla, convenio, estándares, plantilla máxima, previsión, KPIs,
+// alertas y ausencias (Tanda RRHH · RRHH-6): /hr/* (modules/hr/hr.routes.ts).
+// Claves hr.employee.read / hr.employee.manage / hr.config.manage /
+// hr.standards.manage / hr.staffing.approve del catálogo v5 (RRHH-1) más
+// workforce.read / workforce.schedule.manage / workforce.labor_cost.view ya
+// existentes; nunca accounting.read (el remap de abajo no las toca).
+import { hrRoutePermissions } from "../modules/hr/route-permissions.partial.js";
 // Importación masiva de reservas (Tanda 7 · L3): /properties/:propertyId/
 // reservations/imports* (modules/pms/reservation-import.routes.ts). Claves
 // pms.reservation.read / create / modify ya existentes (sin rbac:sync); el
@@ -202,6 +209,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...structureRoutePermissions,
   // Coste de personal importado (Tanda 6c): 7 entries, see modules/payroll/route-permissions.partial.ts.
   ...payrollRoutePermissions,
+  // RRHH · plantilla y previsión (Tanda RRHH · RRHH-6): 21 entradas, ver modules/hr/route-permissions.partial.ts.
+  ...hrRoutePermissions,
   // Importación masiva de reservas (Tanda 7): 6 entradas, ver modules/pms/route-permissions.partial.ts.
   ...reservationImportRoutePermissions,
   // OPERA Cloud modo sombra (Tanda 7b): 15 entradas, ver modules/pms-shadow/route-permissions.partial.ts.

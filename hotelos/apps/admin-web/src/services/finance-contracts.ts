@@ -195,6 +195,7 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.f
   PAYROLL_IMPORT_NOT_FOUND: "La importación de coste de personal no existe o no pertenece a tu organización.",
   PAYROLL_IMPORT_DUPLICATE: "Ese informe ya está importado con el mismo contenido: revierte el lote anterior o marca «Sustituir los lotes anteriores» para reemplazarlo.",
   PAYROLL_IMPORT_OVERLAP: "Algún centro y mes del informe ya está contabilizado por otro lote: marca «Sustituir los lotes anteriores» para revertirlos enteros y volver a importar el rango completo.",
+  PAYROLL_MODE_CONFLICT: "Ese centro y mes ya tiene nómina calculada aprobada por dirección (modo calculado): el lote importado no se contabiliza; revisa qué nómina es la buena antes de seguir.",
   PAYROLL_IMPORT_ALREADY_POSTED: "La importación ya está contabilizada: no se contabiliza dos veces.",
   PAYROLL_IMPORT_REVERSED: "La importación está revertida: vuelve a importar el informe para contabilizarlo de nuevo.",
   PAYROLL_IMPORT_ENTRY_EXISTS: "Ya existe un asiento con el mismo origen para ese centro y mes: no se ha contabilizado nada.",

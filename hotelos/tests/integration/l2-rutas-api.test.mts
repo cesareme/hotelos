@@ -85,6 +85,8 @@ describe("L2-02 · rutas API: retiradas, canónicas, espejos Prisma, lease y job
   let ownerB: Session; // organización B
   let manager: Session; // plantilla manager en A (revenue.apply_recommendations)
   let receptionist: Session; // solo A (workforce.timeclock.use)
+  /** Tanda RRHH (RRHH-4): los fichajes exigen ficha (StaffProfile) — la de la recepcionista en A.propertyA; cuelga de la propiedad → cleanupTenant la barre. */
+  let receptionistProfileId = "";
   let invariantsBefore: Awaited<ReturnType<typeof farandaInvariants>>;
   const leaseKey = `l2-test-${newRunId()}`;
 
@@ -94,6 +96,8 @@ describe("L2-02 · rutas API: retiradas, canónicas, espejos Prisma, lease y job
     A = await createIsolatedTenant(`r${newRunId()}`);
     B = await createIsolatedTenant(`s${newRunId()}`);
     await enableModules(A.propertyA, ["workforce_labor", "revenue_profit_engine"]);
+    receptionistProfileId = `sp_l2r_rec_${A.run}`;
+    await prisma.staffProfile.create({ data: { id: receptionistProfileId, userId: A.users.receptionist.id, propertyId: A.propertyA, employeeCode: "REC-001", active: true } });
     const managerUser = await addManager(A);
     await strict(async () => {
       owner = await loginOrThrow(app, A.users.owner.email, A.password);
@@ -227,7 +231,7 @@ describe("L2-02 · rutas API: retiradas, canónicas, espejos Prisma, lease y job
       for (const n of [1, 2]) {
         const clockIn = await call(app, "POST", "/workforce/time-clock/clock-in", receptionist, A.propertyA, {
           propertyId: A.propertyA,
-          staffName: `${A.users.receptionist.fullName} ${n}`,
+          staffProfileId: receptionistProfileId,
           action: "in",
           at: new Date(Date.now() - (3 - n) * 1000).toISOString()
         });

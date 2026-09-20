@@ -124,7 +124,9 @@ const RateShopperSettingsScreen = lazyNamed(() => import("./screens/RateShopperS
 const DemandCalendarAdminScreen = lazyNamed(() => import("./screens/DemandCalendarAdminScreen"), "DemandCalendarAdminScreen");
 const CancellationPoliciesScreen = lazyNamed(() => import("./screens/admin/CancellationPoliciesScreen"), "CancellationPoliciesScreen");
 const CommissionsScreen = lazyNamed(() => import("./screens/commissions/CommissionsScreen"), "CommissionsScreen");
-const PayrollScreen = lazyNamed(() => import("./screens/payroll/PayrollScreen"), "PayrollScreen");
+// Tanda RRHH · RRHH-11: Finanzas › RRHH y nóminas is a tab container (base Nóminas + Plantilla · Previsión de plantilla ·
+// Panel RRHH). Loaded straight from its file (default export) instead of screens/tabs/index.ts, which belongs to another lot.
+const NominasTabs = lazy(() => import("./screens/tabs/finanzas/NominasTabs"));
 const ComplianceCenterScreen = lazyNamed(() => import("./screens/compliance/ComplianceCenterScreen"), "ComplianceCenterScreen");
 const FiscalSubmissionsCenter = lazyNamed(() => import("./screens/fiscal/FiscalSubmissionsCenter"), "FiscalSubmissionsCenter");
 const GdprRequestsScreen = lazyNamed(() => import("./screens/compliance/GdprRequestsScreen"), "GdprRequestsScreen");
@@ -191,6 +193,8 @@ const SCREEN_COMPONENTS = {
   OwnerHome: MiDiaTabs,
   // Tanda CHK · W4-B: pestaña «Check-in automatizado» de Mi día (/hoy/check-in-automatizado).
   CheckInAutomationSettingsScreen: MiDiaTabs,
+  // Tanda RRHH · PANEL-B: pestaña «Costes de personal» de Mi día (/hoy/costes-personal).
+  DirectorLaborCostsScreen: MiDiaTabs,
   AssistantChat: AssistantChatScreen,
   ShiftManagerScreen,
   NightAuditScreen,
@@ -301,7 +305,11 @@ const SCREEN_COMPONENTS = {
   RealEstateInspectionsScreen: ActivoInmobiliarioTabs,
   RealEstateGroupScreen: ActivoInmobiliarioTabs,
   CommissionsScreen,
-  PayrollScreen,
+  // RRHH y nóminas (Tanda RRHH · RRHH-11): base Nóminas · Plantilla · Previsión de plantilla · Panel RRHH (/finanzas/nominas/*)
+  PayrollScreen: NominasTabs,
+  HrEmployeesScreen: NominasTabs,
+  HrForecastScreen: NominasTabs,
+  HrOverviewScreen: NominasTabs,
   // --- Cumplimiento ---
   ComplianceInbox: ComplianceInboxWired,
   ComplianceCenter: ComplianceCenterScreen,

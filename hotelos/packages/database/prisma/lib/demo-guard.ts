@@ -26,9 +26,11 @@
 // Tanda ACT (lote L7): el tenant aislado del activo inmobiliario
 // (prisma/seed-real-estate.ts) también es demo: org_act (sus dos centros
 // prop_act_a / prop_act_b quedan acotados por el propio seed, no por esta lista).
+// Tanda RRHH (lote RRHH-7): el tenant aislado de plantilla y nómina
+// (prisma/seed-hr.ts) también es demo: org_hr / prop_hr.
 export const UX2_DEMO_PROPERTY_IDS: readonly string[] = ["prop_uxday_b"];
-export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday", "org_chk", "org_act"];
-export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday", "prop_chk"].concat(UX2_DEMO_PROPERTY_IDS);
+export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday", "org_chk", "org_act", "org_hr"];
+export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr"].concat(UX2_DEMO_PROPERTY_IDS);
 
 /** One write the seed intends to perform (printed before the decision). */
 export type PlannedWrite = {

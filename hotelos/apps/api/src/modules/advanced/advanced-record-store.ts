@@ -25,19 +25,23 @@
 //   · cuadros operativos (workforce, safety, quality, surveys): el envoltorio
 //     `{ id, status, payload, createdAt, updatedAt }` que leen
 //     WorkforceDashboard.tsx y SafetyDashboard.tsx (`payload.title`,
-//     `payload.staffName`, `payload.action`…);
+//     `payload.staffName`, `payload.action`…); los turnos añaden `warnings`
+//     (Tanda RRHH: motor de reglas hr/rules.engine.ts, nunca bloquea);
 //   · el resto (CRM, fidelización, eventos, compras, energía, analítica,
 //     reseñas): la fila tipada (fechas ISO, decimales como número).
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import type { HotelModuleCode } from "@hotelos/product";
-import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+import type { PermissionKey } from "@hotelos/shared";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
 import { buildPage, decodeCursor, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, type CursorKey, type Page } from "../../lib/pagination.js";
 import { parse } from "../../lib/validate.js";
+import { evaluateShifts, type RuleSet, type RuleViolation } from "../hr/rules.engine.js";
 import {
   AbsenceCreateSchema,
+  AbsenceListFilterSchema,
   AbsenceTransitionSchema,
   AnomalyTransitionSchema,
   assertTransitionAllowed,
@@ -88,12 +92,24 @@ export type StoreScope = {
   deviceId?: string;
   /** Acción de auditoría de la ruta (p. ej. StaffClockedOut decide el sentido del fichaje sin `action`). */
   auditAction?: string;
+  /**
+   * Claves del actor (corrector RRHH · RF-01): el fichaje con solo
+   * `workforce.timeclock.use` es SIEMPRE sobre la ficha del propio actor y con
+   * la hora del servidor; `workforce.timeclock.manage` ficha por terceros y
+   * fija `at`. Sin lista (lectores, scripts) no se restringe nada.
+   */
+  permissions?: readonly PermissionKey[];
   /** Solo getRecord: restringe la lista a un id (una consulta, mismo ámbito). */
   onlyId?: string;
 };
 
-export type PageInput = { limit?: number; cursor?: string | null };
-type NormalizedPage = { limit: number; cursor: CursorKey | null };
+/**
+ * `status`: filtro opcional de las listas que lo admiten (hoy `workforce_labor:absence_requests`); las demás lo ignoran.
+ * `staffProfileIds` (corrector RRHH · RF-03): restringe las listas de personas (`absence_requests`,
+ * `time_clock_entries`) a esas fichas — el empleado solo ve lo suyo; lista vacía = página vacía.
+ */
+export type PageInput = { limit?: number; cursor?: string | null; status?: string | null; staffProfileIds?: readonly string[] | null };
+type NormalizedPage = { limit: number; cursor: CursorKey | null; status?: string; staffProfileIds?: readonly string[] };
 
 export const RECORD_NOT_FOUND = "Registro no encontrado.";
 
@@ -104,7 +120,10 @@ export function normalizePage(page?: PageInput): NormalizedPage {
     if (!Number.isInteger(page.limit) || page.limit < 1) throw new BadRequestError("El parámetro limit debe ser un entero positivo.");
     limit = Math.min(page.limit, MAX_PAGE_LIMIT);
   }
-  return { limit, cursor: decodeCursor(page?.cursor ?? null) };
+  if (page?.status !== undefined && page.status !== null && typeof page.status !== "string") throw new BadRequestError("El parámetro status no es válido.");
+  const status = typeof page?.status === "string" && page.status.trim().length > 0 ? page.status.trim() : undefined;
+  const staffProfileIds = Array.isArray(page?.staffProfileIds) ? page.staffProfileIds.filter((id): id is string => typeof id === "string" && id.length > 0) : undefined;
+  return { limit, cursor: decodeCursor(page?.cursor ?? null), ...(status ? { status } : {}), ...(staffProfileIds ? { staffProfileIds } : {}) };
 }
 
 type DateKeyset = { OR?: Array<{ createdAt?: Date | { lt: Date }; id?: { lt: string } }> };
@@ -143,6 +162,8 @@ function mapPage<R extends { id: string }, I>(page: Page<R>, map: (row: R) => I)
 }
 
 const idFilter = (scope: StoreScope): { id?: string } => (scope.onlyId ? { id: scope.onlyId } : {});
+/** Filtro por fichas de la página (RF-03): sin lista no filtra; lista vacía → `in: []` (ninguna fila). */
+const staffFilter = (page: NormalizedPage): { staffProfileId?: { in: string[] } } => (page.staffProfileIds ? { staffProfileId: { in: [...page.staffProfileIds] } } : {});
 const iso = (value: Date | null | undefined): string | undefined => (value ? value.toISOString() : undefined);
 const isoOrNull = (value: Date | null | undefined): string | null => (value ? value.toISOString() : null);
 const dec = (value: { toString(): string } | null | undefined): number | null => (value === null || value === undefined ? null : Number(value.toString()));
@@ -179,6 +200,8 @@ export type BoardItem = {
   payload: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  /** Tanda RRHH (RRHH-4): avisos del motor de reglas (hr/rules.engine.ts) al crear o mover un turno; nunca bloquean. */
+  warnings?: RuleViolation[];
 };
 
 function boardItem(
@@ -252,13 +275,27 @@ type ShiftRow = Prisma.ShiftGetPayload<{ select: typeof SHIFT_SELECT }>;
 const CLOCK_SELECT = { id: true, propertyId: true, staffProfileId: true, clockType: true, clockAt: true, source: true, metadataJson: true, createdAt: true } satisfies Prisma.TimeClockEntrySelect;
 type ClockRow = Prisma.TimeClockEntryGetPayload<{ select: typeof CLOCK_SELECT }>;
 
-const ABSENCE_SELECT = { id: true, propertyId: true, staffProfileId: true, absenceType: true, startDate: true, endDate: true, status: true, approvedBy: true, createdAt: true } satisfies Prisma.AbsenceRequestSelect;
+const ABSENCE_SELECT = {
+  id: true,
+  propertyId: true,
+  staffProfileId: true,
+  absenceType: true,
+  startDate: true,
+  endDate: true,
+  status: true,
+  approvedBy: true,
+  requestedBy: true,
+  decidedAt: true,
+  reason: true,
+  createdAt: true
+} satisfies Prisma.AbsenceRequestSelect;
 type AbsenceRow = Prisma.AbsenceRequestGetPayload<{ select: typeof ABSENCE_SELECT }>;
 
 /**
  * Nombre visible por StaffProfile (una consulta de perfiles + una de usuarios
- * por página, ambas en el ámbito). Un id sin perfil (nombre libre guardado
- * como referencia) se muestra tal cual.
+ * por página, ambas en el ámbito). Un id sin perfil (fila legada anterior a la
+ * Tanda RRHH, cuando el nombre libre se guardaba como referencia) se muestra
+ * tal cual.
  */
 async function staffDisplayNames(scope: StoreScope, ids: Array<string | null | undefined>): Promise<Map<string, string>> {
   const unique = Array.from(new Set(ids.filter((id): id is string => typeof id === "string" && id.length > 0)));
@@ -278,24 +315,94 @@ async function staffDisplayNames(scope: StoreScope, ids: Array<string | null | u
   return out;
 }
 
+export const HR_EMPLOYEE_REQUIRED_CODE = "HR_EMPLOYEE_REQUIRED";
+export const APPROVAL_SELF_DECISION_CODE = "APPROVAL_SELF_DECISION";
+
+/** 400 tipado con `details.code` (BadRequestError no admite details en el constructor). */
+function badRequestWithCode(message: string, code: string, extra: Record<string, unknown> = {}): BadRequestError {
+  const error = new BadRequestError(message);
+  error.details = { code, ...extra };
+  return error;
+}
+
 /**
- * StaffProfile del empleado: `staffProfileId` debe existir en la propiedad
- * (404 si no); `staffName` se resuelve por usuario de la organización o por
- * código de empleado y, sin perfil, se guarda el nombre como referencia
- * (comportamiento heredado de la pantalla, que no tiene selector).
+ * Tanda RRHH (RRHH-4): la persona de un turno, fichaje o ausencia es SIEMPRE
+ * una ficha (StaffProfile) de la propiedad. `staffProfileId` debe existir en
+ * la propiedad (404 opaco si no); `staffName` es un ALIAS resoluble —
+ * código de empleado de la ficha o nombre completo de un usuario de la
+ * organización con ficha en la propiedad, exacto e insensible a mayúsculas —
+ * que se convierte en el id real. Sin resolución → 400 HR_EMPLOYEE_REQUIRED:
+ * el texto nunca se guarda como id ni como referencia.
  */
-async function resolveStaff(scope: StoreScope, input: Pick<ShiftCreateInput, "staffProfileId" | "staffName">): Promise<{ staffProfileId: string; staffName?: string }> {
+async function resolveStaff(scope: StoreScope, input: Pick<ShiftCreateInput, "staffProfileId" | "staffName">): Promise<{ staffProfileId: string }> {
   if (input.staffProfileId) {
     const profile = await prisma.staffProfile.findFirst({ where: { id: input.staffProfileId, propertyId: scope.propertyId }, select: { id: true } });
     if (!profile) throw new NotFoundError("Empleado no encontrado.");
-    return { staffProfileId: profile.id, staffName: input.staffName };
+    return { staffProfileId: profile.id };
   }
-  const staffName = (input.staffName ?? "").trim();
-  const user = await prisma.user.findFirst({ where: { organizationId: scope.organizationId, fullName: staffName }, select: { id: true } });
-  const profile = user
-    ? await prisma.staffProfile.findFirst({ where: { propertyId: scope.propertyId, userId: user.id }, select: { id: true } })
-    : await prisma.staffProfile.findFirst({ where: { propertyId: scope.propertyId, employeeCode: staffName.toUpperCase() }, select: { id: true } });
-  return { staffProfileId: profile?.id ?? staffName, staffName };
+  const alias = (input.staffName ?? "").trim();
+  if (alias.length === 0) throw badRequestWithCode("Indica la ficha de personal (staffProfileId o alias).", HR_EMPLOYEE_REQUIRED_CODE);
+  const activeFirst = [{ active: "desc" }, { createdAt: "desc" }] satisfies Prisma.StaffProfileOrderByWithRelationInput[];
+  const byCode = await prisma.staffProfile.findFirst({
+    where: { propertyId: scope.propertyId, employeeCode: { equals: alias, mode: "insensitive" } },
+    orderBy: activeFirst,
+    select: { id: true }
+  });
+  if (byCode) return { staffProfileId: byCode.id };
+  const users = await prisma.user.findMany({
+    where: { organizationId: scope.organizationId, fullName: { equals: alias, mode: "insensitive" } },
+    select: { id: true },
+    take: 50
+  });
+  if (users.length > 0) {
+    const byUser = await prisma.staffProfile.findFirst({
+      where: { propertyId: scope.propertyId, userId: { in: users.map((user) => user.id) } },
+      orderBy: activeFirst,
+      select: { id: true }
+    });
+    if (byUser) return { staffProfileId: byUser.id };
+  }
+  throw badRequestWithCode("No hay ninguna ficha de personal con ese código o nombre en la propiedad.", HR_EMPLOYEE_REQUIRED_CODE);
+}
+
+const RULE_KEYS_FOR_SHIFTS: ReadonlyArray<keyof RuleSet> = ["annual_hours", "max_daily_hours", "rest_between_shifts_h", "weekly_rest_days", "overtime_max_year"];
+
+/**
+ * Avisos del motor de reglas para la persona del turno: sus turnos del mismo
+ * año natural (una consulta), su contrato activo (jornada) y las reglas del
+ * convenio del contrato o, en su defecto, de la propiedad (vigentes en la
+ * fecha del turno). Sin convenio, defectos del ET. Nunca bloquea.
+ */
+async function shiftWarnings(scope: StoreScope, staffProfileId: string, shiftDate: Date): Promise<RuleViolation[]> {
+  const yearStart = new Date(Date.UTC(shiftDate.getUTCFullYear(), 0, 1));
+  const yearEnd = new Date(Date.UTC(shiftDate.getUTCFullYear() + 1, 0, 1));
+  const [shifts, contract] = await Promise.all([
+    prisma.shift.findMany({
+      where: { propertyId: scope.propertyId, staffProfileId, startAt: { gte: yearStart, lt: yearEnd }, status: { not: "cancelled" } },
+      select: { id: true, startAt: true, endAt: true },
+      orderBy: { startAt: "asc" }
+    }),
+    prisma.employmentContract.findFirst({
+      where: { staffProfileId, active: true, organizationId: scope.organizationId },
+      orderBy: { startDate: "desc" },
+      select: { weeklyHours: true, partTimePct: true, agreementId: true }
+    })
+  ]);
+  let agreementId = contract?.agreementId ?? null;
+  if (!agreementId) {
+    const property = await prisma.property.findFirst({ where: { id: scope.propertyId, organizationId: scope.organizationId }, select: { agreementId: true } });
+    agreementId = property?.agreementId ?? null;
+  }
+  const rules: Partial<Record<keyof RuleSet, unknown>> = {};
+  if (agreementId) {
+    const rows = await prisma.agreementRule.findMany({
+      where: { agreementId, key: { in: [...RULE_KEYS_FOR_SHIFTS] }, validFrom: { lte: shiftDate }, OR: [{ validTo: null }, { validTo: { gte: shiftDate } }] },
+      orderBy: { validFrom: "desc" },
+      select: { key: true, valueJson: true }
+    });
+    for (const row of rows) if (!(row.key in rules)) rules[row.key as keyof RuleSet] = row.valueJson;
+  }
+  return evaluateShifts(shifts, { weeklyHours: dec(contract?.weeklyHours), partTimePct: dec(contract?.partTimePct) }, rules);
 }
 
 function shiftItem(scope: StoreScope, row: ShiftRow, names: Map<string, string>): BoardItem {
@@ -340,8 +447,8 @@ async function createShift(scope: StoreScope, payload: unknown, id: string): Pro
     },
     select: SHIFT_SELECT
   });
-  const names = await staffDisplayNames(scope, [row.staffProfileId]);
-  return shiftItem(scope, row, names);
+  const [names, warnings] = await Promise.all([staffDisplayNames(scope, [row.staffProfileId]), shiftWarnings(scope, staff.staffProfileId, startAt)]);
+  return { ...shiftItem(scope, row, names), warnings };
 }
 
 async function transitionShift(scope: StoreScope, id: string, routeStatus: string, payload: unknown): Promise<BoardItem> {
@@ -367,15 +474,17 @@ async function transitionShift(scope: StoreScope, id: string, routeStatus: strin
     select: SHIFT_SELECT
   });
   const names = await staffDisplayNames(scope, [updated.staffProfileId]);
-  return shiftItem(scope, updated, names);
+  const warnings = updated.staffProfileId ? await shiftWarnings(scope, updated.staffProfileId, startAt) : [];
+  return { ...shiftItem(scope, updated, names), warnings };
 }
 
 function clockItem(scope: StoreScope, row: ClockRow, names: Map<string, string>): BoardItem {
   const meta = asObject(row.metadataJson);
   const action = row.clockType === "out" ? "out" : "in";
+  // El nombre sale SIEMPRE de la ficha; `meta.staffName` solo existe en filas legadas (antes de la Tanda RRHH).
   return boardItem(scope, "time_clock_entry", row, action, {
     ...meta,
-    staffName: typeof meta.staffName === "string" ? meta.staffName : names.get(row.staffProfileId) ?? row.staffProfileId,
+    staffName: names.get(row.staffProfileId) ?? (typeof meta.staffName === "string" ? meta.staffName : row.staffProfileId),
     action,
     at: row.clockAt.toISOString(),
     staffProfileId: row.staffProfileId,
@@ -385,7 +494,7 @@ function clockItem(scope: StoreScope, row: ClockRow, names: Map<string, string>)
 }
 
 async function listTimeClock(scope: StoreScope, page: NormalizedPage): Promise<Page<BoardItem>> {
-  const where: Prisma.TimeClockEntryWhereInput = { propertyId: scope.propertyId, ...idFilter(scope) };
+  const where: Prisma.TimeClockEntryWhereInput = { propertyId: scope.propertyId, ...idFilter(scope), ...staffFilter(page) };
   const [rows, total] = await Promise.all([
     prisma.timeClockEntry.findMany({ where: { ...where, ...afterCreatedAt(page.cursor) }, orderBy: NEWEST_FIRST, take: page.limit + 1, select: CLOCK_SELECT }),
     prisma.timeClockEntry.count({ where })
@@ -395,25 +504,64 @@ async function listTimeClock(scope: StoreScope, page: NormalizedPage): Promise<P
   return mapPage(built, (row) => clockItem(scope, row, names));
 }
 
+export const HR_TIMECLOCK_SELF_ONLY_CODE = "HR_TIMECLOCK_SELF_ONLY";
+const TIMECLOCK_MANAGE_KEY: PermissionKey = "workforce.timeclock.manage";
+
+/** ¿El actor ficha por terceros y fija la hora? Solo con `workforce.timeclock.manage` (o sin lista de claves: llamadores internos). */
+export function canClockForOthers(scope: Pick<StoreScope, "permissions">): boolean {
+  return scope.permissions === undefined || scope.permissions.includes(TIMECLOCK_MANAGE_KEY);
+}
+
+/**
+ * Fichas ACTIVAS del actor en la propiedad (RF-03 / RF-01): la persona que ficha o
+ * que consulta «lo suyo». Un usuario sin ficha en el centro → lista vacía.
+ */
+export async function ownStaffProfileIds(scope: Pick<StoreScope, "propertyId" | "userId">): Promise<string[]> {
+  if (!scope.userId) return [];
+  const rows = await prisma.staffProfile.findMany({ where: { propertyId: scope.propertyId, userId: scope.userId, active: true }, select: { id: true }, orderBy: { createdAt: "desc" } });
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Fichaje (D §8 ET 34.9, registro «por persona» e inmutable; corrector RRHH · RF-01):
+ * con solo `workforce.timeclock.use` la ficha es la del propio actor en el centro
+ * (400 HR_EMPLOYEE_REQUIRED si no tiene ninguna activa), un `staffProfileId` o alias
+ * que resuelva a OTRA ficha es un 403 HR_TIMECLOCK_SELF_ONLY y `at` se ignora (hora
+ * del servidor: nadie fabrica un fichaje retroactivo). Con `workforce.timeclock.manage`
+ * (gobernanta, jefatura, RRHH) se ficha por terceros y se admite `at` (corrección
+ * manual, auditada por la ruta).
+ */
 async function createTimeClock(scope: StoreScope, payload: unknown, id: string): Promise<BoardItem> {
   const data: TimeClockCreateInput = parse(TimeClockCreateSchema, payload, "body");
   if (data.propertyId && data.propertyId !== scope.propertyId) throw new BadRequestError("propertyId no coincide con la propiedad de la petición.");
-  const staff = await resolveStaff(scope, data);
+  const manages = canClockForOthers(scope);
+  let staffProfileId: string;
+  if (manages) {
+    staffProfileId = (await resolveStaff(scope, data)).staffProfileId;
+  } else {
+    const own = await ownStaffProfileIds(scope);
+    if (own.length === 0) throw badRequestWithCode("No tienes ficha de personal activa en este centro: pide a RRHH que la cree antes de fichar.", HR_EMPLOYEE_REQUIRED_CODE);
+    const requested = data.staffProfileId || (data.staffName ?? "").trim() ? (await resolveStaff(scope, data)).staffProfileId : own[0]!;
+    if (!own.includes(requested)) {
+      throw new ForbiddenError("Solo puedes fichar con tu propia ficha de personal; fichar por otra persona exige workforce.timeclock.manage.", { code: HR_TIMECLOCK_SELF_ONLY_CODE, staffProfileId: requested });
+    }
+    staffProfileId = requested;
+  }
   const action = data.action ?? (scope.auditAction === "StaffClockedOut" ? "out" : "in");
   const row = await prisma.timeClockEntry.create({
     data: {
       id,
       propertyId: scope.propertyId,
-      staffProfileId: staff.staffProfileId,
+      staffProfileId,
       clockType: action,
-      clockAt: data.at ? dateOf(data.at) : new Date(),
+      clockAt: manages && data.at ? dateOf(data.at) : new Date(),
       source: data.source ?? "api",
       deviceId: scope.deviceId ?? null,
-      metadataJson: toJson({ staffName: staff.staffName, action })
+      metadataJson: toJson({ action })
     },
     select: CLOCK_SELECT
   });
-  return clockItem(scope, row, new Map());
+  return clockItem(scope, row, await staffDisplayNames(scope, [row.staffProfileId]));
 }
 
 function absenceItem(scope: StoreScope, row: AbsenceRow, names: Map<string, string>): BoardItem {
@@ -424,10 +572,27 @@ function absenceItem(scope: StoreScope, row: AbsenceRow, names: Map<string, stri
     startDate: row.startDate.toISOString().slice(0, 10),
     endDate: row.endDate.toISOString().slice(0, 10),
     approvedBy: row.approvedBy,
+    requestedBy: row.requestedBy,
+    decidedAt: isoOrNull(row.decidedAt),
+    reason: row.reason,
     status: row.status
   });
 }
 
+/** Lista de ausencias de la propiedad (`workforce_labor:absence_requests`), con filtro opcional `status` (400 si no es un estado de la máquina). */
+async function listAbsences(scope: StoreScope, page: NormalizedPage): Promise<Page<BoardItem>> {
+  const filter = parse(AbsenceListFilterSchema, page.status ? { status: page.status } : {}, "query");
+  const where: Prisma.AbsenceRequestWhereInput = { propertyId: scope.propertyId, ...(filter.status ? { status: filter.status } : {}), ...idFilter(scope), ...staffFilter(page) };
+  const [rows, total] = await Promise.all([
+    prisma.absenceRequest.findMany({ where: { ...where, ...afterCreatedAt(page.cursor) }, orderBy: NEWEST_FIRST, take: page.limit + 1, select: ABSENCE_SELECT }),
+    prisma.absenceRequest.count({ where })
+  ]);
+  const built = buildPage(rows, page.limit, total, createdAtKey);
+  const names = await staffDisplayNames(scope, built.items.map((row) => row.staffProfileId));
+  return mapPage(built, (row) => absenceItem(scope, row, names));
+}
+
+/** Alta de ausencia: ficha resuelta, tipo tasado, motivo y solicitante (= actor de la petición, nunca del cuerpo). */
 async function createAbsence(scope: StoreScope, payload: unknown, id: string): Promise<BoardItem> {
   const data: AbsenceCreateInput = parse(AbsenceCreateSchema, payload, "body");
   const staff = await resolveStaff(scope, data);
@@ -439,21 +604,33 @@ async function createAbsence(scope: StoreScope, payload: unknown, id: string): P
       absenceType: data.absenceType,
       startDate: utcDayStart(dateOf(data.startDate)),
       endDate: utcDayStart(dateOf(data.endDate)),
-      status: "pending"
+      status: "pending",
+      requestedBy: scope.userId,
+      reason: data.reason ?? null
     },
     select: ABSENCE_SELECT
   });
   return absenceItem(scope, row, await staffDisplayNames(scope, [row.staffProfileId]));
 }
 
+/**
+ * Decisión sobre una ausencia. Separación de funciones (diseño §9, CHECK
+ * absence_requests_requested_ne_approved): quien la solicitó no la aprueba ni
+ * la rechaza (409 APPROVAL_SELF_DECISION); sí puede cancelarla. Toda salida de
+ * `pending` fija `decidedAt`; `approvedBy` solo en la aprobación.
+ */
 async function transitionAbsence(scope: StoreScope, id: string, routeStatus: string, payload: unknown): Promise<BoardItem> {
   const data = parse(AbsenceTransitionSchema, payload, "body");
   const row = await prisma.absenceRequest.findFirst({ where: { id, propertyId: scope.propertyId }, select: ABSENCE_SELECT });
   if (!row) throw new NotFoundError(RECORD_NOT_FOUND);
   const target = targetStatus("absence_request", row.status, routeStatus, data.status);
+  if ((target === "approved" || target === "rejected") && row.requestedBy && row.requestedBy === scope.userId) {
+    throw new ConflictError("Quien solicita no puede aprobar su propia solicitud.", { code: APPROVAL_SELF_DECISION_CODE, entityType: "absence_request", requestedBy: row.requestedBy });
+  }
+  const decided = target !== row.status && target !== "pending";
   const updated = await prisma.absenceRequest.update({
     where: { id: row.id },
-    data: { status: target, ...(target === "approved" ? { approvedBy: scope.userId } : {}) },
+    data: { status: target, ...(target === "approved" ? { approvedBy: scope.userId } : {}), ...(decided ? { decidedAt: new Date() } : {}) },
     select: ABSENCE_SELECT
   });
   return absenceItem(scope, updated, await staffDisplayNames(scope, [updated.staffProfileId]));
@@ -1409,6 +1586,7 @@ type TransitionFn = (scope: StoreScope, id: string, routeStatus: string, payload
 const LISTS: Readonly<Record<string, ListFn>> = {
   "workforce_labor:schedule": listShifts,
   "workforce_labor:time_clock_entries": listTimeClock,
+  "workforce_labor:absence_requests": listAbsences,
   "safety_incident_management:safety_incidents": listIncidents,
   "safety_incident_management:safety_checks": listSafetyChecks,
   "reputation_quality:quality_cases": listQualityCases,

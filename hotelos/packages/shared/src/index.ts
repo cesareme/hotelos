@@ -61,6 +61,10 @@ export * from "./integrations-status-types.js";
 // vista `GET /guest-portal/stay`, peticiones de salida, enlace de pago honesto y
 // códigos de error compartidos por el API, el portal del huésped y el admin-web.
 export * from "./guest-portal-types.js";
+// RRHH · plantilla, convenio, estándares, previsión y nómina (Tanda RRHH · RRHH-1): DTOs wire sin
+// PII en listados, vocabularios, valores por defecto de convenios y estándares, tipos de
+// cotización 2026, panel de costes de personal y códigos de error compartidos por el API y el admin-web.
+export * from "./hr-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

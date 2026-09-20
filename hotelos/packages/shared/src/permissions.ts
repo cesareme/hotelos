@@ -156,6 +156,12 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "payroll.manage": "Manage payroll contracts, periods and payroll calculation runs",
   "banking.reconcile": "Manage bank accounts, statement imports and reconciliation matching",
   "payroll.read": "Read payroll contracts, periods, payslips and exports",
+  // Tanda RRHH (2026-09-20, docs/design/RRHH-PLANTILLA-NOMINA.md §9): expediente, convenio, estándares y plantilla máxima.
+  "hr.employee.read": "Read the employee files (expedientes): list without PII, detail with the decrypted fields the scope allows",
+  "hr.employee.manage": "Create, update and terminate employee files (expedientes) and their contracts",
+  "hr.config.manage": "Manage collective agreements and their rules (jornada anual, pagas, topes, preavisos)",
+  "hr.standards.manage": "Manage the staffing standards of a work centre per USALI department and driver",
+  "hr.staffing.approve": "Approve the maximum staffing plan (FTE per department and season) of a work centre",
   "banking.read": "Read bank accounts, balances, statements and reconciliation status",
   "commissions.read": "Read commission rules, accruals and summaries",
   "accounting.read": "Read fiscal years, fiscal periods and exchange rates",
@@ -1151,6 +1157,8 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "workforce.schedule.manage",
     "workforce.timeclock.manage",
     "payroll.approve",
+    // Tanda RRHH (2026-09-20) · expediente · V (listado sin PII de su centro)
+    "hr.employee.read",
     // M13 Inmovilizado y CAPEX · V S
     "assets.read",
     "capex.read",
@@ -1349,6 +1357,8 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "workforce.read",
     "workforce.labor_cost.view",
     "payroll.approve",
+    // Tanda RRHH (2026-09-20) · expediente · V
+    "hr.employee.read",
     // M13 Inmovilizado y CAPEX · V S
     "assets.read",
     "capex.read",
@@ -1720,6 +1730,14 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "workforce.schedule.manage",
     "workforce.timeclock.manage",
     "workforce.payroll_export",
+    // Tanda RRHH (2026-09-20) · expediente, convenio y estándares · V E (sin hr.staffing.approve: aprueba
+    // dirección general, SoD con payroll.manage; users.read la aporta CIERRE-1, ver M21 más abajo)
+    "hr.employee.read",
+    "hr.employee.manage",
+    "hr.config.manage",
+    "hr.standards.manage",
+    // M17 Cumplimiento · V (Tanda RRHH: resumen de cumplimiento laboral y umbral de 50 personas)
+    "compliance.read",
     // M18 Informes y analítica · V
     "analytics.read",
     // M21 Usuarios, roles y auditoría · V (CIERRE-1: selector «Persona» de la ficha de personal → GET /rbac/users)
@@ -1896,6 +1914,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "workforce.read",
     "workforce.labor_cost.view",
     "payroll.approve",
+    // Tanda RRHH (2026-09-20) · expediente · V y plantilla máxima · A (SoD estática con payroll.manage)
+    "hr.employee.read",
+    "hr.staffing.approve",
     // M13 Inmovilizado y CAPEX · V A
     "assets.read",
     "capex.read",
@@ -2040,6 +2061,8 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "payroll.read",
     "workforce.read",
     "workforce.labor_cost.view",
+    // Tanda RRHH (2026-09-20) · expediente · V
+    "hr.employee.read",
     // M13 Inmovilizado y CAPEX · V A
     "assets.read",
     "capex.read",
@@ -2439,8 +2462,14 @@ export const ORGANIZATION_TEMPLATE_ROLE_KEYS: readonly RoleKey[] = [
  * CIERRE-1 (2026-09-20): payroll_hr + users.read (selector «Persona» de la ficha
  * de personal → GET /rbac/users), aditiva, sin bump: la entrega el top-up de
  * rbac:sync / arranque (la versión solo sube cuando una plantilla pierde claves).
+ * Version 5 (Tanda RRHH · plantilla y nómina, 2026-09-20): aditiva — las cinco
+ * claves `hr.*` (employee.read, employee.manage, config.manage, standards.manage,
+ * staffing.approve) van a payroll_hr (todas menos staffing.approve, más
+ * compliance.read), general_manager (employee.read + staffing.approve) y
+ * manager / operations_director / owner (employee.read); ninguna plantilla
+ * pierde claves y ROLE_TEMPLATE_REVOCATIONS no cambia.
  */
-export const ROLE_TEMPLATE_VERSION = 4;
+export const ROLE_TEMPLATE_VERSION = 5;
 
 /**
  * Keys that version 2 REMOVES from each template with respect to version 1
@@ -2468,6 +2497,10 @@ export const ROLE_TEMPLATE_VERSION = 4;
  * Version 4 (Tanda T9 · documentos y digitalización, 2026-09-19) removes nothing
  * either: it ADDS documents.capture / documents.review / documents.archive.read /
  * documents.admin to 15 templates (design §6.2); this record is unchanged.
+ *
+ * Version 5 (Tanda RRHH · plantilla y nómina, 2026-09-20) removes nothing either:
+ * it ADDS the five hr.* keys to six templates (see ROLE_TEMPLATE_VERSION); this
+ * record is unchanged.
  */
 export const ROLE_TEMPLATE_REVOCATIONS: Record<RoleKey, PermissionKey[]> = {
   receptionist: [],

@@ -96,6 +96,12 @@ import { registerPayrollCostRoutes } from "./modules/payroll/cost-import.routes.
 // Fichas de personal (FIX-1 · F10): GET/POST /payroll/staff-profiles
 // (modules/payroll/staff-profiles.routes.ts; permisos en el mismo partial).
 import { registerStaffProfileRoutes } from "./modules/payroll/staff-profiles.routes.js";
+// RRHH · plantilla, convenio, estándares, plantilla máxima, previsión, KPIs,
+// alertas y ausencias (Tanda RRHH · RRHH-6): /hr/* (modules/hr/hr.routes.ts) y
+// GET /payroll/incidences (modules/payroll/payroll.routes.ts). Los helpers
+// redactHrPii* quitan los campos PII de Employee de Sentry y del log de `req`.
+import { redactHrPii, redactHrPiiInUrl, registerHrRoutes, workforceSelfScope } from "./modules/hr/hr.routes.js";
+import { registerPayrollRoutes } from "./modules/payroll/payroll.routes.js";
 // Importación masiva de reservas (Tanda 7 · L3): /properties/:propertyId/
 // reservations/imports* (modules/pms/reservation-import.routes.ts; permisos en
 // modules/pms/route-permissions.partial.ts).
@@ -1100,6 +1106,14 @@ async function initSentry() {
           // No logueamos cuerpos de request para evitar PII (passwords, DNIs…).
           event.request.data = "[redacted]";
         }
+        // Tanda RRHH (RRHH-6): los campos PII de Employee (NIF, NAF, correo,
+        // teléfono, IBAN y su hash de búsqueda) nunca llegan a Sentry, ni en la
+        // query string ni en `extra` / `contexts` (redactHrPii* de hr.routes.ts).
+        if (event.request && typeof event.request.query_string === "string") {
+          event.request.query_string = redactHrPiiInUrl(`?${event.request.query_string}`)?.slice(1) ?? event.request.query_string;
+        }
+        if (event.extra) event.extra = redactHrPii(event.extra);
+        if (event.contexts) event.contexts = redactHrPii(event.contexts);
         return event;
       }
     });
@@ -1127,7 +1141,11 @@ export function redactTokenInUrl(url: string | undefined): string | undefined {
   if (typeof url !== "string") return url;
   // `?token=` de cualquier ruta y el token en el path de la familia legada
   // /guest-portal/session/:token[/folio|/pay] (corrector REV-L7-07).
-  return url.replace(/([?&]token=)[^&#]*/gi, "$1<redacted>").replace(/(\/guest-portal\/session\/)[^/?#]+/gi, "$1<redacted>");
+  // Tanda RRHH (RRHH-6): tampoco un campo PII de Employee en la query (NIF, NAF, correo,
+  // teléfono, IBAN y su hash de búsqueda: HR_PII_REDACT_KEYS de modules/hr/hr.routes.ts).
+  // El patrón va INLINE porque tests/cors-contract.test.mjs evalúa este cuerpo aislado (función
+  // pura, sin imports); hr-schemas.test.mts comprueba que cubre las mismas claves.
+  return url.replace(/([?&]token=)[^&#]*/gi, "$1<redacted>").replace(/(\/guest-portal\/session\/)[^/?#]+/gi, "$1<redacted>").replace(/([?&](?:taxId|socialSecurityNumber|email|phone|iban|taxIdLookupHash)=)[^&#]*/gi, "$1<redacted>");
 }
 
 export async function buildApiServer() {
@@ -3059,6 +3077,13 @@ export async function buildApiServer() {
   // exige POST /payroll/contracts (antes no había alta y el cajón «Nuevo
   // contrato» acababa en 404 «Perfil de empleado no encontrado.»).
   registerStaffProfileRoutes(app);
+  // RRHH · plantilla, convenio, estándares, plantilla máxima, previsión, KPIs,
+  // alertas y ausencias (Tanda RRHH · RRHH-6): /hr/* (modules/hr/hr.routes.ts) e
+  // incidencias del mes para la gestoría (GET /payroll/incidences,
+  // modules/payroll/payroll.routes.ts). Manifiesto: modules/hr/route-permissions.partial.ts
+  // y la entrada de incidencias en modules/payroll/route-permissions.partial.ts.
+  registerHrRoutes(app);
+  registerPayrollRoutes(app);
   // Importación masiva de reservas (Tanda 7 · L3): previsualizar, importar,
   // listar, ver un lote, descargar la plantilla y deshacer
   // (/properties/:propertyId/reservations/imports*).
@@ -3329,7 +3354,9 @@ export async function buildApiServer() {
   app.post("/workforce/time-clock/clock-out", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "time_clock_entry", auditAction: "StaffClockedOut", requiredPermissions: ["workforce.timeclock.use"], payload: request.body as never, correlationId: createId("corr") }));
   app.get("/workforce/properties/:propertyId/time-clock", async (request, reply) => {
     const query = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
-    const page = await listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "time_clock_entries", query);
+    // Corrector RRHH · RF-03: sin schedule.manage / timeclock.manage / hr.employee.read solo los fichajes propios.
+    const propertyId = (request.params as { propertyId: string }).propertyId;
+    const page = await listAdvancedRecords(propertyId, "workforce_labor", "time_clock_entries", { ...query, ...(await workforceSelfScope(request.userContext, propertyId)) });
     reply.headers(pageHeaders(page));
     return page;
   });
@@ -7493,6 +7520,14 @@ export async function buildApiServer() {
       irpfRatePct: body.irpfRatePct === undefined ? undefined : decimalInputToNumber(body.irpfRatePct),
       socialSecurityCategory: body.socialSecurityCategory,
       costCenterId: body.costCenterId,
+      // Tanda RRHH (RRHH-6, abierto de RRHH-2): convenio, jornada, % de jornada, fijo
+      // discontinuo y grupo de cotización llegan al servicio (antes se descartaban
+      // en silencio aunque el esquema ya los admitía).
+      agreementId: body.agreementId,
+      weeklyHours: body.weeklyHours === undefined ? undefined : decimalInputToNumber(body.weeklyHours),
+      partTimePct: body.partTimePct === undefined ? undefined : decimalInputToNumber(body.partTimePct),
+      fixedDiscontinuous: body.fixedDiscontinuous,
+      contributionGroup: body.contributionGroup,
       correlationId: createId("corr")
     });
   });
@@ -7511,6 +7546,7 @@ export async function buildApiServer() {
     // Finanzas (2026-09-16, fix t6#6): same tenant scope as GET /payroll/contracts.
     const query = parse(PayrollListQuerySchema, request.query ?? {}, "query");
     const organizationId = await resolveOrganizationScope(request, query.organizationId);
+    // Tanda RRHH (RRHH-6 → corrector SEC-12): `mode` (external | calculated) y `closedAt` salen de mapPeriod.
     return listPayrollPeriods(organizationId);
   });
 
@@ -7700,7 +7736,8 @@ export async function buildApiServer() {
   // Operational dashboards (Sprint 15 — P1.a)
   app.get("/dashboards/workforce", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildWorkforceDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
+    // Corrector RRHH · SEC-07: los tipos de ausencia de salud solo con hr.employee.read / manage.
+    return buildWorkforceDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to, permissions: request.userContext.permissions ?? [] });
   });
   app.get("/dashboards/crm", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };

@@ -54,8 +54,11 @@ describe("nav-tree · generated tree shape", () => {
     // Tanda CHK (2026-09-20): +1 tab (Hoy › Mi día › Check-in automatizado, CheckInAutomationSettingsScreen).
     // Fusión T9 + CHK (2026-09-20): 70 items · 104 tabs (medido con build-nav-tree.mjs sobre el CSV compartido).
     // Tanda ACT · F4 (2026-09-20): +1 item (Finanzas › Activo inmobiliario, RealEstateAssetScreen) · +5 tabs (Documentación, Tributos, Obras, Inspecciones y seguros, Grupo) = 71 items · 109 tabs.
+    // Tanda RRHH · RRHH-11 (2026-09-20): +3 tabs (Finanzas › RRHH y nóminas › Plantilla, Previsión de plantilla y Panel RRHH).
+    // Tanda RRHH · PANEL-B (2026-09-20): +1 tab (Hoy › Mi día › Costes de personal, DirectorLaborCostsScreen).
+    // Fusión ACT + RRHH (2026-09-20): 71 items · 113 tabs (medido con build-nav-tree.mjs sobre el CSV compartido).
     assert.equal(NAV_TREE.meta.counts.items, 71);
-    assert.equal(NAV_TREE.meta.counts.tabs, 109);
+    assert.equal(NAV_TREE.meta.counts.tabs, 113);
     assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
   });
@@ -67,7 +70,8 @@ describe("nav-tree · generated tree shape", () => {
     assert.deepEqual(
       today.tabs.map((tab) => tab.url),
       // Tanda CHK: + Check-in automatizado (CheckInAutomationSettingsScreen; recepcion · direccion · admin · auditoria).
-      ["/hoy/operaciones", "/hoy/direccion", "/hoy/propietario", "/hoy/check-in-automatizado"]
+      // Tanda RRHH · PANEL-B: + Costes de personal (DirectorLaborCostsScreen; direccion · finanzas · admin · propiedad · auditoria).
+      ["/hoy/operaciones", "/hoy/direccion", "/hoy/propietario", "/hoy/check-in-automatizado", "/hoy/costes-personal"]
     );
   });
 });
@@ -141,8 +145,9 @@ describe("nav-tree · lookups", () => {
     const urls = allUrls();
     // items + tabs + devOnly + public (Tanda T9: +1 item, Operaciones › Digitalizar; ola 4: +3 tabs, Recepciones / Documentos / Archivo;
     // Tanda CHK: +1 tab, /hoy/check-in-automatizado) = 70 + 104 + 21 + 2 = 197;
-    // Tanda ACT · F4: +1 item y +5 tabs, /finanzas/activo-inmobiliario[/…]) = 71 + 109 + 21 + 2 = 203.
-    assert.equal(urls.length, 71 + 109 + 21 + 2);
+    // Tanda ACT · F4: +1 item y +5 tabs, /finanzas/activo-inmobiliario[/…]) = 71 + 109 + 21 + 2 = 203;
+    // Tanda RRHH · RRHH-11: +3 tabs, /finanzas/nominas/{plantilla,prevision,panel}; Tanda RRHH · PANEL-B: +1 tab, /hoy/costes-personal) = 71 + 113 + 21 + 2 = 207.
+    assert.equal(urls.length, 71 + 113 + 21 + 2);
     assert.equal(new Set(urls).size, urls.length);
     assert.ok(urls.every((url) => !url.startsWith("/backoffice")));
   });

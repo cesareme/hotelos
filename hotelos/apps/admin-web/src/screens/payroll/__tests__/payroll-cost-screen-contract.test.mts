@@ -230,6 +230,71 @@ describe("Nóminas · cajón «Nueva ficha de personal» (FIX-1 · F10)", () => 
   });
 });
 
+describe("Nóminas · nómina ampliada (Tanda RRHH · RRHH-10: modo, «Aprobar», «Pagar» tras la aprobación, «Incidencias del mes», pagas por convenio)", () => {
+  const api = source("../../../services/payrollApi.ts");
+
+  it("keeps the frozen inline-style budget (≤ 9, nothing new) and the Cocoa 22 rules", () => {
+    assert.ok(count(screen, /\bstyle=\{/g) <= 9, `PayrollScreen.tsx: style={ ×${count(screen, /\bstyle=\{/g)} > 9`);
+    assertCocoaRules("PayrollScreen.tsx", screen);
+  });
+
+  it("paints the mode callout under the KPI strip of Periodos / Recibos from the period's `mode` (external · calculated) with the shared labels", () => {
+    assert.match(screen, /\(view === "periods" \|\| view === "slips"\) && calloutPeriod \? \(\s*<CocoaCallout tone="info" title=\{PAYROLL_PERIOD_MODE_LABELS_ES\[calloutMode\]\}>/);
+    assert.match(screen, /const calloutMode = payrollPeriodMode\(calloutPeriod\);/);
+    assert.match(screen, /const PERIOD_MODE_HELP: Record<PayrollPeriodMode, string> = \{/);
+    assert.match(api, /external: "Modo externo: la gestoría calcula; el ERP importa el agregado"/);
+    assert.match(api, /calculated: "Modo calculado: preparación interna, validar con la gestoría"/);
+    assert.match(screen, /\{PAYROLL_PERIOD_MODE_SHORT_ES\[payrollPeriodMode\(period\)\]\}/, "the period badge names the short mode");
+    // The mode travels with the period record (mapPeriod of periods.service.ts, corrector SEC-12), never from a fixed default in the screen.
+    assert.doesNotMatch(screen, /mode: "external"|mode: "calculated"/);
+  });
+
+  it("offers «Aprobar» between Calcular and Exportar only to payroll.approve (canDo over useNavGate), on a calculated period nobody approved, through a dialog with an optional note", () => {
+    assert.match(screen, /const approve = canDo\(useNavGate\(\), "payroll\.approve"\);/);
+    assert.match(screen, /\{p\.status === "open" \? "Calcular" : "Recalcular"\}\s*<\/CocoaButton>\s*\{approve \? \(\s*<CocoaButton[\s\S]*?disabled=\{!canApprovePayrollPeriod\(p\)\}[\s\S]*?\{ACTIONS\.approve\}\s*<\/CocoaButton>\s*\) : null\}\s*<CocoaButton[\s\S]*?\{ACTIONS\.export\}/);
+    assert.match(screen, /await approvePayrollPeriod\(approveTarget\.id, \{ note: approveNote \}\)/);
+    assert.match(screen, /title=\{approveTarget \? `Aprobar el registro de nómina \$\{approveTarget\.periodCode\}` : "Aprobar periodo"\}/);
+    assert.match(screen, /<CocoaInput value=\{approveNote\} onChange=\{setApproveNote\} multiline rows=\{3\} maxLength=\{1000\}/);
+    assert.match(screen, /Quien calculó el periodo no puede aprobarlo/);
+    assert.match(screen, /approved: STATUS_LABELS\.approved/, "the status map knows «approved»");
+    assert.match(api, /export function approvePayrollPeriod\(periodId: string, body: ApprovePayrollPeriodRequest = \{\}\): Promise<PayrollPeriodRecord> \{\s*return apiRequest<PayrollPeriodRecord>\(`\/payroll\/periods\/\$\{enc\(periodId\)\}\/approve`, \{ method: "POST"/);
+    assert.match(api, /calculator_ne_approver: "Quien calculó la nómina no puede aprobarla/);
+  });
+
+  it("keeps «Pagar» and «Exportar» disabled until dirección approved the register, and «Recalcular» once it did (RF-02), and says so", () => {
+    assert.match(screen, /disabled=\{p\.status === "open" \|\| Boolean\(p\.paidAt\) \|\| !isPayrollPeriodApproved\(p\)\}/);
+    assert.match(screen, /"Dirección debe aprobar el periodo antes de pagarlo"/);
+    assert.match(screen, /disabled=\{p\.status === "open" \|\| !isPayrollPeriodApproved\(p\)\}\s*title=\{p\.status === "open" \? "Calcula el periodo antes de exportarlo" : !isPayrollPeriodApproved\(p\) \? "Dirección debe aprobar el periodo antes de exportarlo a la gestoría"/);
+    assert.match(screen, /disabled=\{p\.status === "closed" \|\| Boolean\(p\.paidAt\) \|\| isPayrollPeriodApproved\(p\)\}/);
+    assert.match(screen, /"El periodo ya está aprobado por dirección: no se recalcula"/);
+    // RF-05 / RF-07: the warnings of a new contract (position control, second active contract) follow the success toast.
+    assert.match(screen, /const contractWarnings = toArray<string>\(createdContract\.warnings\);\s*if \(contractWarnings\.length > 0\) showToast\(contractWarnings\.join\(" · "\), \{ variant: "warning" \}\);/);
+    assert.match(api, /export function isPayrollPeriodApproved\(/);
+    assert.match(api, /PAYROLL_NOT_APPROVED: "Dirección debe aprobar el periodo de nómina antes de pagarlo\."/);
+  });
+
+  it("downloads «Incidencias del mes» (CSV of GET /payroll/incidences, gate workforce.payroll_export) with the downloadText pattern, from the header, the palette and a dialog", () => {
+    assert.match(screen, /const exportIncidences = canDo\(useNavGate\(\), "workforce\.payroll_export"\);/);
+    assert.match(screen, /<CocoaButton variant="bordered" tone="neutral" size="small" onClick=\{\(\) => openIncidences\(\)\} disabled=\{!exportIncidences\}[^>]*>\s*Incidencias del mes/);
+    assert.match(screen, /\.\.\.\(exportIncidences \? \[\{ id: "payroll-incidences", label: "Descargar las incidencias del mes", run: \(\) => openIncidences\(\) \}\] : \[\]\)/);
+    assert.match(screen, /const result = await downloadPayrollIncidences\(\{ period: incidencesPeriod\.trim\(\), propertyId: incidencesPropertyId \}\);\s*downloadText\(result\.filename, result\.contentType, result\.text\);/);
+    assert.match(screen, /title="Incidencias del mes para la gestoría"/);
+    assert.match(screen, /nunca por NIF/);
+    // Whole-sociedad scope: the dialog picks a centre (default the active hotel) because the API answers 404 ENTITY_SCOPE_REQUIRED without accounting.entity.read.
+    assert.match(screen, /const incidencesPropertyId = propertyId \?\? \(incidencesCentre \|\| null\);/);
+    assert.match(screen, /setIncidencesCentre\(propertyId \?\? finance\.active\.propertyId\);/);
+    assert.match(screen, /<CocoaSelect value=\{incidencesCentre\} onChange=\{setIncidencesCentre\} options=\{\[\{ value: "", label: "Toda la sociedad" \}, \.\.\.centreOptions\]\} \/>/);
+    assert.match(api, /ENTITY_SCOPE_REQUIRED: "Sin ámbito de toda la sociedad: elige un centro de trabajo/);
+    assert.match(api, /export function downloadPayrollIncidences\(query: PayrollIncidencesQuery\): Promise<PayrollIncidencesExport> \{\s*return apiRequest<PayrollIncidencesExport>\("\/payroll\/incidences", \{ query: compactQuery\(\{ period: query\.period, propertyId: query\.propertyId \?\? undefined, format: "csv" \}\) \}\);/);
+  });
+
+  it("registers the ⌘K command «Aprobar el periodo» for payroll.approve and corrects the pagas help to the convenio", () => {
+    assert.match(screen, /\.\.\.\(approve \? \[\{ id: "payroll-approve-period", label: "Aprobar el periodo", run: approveFromPalette \}\] : \[\]\)/);
+    assert.match(screen, /help="Entre 12 y 16; vacío: las del convenio del centro \(12 más sus pagas extra; 14 sin convenio\)\."/);
+    assert.doesNotMatch(screen, /por defecto 12/);
+  });
+});
+
 describe("USALI · origen «Centro de coste» y etiqueta del diario", () => {
   it("UsaliScreen paints the info badge on an account routed by cost centre and leaves SOURCE_LABELS untouched", () => {
     assert.match(usali, /account\.source === "cost_center" \? \(/);

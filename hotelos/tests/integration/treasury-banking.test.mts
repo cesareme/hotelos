@@ -4,9 +4,13 @@
  *
  * Exercises the money path end to end on the demo property (prop_123 /
  * org_123), everything created here is removed in `after`:
- *   · payroll: contract 2.000,00 € (IRPF 15 %) → period 2026-08 calculated
- *     through the API → ONE entry per slip (D 640 2.000,00 / D 642 610,00 /
- *     H 4751 300,00 / H 476 737,00 / H 465 1.573,00) + Modelo 111 record;
+ *   · payroll: contract 2.000,00 € (IRPF 14,85 %; tipos 2026 PAYROLL_RATES_2026
+ *     6,50 / 32,15 — Tanda RRHH · RRHH-2; the rate keeps the net at 1.573,00 so the
+ *     CSB43 fixture line «pago nóminas 1.573,00» still matches) → period 2026-08 on prop_canary
+ *     (prop_123 × 2026-08 carries the demo's posted cost-import batch «MANUAL-RRHH-coste-personal-2026-08»:
+ *     corrector RRHH · RF-10 refuses to calculate a payroll on that cell, 409 PAYROLL_MODE_CONFLICT — asserted below)
+ *     calculated through the API → ONE entry per slip (D 640 2.000,00 / D 642 643,00 /
+ *     H 4751 297,00 / H 476 773,00 / H 465 1.573,00) + Modelo 111 record;
  *     recalculation REVERSES the previous entry (marked reversalOfId) before
  *     posting the new one, so the net 640 expense stays 2.000,00 (never 4.000,00);
  *     GET export is read-only, POST export marks the period;
@@ -66,6 +70,8 @@ type ErrorBody = { statusCode: number; message: string; details?: { code?: strin
 type LineView = { accountCode: string; debit: string; credit: string };
 
 const PROPERTY_ID = "prop_123";
+/** Centre of the payroll fixtures: prop_123 × 2026-08 is in external mode (posted cost import → RF-10); the second demo hotel is free. */
+const PAYROLL_PROPERTY_ID = "prop_canary";
 const ORG_ID = "org_123";
 const MARK = "[treasury-banking test]";
 const FIXTURE = new URL("../../apps/api/src/modules/banking-spain/__tests__/fixtures/norma43-hotel-ejemplo.n43", import.meta.url);
@@ -286,10 +292,10 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
     await prisma.supplierBill.update({ where: { id: bill.id }, data: { journalEntryId: accrualEntry.id, postedAt: new Date() } });
 
     // Employee + contract.
-    const profile = await prisma.staffProfile.create({ data: { userId: "usr_123", propertyId: PROPERTY_ID, employeeCode: `TB-EMP-${suffix}` }, select: { id: true } });
+    const profile = await prisma.staffProfile.create({ data: { userId: "usr_123", propertyId: PAYROLL_PROPERTY_ID, employeeCode: `TB-EMP-${suffix}` }, select: { id: true } });
     staffProfileId = profile.id;
     const contract = await prisma.employmentContract.create({
-      data: { staffProfileId, propertyId: PROPERTY_ID, organizationId: ORG_ID, contractType: "indefinido", startDate: dayUtc("2026-01-01"), grossSalary: "2000.00", payFrequency: "monthly", payCount: 12, irpfRatePct: "15.00" },
+      data: { staffProfileId, propertyId: PAYROLL_PROPERTY_ID, organizationId: ORG_ID, contractType: "indefinido", startDate: dayUtc("2026-01-01"), grossSalary: "2000.00", payFrequency: "monthly", payCount: 12, irpfRatePct: "14.85" },
       select: { id: true }
     });
     contractId = contract.id;
@@ -305,23 +311,23 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
 
   // ---- Nóminas ----------------------------------------------------------------
   it("calculates the payroll period through the API: one balanced entry per slip and a Modelo 111 record", async () => {
-    const created = await api<{ id: string; status: string }>("POST", "/payroll/periods", { propertyId: PROPERTY_ID, periodCode: "2026-08" });
+    const created = await api<{ id: string; status: string }>("POST", "/payroll/periods", { propertyId: PAYROLL_PROPERTY_ID, periodCode: "2026-08" });
     assert.equal(created.status, 200, created.raw);
     periodId = created.body.id;
     const calc = await api<{ period: { totalGross: number; totalNet: number; totalIrpf: number; totalSs: number; journalEntryIds: string[]; reversalJournalEntryIds: string[]; status: string }; slipIds: string[]; journalEntryIds: string[] }>("POST", `/payroll/periods/${periodId}/calculate`, {});
     assert.equal(calc.status, 200, calc.raw);
     assert.equal(calc.body.slipIds.length, 1);
-    assert.deepEqual([calc.body.period.totalGross, calc.body.period.totalNet, calc.body.period.totalIrpf, calc.body.period.totalSs], [2000, 1573, 300, 737]);
+    assert.deepEqual([calc.body.period.totalGross, calc.body.period.totalNet, calc.body.period.totalIrpf, calc.body.period.totalSs], [2000, 1573, 297, 773]);
     assert.equal(calc.body.period.journalEntryIds.length, 1);
     assert.deepEqual(calc.body.period.reversalJournalEntryIds, []);
     const lines = await entryLines(calc.body.period.journalEntryIds[0]!);
-    assertBalanced(lines, "2610.00");
+    assertBalanced(lines, "2643.00");
     expectLines(lines, [
-      ["4751", "0.00", "300.00"],
+      ["4751", "0.00", "297.00"],
       ["465", "0.00", "1573.00"],
-      ["476", "0.00", "737.00"],
+      ["476", "0.00", "773.00"],
       ["640", "2000.00", "0.00"],
-      ["642", "610.00", "0.00"]
+      ["642", "643.00", "0.00"]
     ]);
     const entry = await prisma.journalEntry.findUnique({ where: { id: calc.body.period.journalEntryIds[0]! } });
     assert.equal(entry?.status, "posted");
@@ -330,8 +336,24 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
     assert.equal(entry?.fiscalYearCode, "2026");
     const withholding = await prisma.withholdingTaxRecord.findMany({ where: { sourceType: "payroll_slip", sourceId: { in: calc.body.slipIds } } });
     assert.equal(withholding.length, 1);
-    assert.equal(withholding[0]!.retentionAmount.toFixed(2), "300.00");
+    assert.equal(withholding[0]!.retentionAmount.toFixed(2), "297.00");
     assert.equal(withholding[0]!.rowCode, "01");
+  });
+
+  it("a centre × month with a posted cost-import batch is in external mode: calculating a payroll there is 409 PAYROLL_MODE_CONFLICT (RF-10, design §7.1 (3))", async () => {
+    const posted = await prisma.payrollCostLine.findFirst({ where: { propertyId: PROPERTY_ID, periodCode: "2026-08", import: { organizationId: ORG_ID, status: "posted" } }, select: { importId: true } });
+    if (!posted) return; // the demo dataset of this database carries no posted batch for August: nothing to assert here
+    const created = await api<{ id: string }>("POST", "/payroll/periods", { propertyId: PROPERTY_ID, periodCode: "2026-08" });
+    assert.equal(created.status, 200, created.raw);
+    try {
+      const refused = await api("POST", `/payroll/periods/${created.body.id}/calculate`, {});
+      assert.equal(refused.status, 409, refused.raw);
+      assert.equal(refused.body.details?.code, "PAYROLL_MODE_CONFLICT");
+      assert.deepEqual(refused.body.details?.imports, [{ importId: posted.importId, propertyId: PROPERTY_ID }]);
+      assert.equal((await prisma.payrollPeriod.findUnique({ where: { id: created.body.id } }))?.status, "open");
+    } finally {
+      await prisma.payrollPeriod.deleteMany({ where: { id: created.body.id } });
+    }
   });
 
   it("recalculating reverses the previous entry (never a duplicate expense) and keeps the history on the period", async () => {
@@ -349,18 +371,18 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
     assert.equal(reversal?.reversalOfId, firstEntryId);
     assert.equal(reversal?.sourceType, "reversal");
     expectLines(await entryLines(reversal!.id), [
-      ["4751", "300.00", "0.00"],
+      ["4751", "297.00", "0.00"],
       ["465", "1573.00", "0.00"],
-      ["476", "737.00", "0.00"],
+      ["476", "773.00", "0.00"],
       ["640", "0.00", "2000.00"],
-      ["642", "0.00", "610.00"]
+      ["642", "0.00", "643.00"]
     ]);
     // Net 640 across original + reversal + new = 2.000,00.
     const ids = [firstEntryId, reversal!.id, recalc.body.period.journalEntryIds[0]!];
     const all = await prisma.journalLine.findMany({ where: { journalEntryId: { in: ids }, accountCode: "640" } });
     const net = all.reduce((s, l) => s + Math.round(Number(l.debit) * 100) - Math.round(Number(l.credit) * 100), 0);
     assert.equal(net, 200_000);
-    const withholding = await prisma.withholdingTaxRecord.count({ where: { sourceType: "payroll_slip", organizationId: ORG_ID, propertyId: PROPERTY_ID, paymentDate: dayUtc("2026-08-31") } });
+    const withholding = await prisma.withholdingTaxRecord.count({ where: { sourceType: "payroll_slip", organizationId: ORG_ID, propertyId: PAYROLL_PROPERTY_ID, paymentDate: dayUtc("2026-08-31") } });
     assert.equal(withholding, 1, "the old slip's 111 record was removed with it");
   });
 
@@ -370,17 +392,43 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
     assert.equal(read.status, 200, read.raw);
     assert.equal(read.body.exportedAt, null);
     assert.equal(read.body.validateWithAdvisor, true);
-    assert.match(read.body.text, /^Employee,Period,Gross,IRPF,SSEmployee,SSEmployer,Net\n.*,2026-08,2000\.00,300\.00,127\.00,610\.00,1573\.00\n$/);
+    assert.match(read.body.text, /^Employee,Period,Gross,IRPF,SSEmployee,SSEmployer,Net\n.*,2026-08,2000\.00,297\.00,130\.00,643\.00,1573\.00\n$/);
     const still = await prisma.payrollPeriod.findUnique({ where: { id: periodId } });
     assert.equal(still?.status, "calculated");
     assert.equal(still?.exportedAt, null);
-    // POST (this lot): CSV universal with decimal comma, marks the period exported.
+    // Corrector RRHH · RF-02 (design §7.4 calculated → approved → exported): the POST export to the gestoría
+    // demands dirección's approval; nothing changes on the 409.
+    const refused = await api("POST", `/payroll/periods/${periodId}/export`, { format: "csv" });
+    assert.equal(refused.status, 409, refused.raw);
+    assert.equal(refused.body.details?.code, "PAYROLL_NOT_APPROVED");
+    assert.equal((await prisma.payrollPeriod.findUnique({ where: { id: periodId } }))?.exportedAt, null);
+    // The approval trail (Tanda 8a) is stamped directly: this suite runs with one demo session and the
+    // approver must differ from the calculator (rbac-sod.test.mts covers the SoD of POST …/approve).
+    await prisma.payrollPeriod.update({ where: { id: periodId }, data: { status: "approved", approvedByUserId: `usr_tb_direccion_${suffix}`, approvedAt: new Date() } });
+    // POST (this lot): CSV universal with decimal comma, marks the period exported and keeps the approval.
     const posted = await api<{ exportedAt: string | null; slipCount: number; text: string }>("POST", `/payroll/periods/${periodId}/export`, { format: "csv" });
     assert.equal(posted.status, 200, posted.raw);
     assert.ok(posted.body.exportedAt);
     assert.match(posted.body.text, /periodo;empleado;codigo_empleado/);
-    assert.match(posted.body.text, /2026-08;.*;31;2000,00;15;300,00;127,00;610,00;1573,00/);
+    assert.match(posted.body.text, /2026-08;.*;31;2000,00;14,85;297,00;130,00;643,00;1573,00/);
     const after = await prisma.payrollPeriod.findUnique({ where: { id: periodId } });
+    assert.equal(after?.status, "exported");
+    assert.equal(after?.approvedByUserId, `usr_tb_direccion_${suffix}`, "la etiqueta «Aprobado» se conserva");
+    const record = await api<{ mode: string; closedAt: string | null; status: string; approvedByUserId: string | null }>("GET", `/payroll/periods/${periodId}`);
+    assert.equal(record.status, 200, record.raw);
+    assert.equal(record.body.mode, "calculated", "SEC-12: mode sale de mapPeriod (un periodo calculado por el ERP es `calculated`)");
+    assert.equal(record.body.closedAt, null);
+    assert.equal(record.body.status, "exported");
+  });
+
+  it("an approved / exported register is never recalculated (409 PAYROLL_PERIOD_APPROVED): the approval is never wiped in silence (RF-02)", async () => {
+    const before = await prisma.payrollPeriod.findUnique({ where: { id: periodId } });
+    const recalc = await api("POST", `/payroll/periods/${periodId}/calculate`, {});
+    assert.equal(recalc.status, 409, recalc.raw);
+    assert.equal(recalc.body.details?.code, "PAYROLL_PERIOD_APPROVED");
+    const after = await prisma.payrollPeriod.findUnique({ where: { id: periodId } });
+    assert.equal(after?.approvedByUserId, before?.approvedByUserId);
+    assert.deepEqual(after?.journalEntryIds, before?.journalEntryIds, "no reversal, no new entry");
     assert.equal(after?.status, "exported");
   });
 

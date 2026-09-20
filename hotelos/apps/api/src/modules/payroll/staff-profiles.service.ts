@@ -9,6 +9,10 @@
 //   listStaffProfiles({ context, propertyId })   payroll.read   fichas de un centro
 //     (o de todos los centros de la organización dentro del ámbito R11 cuando no
 //     se indica), con `userFullName` / `userEmail` (prisma.user) y `departmentName`.
+//   listWorkforceStaffProfiles({ context, propertyId })   workforce.read | workforce.timeclock.use
+//     (corrector RRHH · SEC-02): las fichas de UN centro para el selector de
+//     Personal y turnos sin `hourlyCost` ni correo — las plantillas operativas
+//     (housekeeper, maintenance, fnb, receptionist…) fichan sin payroll.read.
 //   createStaffProfile({ context, body, correlationId })   payroll.manage
 //     · la propiedad debe ser de la organización y estar en el ámbito del actor
 //       (404 opaco «Propiedad no encontrada.»; la ruta ya pasó grantPropertyAccess);
@@ -16,6 +20,10 @@
 //     · el departamento, si viene, debe ser de la propiedad (400
 //       STAFF_PROFILE_DEPARTMENT_MISMATCH; también los del seed en memoria);
 //     · una ficha ACTIVA por (userId, propertyId): 409 STAFF_PROFILE_EXISTS;
+//     · `employeeId` opcional (corrector RRHH · SEC-01, diseño §4): expediente de
+//       la organización y de la sociedad del centro (404 «Expediente no
+//       encontrado.» / 400 STAFF_PROFILE_EMPLOYEE_MISMATCH); la ficha hereda
+//       usaliDepartment / jobTitle del expediente si el cuerpo no los trae;
 //     · `hourlyCost` ≥ 0 con dos decimales (Decimal(12,2)); `employeeCode` ≤ 32;
 //     · audita STAFF_PROFILE_CREATED con `afterJson` SIN datos personales
 //       (identificadores y código de empleado; nunca nombre ni correo).
@@ -31,6 +39,7 @@ import { assertFinanceReadScope, propertyWithinScope } from "../../lib/finance-s
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { requireAnyPermission } from "../treasury/permissions.js";
 
 export const STAFF_EMPLOYMENT_TYPES = ["indefinido", "temporal", "fijo_discontinuo", "practicas", "otro"] as const;
 export type StaffEmploymentType = (typeof STAFF_EMPLOYMENT_TYPES)[number];
@@ -39,11 +48,17 @@ export const STAFF_EMPLOYEE_CODE_MAX = 32;
 export const STAFF_PROFILE_ERROR_CODES = {
   invalid: "STAFF_PROFILE_INVALID",
   exists: "STAFF_PROFILE_EXISTS",
-  departmentMismatch: "STAFF_PROFILE_DEPARTMENT_MISMATCH"
+  departmentMismatch: "STAFF_PROFILE_DEPARTMENT_MISMATCH",
+  /** 400 · el expediente pertenece a otra sociedad que el centro de la ficha. */
+  employeeMismatch: "STAFF_PROFILE_EMPLOYEE_MISMATCH"
 } as const;
+/** Claves que leen las fichas de un centro para fichar o planificar (SEC-02): la lista reducida, sin coste hora ni correo. */
+export const WORKFORCE_STAFF_PROFILE_READ_KEYS = ["workforce.read", "workforce.timeclock.use", "workforce.schedule.manage", "workforce.timeclock.manage"] as const;
 
 const PROPERTY_NOT_FOUND = "Propiedad no encontrada.";
 const USER_NOT_FOUND = "Usuario no encontrado.";
+const EMPLOYEE_NOT_FOUND = "Expediente no encontrado.";
+const EMPLOYEE_MISMATCH = "El expediente pertenece a otra sociedad que el centro de la ficha.";
 const STAFF_PROFILE_EXISTS = "Ya existe una ficha de personal activa para esta persona en la propiedad.";
 const DEPARTMENT_MISMATCH = "El departamento no pertenece a la propiedad de la ficha.";
 
@@ -52,6 +67,8 @@ export type StaffProfileDto = {
   id: string;
   propertyId: string;
   userId: string;
+  /** Expediente (Employee) enlazado, o null (ficha sin expediente: solo nómina / turnos). */
+  employeeId: string | null;
   employeeCode: string | null;
   departmentId: string | null;
   departmentName: string | null;
@@ -63,9 +80,13 @@ export type StaffProfileDto = {
   userEmail: string | null;
 };
 
+/** Ficha para fichar / planificar (SEC-02): sin coste hora ni correo (datos de nómina). */
+export type WorkforceStaffProfileDto = Omit<StaffProfileDto, "hourlyCost" | "userEmail">;
+
 export type StaffProfileInput = {
   propertyId: string;
   userId: string;
+  employeeId?: string | null;
   employeeCode?: string | null;
   departmentId?: string | null;
   employmentType?: string | null;
@@ -75,6 +96,7 @@ export type StaffProfileInput = {
 export type NormalisedStaffProfileInput = {
   propertyId: string;
   userId: string;
+  employeeId: string | null;
   employeeCode: string | null;
   departmentId: string | null;
   employmentType: StaffEmploymentType | null;
@@ -86,6 +108,7 @@ type StaffProfileRow = {
   id: string;
   userId: string;
   propertyId: string;
+  employeeId?: string | null;
   employeeCode: string | null;
   departmentId: string | null;
   employmentType: string | null;
@@ -95,6 +118,7 @@ type StaffProfileRow = {
 };
 type UserRow = { id: string; fullName: string | null; email: string | null };
 type DepartmentRow = { id: string; propertyId: string; name: string };
+type EmployeeLinkRow = { id: string; legalEntityId: string; usaliDepartment: string | null; jobTitle: string | null };
 
 /** Subconjunto del cliente Prisma que usa el módulo (los tests unitarios pasan fakes en memoria). */
 export type StaffProfileDeps = {
@@ -102,15 +126,19 @@ export type StaffProfileDeps = {
     staffProfile: {
       findMany: (args: { where: { propertyId: string | { in: string[] } }; orderBy?: unknown }) => Promise<StaffProfileRow[]>;
       findFirst: (args: { where: { userId: string; propertyId: string; active: boolean }; select?: unknown }) => Promise<{ id: string } | null>;
-      create: (args: { data: { userId: string; propertyId: string; employeeCode: string | null; departmentId: string | null; employmentType: string | null; hourlyCost: string | null; active: boolean } }) => Promise<StaffProfileRow>;
+      create: (args: { data: { userId: string; propertyId: string; employeeId: string | null; employeeCode: string | null; departmentId: string | null; employmentType: string | null; hourlyCost: string | null; active: boolean; usaliDepartment?: string | null; jobTitle?: string | null } }) => Promise<StaffProfileRow>;
     };
     user: {
       findFirst: (args: { where: { id: string; organizationId: string }; select?: unknown }) => Promise<UserRow | null>;
       findMany: (args: { where: { id: { in: string[] } }; select?: unknown }) => Promise<UserRow[]>;
     };
     property: {
-      findFirst: (args: { where: { id: string; organizationId: string }; select?: unknown }) => Promise<{ id: string } | null>;
+      findFirst: (args: { where: { id: string; organizationId: string }; select?: unknown }) => Promise<{ id: string; legalEntityId?: string | null } | null>;
       findMany: (args: { where: { organizationId: string }; select?: unknown }) => Promise<Array<{ id: string }>>;
+    };
+    /** Expediente a enlazar (SEC-01); los fakes de los tests unitarios pueden omitirlo cuando no envían employeeId. */
+    employee?: {
+      findFirst: (args: { where: { id: string; organizationId: string }; select?: unknown }) => Promise<EmployeeLinkRow | null>;
     };
     department: {
       findFirst: (args: { where: { id: string; propertyId: string }; select?: unknown }) => Promise<DepartmentRow | null>;
@@ -152,6 +180,8 @@ export function normaliseStaffProfileInput(body: StaffProfileInput): NormalisedS
   if (employeeCode.length > STAFF_EMPLOYEE_CODE_MAX) throw invalid(`employeeCode no puede superar ${STAFF_EMPLOYEE_CODE_MAX} caracteres.`, "employeeCode");
 
   const departmentId = typeof body.departmentId === "string" ? body.departmentId.trim() : "";
+  const employeeId = typeof body.employeeId === "string" ? body.employeeId.trim() : "";
+  if (employeeId.length > 64) throw invalid("employeeId no puede superar 64 caracteres.", "employeeId");
 
   const employmentTypeRaw = typeof body.employmentType === "string" ? body.employmentType.trim() : "";
   if (employmentTypeRaw && !(STAFF_EMPLOYMENT_TYPES as readonly string[]).includes(employmentTypeRaw)) {
@@ -170,6 +200,7 @@ export function normaliseStaffProfileInput(body: StaffProfileInput): NormalisedS
   return {
     propertyId,
     userId,
+    employeeId: employeeId || null,
     employeeCode: employeeCode || null,
     departmentId: departmentId || null,
     employmentType: (employmentTypeRaw || null) as StaffEmploymentType | null,
@@ -188,6 +219,7 @@ function toDto(row: StaffProfileRow, user: UserRow | undefined, department: Depa
     id: row.id,
     propertyId: row.propertyId,
     userId: row.userId,
+    employeeId: row.employeeId ?? null,
     employeeCode: row.employeeCode ?? null,
     departmentId: row.departmentId ?? null,
     departmentName: department?.name ?? null,
@@ -245,6 +277,25 @@ export async function listStaffProfiles(
   return rows.map((row) => toDto(row, usersById.get(row.userId), row.departmentId ? departmentsById.get(row.departmentId) : undefined));
 }
 
+/**
+ * Fichas de UN centro para fichar y planificar (corrector RRHH · SEC-02): cualquier clave
+ * de WORKFORCE_STAFF_PROFILE_READ_KEYS (la ruta pide workforce.read); el centro debe ser de
+ * la organización y del ámbito (404 opaco). Nunca lleva coste hora ni correo.
+ */
+export async function listWorkforceStaffProfiles(
+  input: { context: UserContext; propertyId: string },
+  deps: StaffProfileDeps = defaultStaffProfileDeps
+): Promise<WorkforceStaffProfileDto[]> {
+  requireAnyPermission(input.context, [...WORKFORCE_STAFF_PROFILE_READ_KEYS]);
+  const propertyId = typeof input.propertyId === "string" ? input.propertyId.trim() : "";
+  if (!propertyId) throw invalid("propertyId es obligatorio.", "propertyId");
+  const property = await deps.db.property.findFirst({ where: { id: propertyId, organizationId: input.context.organizationId }, select: { id: true } });
+  if (!property || !propertyWithinScope(input.context, propertyId)) throw new NotFoundError(PROPERTY_NOT_FOUND);
+  const payrollContext: UserContext = { ...input.context, permissions: [...(input.context.permissions ?? []), "payroll.read"] };
+  const rows = await listStaffProfiles({ context: payrollContext, propertyId }, deps);
+  return rows.map(({ hourlyCost: _cost, userEmail: _email, ...rest }) => rest);
+}
+
 /** Alta de una ficha de personal (ver cabecera). Devuelve la ficha creada con la persona y el departamento resueltos. */
 export async function createStaffProfile(
   input: { context: UserContext; body: StaffProfileInput; correlationId: string },
@@ -255,11 +306,24 @@ export async function createStaffProfile(
   const organizationId = input.context.organizationId;
 
   // Propiedad de la organización y dentro del ámbito del actor (mismo 404 opaco para ambas cosas).
-  const property = await deps.db.property.findFirst({ where: { id: body.propertyId, organizationId }, select: { id: true } });
+  const property = await deps.db.property.findFirst({ where: { id: body.propertyId, organizationId }, select: { id: true, legalEntityId: true } });
   if (!property || !propertyWithinScope(input.context, body.propertyId)) throw new NotFoundError(PROPERTY_NOT_FOUND);
 
   const user = await deps.db.user.findFirst({ where: { id: body.userId, organizationId }, select: { id: true, fullName: true, email: true } });
   if (!user) throw new NotFoundError(USER_NOT_FOUND);
+
+  // Expediente enlazado (SEC-01): de la organización y de la sociedad del centro (si el centro tiene sociedad).
+  let employee: EmployeeLinkRow | null = null;
+  if (body.employeeId) {
+    if (!deps.db.employee) throw new NotFoundError(EMPLOYEE_NOT_FOUND);
+    employee = await deps.db.employee.findFirst({ where: { id: body.employeeId, organizationId }, select: { id: true, legalEntityId: true, usaliDepartment: true, jobTitle: true } });
+    if (!employee) throw new NotFoundError(EMPLOYEE_NOT_FOUND);
+    if (property.legalEntityId && employee.legalEntityId !== property.legalEntityId) {
+      const mismatch = new BadRequestError(EMPLOYEE_MISMATCH);
+      mismatch.details = { code: STAFF_PROFILE_ERROR_CODES.employeeMismatch, employeeId: employee.id };
+      throw mismatch;
+    }
+  }
 
   let department: DepartmentRow | null = null;
   if (body.departmentId) {
@@ -278,11 +342,14 @@ export async function createStaffProfile(
     data: {
       userId: body.userId,
       propertyId: body.propertyId,
+      employeeId: employee?.id ?? null,
       employeeCode: body.employeeCode,
       departmentId: body.departmentId,
       employmentType: body.employmentType,
       hourlyCost: body.hourlyCost,
-      active: true
+      active: true,
+      // La ficha hereda el departamento USALI y el puesto del expediente (position control y KPIs por departamento).
+      ...(employee ? { usaliDepartment: employee.usaliDepartment, jobTitle: employee.jobTitle } : {})
     }
   });
 
@@ -295,7 +362,7 @@ export async function createStaffProfile(
     entityType: "staff_profile",
     entityId: created.id,
     // Sin datos personales: identificadores y código de empleado (nunca nombre, correo ni coste).
-    afterJson: { id: created.id, propertyId: body.propertyId, userId: body.userId, departmentId: body.departmentId, employeeCode: body.employeeCode, employmentType: body.employmentType },
+    afterJson: { id: created.id, propertyId: body.propertyId, userId: body.userId, employeeId: employee?.id ?? null, departmentId: body.departmentId, employeeCode: body.employeeCode, employmentType: body.employmentType },
     correlationId: input.correlationId
   });
 

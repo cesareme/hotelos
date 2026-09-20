@@ -3082,3 +3082,76 @@ troceo final; el SQL con sus valores esperados se deja junto a la carga para pod
 - **Nóminas y nativos:** 640/642 por mes y origen con un solo origen por mes (Sage o lote de
   nómina, nunca ambos); reverso del lote sintético espejo exacto; nativos idénticos a la foto
   previa; cada diferencia de reconciliación explicada documento a documento.
+
+## 20. Panel de costes de personal (Tanda RRHH · PANEL-A/B · 2026-09-20)
+
+Pestaña **Hoy › Mi día › Costes de personal** (`/hoy/costes-personal`, `DirectorLaborCostsScreen`,
+roles direccion · finanzas · admin · propiedad · auditoria) sobre `GET /payroll/labor-cost-panel?from=YYYY-MM&to=YYYY-MM[&propertyId]`
+(`payroll.read`; viñeta completa en `docs/api-contracts.md` «Panel de costes de personal»). Diseño:
+`docs/design/PANEL-COSTES-DIRECCION.md` §8 recortado al bloque laboral (decisión del brief: sin
+CostKpiSnapshot, presupuesto, umbrales ni benchmarks; solo coste de personal frente a ventas).
+Código: `apps/api/src/modules/payroll/{labor-cost-panel.source, labor-cost-panel.service}.ts`
+(lector SQL propio + agregador puro), `apps/admin-web/src/services/laborCostPanelApi.ts`,
+`apps/admin-web/src/screens/costs/{DirectorLaborCostsScreen.tsx, labor-costs-helpers.ts}`.
+
+**Fuentes y regla por (centro, mes).** El coste de personal de un mes sale de UNA sola fuente:
+
+1. **Diario contable (`source: "ledger"`)**: cuentas 64x de `journal_lines ⋈ journal_entries` con la
+   regla de lectura de los estados (`status ≠ draft`, sin parejas de reverso, sin regularización /
+   cierre / apertura) y EXCLUYENDO los asientos `source_type = payroll_cost_import` (el devengo del
+   lote ya se cuenta por el propio lote). El reparto por departamento USALI sigue el centro de coste
+   `usali` de cada línea (`ROOMS` → rooms, `FNB` → fnb…); una línea sin centro de coste, o con un
+   centro que no es departamento USALI, cae en la fila **`sin_desglose`** («Sin desglose»).
+2. **Lote de nómina contabilizado (`source: "import"`)**: si el diario no tiene 64x propio ese mes,
+   `payroll_cost_lines` del lote `posted` por `usali_department` (con `employees_reported` →
+   headcount y `net_sales_reported` → ventas de referencia, `salesSource: "reference"`).
+3. **Ambos** en el mismo mes → prevalece el diario, `overlap: true` y aviso `LABOR_PANEL_OVERLAP`;
+   el lote solo aporta plantilla y ventas de referencia. Nunca se suman las dos fuentes.
+4. **Ninguno** → `laborCost: "0.00"` con `source: null` y `LABOR_PANEL_COST_MISSING`: la pantalla
+   pinta «—» (ese 0,00 no es un coste) y la fila del centro sale en tono de aviso.
+
+Ventas = 70x del diario con la cobertura del informe de coste (`salesSourceOf`: libro si cubre
+≥ 90 % de la referencia del lote, si no «(ref.)»). Ingreso por departamento (habitaciones, A&B,
+otros operativos) = USALI del mes (`computeUsaliPnl`); exige `accounting.read` (sin ella,
+`revenue` nulo y `LABOR_PANEL_USALI_FORBIDDEN`; los no distribuidos y «Sin desglose» miden su %
+sobre las ventas del centro). Habitaciones ocupadas = reales del mes (`realizeDays` sobre
+snapshots `night_audit` / `pms_import:*` y estancias; los snapshots `demo` no cuentan): sin dato,
+CPOR laboral nulo (`LABOR_PANEL_RN_MISSING`); mes incompleto, `LABOR_PANEL_RN_PARTIAL`.
+Sociedad = Σ de los centros en ámbito (hoteles y oficina central: su personal es A&G) con
+`accounting.entity.read` (si no, 404 `ENTITY_SCOPE_REQUIRED` y la pantalla pide un centro en
+«Ámbito»); `ranking` de centros por % s/ ventas solo con ámbito sociedad; `deltaPrevious` = Δ %
+frente a la ventana anterior de la misma longitud. `sources` lista asientos y cuentas del diario,
+lotes usados y la fuente de RN por centro; `degraded[]` lleva un aviso por (centro, código) con
+los meses afectados (códigos en `LABOR_PANEL_DEGRADED_CODES`; etiquetas en español en
+`labor-costs-helpers.ts`).
+
+**Pantalla.** «Ámbito» de Finanzas (sociedad por defecto o un centro; política `entity_default`),
+mes y ventana **Mes / Acumulado del año** (de enero al mes elegido), tira de 4 KPI —coste de
+personal con Δ frente al periodo anterior, % sobre ventas con la fuente de las ventas, coste por
+empleado (plantilla media del lote), CPOR laboral (solo con habitaciones ocupadas reales)—, barras
+por departamento con «Sin desglose» como serie propia y su callout, tabla centro × departamento
+con pie de totales, ranking de centros (sociedad) o meses del centro, y las fuentes al pie. Cada
+KPI sin cifra se marca degradado (nunca un 0 en verde). Comandos ⌘K: «Actualizar los costes de
+personal», «Costes de personal: mes anterior», «Costes de personal: acumulado del año».
+
+**Límites con los datos del cliente piloto (2026-01..08, solo lectura).** Ene-jul: 640/641/642
+de Sage sin centro de coste en AS/LT/MC/OC/PG/RA → todo en «Sin desglose» (p. ej. LT 2026-05:
+640 34.657,64 + 641 −551,94 + 642 10.692,77 = 44.798,47). Agosto: por departamento desde el lote
+contabilizado (`nomina-2026-08.json`), con plantilla y ventas de referencia. **FN y LL no tienen
+64x ni lote**: «—» y `LABOR_PANEL_COST_MISSING`. Habitaciones ocupadas reales solo en LT
+(`pms_import:opera_hf_2026-09-14`) y RA (cierres `night_audit` desde 2026-07-15, con RN
+residuales que dan CPOR desorbitados: la pantalla enseña la fuente y el número de RN junto al
+CPOR); AS/MC/PG con dos cierres de septiembre y estancias parciales de OPERA; FN/LL sin ninguno.
+`ledger_analytics_maps` sigue vacío (0 filas): el reparto por centro de coste depende de que las
+líneas 64x lleven `cost_centre_id` con código USALI. Ventas 70x: AS/LT/MC/PG/RA ene-jul (+ RA
+2026-09); OC sin 70x (% s/ ventas nulo). Demo `org_hr` (seed-hr): solo 2026-09 con el devengo
+de nómina de RRHH-10; sin 70x, sin lote `posted` ni RN → panel casi todo degradado hasta que el
+seed siembre ventas, un lote contabilizado y cierres.
+
+**Comprobar.** `apps/api/src/modules/payroll/__tests__/labor-cost-panel.test.mts` (agregador),
+`tests/integration/labor-cost-panel-routes.test.mts` (tenant aislado: 401 / 403 / 400, sociedad y
+centro, 404 opaco, `ENTITY_SCOPE_REQUIRED`), `apps/admin-web/src/screens/costs/__tests__/
+{labor-costs-helpers, director-labor-costs-contract}.test.mts`. A mano: `curl -H "Authorization:
+Bearer <token>" "http://127.0.0.1:3000/payroll/labor-cost-panel?from=2026-01&to=2026-08"` y
+comprobar `centres[].months[].source` (ledger ene-jul, import ago) y que ningún mes sin fuente
+lleve `source` distinto de null.

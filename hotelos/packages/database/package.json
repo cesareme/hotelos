@@ -25,6 +25,7 @@
     "db:seed:ux-direccion": "node --env-file=../../.env --import tsx prisma/seed-ux-direccion.ts",
     "db:seed:checkin": "node --env-file=../../.env --import tsx prisma/seed-checkin.ts",
     "db:seed:real-estate": "node --env-file=../../.env --import tsx prisma/seed-real-estate.ts",
+    "db:seed:hr": "node --env-file=../../.env --import tsx prisma/seed-hr.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "db:seed:ux-day-pisos": "node --env-file=../../.env --import tsx prisma/seed-ux-day-pisos.ts"

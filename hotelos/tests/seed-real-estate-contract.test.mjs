@@ -279,8 +279,8 @@ describe("Seed «tenant de prueba ACT» (ACT-L7)", () => {
   });
 
   it("está en la allowlist demo (solo la organización), tiene script pnpm y tests/demo-seed-contract lo guarda", () => {
-    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk", "org_act"\]/);
-    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk"\]/, "prop_act_* no entra en la allowlist: los acota el propio seed");
+    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk", "org_act", "org_hr"\]/);
+    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr"\]/, "prop_act_* no entra en la allowlist: los acota el propio seed");
     assert.equal(databasePackage.scripts["db:seed:real-estate"], "node --env-file=../../.env --import tsx prisma/seed-real-estate.ts");
     assert.match(demoSeedContract, /"seed-real-estate\.ts"/);
   });

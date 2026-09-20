@@ -112,7 +112,36 @@ export const CreatePayrollContractSchema = z
       .min(1, { message: "socialSecurityCategory no puede estar vacío." })
       .max(80, { message: "socialSecurityCategory no puede superar 80 caracteres." })
       .optional(),
-    costCenterId: optionalId("costCenterId")
+    costCenterId: optionalId("costCenterId"),
+    // Tanda RRHH (RRHH-2, design §4 «EmploymentContract»): convenio del contrato (prevalece
+    // sobre el del centro), jornada semanal, % de jornada (100 = completa), fijo discontinuo
+    // y grupo de cotización 1-11. `payCount` ausente → 12 + extra_pay_count del convenio.
+    agreementId: optionalId("agreementId"),
+    weeklyHours: decimalInput("weeklyHours")
+      .refine(
+        (value) => {
+          const hours = decimalInputToNumber(value);
+          return hours > 0 && hours <= 60;
+        },
+        { message: "weeklyHours debe estar entre 0 y 60 horas." }
+      )
+      .optional(),
+    partTimePct: decimalInput("partTimePct")
+      .refine(
+        (value) => {
+          const pct = decimalInputToNumber(value);
+          return pct > 0 && pct <= 100;
+        },
+        { message: "partTimePct debe estar entre 0 y 100." }
+      )
+      .optional(),
+    fixedDiscontinuous: z.boolean({ invalid_type_error: "fixedDiscontinuous debe ser verdadero o falso." }).optional(),
+    contributionGroup: z
+      .number({ invalid_type_error: "contributionGroup debe ser un entero entre 1 y 11 (grupo de cotización)." })
+      .int({ message: "contributionGroup debe ser un entero entre 1 y 11 (grupo de cotización)." })
+      .min(1, { message: "contributionGroup debe ser un entero entre 1 y 11 (grupo de cotización)." })
+      .max(11, { message: "contributionGroup debe ser un entero entre 1 y 11 (grupo de cotización)." })
+      .optional()
   })
   .strict(STRICT_BODY)
   .superRefine((body, ctx) => {

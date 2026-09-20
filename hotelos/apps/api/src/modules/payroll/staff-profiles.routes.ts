@@ -9,7 +9,9 @@
 // global (grantPropertyAccess); el `propertyId` del cuerpo pasa aquí por el
 // mismo helper (404 opaco «Propiedad no encontrada.» para una propiedad ajena o
 // fuera del ámbito) antes de que el servicio repita la comprobación para los
-// llamadores directos. Los códigos de dominio (STAFF_PROFILE_EXISTS 409,
+// llamadores directos. GET /workforce/properties/:propertyId/staff-profiles
+// (corrector RRHH · SEC-02, workforce.read · medium) sirve la lista reducida
+// del selector de Personal y turnos a las plantillas sin payroll.read. Los códigos de dominio (STAFF_PROFILE_EXISTS 409,
 // STAFF_PROFILE_DEPARTMENT_MISMATCH 400, «Usuario no encontrado.» 404) los emite
 // staff-profiles.service.ts.
 
@@ -18,7 +20,7 @@ import { z } from "zod";
 import { createId } from "../../lib/ids.js";
 import { grantPropertyAccess } from "../../lib/tenancy.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
-import { STAFF_EMPLOYEE_CODE_MAX, STAFF_EMPLOYMENT_TYPES, createStaffProfile, listStaffProfiles } from "./staff-profiles.service.js";
+import { STAFF_EMPLOYEE_CODE_MAX, STAFF_EMPLOYMENT_TYPES, createStaffProfile, listStaffProfiles, listWorkforceStaffProfiles } from "./staff-profiles.service.js";
 
 const STRICT_BODY = { message: "Campo no admitido en el cuerpo de la petición." };
 const STRICT_QUERY = { message: "Parámetro de consulta no admitido." };
@@ -37,6 +39,8 @@ export const CreateStaffProfileSchema = z
   .object({
     propertyId: id("propertyId"),
     userId: id("userId"),
+    /** Expediente (Employee) de la misma sociedad que el centro (corrector RRHH · SEC-01): enlaza la ficha al expediente. */
+    employeeId: id("employeeId").optional(),
     employeeCode: z
       .string({ invalid_type_error: "employeeCode debe ser un texto." })
       .trim()
@@ -68,6 +72,13 @@ export function registerStaffProfileRoutes(app: FastifyInstance): void {
   app.get("/payroll/staff-profiles", async (request) => {
     const query = parseOr400(StaffProfileListQuerySchema, request.query ?? {}, "query");
     return listStaffProfiles({ context: request.userContext, propertyId: query.propertyId ?? null });
+  });
+
+  // Fichas de UN centro para fichar y planificar (corrector RRHH · SEC-02): workforce.read (las plantillas
+  // operativas la tienen junto a workforce.timeclock.use); sin coste hora ni correo. `:propertyId` lo concede el hook global.
+  app.get("/workforce/properties/:propertyId/staff-profiles", async (request) => {
+    const { propertyId } = request.params as { propertyId: string };
+    return listWorkforceStaffProfiles({ context: request.userContext, propertyId });
   });
 
   // Alta: 201 con la ficha (persona y departamento resueltos); audita STAFF_PROFILE_CREATED.

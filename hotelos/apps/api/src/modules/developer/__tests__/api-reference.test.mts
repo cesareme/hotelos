@@ -137,6 +137,16 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.equal(describeEndpoint("GET", "/payroll/staff-profiles"), "Listar fichas de personal.");
     assert.equal(describeEndpoint("POST", "/payroll/staff-profiles"), "Crear o registrar una ficha de personal.");
     assert.equal(describeEndpoint("GET", "/accounting/ledger-imports/third-parties"), "Listar terceros.");
+    // Tanda RRHH (ola 3): plantilla, convenios, estándares, planes de dotación e incidencias de nómina leen en español.
+    assert.equal(describeEndpoint("GET", "/payroll/incidences"), "Listar incidencias de nómina.");
+    assert.equal(describeEndpoint("GET", "/hr/employees/:id"), "Obtener el detalle del empleado.");
+    assert.equal(describeEndpoint("POST", "/hr/employees/:id/terminate"), "Dar de baja el empleado.");
+    assert.equal(describeEndpoint("PUT", "/hr/agreements/:id/rules"), "Sustituir las reglas del convenio.");
+    assert.equal(describeEndpoint("POST", "/hr/properties/:propertyId/standards/reset-defaults"), "Restablecer los valores por defecto de los estándares de dotación.");
+    assert.equal(describeEndpoint("POST", "/hr/properties/:propertyId/staffing-plans/:id/approve"), "Aprobar el plan de dotación.");
+    assert.equal(describeEndpoint("POST", "/hr/absences/:id/decide"), "Decidir la ausencia.");
+    // Tanda RRHH (ola 4 · PANEL-A): el panel de costes de dirección lee en español.
+    assert.equal(describeEndpoint("GET", "/payroll/labor-cost-panel"), "Obtener el panel de costes de personal.");
     // No description of the manifest echoes a raw (untranslated) segment of its own path any more,
     // except «marketplace» and «OAuth», which are Spanish usage.
     const echo = routePermissionManifest.filter((route) => {

@@ -16,6 +16,7 @@
 //     `INVALID_TRANSITION`.
 
 import { z } from "zod";
+import { ABSENCE_STATUSES, ABSENCE_TYPES } from "@hotelos/shared";
 import { ConflictError } from "../../lib/http-error.js";
 
 // ---------------------------------------------------------------------------
@@ -136,11 +137,22 @@ const statusOf = (entityType: string) => {
 // workforce_labor
 // ---------------------------------------------------------------------------
 
+// Tanda RRHH (RRHH-4): la persona se identifica SIEMPRE por su ficha
+// (StaffProfile). `staffName` deja de ser un nombre libre: es un ALIAS
+// resoluble (código de empleado o nombre completo del usuario de la
+// organización, exacto e insensible a mayúsculas) que el almacén convierte en
+// `staffProfileId`; si no resuelve, 400 HR_EMPLOYEE_REQUIRED. Nunca se guarda
+// el texto como id ni en metadataJson.
 const staffFields = {
   staffProfileId: identifier("staffProfileId").optional(),
-  /** Nombre libre del empleado (la pantalla no tiene selector): se resuelve a StaffProfile cuando existe. */
+  /** Alias de la ficha (employeeCode o nombre completo del usuario): se resuelve a StaffProfile o es un 400. */
   staffName: text("staffName", 120).optional()
 };
+
+/** Tipos de ausencia tasados (diseño §4 · AbsenceRequest; ABSENCE_TYPES de @hotelos/shared). */
+export const ABSENCE_TYPE_VALUES = ABSENCE_TYPES;
+/** Estados de AbsenceRequest admitidos como filtro de la lista `workforce_labor:absence_requests`. */
+export const ABSENCE_STATUS_VALUES = ABSENCE_STATUSES;
 
 export const ShiftCreateSchema = strictObject({
   ...staffFields,
@@ -162,6 +174,11 @@ export const ShiftUpdateSchema = strictObject({
   status: statusOf("shift").optional()
 });
 
+/**
+ * Fichaje: sin `staffProfileId` ni `staffName` la ficha es la del propio actor (corrector RRHH · RF-01:
+ * con solo workforce.timeclock.use SIEMPRE es la propia; con timeclock.manage, quien no nombra a nadie
+ * recibe 400 HR_EMPLOYEE_REQUIRED del store). `at` solo lo honra timeclock.manage.
+ */
 export const TimeClockCreateSchema = strictObject({
   ...staffFields,
   /** La pantalla envía la propiedad activa en el cuerpo: debe coincidir con la de la petición. */
@@ -169,11 +186,11 @@ export const TimeClockCreateSchema = strictObject({
   action: oneOf("La acción", ["in", "out"]).optional(),
   at: isoDateTime("at").optional(),
   source: text("source", 40).optional()
-}).refine((value) => Boolean(value.staffProfileId || value.staffName), { message: "Indica staffProfileId o staffName.", path: ["staffName"] });
+});
 
 export const AbsenceCreateSchema = strictObject({
   ...staffFields,
-  absenceType: oneOf("El tipo de ausencia", ["vacation", "sick", "personal", "unpaid", "other"]),
+  absenceType: oneOf("El tipo de ausencia", ABSENCE_TYPE_VALUES),
   startDate: isoDateTime("startDate"),
   endDate: isoDateTime("endDate"),
   reason: text("reason", 500).optional()
@@ -184,6 +201,11 @@ export const AbsenceCreateSchema = strictObject({
 export const AbsenceTransitionSchema = strictObject({
   status: oneOf("El estado", ["approved", "rejected", "cancelled"]).optional(),
   note: text("note", 500).optional()
+});
+
+/** Filtro de la lista de ausencias (`?status=`): uno de los estados de la máquina. */
+export const AbsenceListFilterSchema = strictObject({
+  status: oneOf("El estado", ABSENCE_STATUS_VALUES).optional()
 });
 
 // ---------------------------------------------------------------------------
@@ -492,6 +514,7 @@ export const TRANSITION_SCHEMAS = {
 export const LIST_RECORD_TYPES = [
   "workforce_labor:schedule",
   "workforce_labor:time_clock_entries",
+  "workforce_labor:absence_requests",
   "safety_incident_management:safety_incidents",
   "safety_incident_management:safety_checks",
   "reputation_quality:quality_cases",
@@ -523,6 +546,7 @@ export type ShiftUpdateInput = z.infer<typeof ShiftUpdateSchema>;
 export type TimeClockCreateInput = z.infer<typeof TimeClockCreateSchema>;
 export type AbsenceCreateInput = z.infer<typeof AbsenceCreateSchema>;
 export type AbsenceTransitionInput = z.infer<typeof AbsenceTransitionSchema>;
+export type AbsenceListFilterInput = z.infer<typeof AbsenceListFilterSchema>;
 export type IncidentCreateInput = z.infer<typeof IncidentCreateSchema>;
 export type IncidentUpdateInput = z.infer<typeof IncidentUpdateSchema>;
 export type EvidenceCreateInput = z.infer<typeof EvidenceCreateSchema>;

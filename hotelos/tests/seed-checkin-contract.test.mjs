@@ -193,8 +193,9 @@ describe("Seed «tenant de prueba CHK» (W1-D)", () => {
 
   it("está en la allowlist demo y tiene script pnpm", () => {
     // Tanda ACT (L7): la allowlist incorpora también el tenant aislado org_act (seed-real-estate.ts).
-    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk", "org_act"\]/);
-    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk"\]/);
+    // Tanda RRHH (RRHH-7): y el tenant aislado org_hr / prop_hr (seed-hr.ts).
+    assert.match(guard, /DEMO_ORG_IDS: readonly string\[\] = \["org_123", "org_uxday", "org_chk", "org_act", "org_hr"\]/);
+    assert.match(guard, /DEMO_PROPERTY_IDS: readonly string\[\] = \["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr"\]/);
     assert.equal(databasePackage.scripts["db:seed:checkin"], "node --env-file=../../.env --import tsx prisma/seed-checkin.ts");
   });
 });

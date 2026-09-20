@@ -533,7 +533,9 @@ async function scopeOf(input: AdvancedMutationInput): Promise<StoreScope> {
     moduleCode: input.moduleCode,
     userId: input.context.userId,
     deviceId: input.context.deviceId,
-    auditAction: input.auditAction
+    auditAction: input.auditAction,
+    // Corrector RRHH · RF-01: el store decide con las claves del actor (fichaje solo propio sin timeclock.manage).
+    permissions: input.context.permissions ?? []
   };
 }
 

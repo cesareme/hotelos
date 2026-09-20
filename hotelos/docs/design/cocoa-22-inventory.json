@@ -11,44 +11,44 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 254,
-    "lines": 116287,
+    "files": 260,
+    "lines": 118898,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1340,
+    "cocoaButtons": 1365,
     "rawTables": 1,
-    "cocoaTables": 330,
+    "cocoaTables": 341,
     "rawInputs": 0,
-    "cocoaInputs": 1348,
+    "cocoaInputs": 1403,
     "inlineStyles": 605,
     "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 216,
+    "withPageHeader": 221,
     "withTabHost": 99,
     "debtPoints": 170
   },
   "bySize": {
-    "S": 100,
-    "M": 118,
-    "L": 28,
-    "XL": 8
+    "S": 103,
+    "M": 121,
+    "L": 27,
+    "XL": 9
   },
   "byArchetype": {
-    "dashboard": 100,
-    "lista": 19,
+    "dashboard": 102,
+    "lista": 20,
     "detalle": 3,
     "formulario": 23,
     "asistente": 13,
-    "workspace": 7,
+    "workspace": 8,
     "calendario": 6,
     "chat": 1,
-    "dialogo": 25,
-    "contenedor": 42,
+    "dialogo": 26,
+    "contenedor": 43,
     "otro": 15
   },
   "byCategory": {
@@ -71,17 +71,17 @@
     },
     "compartido": {
       "label": "Compartido / sin entrada de menú",
-      "files": 17,
-      "lines": 4788,
+      "files": 18,
+      "lines": 5549,
       "debtPoints": 0,
       "sizes": {
         "S": 10,
-        "M": 6,
+        "M": 7,
         "L": 1,
         "XL": 0
       },
       "archetypes": {
-        "dialogo": 6,
+        "dialogo": 7,
         "formulario": 4,
         "otro": 2,
         "dashboard": 1,
@@ -148,39 +148,39 @@
     },
     "finanzas": {
       "label": "Finanzas",
-      "files": 43,
-      "lines": 26740,
+      "files": 47,
+      "lines": 28181,
       "debtPoints": 35,
       "sizes": {
-        "S": 10,
-        "M": 20,
-        "L": 11,
-        "XL": 2
+        "S": 13,
+        "M": 21,
+        "L": 10,
+        "XL": 3
       },
       "archetypes": {
-        "dashboard": 21,
+        "dashboard": 22,
         "formulario": 7,
-        "lista": 1,
+        "lista": 2,
         "asistente": 2,
         "detalle": 1,
-        "workspace": 2,
+        "workspace": 3,
         "dialogo": 2,
-        "contenedor": 7
+        "contenedor": 8
       }
     },
     "hoy": {
       "label": "Hoy",
-      "files": 13,
-      "lines": 9098,
+      "files": 14,
+      "lines": 9468,
       "debtPoints": 12,
       "sizes": {
         "S": 2,
-        "M": 7,
+        "M": 8,
         "L": 3,
         "XL": 1
       },
       "archetypes": {
-        "dashboard": 7,
+        "dashboard": 8,
         "lista": 1,
         "chat": 1,
         "asistente": 1,
@@ -207,7 +207,7 @@
     "operaciones": {
       "label": "Operaciones",
       "files": 38,
-      "lines": 17047,
+      "lines": 17086,
       "debtPoints": 34,
       "sizes": {
         "S": 14,
@@ -2202,6 +2202,44 @@
       "size": "L"
     },
     {
+      "path": "apps/admin-web/src/screens/costs/DirectorLaborCostsScreen.tsx",
+      "name": "DirectorLaborCostsScreen",
+      "screenKeys": [
+        "DirectorLaborCostsScreen"
+      ],
+      "category": "hoy",
+      "categories": [
+        "hoy"
+      ],
+      "archetype": "dashboard",
+      "lines": 365,
+      "metrics": {
+        "lines": 365,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 1,
+        "rawTables": 0,
+        "cocoaTables": 3,
+        "rawInputs": 0,
+        "cocoaInputs": 2,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
       "path": "apps/admin-web/src/screens/crm/GuestSegmentsScreen.tsx",
       "name": "GuestSegmentsScreen",
       "screenKeys": [
@@ -3840,6 +3878,154 @@
       "headerExempt": false,
       "debtPoints": 2,
       "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/hr/EmployeeDrawer.tsx",
+      "name": "EmployeeDrawer",
+      "screenKeys": [],
+      "category": "compartido",
+      "categories": [],
+      "archetype": "dialogo",
+      "lines": 761,
+      "metrics": {
+        "lines": 761,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 8,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 34,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": true,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/hr/HrEmployeesScreen.tsx",
+      "name": "HrEmployeesScreen",
+      "screenKeys": [
+        "HrEmployeesScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "lista",
+      "lines": 238,
+      "metrics": {
+        "lines": 238,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 2,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 2,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/hr/HrForecastScreen.tsx",
+      "name": "HrForecastScreen",
+      "screenKeys": [
+        "HrForecastScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "workspace",
+      "lines": 652,
+      "metrics": {
+        "lines": 652,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 9,
+        "rawTables": 0,
+        "cocoaTables": 4,
+        "rawInputs": 0,
+        "cocoaInputs": 11,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": true,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/hr/HrOverviewScreen.tsx",
+      "name": "HrOverviewScreen",
+      "screenKeys": [
+        "HrOverviewScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "dashboard",
+      "lines": 293,
+      "metrics": {
+        "lines": 293,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 1,
+        "rawTables": 0,
+        "cocoaTables": 2,
+        "rawInputs": 0,
+        "cocoaInputs": 2,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "S"
     },
     {
       "path": "apps/admin-web/src/screens/integrations/IntegrationsStatusPanel.tsx",
@@ -6238,9 +6424,9 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 531,
+      "lines": 570,
       "metrics": {
-        "lines": 531,
+        "lines": 570,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6572,18 +6758,18 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 1408,
+      "lines": 1634,
       "metrics": {
-        "lines": 1408,
+        "lines": 1634,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 23,
+        "cocoaButtons": 27,
         "rawTables": 0,
         "cocoaTables": 10,
         "rawInputs": 0,
-        "cocoaInputs": 26,
+        "cocoaInputs": 30,
         "inlineStyles": 9,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -6597,7 +6783,7 @@
       },
       "headerExempt": false,
       "debtPoints": 2,
-      "size": "L"
+      "size": "XL"
     },
     {
       "path": "apps/admin-web/src/screens/pos/CashClosureScreen.tsx",
@@ -8746,6 +8932,40 @@
       "size": "S"
     },
     {
+      "path": "apps/admin-web/src/screens/tabs/finanzas/NominasTabs.tsx",
+      "name": "NominasTabs",
+      "screenKeys": [],
+      "category": "finanzas",
+      "categories": [],
+      "archetype": "contenedor",
+      "lines": 32,
+      "metrics": {
+        "lines": 32,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 0,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
       "path": "apps/admin-web/src/screens/tabs/finanzas/ProveedoresTabs.tsx",
       "name": "ProveedoresTabs",
       "screenKeys": [],
@@ -8820,9 +9040,9 @@
       "category": "hoy",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 128,
+      "lines": 133,
       "metrics": {
-        "lines": 128,
+        "lines": 133,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

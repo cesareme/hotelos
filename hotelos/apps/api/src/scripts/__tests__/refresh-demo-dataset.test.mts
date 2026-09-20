@@ -302,14 +302,15 @@ describe("fix-demo-legal-identity", () => {
 });
 
 describe("demo-guard", () => {
-  it("allows the demo allowlist without any confirmation (org_uxday / prop_uxday = tenant aislado de UX-1 · seed-ux-day; org_chk / prop_chk = tenant aislado de CHK · seed-checkin; prop_uxday_b = segundo hotel de UX-2 · seed-ux-direccion; org_act = tenant aislado de ACT · seed-real-estate)", () => {
-    assert.deepEqual([...DEMO_ORG_IDS], ["org_123", "org_uxday", "org_chk", "org_act"]);
-    assert.deepEqual([...DEMO_PROPERTY_IDS], ["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_uxday_b"]);
+  it("allows the demo allowlist without any confirmation (org_uxday / prop_uxday = tenant aislado de UX-1 · seed-ux-day; org_chk / prop_chk = tenant aislado de CHK · seed-checkin; prop_uxday_b = segundo hotel de UX-2 · seed-ux-direccion; org_act = tenant aislado de ACT · seed-real-estate; org_hr / prop_hr = tenant aislado de RRHH · seed-hr)", () => {
+    assert.deepEqual([...DEMO_ORG_IDS], ["org_123", "org_uxday", "org_chk", "org_act", "org_hr"]);
+    assert.deepEqual([...DEMO_PROPERTY_IDS], ["prop_123", "prop_canary", "prop_uxday", "prop_chk", "prop_hr", "prop_uxday_b"]);
     assert.deepEqual([...UX2_DEMO_PROPERTY_IDS], ["prop_uxday_b"]);
     assert.equal(evaluateDemoTarget({ orgId: "org_uxday", propertyId: "prop_uxday_b", action: "t" }, {}).allowed, true);
     // Tanda ACT: el seed solo pasa el orgId al guard; prop_act_* no está en la allowlist (los acota el propio seed).
     assert.equal(evaluateDemoTarget({ orgId: "org_act", action: "t" }, {}).allowed, true);
     assert.equal(evaluateDemoTarget({ propertyId: "prop_act_a", action: "t" }, {}).allowed, false);
+    assert.equal(evaluateDemoTarget({ orgId: "org_hr", propertyId: "prop_hr", action: "t" }, {}).allowed, true);
     const d = evaluateDemoTarget({ orgId: "org_123", propertyId: "prop_canary", action: "t" }, {});
     assert.deepEqual(d, { allowed: true, via: "allowlist", targets: ["org_123", "prop_canary"] });
   });

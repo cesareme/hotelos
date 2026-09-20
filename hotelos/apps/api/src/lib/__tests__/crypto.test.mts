@@ -11,8 +11,13 @@ import {
 // API facade: the test reads it from the package source (same module instance under tsx).
 import {
   __resetCryptoWarningForTests as resetDatabaseWarnings,
+  LOOKUP_HASH_FIELDS,
+  PII_FIELDS,
+  computeLookupHash,
   decryptResultForModel,
-  encryptField as encryptDatabaseField
+  encryptArgsForModel,
+  encryptField as encryptDatabaseField,
+  rewriteWhereForModel
 } from "../../../../../packages/database/src/crypto-fields.js";
 
 function setRandomKey(): string {
@@ -213,5 +218,86 @@ describe("crypto-fields — decryptResultForModel with a wrong key (Cocoa 22 · 
     assert.equal(row.documentNumber, "12345678Z");
     const untouched = { id: "x", documentNumber: envelope };
     assert.equal(decryptResultForModel("Building", untouched), untouched);
+  });
+});
+
+// Tanda RRHH (RRHH-1): el expediente de empleado entra en la extensión de cifrado. Datos de prueba
+// FICTICIOS (NIF sintético con letra válida, correo en example.test); nunca personas reales.
+describe("crypto-fields — Employee (Tanda RRHH · RRHH-1): PII cifrada y hash de búsqueda solo para taxId", () => {
+  const EMPLOYEE_PII = ["taxId", "socialSecurityNumber", "email", "phone", "iban"] as const;
+  const ficticio = {
+    employeeNumber: "E-0001",
+    firstName: "Ficticia",
+    lastName: "Prueba",
+    taxId: "12345678Z",
+    socialSecurityNumber: "281234567890",
+    email: "ficticia@example.test",
+    phone: "+34600000000",
+    iban: "ES9121000418450200051332",
+    jobTitle: "Camarera de pisos",
+    status: "active"
+  };
+
+  beforeEach(() => {
+    __resetCryptoWarningForTests();
+    resetDatabaseWarnings();
+  });
+  afterEach(clearKey);
+
+  it("registra los 5 campos PII de Employee y el sibling taxIdLookupHash (solo el NIF se hashea)", () => {
+    assert.deepEqual([...PII_FIELDS.Employee!], [...EMPLOYEE_PII]);
+    assert.deepEqual(LOOKUP_HASH_FIELDS.Employee, { taxId: "taxIdLookupHash" });
+  });
+
+  it("al crear cifra NIF, NAF, correo, teléfono e IBAN, calcula taxIdLookupHash y deja nombre, número y puesto en claro", () => {
+    setRandomKey();
+    resetDatabaseWarnings();
+    const args = encryptArgsForModel("Employee", { data: { ...ficticio } }) as { data: Record<string, unknown> };
+    for (const field of EMPLOYEE_PII) {
+      assert.ok(isCiphertext(args.data[field]), `${field} is encrypted`);
+      assert.notEqual(args.data[field], ficticio[field]);
+    }
+    assert.equal(args.data.taxIdLookupHash, computeLookupHash("12345678Z"));
+    assert.match(String(args.data.taxIdLookupHash), /^[0-9a-f]{64}$/);
+    for (const field of ["employeeNumber", "firstName", "lastName", "jobTitle", "status"] as const) assert.equal(args.data[field], ficticio[field], `${field} stays plaintext`);
+    assert.equal("socialSecurityNumberLookupHash" in args.data, false, "only taxId gets a lookup hash");
+    const row = decryptResultForModel("Employee", { id: "emp_1", ...args.data }) as Record<string, unknown>;
+    for (const field of EMPLOYEE_PII) assert.equal(row[field], ficticio[field], `${field} round-trips`);
+    assert.equal(row.taxIdLookupHash, args.data.taxIdLookupHash, "the hash column is not touched on read");
+  });
+
+  it("reescribe where.taxId (normalizado: trim + minúsculas) al hash y no toca el resto del where", () => {
+    setRandomKey();
+    const next = rewriteWhereForModel("Employee", { where: { legalEntityId: "le_1", taxId: " 12345678z ", employeeNumber: "E-0001" } }) as { where: Record<string, unknown> };
+    assert.equal(next.where.taxIdLookupHash, computeLookupHash("12345678Z"));
+    assert.equal("taxId" in next.where, false, "the plaintext NIF never reaches SQL");
+    assert.deepEqual([next.where.legalEntityId, next.where.employeeNumber], ["le_1", "E-0001"]);
+  });
+
+  it("con la clave rotada el expediente devuelve null en los campos PII sin filtrar el envelope y avisa una vez por campo", () => {
+    setRandomKey();
+    resetDatabaseWarnings();
+    const args = encryptArgsForModel("Employee", { data: { ...ficticio } }) as { data: Record<string, unknown> };
+    process.env.HOTELOS_FIELD_KEY = randomBytes(32).toString("base64");
+    __resetCryptoWarningForTests();
+    resetDatabaseWarnings();
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (message: unknown) => {
+      warnings.push(String(message));
+    };
+    try {
+      const row = decryptResultForModel("Employee", { id: "emp_1", ...args.data }) as Record<string, unknown>;
+      for (const field of EMPLOYEE_PII) assert.equal(row[field], null, `${field} reads as null`);
+      assert.ok(!JSON.stringify(row).includes("v1."), "the envelope never leaves the extension");
+      assert.equal(row.firstName, "Ficticia");
+      assert.equal(warnings.length, EMPLOYEE_PII.length, "one warning per (Employee, field)");
+      for (const warning of warnings) {
+        assert.match(warning, /Employee\.(taxId|socialSecurityNumber|email|phone|iban)/);
+        assert.ok(!warning.includes("v1."), "the warning never carries the envelope");
+      }
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });

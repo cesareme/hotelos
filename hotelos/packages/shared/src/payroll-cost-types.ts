@@ -282,6 +282,8 @@ export type PayrollCostPayrollPeriodRef = {
   periodId: string;
   propertyId: string | null;
   periodCode: string;
+  /** Aprobado por dirección (o exportado): la celda está en modo calculado y el lote no se contabiliza (409 PAYROLL_MODE_CONFLICT; RF-10). */
+  approved: boolean;
 };
 
 /** Respuesta de `POST /payroll/cost-imports/preview` (nunca escribe). */
@@ -646,6 +648,8 @@ export const PAYROLL_COST_ERROR_CODES = [
   "PAYROLL_IMPORT_DUPLICATE",
   /** 409 · `{ overlaps }`: celda (centro, mes) ya contabilizada por otro lote sin `replace`. */
   "PAYROLL_IMPORT_OVERLAP",
+  /** 409 · la celda (centro, mes) ya tiene nómina calculada APROBADA (o exportada) por el ERP: modo calculado, el lote no se contabiliza (diseño §7.1 (3); RF-10). */
+  "PAYROLL_MODE_CONFLICT",
   /** 409 · `post` sobre un lote ya contabilizado. */
   "PAYROLL_IMPORT_ALREADY_POSTED",
   /** 409 · `post` sobre un lote revertido. */

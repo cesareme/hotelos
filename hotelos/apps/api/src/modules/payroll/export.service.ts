@@ -7,6 +7,7 @@ import { ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { money } from "../treasury/money.js";
 import { PAYROLL_EXPORT_KEYS, requireAnyPermission } from "../treasury/permissions.js";
+import { isPeriodApproved } from "./periods.service.js";
 
 // ---- Payroll export to the gestoría (lote tesoreria-banca) ----
 //
@@ -244,9 +245,22 @@ export function normalisePayrollExportFormat(value: unknown): PayrollExportForma
   return value === "sage" ? "sage" : value === "csv" ? "csv" : "a3";
 }
 
-/** POST: builds the export and marks the period exported (audited). */
+/**
+ * POST: builds the export and marks the period exported (audited). Corrector RRHH · RF-02
+ * (design §7.4 calculated → approved → exported; runbook §6 «Aprobar entre Calcular y
+ * Exportar»): the file that leaves for the gestoría is the register dirección approved —
+ * an unapproved period is 409 PAYROLL_NOT_APPROVED (the read-only GET preview stays open
+ * to payroll.read). The «Aprobado» trail (approvedBy / approvedAt) survives the status change.
+ */
 export async function exportPeriod(input: { context: UserContext; periodId: string; format: PayrollExportFormat; correlationId: string; markExported?: boolean }): Promise<PayrollExportResult> {
   requireAnyPermission(input.context, PAYROLL_EXPORT_KEYS);
+  if (input.markExported !== false) {
+    const gate = await prisma.payrollPeriod.findUnique({ where: { id: input.periodId }, select: { periodCode: true, status: true, approvedByUserId: true, approvedAt: true } });
+    if (!gate) throw new NotFoundError("El periodo de nómina no existe.");
+    if (!isPeriodApproved(gate)) {
+      throw new ConflictError(`El registro de nómina ${gate.periodCode} no está aprobado por dirección: apruébalo antes de exportarlo a la gestoría.`, { code: "PAYROLL_NOT_APPROVED", periodId: input.periodId, status: gate.status });
+    }
+  }
   const result = await buildPayrollExport(input.periodId, input.format);
   if (input.markExported === false) return result;
   const period = await prisma.payrollPeriod.findUnique({ where: { id: input.periodId } });
@@ -254,7 +268,7 @@ export async function exportPeriod(input: { context: UserContext; periodId: stri
   const exportedAt = new Date();
   await prisma.payrollPeriod.update({
     where: { id: period.id },
-    data: { exportedAt, ...(period.status === "calculated" ? { status: "exported" } : {}) }
+    data: { exportedAt, ...(period.status === "calculated" || period.status === "approved" ? { status: "exported" } : {}) }
   });
   recordAuditEvent({
     organizationId: period.organizationId,

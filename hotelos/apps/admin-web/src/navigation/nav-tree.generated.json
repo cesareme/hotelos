@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 300,
+      "csvRows": 304,
       "categories": 9,
       "items": 71,
-      "tabs": 109,
+      "tabs": 113,
       "devOnly": 21,
       "retired": 72,
       "aliases": 25,
@@ -116,6 +116,19 @@
                 "recepcion",
                 "direccion",
                 "admin",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "DirectorLaborCostsScreen",
+              "label": "Costes de personal",
+              "url": "/hoy/costes-personal",
+              "roles": [
+                "direccion",
+                "finanzas",
+                "admin",
+                "propiedad",
                 "auditoria"
               ],
               "modulesAny": []
@@ -1547,7 +1560,47 @@
             "auditoria"
           ],
           "modulesAny": [],
-          "tabs": []
+          "tabs": [
+            {
+              "screenKey": "HrEmployeesScreen",
+              "label": "Plantilla",
+              "url": "/finanzas/nominas/plantilla",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "rrhh",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "HrForecastScreen",
+              "label": "Previsión de plantilla",
+              "url": "/finanzas/nominas/prevision",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "rrhh",
+                "auditoria"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "HrOverviewScreen",
+              "label": "Panel RRHH",
+              "url": "/finanzas/nominas/panel",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin",
+                "rrhh",
+                "auditoria"
+              ],
+              "modulesAny": []
+            }
+          ]
         },
         {
           "screenKey": "RealEstateAssetScreen",

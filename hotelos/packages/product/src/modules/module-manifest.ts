@@ -498,7 +498,18 @@ const ADVANCED_HOTEL_MODULE_INPUTS: HotelModuleManifestInput[] = [
     description: "Cuadrantes, fichajes, previsión de personal, gestión de turnos y productividad.",
     isCore: false,
     dependencies: ["pms_core", "housekeeping", "maintenance"],
-    permissions: ["workforce.read", "workforce.schedule.manage", "workforce.timeclock.manage", "workforce.labor_cost.view"],
+    // Tanda RRHH (2026-09-20): expediente, convenio, estándares y plantilla máxima (hr.*).
+    permissions: [
+      "workforce.read",
+      "workforce.schedule.manage",
+      "workforce.timeclock.manage",
+      "workforce.labor_cost.view",
+      "hr.employee.read",
+      "hr.employee.manage",
+      "hr.config.manage",
+      "hr.standards.manage",
+      "hr.staffing.approve"
+    ],
     mobileRoutes: ["MyShifts", "LaborDashboard"],
     adminRoutes: ["WorkforceDashboard"]
   },
