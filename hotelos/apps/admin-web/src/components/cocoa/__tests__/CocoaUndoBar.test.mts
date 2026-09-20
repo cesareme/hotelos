@@ -93,8 +93,10 @@ describe("CocoaUndoBar · fuente (asserts heredados de TimelineUndoBar) y cablea
     assert.doesNotMatch(source, /\bannounce\(/, "la barra no repite el mensaje en la región viva (un solo status)");
     assert.doesNotMatch(source, />\s*(?:Undo|Close|Today|Previous|Next|Loading|Clear filters|Room)\s*</, "textos en español");
   });
-  it("una sola entrada viva: la nueva sustituye a la anterior y reinicia la cuenta atrás (R15)", () => {
-    assert.match(source, /if \(entry !== tracked\) \{\s*setTracked\(entry\);\s*setLeft\(seconds\);\s*\}/);
+  it("una sola entrada viva: la nueva sustituye a la anterior, reinicia la cuenta atrás y levanta la pausa (R15, UX2-REV-04)", () => {
+    // La pausa por hover no puede sobrevivir a la entrada: al pulsar «Deshacer» la barra se desmonta bajo el puntero sin mouseleave.
+    assert.match(source, /if \(entry !== tracked\) \{\s*setTracked\(entry\);\s*setLeft\(seconds\);\s*if \(paused\) setPaused\(false\);\s*\}/);
+    assert.ok(source.indexOf("const [paused, setPaused] = useState(false);") < source.indexOf("if (entry !== tracked) {"), "la pausa se declara antes del reinicio");
   });
   it("TimelineUndoBar es un reexport de una línea desde el barrel; el Live Timeline monta CocoaUndoBar; el barrel la exporta", () => {
     const lines = shim.split("\n").filter((line) => line.trim() && !line.trim().startsWith("//"));

@@ -18,12 +18,21 @@
 // summary, `DirectorOpsHealthMini` inside a strip, `CocoaTable` per detail
 // list, `CocoaChart.Line` for the 7-day trends, `CocoaBadge` everywhere,
 // `CocoaState` / `Degraded*` for the honest empty and degraded states and a
-// mirror skeleton. Same endpoint, polling and drill-down targets.
+// mirror skeleton. Same endpoint and polling.
+//
+// Tanda UX-2 · lote D8 (docs/design/UX-DIRECCION-FEEL.md §1 P2/P5, F-D11):
+// the housekeeping and maintenance drill-downs go to the BOARDS
+// (HousekeepingDashboard · MaintenanceDashboard) with a fine pointer and only
+// on a phone with a coarse pointer (`mobileDrillDown`: useCoarsePointer + tier
+// of cocoa-viewport.ts) to the mobile «Mi turno» / «Mis averías» screens; the
+// detail tables are `comfortable` (a director's panel, not an operational
+// list); ⌘K adds «Ver alertas», «Ir a pisos» and «Ir a mantenimiento».
 
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
-import { navigateTo } from "../../lib/navigate";
+import { navigateTo, type ScreenKey } from "../../lib/navigate";
+import { useCoarsePointer } from "../../lib/useCoarsePointer";
 import { toArray } from "../../utils/toArray";
 import { date, dateTime, number, percent, plural, time } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
@@ -54,7 +63,8 @@ import {
   type CocoaKpiStatus,
   type CocoaLineSeries,
   type CocoaTableColumn,
-  type CocoaTone
+  type CocoaTone,
+  type CocoaViewportTier
 } from "../../components/cocoa";
 
 type Kpi = { label: string; value: number | string; tone: "ok" | "warn" | "error" | "info"; detail?: string };
@@ -280,10 +290,30 @@ function posStatus(mc: MiniCards["posRevenueToday"]): DirectorOpsHealthStatus {
   return "ok";
 }
 
+// ---------------------------------------------------------------------------
+// Drill-down targets by device (UX-2 · D8). Pure: a phone (viewportTier
+// «phone») handled with a finger (`pointer: coarse`) is the only case where
+// the mobile «Mi turno» / «Mis averías» screens are the right landing; a
+// director with a mouse, a trackpad or a tablet wants the boards.
+// ---------------------------------------------------------------------------
+
+export function mobileDrillDown(tier: CocoaViewportTier, coarse: boolean): boolean {
+  return tier === "phone" && coarse;
+}
+
+export const DRILL_DOWN_SCREENS = {
+  housekeeping: { board: "HousekeepingDashboard", mobile: "HousekeepingMobileScreen" },
+  maintenance: { board: "MaintenanceDashboard", mobile: "MaintenanceMobileScreen" }
+} as const satisfies Record<string, { board: ScreenKey; mobile: ScreenKey }>;
+
+export function drillDownScreen(module: keyof typeof DRILL_DOWN_SCREENS, mobile: boolean): ScreenKey {
+  return mobile ? DRILL_DOWN_SCREENS[module].mobile : DRILL_DOWN_SCREENS[module].board;
+}
+
 // `deltaDegraded`: the yesterday baseline is a safe()-wrapped query; when it
 // failed the API returns a delta computed against 0, so omit the delta rather
-// than show a fake "+N".
-function buildHkMiniProps(mc: MiniCards["housekeeping"], deltaDegraded: boolean): DirectorOpsHealthMiniProps {
+// than show a fake "+N". `mobile`: `mobileDrillDown(tier, coarse)` of the screen.
+function buildHkMiniProps(mc: MiniCards["housekeeping"], deltaDegraded: boolean, mobile: boolean): DirectorOpsHealthMiniProps {
   return {
     module: "housekeeping",
     title: "Housekeeping",
@@ -296,11 +326,11 @@ function buildHkMiniProps(mc: MiniCards["housekeeping"], deltaDegraded: boolean)
     ],
     status: hkStatus(mc),
     deltaVsYesterday: deltaDegraded ? undefined : mc.deltaVsYesterday,
-    onDrillDown: () => navigateTo("HousekeepingMobileScreen")
+    onDrillDown: () => navigateTo(drillDownScreen("housekeeping", mobile))
   };
 }
 
-function buildMaintenanceMiniProps(mc: MiniCards["maintenance"], deltaDegraded: boolean): DirectorOpsHealthMiniProps {
+function buildMaintenanceMiniProps(mc: MiniCards["maintenance"], deltaDegraded: boolean, mobile: boolean): DirectorOpsHealthMiniProps {
   return {
     module: "maintenance",
     title: "Mantenimiento",
@@ -313,7 +343,7 @@ function buildMaintenanceMiniProps(mc: MiniCards["maintenance"], deltaDegraded: 
     ],
     status: maintenanceStatus(mc),
     deltaVsYesterday: deltaDegraded ? undefined : mc.deltaVsYesterday,
-    onDrillDown: () => navigateTo("MaintenanceMobileScreen")
+    onDrillDown: () => navigateTo(drillDownScreen("maintenance", mobile))
   };
 }
 
@@ -480,7 +510,11 @@ export function OperationsDirectorScreen() {
 
   const [activeTab, setActiveTab] = useState<OpsTab>("overview");
   const [activeDetail, setActiveDetail] = useState<DetailTab>("hk");
-  const compactDetailTabs = useViewportTier() === "phone";
+  const tier = useViewportTier();
+  const coarse = useCoarsePointer();
+  const compactDetailTabs = tier === "phone";
+  // Drill-down by device (D8): boards with a fine pointer, the mobile screens only on a touch phone.
+  const mobile = mobileDrillDown(tier, coarse);
 
   const alerts = toArray<Alert>(data?.alerts);
   const degraded = toArray<string>(data?.degraded);
@@ -532,7 +566,13 @@ export function OperationsDirectorScreen() {
       skeleton={<OpsSkeleton />}
       empty={{ title: "Sin datos operativos hoy", message: "El estado operativo se rellena con la actividad de los departamentos a lo largo del día." }}
       error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
-      commands={[{ id: "operations-director-refresh", label: "Actualizar estado operativo", run: refresh }]}
+      commands={[
+        { id: "operations-director-refresh", label: "Actualizar estado operativo", run: refresh },
+        // UX-2 · D8 (F-D11): the panel's tasks are page commands, not only «Actualizar».
+        { id: "operations-director-alertas", label: "Ver alertas", run: () => setActiveTab("alertas") },
+        { id: "operations-director-pisos", label: "Ir a pisos", run: () => navigateTo(drillDownScreen("housekeeping", mobile)) },
+        { id: "operations-director-mantenimiento", label: "Ir a mantenimiento", run: () => navigateTo(drillDownScreen("maintenance", mobile)) }
+      ]}
     >
       {/* Summary tiles (siempre visibles, son el resumen ejecutivo). The
           roll-up is computed from safe()-wrapped department counters: a
@@ -553,9 +593,9 @@ export function OperationsDirectorScreen() {
           <CocoaSection title="Salud operativa" meta="5 módulos">
             {miniCards ? (
               <CocoaKpiStrip min={200} aria-label="Salud operativa">
-                <DirectorOpsHealthMini {...buildHkMiniProps(miniCards.housekeeping, isDegraded(DEGRADED_LABEL.hkDelta, degraded))} />
+                <DirectorOpsHealthMini {...buildHkMiniProps(miniCards.housekeeping, isDegraded(DEGRADED_LABEL.hkDelta, degraded), mobile)} />
                 <DegradedCard label={DEGRADED_LABEL.maintenance} degraded={degraded} title="Mantenimiento">
-                  <DirectorOpsHealthMini {...buildMaintenanceMiniProps(miniCards.maintenance, isDegraded(DEGRADED_LABEL.maintenanceDelta, degraded))} />
+                  <DirectorOpsHealthMini {...buildMaintenanceMiniProps(miniCards.maintenance, isDegraded(DEGRADED_LABEL.maintenanceDelta, degraded), mobile)} />
                 </DegradedCard>
                 <DegradedCard label={DEGRADED_LABEL.workforce} degraded={degraded} title="Personal">
                   <DirectorOpsHealthMini {...buildWorkforceMiniProps(miniCards.workforce)} />
@@ -683,27 +723,27 @@ function DetailTable({ detail, details, degraded }: { detail: DetailTab; details
   if (detail === "hk") {
     return (
       <DegradedNote label={DEGRADED_LABEL.details.hk} degraded={degraded}>
-        <CocoaTable columns={HK_COLUMNS} rows={toArray<DetailHkTask>(details.hkTasks)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
+        <CocoaTable columns={HK_COLUMNS} rows={toArray<DetailHkTask>(details.hkTasks)} rowKey="id" density="comfortable" caption={caption} emptyState={emptyState} />
       </DegradedNote>
     );
   }
   if (detail === "wo") {
     return (
       <DegradedNote label={DEGRADED_LABEL.details.wo} degraded={degraded}>
-        <CocoaTable columns={WO_COLUMNS} rows={toArray<DetailWorkOrder>(details.workOrders)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
+        <CocoaTable columns={WO_COLUMNS} rows={toArray<DetailWorkOrder>(details.workOrders)} rowKey="id" density="comfortable" caption={caption} emptyState={emptyState} />
       </DegradedNote>
     );
   }
   if (detail === "shifts") {
     return (
       <DegradedNote label={DEGRADED_LABEL.details.shifts} degraded={degraded}>
-        <CocoaTable columns={SHIFT_COLUMNS} rows={toArray<DetailShift>(details.shifts)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
+        <CocoaTable columns={SHIFT_COLUMNS} rows={toArray<DetailShift>(details.shifts)} rowKey="id" density="comfortable" caption={caption} emptyState={emptyState} />
       </DegradedNote>
     );
   }
   return (
     <DegradedNote label={DEGRADED_LABEL.details.incidents} degraded={degraded}>
-      <CocoaTable columns={INCIDENT_COLUMNS} rows={toArray<DetailSafetyIncident>(details.safetyIncidents)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
+      <CocoaTable columns={INCIDENT_COLUMNS} rows={toArray<DetailSafetyIncident>(details.safetyIncidents)} rowKey="id" density="comfortable" caption={caption} emptyState={emptyState} />
     </DegradedNote>
   );
 }

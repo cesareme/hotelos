@@ -624,7 +624,11 @@ describe("B/C · N+1 y acotación: resultado idéntico al algoritmo anterior, co
     const asOf = new Date();
     const overview = await buildPropertyOverview({ propertyId: DEMO_PROP, asOf });
     // Algoritmo anterior: todas las reservas → folios → groupBy de líneas del mes.
-    const monthStart = new Date(Date.UTC(asOf.getUTCFullYear(), asOf.getUTCMonth(), 1));
+    // Corrector UX2-REV-02: el mes cuelga de la FECHA DE NEGOCIO de prop_123 (business_dates."current_date",
+    // que va días por detrás del calendario en la copia), no del reloj: la respuesta la expone.
+    assert.match(overview.businessDate, /^\d{4}-\d{2}-\d{2}$/);
+    const anchor = new Date(`${overview.businessDate}T00:00:00.000Z`);
+    const monthStart = new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1));
     const reservations = await prisma.reservation.findMany({ where: { propertyId: DEMO_PROP }, select: { id: true } });
     const folios = await prisma.folio.findMany({ where: { reservationId: { in: reservations.map((r) => r.id) } }, select: { id: true } });
     const grouped = folios.length ? await prisma.folioLine.groupBy({ by: ["folioId"], where: { folioId: { in: folios.map((f) => f.id) }, postedAt: { gte: monthStart } }, _sum: { total: true } }) : [];
@@ -652,7 +656,10 @@ describe("B/C · N+1 y acotación: resultado idéntico al algoritmo anterior, co
 
   it("dirección (org_123, lectura): reputación por aggregate idéntica al recorrido de reseñas y sin degradación", async () => {
     const dashboard = await buildGmDashboard({ propertyId: DEMO_PROP });
-    const since = new Date(Date.now() - 30 * 86_400_000);
+    // Corrector UX2-REV-02 (R-13): la ventana de 30 días del servicio cuelga de la fecha de negocio de prop_123
+    // (2026-09-14 en la copia, no «hoy»): se ancla en `businessDate` en vez de en Date.now().
+    assert.match(dashboard.businessDate, /^\d{4}-\d{2}-\d{2}$/);
+    const since = new Date(new Date(`${dashboard.businessDate}T00:00:00.000Z`).getTime() - 30 * 86_400_000);
     const reviews30 = await prisma.guestReview.findMany({ where: { propertyId: DEMO_PROP, createdAt: { gte: since } }, select: { rating: true } });
     if (reviews30.length === 0) {
       assert.equal(dashboard.reputation, undefined);

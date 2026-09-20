@@ -1,15 +1,23 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
+  CLOSE_BANNER_TITLES,
+  CLOSE_REVIEW_ONLY_TEXT,
+  OPEN_QUEUE_LABEL,
   REOPEN_REASON_CODES,
   blockerLabel,
   canForceClose,
+  closeActionFor,
   labelledAmounts,
+  latestRunToReview,
   paymentMethodLabel,
   preflightOverrideSummary,
   reopenReasonLabel,
   reportSummary,
   revenueTypeLabel,
+  reviewCalloutTitle,
+  reviewedToast,
   roomChargeOutcomeTone,
   runActionsFor,
   runReviewState,
@@ -174,5 +182,150 @@ describe("Cierre del día · informe de la corrida", () => {
     assert.deepEqual(labelledAmounts(undefined, revenueTypeLabel), []);
     assert.equal(revenueTypeLabel("unknown_kind"), "unknown_kind");
     assert.equal(paymentMethodLabel("card"), "Tarjeta (datáfono)");
+  });
+});
+
+// ---------------------------------------------------------------- Tanda UX-2 · D8 (F-D3): honest close, review of the last run
+
+describe("Cierre del día · UX-2 D8 · closeActionFor (the run key decides, never canClose alone)", () => {
+  const withRun = (key: string) => key === "night_audit.run";
+  const withoutRun = (key: string) => key !== "night_audit.run";
+
+  it("green preflight + night_audit.run → run; green WITHOUT the key → review-only (dirección)", () => {
+    assert.equal(closeActionFor({ canClose: true }, withRun), "run");
+    assert.equal(closeActionFor({ canClose: true }, withoutRun), "review-only");
+  });
+
+  it("blockers + night_audit.run → force; blockers WITHOUT the key → blocked", () => {
+    assert.equal(closeActionFor({ canClose: false }, withRun), "force");
+    assert.equal(closeActionFor({ canClose: false }, withoutRun), "blocked");
+  });
+
+  it("no preflight yet counts as not closable; a demo session without a permission list keeps the button", () => {
+    assert.equal(closeActionFor(null, withoutRun), "blocked");
+    assert.equal(closeActionFor(undefined, () => true), "force");
+    assert.equal(closeActionFor({ canClose: true }, () => true), "run", "sessionCan answers true without a permission list (the API decides)");
+  });
+
+  it("titles and texts are Spanish and say who closes (P7)", () => {
+    assert.equal(CLOSE_BANNER_TITLES.run, "Puedes cerrar el día");
+    assert.equal(CLOSE_BANNER_TITLES["review-only"], "Comprobaciones en verde");
+    assert.equal(CLOSE_BANNER_TITLES.blocked, CLOSE_BANNER_TITLES.force);
+    assert.equal(CLOSE_REVIEW_ONLY_TEXT, "Las comprobaciones están en verde; el cierre lo ejecuta recepción o auditoría nocturna y tú lo revisas cuando esté hecho.");
+    assert.equal(OPEN_QUEUE_LABEL, "Abrir cola operativa");
+  });
+});
+
+describe("Cierre del día · UX-2 D8 · latestRunToReview and the copy of the review callout", () => {
+  const reviewer = (key: string) => key === "night_audit.review";
+  const runner = (key: string) => key === "night_audit.run";
+  const run = (overrides: Partial<{ id: string; status: "completed" | "failed" | "reopened" | "in_progress"; reviewedByUserId: string | null; businessDate: string; completedAt?: string }> = {}) => ({
+    id: "run_1",
+    status: "completed" as const,
+    reviewedByUserId: null,
+    businessDate: "2026-09-18",
+    completedAt: "2026-09-19T06:00:00.000Z",
+    ...overrides
+  });
+
+  it("picks the newest business date whatever the order of the list, only while it awaits its review", () => {
+    const older = run({ id: "old", businessDate: "2026-09-17", completedAt: "2026-09-18T06:00:00.000Z" });
+    const newest = run({ id: "new" });
+    assert.equal(latestRunToReview([older, newest], reviewer)?.id, "new");
+    assert.equal(latestRunToReview([newest, older], reviewer)?.id, "new");
+    assert.equal(latestRunToReview([older, run({ id: "new", reviewedByUserId: "usr_1" })], reviewer), null, "the newest is reviewed: no callout even if an older one is not (the drawer keeps it)");
+    assert.equal(latestRunToReview([], reviewer), null);
+  });
+
+  it("failed / in-progress runs and sessions without night_audit.review get no callout; a reopened day does", () => {
+    assert.equal(latestRunToReview([run({ status: "failed" })], reviewer), null);
+    assert.equal(latestRunToReview([run({ status: "in_progress", completedAt: undefined })], reviewer), null);
+    assert.equal(latestRunToReview([run()], runner), null, "recepción runs, it does not review");
+    assert.equal(latestRunToReview([run({ status: "reopened" })], reviewer)?.id, "run_1");
+  });
+
+  it("on a tie of business date the latest completion wins (a day reopened and closed again)", () => {
+    const first = run({ id: "first", completedAt: "2026-09-19T06:00:00.000Z" });
+    const again = run({ id: "again", completedAt: "2026-09-19T10:30:00.000Z" });
+    assert.equal(latestRunToReview([first, again], reviewer)?.id, "again");
+  });
+
+  it("«Cierre del 18/09/2026 hecho a las 08:00» (Madrid) · toast «Cierre del 18/09/2026 marcado como revisado»", () => {
+    assert.equal(reviewCalloutTitle(run()), "Cierre del 18/09/2026 hecho a las 08:00");
+    assert.equal(reviewCalloutTitle(run({ status: "reopened" })), "Día del 18/09/2026 reabierto, pendiente de revisión");
+    assert.equal(reviewCalloutTitle(run({ completedAt: undefined })), "Cierre del 18/09/2026 hecho a las —");
+    assert.equal(reviewedToast(run()), "Cierre del 18/09/2026 marcado como revisado");
+  });
+});
+
+// ---------------------------------------------------------------- source contract (NightAuditScreen.tsx)
+
+const stripComments = (source: string) =>
+  source
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+const SCREEN = stripComments(readFileSync(new URL("../NightAuditScreen.tsx", import.meta.url), "utf8"));
+
+/** Source of the close banner: from its `closeActionFor` use to the end of the callout. */
+function bannerRegion(source: string): string {
+  const start = source.indexOf("title={CLOSE_BANNER_TITLES[closeAction]}");
+  assert.ok(start >= 0, "the banner title comes from closeActionFor");
+  const end = source.indexOf("</CocoaCallout>", start);
+  assert.ok(end > start, "the banner closes");
+  return source.slice(start, end);
+}
+
+describe("NightAuditScreen · no «Cerrar día» without the run key (P7), one review callout with one primary (P1/P2)", () => {
+  const banner = bannerRegion(SCREEN);
+
+  it("«Cerrar día» is painted ONLY in the `run` branch; the disabled placeholder is gone", () => {
+    assert.equal((SCREEN.match(/>\s*Cerrar día\s*</g) ?? []).length, 1, "one «Cerrar día» button in the screen");
+    assert.match(banner, /closeAction === "run" \? \(\s*<CocoaButton variant="filled" tone="accent" disabled=\{busy\} loading=\{busy\} onClick=\{\(\) => void runAudit\(\)\}/);
+    assert.doesNotMatch(SCREEN, /disabled title="Resuelve los bloqueos primero"/);
+    assert.doesNotMatch(SCREEN, /canClose \? \(\s*<CocoaButton/);
+    assert.match(SCREEN, /const closeAction = closeActionFor\(preflight, sessionCan\);/);
+  });
+
+  it("forced close keeps its key; blocked without the key offers the operational queue; review-only has no button and says who closes", () => {
+    assert.match(banner, /closeAction === "force" \? \([\s\S]*?Cerrar de todos modos/);
+    assert.match(banner, /closeAction === "blocked" \? \([\s\S]*?navigateTo\("FrontDeskDashboard"\)[\s\S]*?\{OPEN_QUEUE_LABEL\}/);
+    assert.match(banner, /\) : undefined\s*\}/, "review-only paints no action");
+    assert.match(banner, /closeAction === "review-only" \? CLOSE_REVIEW_ONLY_TEXT : preflight\.blockingMessage/);
+  });
+
+  it("the last unreviewed run gets a callout above the history with ONE filled «Marcar como revisado» (⌥V) that opens the review dialog", () => {
+    assert.match(SCREEN, /const runToReview = latestRunToReview\(runs, sessionCan\);/);
+    const start = SCREEN.indexOf("{runToReview ? (");
+    const end = SCREEN.indexOf('<CocoaSection title="Historial de cierres"', start);
+    assert.ok(start >= 0 && end > start, "the review callout sits before the history section");
+    const callout = SCREEN.slice(start, end);
+    assert.match(callout, /title=\{reviewCalloutTitle\(runToReview\)\}/);
+    assert.equal((callout.match(/variant="filled"/g) ?? []).length, 1);
+    assert.match(callout, /variant="filled" tone="accent" size="small" accessKey="V" disabled=\{actionBusy\} onClick=\{\(\) => setReviewTarget\(runToReview\)\}/);
+    assert.match(callout, />\s*Marcar como revisado\s*</);
+    assert.match(callout, /variant="plain" tone="neutral" size="small" onClick=\{\(\) => setSelectedRunId\(runToReview\.id\)\}/, "the report stays one plain click away");
+  });
+
+  it("the review dialog is the existing one: opened by target, Enter confirms, the toast names the day, the drawer button shares it", () => {
+    assert.match(SCREEN, /open=\{reviewTarget !== null\}/);
+    assert.match(SCREEN, /title="Marcar el cierre como revisado"/);
+    assert.match(SCREEN, /confirmLabel="Marcar como revisado"\s*busy=\{actionBusy\}\s*submitOnEnter\s*onConfirm=\{reviewRun\}/);
+    assert.doesNotMatch(SCREEN, /initialFocus=\{\(\) => document\.getElementById\(reviewNoteId\)\}/, "focus lands on Confirm so Enter confirms (the note is optional)");
+    assert.match(SCREEN, /showToast\(reviewedToast\(updated\), \{ variant: "success" \}\)/);
+    assert.match(SCREEN, /onClick=\{\(\) => setReviewTarget\(shownRun\)\}/);
+    assert.match(SCREEN, /actionErrorMessage\(err, "No se pudo marcar el cierre como revisado\."\)/, "the 409 of the separation of duties keeps the API copy");
+    assert.doesNotMatch(SCREEN, /reviewOpen/);
+  });
+
+  it("⌘K: «Marcar el cierre como revisado» only with a run to review; «Abrir cola operativa» only when blocked", () => {
+    assert.match(SCREEN, /\.\.\.\(runToReview \? \[\{ id: "night-audit-review", label: "Marcar el cierre como revisado", shortcut: "⌥V"/);
+    assert.match(SCREEN, /\.\.\.\(closeAction === "blocked" \? \[\{ id: "night-audit-open-queue", label: OPEN_QUEUE_LABEL, run: \(\) => navigateTo\("FrontDeskDashboard"\)/);
+  });
+
+  it("Cocoa 22: no new inline style (4 pre-existing), one live region of its own, no English labels", () => {
+    assert.ok((SCREEN.match(/\bstyle=\{/g) ?? []).length <= 4);
+    assert.equal((SCREEN.match(/role="status"/g) ?? []).length, 1);
+    assert.doesNotMatch(SCREEN, />\s*(Close day|Mark as reviewed|Reopen)\s*</);
   });
 });

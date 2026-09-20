@@ -20,8 +20,19 @@
 // Cocoa 22: CocoaPage host, CocoaTable, CocoaDrawer, CocoaDialog, CocoaState,
 // CocoaBadge, CocoaCallout; zero inline style; Spanish only; every call through
 // services/approvalsApi.ts and services/rbacApi.ts (apiRequest).
+//
+// Tanda UX-2 · D5 (docs/design/UX-DIRECCION-FEEL.md §1 P1/P2/P4, F-D7; d2 ≤ 3
+// clicks from Mi día): every decidable row carries ONE primary «Aprobar»
+// (`filled small`, ⌥A on the selected — or first decidable — row) and a
+// `bordered` «Rechazar» (`primaryDecisionFor`), always visible; the row itself
+// still opens the detail drawer (click, Enter or Space) and ↑↓ move the
+// selection between rows without opening it. The decision dialog is nominal
+// («Aprobar reembolso de 60,00 €», same text on its button), confirms with
+// Enter when the note is optional, waits for the API (money: no optimism, P4)
+// and toasts «Aprobada: reembolso 60,00 € · solicitud K3M9Q2». ⌘K: «Aprobar /
+// Rechazar la solicitud seleccionada».
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ApprovalKind, ApprovalRequestDto, ApprovalStatus } from "@hotelos/shared";
 import { useToast } from "../../components/Toast";
 import {
@@ -42,6 +53,8 @@ import {
   type CocoaTone
 } from "../../components/cocoa";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
+import { DIRECCION_PENDIENTES_INSTRUCTIONS } from "../../content/screen-instructions/direccion";
 import { dateTime, money, plural } from "../../lib/format";
 import { useNavGate } from "../../navigation/useEnabledModules";
 import { approveRequest, listApprovals, rejectRequest } from "../../services/approvalsApi";
@@ -56,12 +69,15 @@ import {
   THRESHOLD_TIER_LABELS_ES,
   approvalErrorMessage,
   approvingKeyOf,
+  decisionDialogTitle,
   decisionFor,
+  decisionToast,
   filterApprovals,
   isApprovalKind,
   isApprovalStatus,
   isExpired,
   pendingForViewer,
+  primaryDecisionFor,
   secondApproverNote,
   viewerFromProfile,
   type ApprovalFilters,
@@ -111,7 +127,9 @@ export function ApprovalsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  // `selectedId` is the highlighted row (↑↓ move it, ⌥A / ⌘K act on it); the drawer opens only with `detailOpen`.
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -143,11 +161,48 @@ export function ApprovalsScreen() {
   const pendingMine = useMemo(() => pendingForViewer(rows ?? [], viewer), [rows, viewer]);
   const selected = selectedId ? (visible.find((row) => row.id === selectedId) ?? null) : null;
   const ability = selected ? decisionFor(selected, viewer) : null;
+  // The row ⌥A and the ⌘K commands act on: the selected one, else the first the viewer may approve.
+  const firstDecidable = useMemo(() => visible.find((row) => primaryDecisionFor(row, viewer) === "approve") ?? null, [visible, viewer]);
+  const commandRow = selected ?? firstDecidable;
+  const commandPrimary = commandRow ? primaryDecisionFor(commandRow, viewer) : null;
+
+  function openDetail(id: string) {
+    setSelectedId(id);
+    setDetailOpen(true);
+  }
 
   function closeDetail() {
-    setSelectedId(null);
+    setDetailOpen(false);
     setDecision(null);
     setNote("");
+  }
+
+  function openDecision(row: ApprovalRequestDto, next: Decision) {
+    setSelectedId(row.id);
+    setDecision(next);
+    setNote("");
+  }
+
+  function closeDecision() {
+    setDecision(null);
+    setNote("");
+  }
+
+  /** ↑↓ on a focused row move the selection (and the focus) without opening the drawer; Enter/Space open it (CocoaTable). */
+  function moveSelection(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const target = event.target as HTMLElement;
+    if (target.tagName !== "TR") return;
+    const domRows = Array.from(event.currentTarget.querySelectorAll<HTMLTableRowElement>('tbody tr[data-interactive="true"]'));
+    const index = domRows.indexOf(target as HTMLTableRowElement);
+    if (index < 0) return;
+    const nextIndex = index + (event.key === "ArrowDown" ? 1 : -1);
+    const nextRow = domRows[nextIndex];
+    const nextData = visible[nextIndex];
+    if (!nextRow || !nextData) return;
+    event.preventDefault();
+    nextRow.focus();
+    setSelectedId(nextData.id);
   }
 
   async function decide() {
@@ -158,19 +213,12 @@ export function ApprovalsScreen() {
     }
     setBusy(true);
     try {
+      // Money: no optimism (P4) — the dialog spins until the API answers and the toast carries the number.
       const updated = decision === "approve" ? await approveRequest(selected.id, note.trim() || undefined) : await rejectRequest(selected.id, note.trim() || undefined);
-      showToast(
-        updated.status === "approved"
-          ? `Solicitud aprobada (${APPROVAL_KIND_LABELS_ES[updated.kind]})`
-          : updated.status === "rejected"
-            ? `Solicitud rechazada (${APPROVAL_KIND_LABELS_ES[updated.kind]})`
-            : "Primera aprobación registrada: falta la segunda",
-        { variant: "success" }
-      );
-      setDecision(null);
-      setNote("");
-      refresh();
+      showToast(decisionToast(updated), { variant: "success" });
+      closeDecision();
       closeDetail();
+      refresh();
     } catch (failure) {
       showToast(approvalErrorMessage(failure), { variant: "error", duration: 7000 });
     } finally {
@@ -181,10 +229,12 @@ export function ApprovalsScreen() {
   const columns: CocoaTableColumn<ApprovalRequestDto>[] = [
     { key: "kind", label: "Tipo", render: (row) => <strong>{APPROVAL_KIND_LABELS_ES[row.kind]}</strong> },
     { key: "amount", label: "Importe", align: "right", fit: true, render: (row) => money(row.amount, row.currency) },
-    { key: "tier", label: "Umbral", fit: true, hideOnNarrow: true, render: (row) => THRESHOLD_TIER_LABELS_ES[row.thresholdTier] },
+    // Corrector UX2-REV-08: «Umbral» y «Solicitada» son secundarias (el cajón las repite); solo desde escritorio, para que la
+    // columna «Acciones» con la primaria «Aprobar» quepa sin desplazamiento horizontal en tablet (1024) y portátil (≤ 1224).
+    { key: "tier", label: "Umbral", fit: true, showFrom: "desktop", render: (row) => THRESHOLD_TIER_LABELS_ES[row.thresholdTier] },
     { key: "requester", label: "Solicitante", hideOnNarrow: true, truncate: 180, render: (row) => row.requestedByName ?? "—" },
     { key: "hotel", label: "Hotel", hideOnNarrow: true, truncate: 160, render: (row) => (row.propertyId ? (row.propertyName ?? "—") : "Sociedad") },
-    { key: "requestedAt", label: "Solicitada", fit: true, hideOnNarrow: true, render: (row) => dateTime(row.requestedAt, { style: "medium" }) },
+    { key: "requestedAt", label: "Solicitada", fit: true, showFrom: "desktop", render: (row) => dateTime(row.requestedAt, { style: "medium" }) },
     {
       key: "status",
       label: "Estado",
@@ -223,20 +273,44 @@ export function ApprovalsScreen() {
     );
   } else {
     body = (
-      <CocoaTable
-        columns={columns}
-        rows={visible}
-        rowKey="id"
-        selectedKey={selected?.id}
-        onSelect={(row) => setSelectedId(row.id)}
-        rowTone={(row) => (row.status === "pending" && isExpired(row) ? "neutral" : undefined)}
-        caption="Solicitudes de aprobación"
-        aria-label="Solicitudes de aprobación"
-      />
+      <div onKeyDown={moveSelection}>
+        <CocoaTable
+          columns={columns}
+          rows={visible}
+          rowKey="id"
+          selectedKey={selected?.id}
+          onSelect={(row) => openDetail(row.id)}
+          rowTone={(row) => (row.status === "pending" && isExpired(row) ? "neutral" : undefined)}
+          rowTitle={() => "Abrir el detalle de la solicitud"}
+          caption="Solicitudes de aprobación"
+          aria-label="Solicitudes de aprobación"
+          rowActionsVisible="always"
+          rowActions={(row) => {
+            // P1: one primary per row («Aprobar» filled; «Rechazar» bordered); nothing on rows the viewer cannot decide.
+            const primary = primaryDecisionFor(row, viewer);
+            if (primary === null) return null;
+            const keyed = row.id === (selected?.id ?? firstDecidable?.id);
+            return (
+              <>
+                {primary === "approve" ? (
+                  <CocoaButton variant="filled" tone="accent" size="small" accessKey={keyed ? "A" : undefined} disabled={busy} onClick={() => openDecision(row, "approve")} title={decisionDialogTitle("approve", row)}>
+                    {ACTIONS.approve}
+                  </CocoaButton>
+                ) : null}
+                <CocoaButton variant="bordered" tone="destructive" size="small" disabled={busy} onClick={() => openDecision(row, "reject")} title={decisionDialogTitle("reject", row)}>
+                  {ACTIONS.reject}
+                </CocoaButton>
+              </>
+            );
+          }}
+        />
+      </div>
     );
   }
 
   const noteRequired = decision === "reject";
+  // Nominal title = confirm button (P4): «Aprobar reembolso de 60,00 €», never «¿Aprobar…?».
+  const dialogTitle = decision && selected ? decisionDialogTitle(decision, selected) : ACTIONS.approve;
 
   return (
     <CocoaPage
@@ -253,7 +327,15 @@ export function ApprovalsScreen() {
           </CocoaButton>
         </>
       }
-      commands={[{ id: "approvals-refresh", label: `${ACTIONS.refresh} solicitudes`, run: refresh }]}
+      commands={[
+        { id: "approvals-refresh", label: `${ACTIONS.refresh} solicitudes`, run: refresh },
+        ...(commandRow && commandPrimary === "approve"
+          ? [{ id: "approvals-approve-selected", label: selected ? "Aprobar la solicitud seleccionada" : "Aprobar la primera solicitud pendiente", shortcut: "⌥A", run: () => openDecision(commandRow, "approve") }]
+          : []),
+        ...(commandRow && commandPrimary !== null
+          ? [{ id: "approvals-reject-selected", label: selected ? "Rechazar la solicitud seleccionada" : "Rechazar la primera solicitud pendiente", run: () => openDecision(commandRow, "reject") }]
+          : [])
+      ]}
     >
       <CocoaSection title="Filtros" aria-label="Filtros de la bandeja">
         <CocoaFormRow columns={2} role="group" aria-label="Filtros">
@@ -280,8 +362,11 @@ export function ApprovalsScreen() {
         {body}
       </CocoaSection>
 
+      {/* Ayuda contextual honesta (UX-2 · D8): solo lo que existe en esta bandeja; se descarta una vez. */}
+      <CocoaScreenInstructionsCard {...DIRECCION_PENDIENTES_INSTRUCTIONS} dismissible persistKey="direccion-pendientes" />
+
       <CocoaDrawer
-        open={selected !== null}
+        open={detailOpen && selected !== null}
         onClose={closeDetail}
         title={selected ? APPROVAL_KIND_LABELS_ES[selected.kind] : "Solicitud"}
         subtitle={selected ? `${ENTITY_TYPE_LABELS_ES[selected.entityType] ?? selected.entityType}${selected.propertyId ? ` · ${selected.propertyName ?? "hotel"}` : " · sociedad"}` : undefined}
@@ -382,21 +467,19 @@ export function ApprovalsScreen() {
 
       <CocoaDialog
         open={decision !== null && selected !== null}
-        onClose={() => {
-          setDecision(null);
-          setNote("");
-        }}
+        onClose={closeDecision}
         tone={decision === "reject" ? "destructive" : "primary"}
-        title={decision === "reject" ? "¿Rechazar la solicitud?" : "¿Aprobar la solicitud?"}
+        title={dialogTitle}
         description={
           selected
             ? `${APPROVAL_KIND_LABELS_ES[selected.kind]} · ${money(selected.amount, selected.currency)} · ${THRESHOLD_TIER_LABELS_ES[selected.thresholdTier]}. La decisión queda en el registro de auditoría con tu usuario y la nota.`
             : undefined
         }
-        confirmLabel={decision === "reject" ? ACTIONS.reject : ACTIONS.approve}
+        confirmLabel={dialogTitle}
         cancelLabel={ACTIONS.cancel}
         busy={busy}
         confirmDisabled={noteRequired && !note.trim()}
+        submitOnEnter={!noteRequired}
         onConfirm={decide}
       >
         <CocoaField label={noteRequired ? "Motivo del rechazo" : "Nota"} required={noteRequired} help={noteRequired ? "Obligatorio: el solicitante lo verá." : "Opcional."}>

@@ -24,6 +24,8 @@ export interface DirectorVipListProps {
   vips: DirectorVipListItem[];
   max?: number;
   onSelectGuest?: (guestId: string) => void;
+  /** Card heading (Spanish by default: «VIP alojados»; UX-2 · corrector UX2-REV-05). */
+  title?: string;
 }
 
 interface BadgePalette {
@@ -78,10 +80,11 @@ const STATUS_PALETTE: Record<DirectorVipStatus, BadgePalette> = {
   }
 };
 
+// Vocabulario del diccionario de estados de recepción (UX-1 D5): «Llega hoy · En el hotel · Sale hoy».
 const STATUS_LABEL: Record<DirectorVipStatus, string> = {
-  "pre-arrival": "Pre-arrival",
-  "in-house": "In-house",
-  "departing-today": "Departing today"
+  "pre-arrival": "Llega hoy",
+  "in-house": "En el hotel",
+  "departing-today": "Sale hoy"
 };
 
 const AVATAR_PALETTE: Array<{ bg: string; fg: string }> = [
@@ -392,7 +395,8 @@ function VipRow({
 export function DirectorVipList({
   vips,
   max = 5,
-  onSelectGuest
+  onSelectGuest,
+  title = "VIP alojados"
 }: DirectorVipListProps) {
   const total = vips.length;
   const visible = vips.slice(0, max);
@@ -406,15 +410,16 @@ export function DirectorVipList({
   return (
     <CocoaCard variant="bordered" padding="md">
       <header style={headerStyle}>
-        <h3 style={headerTitleStyle}>VIPs in-house</h3>
-        <span style={headerCountStyle} aria-label={`${total} VIPs`}>
+        <h3 style={headerTitleStyle}>{title}</h3>
+        <span style={headerCountStyle} aria-label={`${total} VIP`}>
           {total}
         </span>
       </header>
 
       {total === 0 ? (
-        <div style={emptyStyle} role="status">
-          Sin VIPs in-house ahora
+        // Estado vacío estático (sin `role="status"`: la región viva es una por página; UX2-REV-07).
+        <div style={emptyStyle}>
+          Sin VIP alojados ahora
         </div>
       ) : (
         <div style={listStyle} role="list">

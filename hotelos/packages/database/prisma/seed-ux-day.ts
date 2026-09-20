@@ -78,6 +78,8 @@ export const PROPERTY_NAME = "Hotel UXDAY (prueba)";
 export const EMAIL_DOMAIN = "uxday.test";
 /** Contraseña común de los tres usuarios de prueba (solo demo local; nunca real). `SEED_UXDAY_PASSWORD` la sustituye (corrector R9). */
 export const DEMO_PASSWORD = process.env.SEED_UXDAY_PASSWORD?.trim() || "uxday-demo";
+/** Lo que el seed IMPRIME sobre la contraseña (corrector UX2-REV-07): nunca el valor, que acabaría en logs. */
+export const DEMO_PASSWORD_LABEL = process.env.SEED_UXDAY_PASSWORD?.trim() ? "la de SEED_UXDAY_PASSWORD" : "la de demo por defecto";
 export const RESERVATION_PREFIX = "UXDAY-";
 export const COMPANY_NAME = "Empresa UXDAY SL";
 /** Fecha fija de puesta en marcha del hotel de prueba (antes de cualquier día de prueba). */
@@ -716,7 +718,7 @@ async function main(): Promise<void> {
 
   log(
     `[seed-ux-day] listo · ${PROPERTY_NAME} (${PROPERTY_ID}) · reservas nuevas=${result.created} existentes=${result.existing} · ` +
-      `usuarios ${USERS.map((u) => `${u.local}@${EMAIL_DOMAIN}`).join(", ")} (contraseña ${DEMO_PASSWORD}) · ` +
+      `usuarios ${USERS.map((u) => `${u.local}@${EMAIL_DOMAIN}`).join(", ")} (contraseña: ${DEMO_PASSWORD_LABEL}) · ` +
       `sociedad ${LEGAL_ENTITY_TAX_ID} · empresa ${COMPANY_NAME} ${COMPANY_TAX_ID}`
   );
   if (result.existing > 0 && !reset) {

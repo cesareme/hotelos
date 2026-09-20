@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { CocoaIllustrations, CocoaSkeleton, SKELETON_HEIGHT, resolveStateDefaults, skeletonLineWidth, skeletonLineWidthHint } from "../CocoaState.tsx";
 import { DEGRADED_HINT } from "../../cocoa-extras/DegradedValue.tsx";
@@ -30,6 +31,14 @@ describe("CocoaState · defaults (§3.10)", () => {
     assert.equal(s.role, "status");
     assert.equal(s.illustration, "search");
     assert.equal(s.message, "No se pudo cargar la información.");
+  });
+  it("role=\"none\" survives the defaults and renders no live region (UX-2 · UX2-REV-07: one live region per page)", () => {
+    const s = resolveStateDefaults("empty", { role: "none" });
+    assert.equal(s.role, "none");
+    assert.equal(s.title, "Sin datos");
+    const source = readFileSync(new URL("../CocoaState.tsx", import.meta.url), "utf8");
+    assert.equal((source.match(/role=\{resolved\.role === "none" \? undefined : resolved\.role\}/g) ?? []).length, 2, "inline and full states drop the role");
+    assert.match(source, /role\?: "status" \| "alert" \| "none";/);
   });
   it("exposes the five illustrations of cocoa-illustrations", () => {
     assert.deepEqual(Object.keys(CocoaIllustrations), ["box", "search", "error", "connection", "success"]);
