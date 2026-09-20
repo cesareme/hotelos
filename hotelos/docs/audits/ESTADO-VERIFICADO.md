@@ -489,3 +489,68 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda UX-3 · «Feel» de pisos y mantenimiento, 2026-09-20, lote Q1 de cierre +
+corrector UX-3-REV + integrador; worktree `tanda-ux3` sobre a069906 con los lotes U0 · D0 · P1 · P2 · P3 ·
+M1 · P4 · Q1, BD `hotelos_ux3`; commit del integrador en `tanda-ux3` («feat(ux-pisos): feel de pisos y
+mantenimiento de ehotelOS (Tanda UX-3)», 68 ficheros: 35 modificados +2.859/−669 · 33 nuevos, 10.904
+líneas; `pnpm-lock.yaml` M preexistente, excluido); informe `docs/audits/TANDA-UX3-PISOS-2026-09-20.md`):
+- diseño `docs/design/UX-PISOS-MANTENIMIENTO-FEEL.md` (§2 con las cifras finales) implementado: copia
+  única `content/pisos-actions.ts` (avisos con número), `screens/operations/deferred-commit.ts` (copia
+  idéntica de la ficha de reserva; escritura diferida 8 s con «Deshacer», `keepalive` en pagehide);
+  tablero de pisos y tablero de habitaciones (P1: busy por habitación, «Marcar limpia» / «Inspeccionar»
+  optimistas con deshacer, «Nueva tarea» con «Asignar a» e Intro, diálogo nominal «Bloquear la NNN» /
+  «Mantenerla en venta», «Desbloquear» y «Marcar sucia» con deshacer); Mi turno (P2: `sections[]` y
+  `sectionId/sectionName` en `GET /dashboards/housekeeping-mobile`, chips de sección recordados por
+  propiedad «Mi sección», tarjeta «Siguiente», «Limpia» cierra la tarea (D1), ayuda plegada con el dedo,
+  `CocoaActionBar` en tablet); Mis averías y tablero de mantenimiento (P3: «Mías · Todas», «Tomar» con
+  deshacer, «Resuelta» / «Resolver» diferidas, «Asignarme» / «Asignar a», diálogo nominal de bloqueo);
+  fotos del parte (M1: migración aditiva `20260920170000_ux3_parte_fotos` en `work_order_media`,
+  `POST /work-orders` con `photos[]` → 201, `POST …/:id/media` base64, `GET …/:id/media` y
+  `GET /work-orders/media/:mediaId` bajo `maintenance.read`, `mediaCount`); `ReportIncidentDrawer`
+  (P4: chips de motivo, ≤ 3 fotos con cámara trasera y compresión por canvas, título automático) y
+  galería en Mis averías; `density="operational"` en las cuatro páginas; manual 40, fichas 09/10 y
+  runbook `docs/runbooks/ux-pisos-pruebas.md`; 0 `style=` nuevos (inlineStyles 624)
+- medida automatizada del camino óptimo (`apps/admin-web/e2e/measure/p1…p6`, `MEASURE_STRICT=1`, tenant
+  aislado `org_uxday/prop_uxday` de `db:seed:ux-day -- --reset` + `db:seed:ux-day-pisos` rearmado con el API
+  parado; baseline y final en `docs/audits/ux-pisos/measure-*.json`; ratón 1280 × 900 = tablet 820 × 1180):
+  p1 2 = 2 toques (ahora con deshacer y tarea cerrada) · p2 1 = 1 (chip de sección recordado; 0 al volver)
+  · p3 2 → 1 clic + Intro (tablet 2) con asignación · p4 no completable → 3 toques · 0 teclas con
+  `mediaCount 1` · p5 2 → 3 (chip «Todas»; 2 acciones de dominio, con deshacer) · p6 bloquear 2 → 3
+  (diálogo nominal) + desbloquear 1; peticiones iguales o menores; 12/12 estricto en dos corridas
+  idénticas en clics, teclas y peticiones (11:53Z y 11:55Z)
+- táctil (`e2e/pisos/pisos-target-size.spec.ts`, proyecto `touch`, 20/20 · 40 corridas, 2 viewports × 2
+  temas × 5 rutas con cajones; `target-size-pisos-2026-09-20.json`): 0 objetivos < 24 px · 0 < 44 px ·
+  `operational/comfortable` en las 4 páginas · barra del pulgar en Mi turno y Mis averías con controles
+  de 44 px · badges texto ≥ 5,91:1 · borde/punto ≥ 4,57:1 en oscuro (el «Baja» a 1,35:1 de U0 corregido);
+  en claro warning/success 2,02–2,87 informativo (heredado de UX-1)
+- puerta completa final tras el corrector (2026-09-20 15:24, `scratchpad/UX-3/gates-final.json`; informe §7):
+  13/14 — typecheck:all 15 PASS · 0 FAIL · 1 SKIP · api unit 3.594 (3.593 pass · 0 fail · 1 skip) · admin-web
+  unit 2.149 (2.148 · 0 · 1) · ai-core 119 · worker 34 · contratos raíz 777 (775 · 0 · 2 skip) · discoverability
+  197 URL · route-access 15 × 197 · cocoa waves §6 al día (regenerado) · rbac dry-run OK · migrate 25/25 +
+  «No difference detected.» · build 3,16 s · integración 996 (988 pass · 0 fail · 8 skip); en rojo SOLO
+  `nav-tree --check` (CSV compartido con rutas de otros carriles sin pantalla aquí; regenerar en la fusión);
+  puerta rápida del integrador sobre el árbol commiteado 11/12 (mismas cifras, solo nav-tree);
+  e2e measure estricta 12/12 (Q1 ×2 y de nuevo por el integrador tras el corrector, 13:31Z: p1 2 · p2 1 ·
+  p3 1+Intro / 2 · p4 3 · p5 3 · p6 3 + 1, peticiones 4 · 7 · 2 · 2 · 3 · 2 + 1) · touch 20/20 · 40 corridas (13:31-13:32Z, 42,8 s) (integrador,
+  tras el corrector; Q1 20/20)
+- corrector UX-3-REV (informe §11): toast con «Deshacer» sin pausa y «Deshacer» tardío honesto
+  (`undoDeferred`, `capToasts`), «Actualizar» de mantenimiento vacía y espera las diferidas, POST + PATCH a
+  la vez en `pagehide` (D1), «Asignarme» sin blur, fotos del parte con 404 opaco entre propiedades + lectura
+  de bytes tras la tenencia + tope de 3 en transacción, EXIF fuera (`force`), estricto del arnés con la
+  baseline (p5/p6 +1 aceptado), api-contracts con `GET /dashboards/housekeeping-mobile`, plan de formación
+  y FAQ con la copia de UX-3 pinzada por `manual-contract`; runtime C1-C8 en verde (`scratchpad/UX-3-COR`)
+- pendientes con dueño (informe §9): chip «Mías» por defecto (+1 toque en p5, aceptado en §2 del diseño;
+  recordar alcance o arrancar en «Todas» con cola sin asignar si se quiere volver a 2), recuento único de p6
+  (contrato U0 `clicks: [1-3]`), `nav-tree --check` rojo por el CSV compartido cambiado tras el JSON
+  (regenerar en la fusión), capturas del manual anteriores a UX-3, guarda `mutating` en `apiCache.loadApiKey`
+  (endurecimiento), `accessKey` en primarios, consolidar `deferredCommit` en `lib/`, `playwright install
+  chromium` (hoy shim), `pnpm-lock.yaml` fuera del commit (deriva preexistente), sesiones con personas
+  reales (kit del runbook)
+- integrador: ficheros confirmados por `git status` (69 entradas; 68 en el commit; 4 fuera de las listas de
+  lote por las puertas: whitelist de discoverability, `env-contract.json`, inventario y §6 de Cocoa 22);
+  revisión UX-3-REV: 16 hallazgos, 15 confirmados (13 corregidos con test, 2 documentados) y 1 refutado (M04:
+  nav-tree rojo por el CSV compartido, no por UX-3); `pre-commit` de `hotelos/.husky` NO lo dispara git desde
+  la raíz del worktree (`core.hooksPath=.husky` relativo; «cannot find a hook named pre-commit») → ejecutado a
+  mano antes del commit (discoverability OK · typecheck:all 15 PASS · 23,9 s), sin `--no-verify`; decisión
+  para César: `core.hooksPath hotelos/.husky` o enlace en la raíz (informe §12)

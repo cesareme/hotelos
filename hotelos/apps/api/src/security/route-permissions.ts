@@ -787,6 +787,9 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/work-orders", permissions: ["maintenance.workorder.create"], riskLevel: "low" },
   { method: "PATCH", path: "/work-orders/:id", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
   { method: "POST", path: "/work-orders/:id/media", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
+  // Tanda UX-3 (M1, diseño §4.6): lectura de medios del parte (metadatos y bytes de las fotos en línea).
+  { method: "GET", path: "/work-orders/:id/media", permissions: ["maintenance.read"], riskLevel: "low" },
+  { method: "GET", path: "/work-orders/media/:mediaId", permissions: ["maintenance.read"], riskLevel: "low" },
   {
     method: "POST",
     path: "/work-orders/:id/block-room",

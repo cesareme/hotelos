@@ -1,0 +1,1581 @@
+{
+  "generatedAt": "2026-09-20T11:57:31.038Z",
+  "lote": "UX-3 · Q1 (final tras P1…P4; density operational y barra del pulgar afirmadas)",
+  "spec": "apps/admin-web/e2e/pisos/pisos-target-size.spec.ts (proyecto Playwright `touch`, hasTouch + Emulation.setEmulatedMedia pointer:coarse)",
+  "baseUrl": "http://127.0.0.1:5201",
+  "apiUrl": "http://127.0.0.1:3931",
+  "tenant": "prop_uxday (seed-ux-day --reset + seed-ux-day-pisos, rearmado con el API parado)",
+  "criterios": {
+    "targetMinPx": 24,
+    "targetGoalPx": 44,
+    "textContrastMin": 4.5,
+    "uiContrastMin": 3,
+    "uiContrastAssertedIn": "dark",
+    "operationalDensityAsserted": [
+      "pisos",
+      "mi-turno",
+      "mantenimiento",
+      "mis-averias"
+    ],
+    "actionBarAsserted": [
+      "mi-turno",
+      "mis-averias"
+    ]
+  },
+  "resumen": {
+    "runs": 40,
+    "screens": 20,
+    "overlays": 20,
+    "below24Total": 0,
+    "below44Total": 0,
+    "operationalPages": 16,
+    "actionBarPresent": 8,
+    "actionBarMinPx": 44,
+    "badgeTextRatioMin": {
+      "light": 6.03,
+      "dark": 5.91
+    },
+    "badgeUiRatioMin": {
+      "light": 2.02,
+      "dark": 4.57
+    },
+    "badgeTextBelow45": [],
+    "badgeUiBelow3Dark": [],
+    "badgeUiBelow3Light": [
+      "warning/outline 2.2",
+      "warning/dot 2.2",
+      "success/dot 2.87",
+      "warning/dot 2.02"
+    ]
+  },
+  "runs": [
+    {
+      "id": "mantenimiento-apaisado-dark-ficha",
+      "route": "/operaciones/mantenimiento",
+      "overlay": "ficha",
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 45,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 16,
+      "badgeTextRatioMin": 6.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mantenimiento-apaisado-dark",
+      "route": "/operaciones/mantenimiento",
+      "overlay": null,
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 40,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 14,
+      "badgeTextRatioMin": 7.65,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mantenimiento-apaisado-light-ficha",
+      "route": "/operaciones/mantenimiento",
+      "overlay": "ficha",
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 45,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 16,
+      "badgeTextRatioMin": 6.85,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "mantenimiento-apaisado-light",
+      "route": "/operaciones/mantenimiento",
+      "overlay": null,
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 40,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 14,
+      "badgeTextRatioMin": 6.85,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "mantenimiento-vertical-dark-ficha",
+      "route": "/operaciones/mantenimiento",
+      "overlay": "ficha",
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 44,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 16,
+      "badgeTextRatioMin": 6.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mantenimiento-vertical-dark",
+      "route": "/operaciones/mantenimiento",
+      "overlay": null,
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 38,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 14,
+      "badgeTextRatioMin": 7.65,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mantenimiento-vertical-light-ficha",
+      "route": "/operaciones/mantenimiento",
+      "overlay": "ficha",
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 44,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 16,
+      "badgeTextRatioMin": 6.85,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "mantenimiento-vertical-light",
+      "route": "/operaciones/mantenimiento",
+      "overlay": null,
+      "user": "encargado@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 38,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 14,
+      "badgeTextRatioMin": 6.85,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "mi-turno-apaisado-dark-reportar",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": "reportar",
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 86,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mi-turno-apaisado-dark",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": null,
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 76,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mi-turno-apaisado-light-reportar",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": "reportar",
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 86,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2"
+      ]
+    },
+    {
+      "id": "mi-turno-apaisado-light",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": null,
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 76,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2"
+      ]
+    },
+    {
+      "id": "mi-turno-vertical-dark-reportar",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": "reportar",
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 84,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mi-turno-vertical-dark",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": null,
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 74,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mi-turno-vertical-light-reportar",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": "reportar",
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 84,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2"
+      ]
+    },
+    {
+      "id": "mi-turno-vertical-light",
+      "route": "/operaciones/pisos/mi-turno",
+      "overlay": null,
+      "user": "pisos@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 74,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 50,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2"
+      ]
+    },
+    {
+      "id": "mis-averias-apaisado-dark-nota",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": "nota",
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 39,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 5.91,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mis-averias-apaisado-dark",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": null,
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 36,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 5.91,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mis-averias-apaisado-light-nota",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": "nota",
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 39,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 6.2,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mis-averias-apaisado-light",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": null,
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 36,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 6.2,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mis-averias-vertical-dark-nota",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": "nota",
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 37,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 5.91,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mis-averias-vertical-dark",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": null,
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 34,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 5.91,
+      "badgeUiRatioMin": 5.91,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mis-averias-vertical-light-nota",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": "nota",
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 37,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 6.2,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "mis-averias-vertical-light",
+      "route": "/operaciones/mantenimiento/mis-averias",
+      "overlay": null,
+      "user": "mantenimiento@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": true,
+      "actionBarTargets": {
+        "count": 1,
+        "min": 44
+      },
+      "totals": {
+        "targets": 34,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 3,
+      "badgeTextRatioMin": 6.2,
+      "badgeUiRatioMin": 6.2,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "pisos-apaisado-dark-nueva-tarea",
+      "route": "/operaciones/pisos",
+      "overlay": "nueva-tarea",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 163,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 7.65,
+      "badgeUiRatioMin": 8.11,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "pisos-apaisado-dark",
+      "route": "/operaciones/pisos",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 157,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 7.65,
+      "badgeUiRatioMin": 8.11,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "pisos-apaisado-light-nueva-tarea",
+      "route": "/operaciones/pisos",
+      "overlay": "nueva-tarea",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 163,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 6.55,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "pisos-apaisado-light",
+      "route": "/operaciones/pisos",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 157,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 6.55,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "pisos-vertical-dark-nueva-tarea",
+      "route": "/operaciones/pisos",
+      "overlay": "nueva-tarea",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 161,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 7.65,
+      "badgeUiRatioMin": 8.11,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "pisos-vertical-dark",
+      "route": "/operaciones/pisos",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 155,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 7.65,
+      "badgeUiRatioMin": 8.11,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "pisos-vertical-light-nueva-tarea",
+      "route": "/operaciones/pisos",
+      "overlay": "nueva-tarea",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 161,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 6.55,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "pisos-vertical-light",
+      "route": "/operaciones/pisos",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": "comfortable",
+          "mode": "operational",
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 155,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 112,
+      "badgeTextRatioMin": 6.55,
+      "badgeUiRatioMin": 2.2,
+      "badgeUiBelow3": [
+        "warning/outline 2.2",
+        "warning/dot 2.2"
+      ]
+    },
+    {
+      "id": "tablero-apaisado-dark-ficha",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": "ficha",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 98,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 88,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "tablero-apaisado-dark",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 92,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 86,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "tablero-apaisado-light-ficha",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": "ficha",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 98,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 88,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        "success/dot 2.87",
+        "warning/dot 2.02",
+        "warning/outline 2.2"
+      ]
+    },
+    {
+      "id": "tablero-apaisado-light",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": true
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 92,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 86,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        "success/dot 2.87",
+        "warning/dot 2.02",
+        "warning/outline 2.2"
+      ]
+    },
+    {
+      "id": "tablero-vertical-dark-ficha",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": "ficha",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 96,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 88,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "tablero-vertical-dark",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "dark",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 90,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 86,
+      "badgeTextRatioMin": 6.19,
+      "badgeUiRatioMin": 4.57,
+      "badgeUiBelow3": []
+    },
+    {
+      "id": "tablero-vertical-light-ficha",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": "ficha",
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 96,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 88,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        "success/dot 2.87",
+        "warning/dot 2.02",
+        "warning/outline 2.2"
+      ]
+    },
+    {
+      "id": "tablero-vertical-light",
+      "route": "/recepcion/reservas/tablero",
+      "overlay": null,
+      "user": "gobernanta@uxday.test",
+      "viewport": {
+        "width": 820,
+        "height": 1180
+      },
+      "scheme": "light",
+      "coarse": true,
+      "hoverNone": true,
+      "pages": [
+        {
+          "density": null,
+          "mode": null,
+          "touchLaptop": false
+        }
+      ],
+      "actionBar": false,
+      "actionBarTargets": {
+        "count": 0,
+        "min": null
+      },
+      "totals": {
+        "targets": 90,
+        "below24": 0,
+        "below44": 0,
+        "inlineExempt": 0
+      },
+      "below24": [],
+      "below44Summary": [],
+      "badges": 86,
+      "badgeTextRatioMin": 6.03,
+      "badgeUiRatioMin": 2.02,
+      "badgeUiBelow3": [
+        "success/dot 2.87",
+        "warning/dot 2.02",
+        "warning/outline 2.2"
+      ]
+    }
+  ]
+}

@@ -34,11 +34,19 @@ export type HkBoardItem = { room: HkRoom; tasks: HkTask[] };
 export type HkTaskType = "departure_clean" | "stayover" | "inspection" | "deep_clean";
 export type HkPriority = "low" | "normal" | "high";
 
+/**
+ * Tanda UX-3 · P1: las escrituras diferidas del tablero («Marcar limpia» /
+ * «Inspeccionar» con «Deshacer» 8 s) viajan con `keepalive` cuando la ventana se
+ * vacía en `pagehide`, para que el POST sobreviva al cierre de la pestaña.
+ */
+export type HkWriteOptions = { keepalive?: boolean };
+
 export function fetchHousekeepingBoard(propertyId = getActivePropertyId()) {
   return apiRequest<HkBoardItem[]>(`/properties/${propertyId}/housekeeping/board`);
 }
+/** POST /housekeeping/tasks: el API admite `assignedTo` (nombre o correo de la camarera) desde siempre; el tablero lo envía desde UX-3 · P1 («Asignar a»). */
 export function createHousekeepingTask(
-  payload: { roomId: string; taskType: HkTaskType; priority?: HkPriority },
+  payload: { roomId: string; taskType: HkTaskType; priority?: HkPriority; assignedTo?: string },
   propertyId = getActivePropertyId()
 ) {
   return apiRequest<HkTask>(`/housekeeping/tasks`, { method: "POST", body: { propertyId, ...payload } });
@@ -46,9 +54,9 @@ export function createHousekeepingTask(
 export function updateHousekeepingTask(id: string, patch: { status?: string; priority?: HkPriority; assignedTo?: string }) {
   return apiRequest<HkTask>(`/housekeeping/tasks/${id}`, { method: "PATCH", body: patch });
 }
-export function markRoomClean(roomId: string) {
-  return apiRequest<HkRoom>(`/rooms/${roomId}/mark-clean`, { method: "POST" });
+export function markRoomClean(roomId: string, options: HkWriteOptions = {}) {
+  return apiRequest<HkRoom>(`/rooms/${roomId}/mark-clean`, { method: "POST", keepalive: options.keepalive });
 }
-export function markRoomInspected(roomId: string) {
-  return apiRequest<HkRoom>(`/rooms/${roomId}/mark-inspected`, { method: "POST" });
+export function markRoomInspected(roomId: string, options: HkWriteOptions = {}) {
+  return apiRequest<HkRoom>(`/rooms/${roomId}/mark-inspected`, { method: "POST", keepalive: options.keepalive });
 }

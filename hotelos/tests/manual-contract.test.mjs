@@ -564,6 +564,49 @@ describe("Contrato del manual de uso · ehotelOS", () => {
     assert.deepEqual(problems, [], `Plan de formación fuera de contrato (${problems.length}):\n${problems.join("\n")}`);
   });
 
+  it("plan de formación y FAQ con la copia de pisos y mantenimiento de UX-3 (content/pisos-actions.ts; corrector UX-3-REV-M03)", () => {
+    // Los avisos que fija content/pisos-actions.ts (PISOS_TOASTS / MANT_TOASTS) tienen que leerse igual en la formación y en la FAQ; un
+    // cambio de copia en el código rompe aquí para que los documentos se actualicen a la vez. Se leen del fuente, no se importa el .ts.
+    const actions = read("apps/admin-web/src/content/pisos-actions.ts");
+    const template = (name) => {
+      const match = actions.match(new RegExp(`\\b${name}: \\([^)]*\\) =>[^\`]*\`([^\`]+)\``));
+      assert.ok(match, `content/pisos-actions.ts define ${name}`);
+      return match[1];
+    };
+    // Parte fija tras el último marcador (`Hab. ${n} → Limpia · tarea cerrada` → «→ Limpia · tarea cerrada»): los documentos ponen números reales.
+    const fixed = (source) => source.split(/\$\{[^}]+\}/).pop().trim();
+    const expected = {
+      hkCleanTaskClosed: fixed(template("hkCleanTaskClosed")), // «→ Limpia · tarea cerrada»
+      incidentReported: "enviada a mantenimiento", // «Avería de la NNN enviada a mantenimiento · 1 foto»
+      taken: fixed(template("taken")), // «→ En curso · asignado a ti»
+      statusChanged: "→ En curso", // «Parte X → <estado>» con la etiqueta del diccionario
+      undoExpired: fixed(template("undoExpired")) // «ya enviada: no se puede deshacer.»
+    };
+    for (const [key, literal] of Object.entries(expected)) assert.ok(literal.length >= 10, `${key}: literal fijo legible («${literal}»)`);
+    assert.match(actions, /incidentReported: \(n: string, photos = 0\) =>/);
+    assert.match(actions, /taken: \(t: string\) => `Parte \$\{t\} → En curso · asignado a ti`/);
+    const plan = read(`${MANUAL_DIR}/${PLAN}`);
+    const faq = read(`${MANUAL_DIR}/${FAQ}`);
+    const problems = [];
+    for (const [key, literal] of Object.entries(expected)) {
+      const target = key === "undoExpired" ? [["plan", plan], ["faq", faq]] : key === "statusChanged" || key === "taken" ? [["plan", plan]] : [["plan", plan], ...(key === "incidentReported" ? [["faq", faq]] : [])];
+      for (const [name, text] of target) if (!text.includes(literal)) problems.push(`${name}: no lleva «${literal}» (${key})`);
+    }
+    const stale = [
+      ["Incidencia reportada a mantenimiento", "aviso anterior a UX-3 (ahora «Avería de la NNN enviada a mantenimiento»)"],
+      ["Estado actualizado.", "aviso anterior a UX-3 (ahora «Parte X → <estado>»)"],
+      ["no cierra su tarea", "desde UX-3 «Limpia» cierra la tarea (D1)"],
+      ["no la asigna a nadie", "desde FIX-1 «Tomar» asigna el parte a quien lo toma"],
+      ["Mantenimiento: blocked", "el estado de mantenimiento se pinta por diccionario («Bloqueada»)"],
+      ["Aviso «Nota guardada»", "aviso anterior a UX-3 (ahora «Nota añadida al parte X.»)"],
+      ["campo «Incidencia»", "el cajón «Reportar incidencia» es de motivo + foto desde UX-3"]
+    ];
+    for (const [literal, why] of stale) {
+      for (const [name, text] of [["plan", plan], ["faq", faq]]) if (text.includes(literal)) problems.push(`${name}: conserva «${literal}» (${why})`);
+    }
+    assert.deepEqual(problems, [], `Copia de pisos/mantenimiento fuera de contrato (${problems.length}):\n${problems.join("\n")}`);
+  });
+
   it("faq", () => {
     const path = `${MANUAL_DIR}/${FAQ}`;
     assert.ok(exists(path), `${path} no existe`);

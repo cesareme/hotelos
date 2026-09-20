@@ -51,6 +51,8 @@ playwright-report/
 test-results/
 # Tanda UX-1: medida automatizada del camino óptimo (baseline copiada a docs/audits/ux-recepcion/)
 apps/admin-web/e2e/measure/results.json
+# Tanda UX-3: medida de pisos/mantenimiento p1…p6 (baseline copiada a docs/audits/ux-pisos/)
+apps/admin-web/e2e/measure/results-pisos.json
 
 # Lockfiles for tools we don't ship
 .npm/_logs/

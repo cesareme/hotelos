@@ -11,17 +11,17 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 245,
-    "lines": 107434,
+    "files": 246,
+    "lines": 109015,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1241,
+    "cocoaButtons": 1251,
     "rawTables": 1,
     "cocoaTables": 315,
     "rawInputs": 0,
-    "cocoaInputs": 1255,
+    "cocoaInputs": 1258,
     "inlineStyles": 624,
     "cocoaCards": 35,
     "colourLiterals": 0,
@@ -33,9 +33,9 @@
     "debtPoints": 175
   },
   "bySize": {
-    "S": 98,
-    "M": 117,
-    "L": 22,
+    "S": 99,
+    "M": 116,
+    "L": 23,
     "XL": 8
   },
   "byArchetype": {
@@ -47,7 +47,7 @@
     "workspace": 6,
     "calendario": 6,
     "chat": 1,
-    "dialogo": 24,
+    "dialogo": 25,
     "contenedor": 41,
     "otro": 15
   },
@@ -205,11 +205,11 @@
     },
     "operaciones": {
       "label": "Operaciones",
-      "files": 37,
-      "lines": 15693,
+      "files": 38,
+      "lines": 17043,
       "debtPoints": 34,
       "sizes": {
-        "S": 13,
+        "S": 14,
         "M": 21,
         "L": 2,
         "XL": 1
@@ -217,7 +217,7 @@
       "archetypes": {
         "dashboard": 13,
         "lista": 2,
-        "dialogo": 15,
+        "dialogo": 16,
         "otro": 1,
         "asistente": 2,
         "contenedor": 4
@@ -242,12 +242,12 @@
     "recepcion": {
       "label": "Recepción",
       "files": 19,
-      "lines": 11757,
+      "lines": 11988,
       "debtPoints": 15,
       "sizes": {
         "S": 5,
-        "M": 8,
-        "L": 5,
+        "M": 7,
+        "L": 6,
         "XL": 1
       },
       "archetypes": {
@@ -4891,9 +4891,9 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 364,
+      "lines": 534,
       "metrics": {
-        "lines": 364,
+        "lines": 534,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4902,7 +4902,7 @@
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
-        "cocoaInputs": 2,
+        "cocoaInputs": 4,
         "inlineStyles": 6,
         "cocoaCards": 1,
         "colourLiterals": 0,
@@ -4929,9 +4929,9 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 414,
+      "lines": 704,
       "metrics": {
-        "lines": 414,
+        "lines": 704,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4940,7 +4940,7 @@
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
-        "cocoaInputs": 1,
+        "cocoaInputs": 0,
         "inlineStyles": 8,
         "cocoaCards": 1,
         "colourLiterals": 0,
@@ -5043,18 +5043,18 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 461,
+      "lines": 730,
       "metrics": {
-        "lines": 461,
+        "lines": 730,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 8,
+        "cocoaButtons": 9,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
-        "cocoaInputs": 6,
+        "cocoaInputs": 7,
         "inlineStyles": 5,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -5081,14 +5081,14 @@
         "operaciones"
       ],
       "archetype": "dashboard",
-      "lines": 375,
+      "lines": 709,
       "metrics": {
-        "lines": 375,
+        "lines": 709,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 7,
+        "cocoaButtons": 10,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -5511,6 +5511,40 @@
       "size": "M"
     },
     {
+      "path": "apps/admin-web/src/screens/operations/ReportIncidentDrawer.tsx",
+      "name": "ReportIncidentDrawer",
+      "screenKeys": [],
+      "category": "operaciones",
+      "categories": [],
+      "archetype": "dialogo",
+      "lines": 287,
+      "metrics": {
+        "lines": 287,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 5,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 1,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
       "path": "apps/admin-web/src/screens/operations/reputation/QualityCaseDrawer.tsx",
       "name": "QualityCaseDrawer",
       "screenKeys": [],
@@ -5869,14 +5903,14 @@
         "recepcion"
       ],
       "archetype": "dashboard",
-      "lines": 591,
+      "lines": 822,
       "metrics": {
-        "lines": 591,
+        "lines": 822,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 10,
+        "cocoaButtons": 11,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -5894,7 +5928,7 @@
       },
       "headerExempt": false,
       "debtPoints": 1,
-      "size": "M"
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/operations/SafetyDashboard.tsx",

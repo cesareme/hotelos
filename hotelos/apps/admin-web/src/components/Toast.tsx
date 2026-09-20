@@ -2,7 +2,9 @@
 // Cocoa 22 (`components/cocoa/CocoaToast`): content bg, radius 12, shadow
 // popover, 3 px tone bar, `--cocoa-z-toast`; desktop bottom-right above the
 // action bars (`--hotelos-toast-offset`), phone below the toolbar at full
-// width. Max 3 visible, 4 s by default, role=status / alert.
+// width. Max 3 (the STORE evicts the overflow: oldest without an action first,
+// then the oldest with one; an evicted toast never comes back — corrector
+// UX-3-REV-01), 4 s by default, role=status / alert.
 //
 // Tanda UX-1 · U4 (docs/design/UX-RECEPCION-FEEL.md §4 «Toast con acción /
 // deshacer», F17, F29): `showToast(message, { action, pauseOnHover,
@@ -62,6 +64,24 @@ export const DEFAULT_DURATION = 4000;
 /** A toast that offers an action («Deshacer») stays long enough to reach it (P4: 8 s). */
 export const ACTION_DURATION = 8000;
 
+/**
+ * At most `max` toasts, newest kept (pure). Corrector UX-3-REV-01: the host used
+ * to HIDE the overflow (`slice(-MAX_VISIBLE)`) and repaint it later with its
+ * timer restarted — a «Deshacer» whose deferred write had already travelled.
+ * The store now EVICTS: the oldest toasts WITHOUT an action go first, then the
+ * oldest with one; an evicted toast is gone for good (its deferred window, if
+ * any, keeps running and the write travels as if the toast had timed out).
+ */
+export function capToasts(toasts: readonly ToastRecord[], max: number = MAX_VISIBLE): ToastRecord[] {
+  if (toasts.length <= max) return [...toasts];
+  const keep = new Set<number>();
+  for (let index = toasts.length - 1; index >= 0 && keep.size < max; index -= 1) {
+    if (toasts[index].action) keep.add(toasts[index].id);
+  }
+  for (let index = toasts.length - 1; index >= 0 && keep.size < max; index -= 1) keep.add(toasts[index].id);
+  return toasts.filter((toast) => keep.has(toast.id));
+}
+
 /** Duration of a toast (pure): explicit, else 8 s with an action, else 4 s. */
 export function toastDuration(options?: Pick<ToastOptions, "duration" | "action">): number {
   if (options?.duration !== undefined) return options.duration;
@@ -112,7 +132,7 @@ export function createToastStore(announceText: (text: string, politeness: "polit
         pauseOnHover: options?.pauseOnHover ?? true,
         announced: announcement !== null
       };
-      toasts = [...toasts, record];
+      toasts = capToasts([...toasts, record]);
       emit();
       if (announcement !== null) announceText(announcement, variant === "error" ? "assertive" : "polite");
       return id;
@@ -183,11 +203,10 @@ export function ToastHost() {
   // SSR guard: only render on the client where document is available.
   if (typeof document === "undefined") return null;
 
-  const visible = toasts.slice(-MAX_VISIBLE);
-
+  // The store already caps at MAX_VISIBLE (capToasts): nothing is hidden here, so no toast ever comes back with a stale action.
   return createPortal(
     <CocoaToastViewport>
-      {visible.map((toast) => (
+      {toasts.map((toast) => (
         <CocoaToast key={toast.id} id={toast.id} message={toast.message} variant={toast.variant} duration={toast.duration} action={toast.action} pauseOnHover={toast.pauseOnHover} announced={toast.announced} onDismiss={handleDismiss} />
       ))}
     </CocoaToastViewport>,

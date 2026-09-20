@@ -7,6 +7,12 @@
 // `window` and `document` exist and hands the original file back on any
 // failure, so a decode the browser cannot do (HEIC on some desktops) never
 // blocks the capture. PDFs and XML e-invoices are never touched.
+//
+// `{ force: true }` (Tanda UX-3 · corrector REV-L01, fotos del parte): the
+// canvas re-encode is ALSO the only step that drops the EXIF block (GPS,
+// device model, timestamp) of a gallery picture, so a caller that stores the
+// bytes for other people to download can force it: the `small_enough` skip is
+// off and the canvas JPEG is returned even when it is not smaller.
 
 export const CAPTURE_MAX_SIDE_PX = 1600;
 export const CAPTURE_JPEG_QUALITY = 0.82;
@@ -32,14 +38,19 @@ export type CompressionPlan = {
 
 export type CompressionInput = { width: number; height: number; sizeBytes: number; mimeType: string };
 
-/** Pure plan: PDF / XML / unknown → skip; image within 1.600 px and under 512 KiB → skip; otherwise scale the long side to 1.600 px (aspect kept) at quality 0,82. */
-export function planCompression({ width, height, sizeBytes, mimeType }: CompressionInput): CompressionPlan {
+export type CompressionOptions = {
+  /** Always re-encode a decodable image (no `small_enough` skip, canvas JPEG kept even if larger): strips EXIF metadata. */
+  force?: boolean;
+};
+
+/** Pure plan: PDF / XML / unknown → skip; image within 1.600 px and under 512 KiB → skip (unless `force`); otherwise scale the long side to 1.600 px (aspect kept) at quality 0,82. */
+export function planCompression({ width, height, sizeBytes, mimeType }: CompressionInput, options: CompressionOptions = {}): CompressionPlan {
   const mime = (mimeType ?? "").trim().toLowerCase();
   const skipped = (reason: CompressionSkipReason): CompressionPlan => ({ skip: true, reason, targetWidth: width, targetHeight: height, quality: CAPTURE_JPEG_QUALITY, outputMimeType: null });
   if (!COMPRESSIBLE.has(mime)) return skipped("not_image");
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return skipped("no_dimensions");
   const longSide = Math.max(width, height);
-  if (longSide <= CAPTURE_MAX_SIDE_PX && sizeBytes <= CAPTURE_SKIP_BELOW_BYTES) return skipped("small_enough");
+  if (!options.force && longSide <= CAPTURE_MAX_SIDE_PX && sizeBytes <= CAPTURE_SKIP_BELOW_BYTES) return skipped("small_enough");
   const scale = Math.min(1, CAPTURE_MAX_SIDE_PX / longSide);
   return {
     skip: false,
@@ -101,19 +112,21 @@ function toJpegBlob(canvas: HTMLCanvasElement, quality: number): Promise<Blob | 
 /**
  * Scale and re-encode a captured image following `planCompression`; the
  * original file comes back untouched outside a browser, for a skipped plan, when
- * the image cannot be decoded, or when the JPEG would not be smaller. The
- * browser applies the EXIF orientation while decoding (`image-orientation:
- * from-image`, default since 2020), so a phone photo lands upright.
+ * the image cannot be decoded, or when the JPEG would not be smaller (unless
+ * `force`: the canvas JPEG is kept whatever its size, so the EXIF block never
+ * travels). The browser applies the EXIF orientation while decoding
+ * (`image-orientation: from-image`, default since 2020), so a phone photo lands
+ * upright — also in the forced re-encode.
  */
-export async function compressImageFile(file: File): Promise<CompressResult> {
+export async function compressImageFile(file: File, options: CompressionOptions = {}): Promise<CompressResult> {
   if (typeof window === "undefined" || typeof document === "undefined") return untouched(file);
-  const quick = planCompression({ width: 0, height: 0, sizeBytes: file.size, mimeType: file.type });
+  const quick = planCompression({ width: 0, height: 0, sizeBytes: file.size, mimeType: file.type }, options);
   if (quick.reason === "not_image") return untouched(file, quick);
   const image = await decodeImage(file);
   if (!image) return untouched(file, quick);
   const width = image.naturalWidth;
   const height = image.naturalHeight;
-  const plan = planCompression({ width, height, sizeBytes: file.size, mimeType: file.type });
+  const plan = planCompression({ width, height, sizeBytes: file.size, mimeType: file.type }, options);
   if (plan.skip) return untouched(file, plan, width, height);
   const canvas = document.createElement("canvas");
   canvas.width = plan.targetWidth;
@@ -122,7 +135,7 @@ export async function compressImageFile(file: File): Promise<CompressResult> {
   if (!context) return untouched(file, plan, width, height);
   context.drawImage(image, 0, 0, plan.targetWidth, plan.targetHeight);
   const blob = await toJpegBlob(canvas, plan.quality);
-  if (!blob || blob.size === 0 || blob.size >= file.size) return untouched(file, plan, width, height);
+  if (!blob || blob.size === 0 || (!options.force && blob.size >= file.size)) return untouched(file, plan, width, height);
   const compressed = new File([blob], jpegFileName(file.name), { type: "image/jpeg", lastModified: file.lastModified });
   return { file: compressed, compressed: true, originalBytes: file.size, width, height, plan };
 }

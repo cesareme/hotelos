@@ -16,24 +16,37 @@
 // leyenda son CocoaButton (objetivo ≥ 24 px con ratón, 44 con el dedo) con un
 // CocoaStatusBadge `dot` del diccionario dentro: punto en el tono + icono +
 // etiqueta, sin cuadrado de 10 px pintado a mano.
+//
+// Tanda UX-3 · P1 (docs/design/UX-PISOS-MANTENIMIENTO-FEEL.md §4.5, §5; solo
+// el cajón de la casilla): «Marcar limpia» / «Marcar sucia» / «Inspeccionada»
+// son optimistas sobre el rack (`useApiData.mutate`) con toast con número y
+// «Deshacer» (limpia e inspeccionada con escritura DIFERIDA 8 s,
+// deferred-commit.ts: deshacer = no se envía; sucia con POST inverso).
+// «Bloquear habitación» abre un CocoaDialog nominal («Bloquear la 305» /
+// «Mantenerla en venta», destructivo); «Desbloquear habitación» es directo con
+// «Habitación 305 desbloqueada.» y «Deshacer» (vuelve a bloquear). `busy` POR
+// casilla. La recepción (tiles, filtros, check-in/out) no cambia.
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
 import { floorKey, floorTitle } from "./room-rack-labels";
+import { deferredCommit, undoDeferred, type DeferredFlushReason } from "./deferred-commit";
+import { HK_UNDO_MS } from "./housekeeping-task-actions";
 import { useTabHost } from "../tabs/TabHost";
 import { useToast } from "../../components/Toast";
 import { date, money, number, plural, time } from "../../lib/format";
 import { ACTIONS } from "../../content/actions";
+import { PISOS_ACTIONS, PISOS_TOASTS } from "../../content/pisos-actions";
 import {
   CocoaBadge,
   CocoaStatusBadge,
   CocoaButton,
   CocoaCallout,
   CocoaCard,
+  CocoaDialog,
   CocoaDrawer,
   CocoaKpi,
   CocoaKpiStrip,
@@ -113,6 +126,9 @@ type RackData = {
   };
 };
 
+/** Limpieza que escribe el cajón (vocabulario cerrado de /rooms/:id/housekeeping-status). */
+type HkWrite = "clean" | "dirty" | "inspected";
+
 // ============================================================== display
 
 // Ocupación del tile → entrada del diccionario común (UX-1 · U2, D5): la
@@ -171,14 +187,41 @@ const mutedStyle: CSSProperties = { display: "block", fontSize: "var(--cocoa-fs-
 // ============================================================== helpers
 
 // SECURITY (auditoría 2026-07): antes era `fetch` crudo sin Authorization → 401
-// en producción. Ahora va por apiRequest (JWT + manejo de sesión).
-async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; message?: string }> {
-  try {
-    await apiRequest(path, { method: "POST", body });
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : "No se pudo completar la acción." };
-  }
+// en producción. Las escrituras van por el `request` vigilado de
+// `useApiData.mutate` (apiRequest: JWT + manejo de sesión + `keepalive`).
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : "No se pudo completar la acción.");
+
+// Reglas puras del rack optimista (UX-3 · P1): la casilla cambia al instante y
+// los totales se recuentan a partir de los tiles; la revalidación tras la
+// escritura trae la verdad del API.
+function isVacant(tile: Tile): boolean {
+  return tile.occupancy === "vacant_clean" || tile.occupancy === "vacant_dirty";
+}
+
+/** Casilla con otra limpieza: una libre espeja el estado (limpia/inspeccionada → «Limpia», sucia → «Sucia»); una ocupada o bloqueada conserva su ocupación. */
+function tileWithHousekeeping(tile: Tile, housekeeping: HkWrite): Tile {
+  const vacant = isVacant(tile);
+  const occupancy: Occupancy = vacant ? (housekeeping === "dirty" ? "vacant_dirty" : "vacant_clean") : tile.occupancy;
+  return { ...tile, housekeepingStatus: housekeeping, status: vacant ? housekeeping : tile.status, occupancy };
+}
+
+/** Casilla bloqueada (no vendible → fuera de servicio) o de vuelta al inventario con su limpieza. */
+function tileWithSellable(tile: Tile, sellable: boolean): Tile {
+  if (!sellable) return { ...tile, occupancy: "out_of_order", status: "out_of_service" };
+  const housekeeping = tile.housekeepingStatus ?? "dirty";
+  return { ...tile, occupancy: housekeeping === "dirty" ? "vacant_dirty" : "vacant_clean", status: housekeeping };
+}
+
+function recountTotals(totals: RackData["totals"], floors: Floor[]): RackData["totals"] {
+  const tiles = floors.flatMap((f) => f.rooms);
+  const count = (...kinds: Occupancy[]) => tiles.filter((t) => kinds.includes(t.occupancy)).length;
+  return { ...totals, vacantClean: count("vacant_clean"), vacantDirty: count("vacant_dirty"), outOfOrder: count("out_of_order", "blocked_maintenance") };
+}
+
+/** Rack con la casilla `roomId` transformada y los totales recontados (las demás casillas, intactas). */
+function rackWithTile(prev: RackData, roomId: string, update: (tile: Tile) => Tile): RackData {
+  const floors = prev.floors.map((f) => ({ ...f, rooms: f.rooms.map((r) => (r.roomId === roomId ? update(r) : r)) }));
+  return { ...prev, floors, totals: recountTotals(prev.totals ?? EMPTY_TOTALS, floors) };
 }
 
 function RackSkeleton() {
@@ -196,7 +239,7 @@ export function RoomRackScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const propertyId = getActivePropertyId();
-  const { data, loading, error, refresh } = useApiData<RackData>(`/dashboards/room-rack?propertyId=${propertyId}`, { pollIntervalMs: 30000 });
+  const { data, loading, error, refresh, mutate } = useApiData<RackData>(`/dashboards/room-rack?propertyId=${propertyId}`, { pollIntervalMs: 30000 });
 
   const [filterOcc, setFilterOcc] = useState<Set<Occupancy>>(new Set());
   const [filterFloor, setFilterFloor] = useState<string | "all">("all");
@@ -204,7 +247,45 @@ export function RoomRackScreen() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [checkInResId, setCheckInResId] = useState<string | null>(null);
   const [checkOutResId, setCheckOutResId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // Ocupado POR casilla (F1): solo la habitación cuya petición está en vuelo se apaga.
+  const [busyRooms, setBusyRooms] = useState<ReadonlySet<string>>(() => new Set());
+  // Diálogo nominal de bloqueo (F8): la casilla que se va a bloquear.
+  const [blockPrompt, setBlockPrompt] = useState<Tile | null>(null);
+
+  // Escrituras diferidas con deshacer (§5): una ventana por casilla; se vacían
+  // al ocultar la página (`keepalive`) y al salir del tablero.
+  const pendingByRoom = useRef(new Map<string, ReturnType<typeof deferredCommit>>());
+  const flushPending = useCallback((reason: DeferredFlushReason = "manual") => {
+    for (const pending of pendingByRoom.current.values()) pending.flush(reason);
+  }, []);
+  useEffect(() => {
+    const onPageHide = () => flushPending("pagehide");
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      flushPending("manual");
+    };
+  }, [flushPending]);
+
+  // «Actualizar» con escrituras pendientes: primero se envían (la revalidación
+  // llega sola al terminar la mutación).
+  const refreshRack = useCallback(() => {
+    if (pendingByRoom.current.size > 0) {
+      flushPending("manual");
+      return;
+    }
+    refresh();
+  }, [flushPending, refresh]);
+
+  const setRoomBusy = useCallback((roomId: string, on: boolean) => {
+    setBusyRooms((prev) => {
+      if (prev.has(roomId) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(roomId);
+      else next.delete(roomId);
+      return next;
+    });
+  }, []);
 
   const totals = data?.totals ?? EMPTY_TOTALS;
   // Floors normalised and merged by key so every spelling of «no floor» is one
@@ -267,20 +348,144 @@ export function RoomRackScreen() {
     setQuery("");
   }
 
-  async function handleBlockRoom(roomId: string, sellable: boolean) {
-    setBusy(true);
-    const result = await postAction(`/rooms/${roomId}/sellable`, { sellable });
-    setBusy(false);
-    showToast(result.ok ? (sellable ? "Habitación desbloqueada" : "Habitación bloqueada") : (result.message ?? "No se pudo completar la acción."), { variant: result.ok ? "success" : "warning" });
-    if (result.ok) refresh();
+  /** «Bloquear la 305» (confirmado en el diálogo nominal): casilla fuera del inventario al instante, POST sellable:false, toast con número. */
+  async function blockRoom(tile: Tile) {
+    const { roomId, roomNumber } = tile;
+    setBlockPrompt(null);
+    setRoomBusy(roomId, true);
+    try {
+      await mutate(
+        (prev) => rackWithTile(prev, roomId, (t) => tileWithSellable(t, false)),
+        (request) => request<void>(`/rooms/${roomId}/sellable`, { method: "POST", body: { sellable: false } })
+      );
+      showToast(PISOS_TOASTS.roomBlocked(roomNumber), { variant: "success" });
+    } catch (e) {
+      // Rollback ya hecho por `mutate` (409 si la bloquea un parte, 403 sin permiso…).
+      showToast(errorMessage(e), { variant: "error" });
+    } finally {
+      setRoomBusy(roomId, false);
+    }
   }
 
-  async function handleHkStatus(roomId: string, status: string) {
-    setBusy(true);
-    const result = await postAction(`/rooms/${roomId}/housekeeping-status`, { status });
-    setBusy(false);
-    showToast(result.ok ? `Habitación marcada como ${roomStatus(status).label.toLowerCase()}` : (result.message ?? "No se pudo completar la acción."), { variant: result.ok ? "success" : "warning" });
-    if (result.ok) refresh();
+  /** «Desbloquear habitación»: directo, toast «Habitación 305 desbloqueada.» con «Deshacer» (POST inverso sellable:false). */
+  async function unblockRoom(tile: Tile) {
+    const { roomId, roomNumber } = tile;
+    setRoomBusy(roomId, true);
+    try {
+      await mutate(
+        (prev) => rackWithTile(prev, roomId, (t) => tileWithSellable(t, true)),
+        (request) => request<void>(`/rooms/${roomId}/sellable`, { method: "POST", body: { sellable: true } }),
+        {
+          undo: {
+            label: PISOS_TOASTS.roomUnblocked(roomNumber),
+            onUndo: async () => {
+              await mutate(
+                (prev) => rackWithTile(prev, roomId, (t) => tileWithSellable(t, false)),
+                (request) => request<void>(`/rooms/${roomId}/sellable`, { method: "POST", body: { sellable: false } })
+              );
+              showToast(PISOS_TOASTS.roomBlocked(roomNumber), { variant: "info" });
+            }
+          }
+        }
+      );
+    } catch (e) {
+      showToast(errorMessage(e), { variant: "error" });
+    } finally {
+      setRoomBusy(roomId, false);
+    }
+  }
+
+  /**
+   * «Marcar limpia» / «Inspeccionada»: cambio optimista, toast con número y
+   * «Deshacer», POST diferido 8 s (deferred-commit.ts). Deshacer cancela la
+   * ventana (no se envía nada) y devuelve la casilla a su estado anterior.
+   */
+  async function deferHkWrite(tile: Tile, housekeeping: Exclude<HkWrite, "dirty">) {
+    const { roomId, roomNumber } = tile;
+    const previous: HkWrite = tile.housekeepingStatus === "inspected" ? "inspected" : tile.housekeepingStatus === "clean" ? "clean" : "dirty";
+    // Una ventana por casilla: la segunda acción vacía la anterior (§5).
+    pendingByRoom.current.get(roomId)?.flush();
+    const pending = deferredCommit(HK_UNDO_MS);
+    pendingByRoom.current.set(roomId, pending);
+    const message = housekeeping === "clean" ? PISOS_TOASTS.roomClean(roomNumber) : PISOS_TOASTS.roomInspected(roomNumber);
+    showToast(message, {
+      variant: "success",
+      duration: HK_UNDO_MS,
+      // El toast y la ventana corren en paralelo: pausar el toast (ratón o foco) no pausa la escritura (UX-3-REV-01).
+      pauseOnHover: false,
+      action: {
+        label: PISOS_ACTIONS.undo,
+        onAction: () => {
+          // Ventana ya agotada o vaciada: la escritura viajó; se avisa en vez de callar (UX-3-REV-01).
+          if (!undoDeferred(pending, () => showToast(PISOS_TOASTS.undoExpired(roomNumber), { variant: "warning" }))) return;
+          // Inversa optimista sin petición: la casilla vuelve a como estaba.
+          void mutate(
+            (prev) => rackWithTile(prev, roomId, (t) => tileWithHousekeeping(t, previous)),
+            async () => undefined
+          );
+          showToast(PISOS_TOASTS.undone(roomNumber), { variant: "info" });
+        }
+      },
+      announce: message
+    });
+    try {
+      await mutate(
+        (prev) => rackWithTile(prev, roomId, (t) => tileWithHousekeeping(t, housekeeping)),
+        async (request) => {
+          const go = await pending.wait();
+          if (!go) return; // Deshacer: no se envía nada.
+          setRoomBusy(roomId, true);
+          try {
+            await request<void>(`/rooms/${roomId}/housekeeping-status`, {
+              method: "POST",
+              body: { status: housekeeping },
+              keepalive: pending.reason() === "pagehide"
+            });
+          } finally {
+            setRoomBusy(roomId, false);
+          }
+        }
+      );
+    } catch (e) {
+      showToast(errorMessage(e), { variant: "error" });
+    } finally {
+      if (pendingByRoom.current.get(roomId) === pending) pendingByRoom.current.delete(roomId);
+    }
+  }
+
+  /** «Marcar sucia»: directo con «Deshacer» (POST inverso a la limpieza anterior: clean o inspected). */
+  async function markDirty(tile: Tile) {
+    const { roomId, roomNumber } = tile;
+    const previous: Exclude<HkWrite, "dirty"> = tile.housekeepingStatus === "inspected" ? "inspected" : "clean";
+    pendingByRoom.current.get(roomId)?.flush();
+    setRoomBusy(roomId, true);
+    try {
+      await mutate(
+        (prev) => rackWithTile(prev, roomId, (t) => tileWithHousekeeping(t, "dirty")),
+        (request) => request<void>(`/rooms/${roomId}/housekeeping-status`, { method: "POST", body: { status: "dirty" } }),
+        {
+          undo: {
+            label: PISOS_TOASTS.roomDirty(roomNumber),
+            onUndo: async () => {
+              await mutate(
+                (prev) => rackWithTile(prev, roomId, (t) => tileWithHousekeeping(t, previous)),
+                (request) => request<void>(`/rooms/${roomId}/housekeeping-status`, { method: "POST", body: { status: previous } })
+              );
+              showToast(previous === "inspected" ? PISOS_TOASTS.roomInspected(roomNumber) : PISOS_TOASTS.roomClean(roomNumber), { variant: "info" });
+            }
+          }
+        }
+      );
+    } catch (e) {
+      showToast(errorMessage(e), { variant: "error" });
+    } finally {
+      setRoomBusy(roomId, false);
+    }
+  }
+
+  function handleHkStatus(tile: Tile, status: HkWrite) {
+    if (status === "dirty") void markDirty(tile);
+    else void deferHkWrite(tile, status);
   }
 
   // Audit 2026-06 · #10: first-load guard. Before any data arrives the derived
@@ -310,15 +515,15 @@ export function RoomRackScreen() {
               Sin actualizar
             </CocoaBadge>
           ) : null}
-          <CocoaButton variant="bordered" tone="neutral" size="small" loading={loading && data !== null} onClick={refresh}>
+          <CocoaButton variant="bordered" tone="neutral" size="small" loading={loading && data !== null} onClick={refreshRack}>
             {ACTIONS.refresh}
           </CocoaButton>
         </>
       }
       state={pageState}
       skeleton={<RackSkeleton />}
-      error={{ title: "No se pudo cargar el tablero de habitaciones", message: error ?? undefined, onRetry: refresh }}
-      commands={[{ id: "tablero-refresh", label: "Actualizar tablero de habitaciones", run: refresh }]}
+      error={{ title: "No se pudo cargar el tablero de habitaciones", message: error ?? undefined, onRetry: refreshRack }}
+      commands={[{ id: "tablero-refresh", label: "Actualizar tablero de habitaciones", run: refreshRack }]}
     >
       <CocoaKpiStrip stagger aria-label="Estado de las habitaciones">
         <CocoaKpi label="Ocupadas" value={number(totals.occupied)} />
@@ -412,7 +617,7 @@ export function RoomRackScreen() {
         {selectedTile ? (
           <RoomDetail
             tile={selectedTile}
-            busy={busy}
+            busy={busyRooms.has(selectedTile.roomId)}
             onCheckIn={(resId) => {
               setSelectedRoomId(null);
               setCheckInResId(resId);
@@ -421,11 +626,27 @@ export function RoomRackScreen() {
               setSelectedRoomId(null);
               setCheckOutResId(resId);
             }}
-            onBlock={(roomId, sellable) => void handleBlockRoom(roomId, sellable)}
-            onHkStatus={(roomId, status) => void handleHkStatus(roomId, status)}
+            onBlock={(tile) => setBlockPrompt(tile)}
+            onUnblock={(tile) => void unblockRoom(tile)}
+            onHkStatus={handleHkStatus}
           />
         ) : null}
       </CocoaDrawer>
+
+      <CocoaDialog
+        open={blockPrompt !== null}
+        onClose={() => setBlockPrompt(null)}
+        tone="destructive"
+        size="sm"
+        title={blockPrompt ? PISOS_ACTIONS.blockRoomConfirm(blockPrompt.roomNumber) : PISOS_ACTIONS.blockRoom}
+        description={blockPrompt ? `La habitación ${blockPrompt.roomNumber} sale del inventario y deja de venderse hasta que la desbloquees.` : undefined}
+        confirmLabel={blockPrompt ? PISOS_ACTIONS.blockRoomConfirm(blockPrompt.roomNumber) : PISOS_ACTIONS.blockRoom}
+        cancelLabel={PISOS_ACTIONS.keepRoomOnSale}
+        busy={blockPrompt ? busyRooms.has(blockPrompt.roomId) : false}
+        onConfirm={() => {
+          if (blockPrompt) void blockRoom(blockPrompt);
+        }}
+      />
 
       {checkInResId ? (
         <QuickCheckInDrawer
@@ -515,14 +736,18 @@ function RoomDetail({
   onCheckIn,
   onCheckOut,
   onBlock,
+  onUnblock,
   onHkStatus
 }: {
   tile: Tile;
   busy: boolean;
   onCheckIn: (reservationId: string) => void;
   onCheckOut: (reservationId: string) => void;
-  onBlock: (roomId: string, sellable: boolean) => void;
-  onHkStatus: (roomId: string, status: string) => void;
+  /** «Bloquear habitación»: abre el diálogo nominal (no escribe). */
+  onBlock: (tile: Tile) => void;
+  /** «Desbloquear habitación»: directo con deshacer. */
+  onUnblock: (tile: Tile) => void;
+  onHkStatus: (tile: Tile, status: HkWrite) => void;
 }) {
   const meta = OCCUPANCY_META[tile.occupancy];
   const current = tile.currentReservation;
@@ -570,19 +795,25 @@ function RoomDetail({
             </CocoaButton>
           ) : null}
           <div className="cocoa-row" data-gap="2">
-            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile.roomId, "clean")}>
-              Marcar limpia
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile, "clean")}>
+              {PISOS_ACTIONS.markClean}
             </CocoaButton>
-            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile.roomId, "dirty")}>
-              Marcar sucia
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile, "dirty")}>
+              {PISOS_ACTIONS.markDirty}
             </CocoaButton>
-            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile.roomId, "inspected")}>
-              Inspeccionada
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile, "inspected")}>
+              {PISOS_ACTIONS.inspected}
             </CocoaButton>
           </div>
-          <CocoaButton variant="bordered" tone={isBlocked ? "neutral" : "destructive"} size="small" disabled={busy} onClick={() => onBlock(tile.roomId, isBlocked)}>
-            {isBlocked ? "Desbloquear habitación" : "Bloquear habitación"}
-          </CocoaButton>
+          {isBlocked ? (
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onUnblock(tile)}>
+              {PISOS_ACTIONS.unblockRoom}
+            </CocoaButton>
+          ) : (
+            <CocoaButton variant="bordered" tone="destructive" size="small" disabled={busy} onClick={() => onBlock(tile)}>
+              {PISOS_ACTIONS.blockRoom}
+            </CocoaButton>
+          )}
         </div>
       </CocoaSection>
     </div>

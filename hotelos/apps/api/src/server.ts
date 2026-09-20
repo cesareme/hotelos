@@ -847,9 +847,12 @@ import {
   attachWorkOrderMedia,
   blockRoomForMaintenance,
   createWorkOrder,
+  getWorkOrderMediaContent,
+  listWorkOrderMedia,
   listWorkOrders,
   resolveWorkOrder,
-  updateWorkOrder
+  updateWorkOrder,
+  WORK_ORDER_PHOTOS_BODY_LIMIT
 } from "./modules/maintenance/maintenance.service.js";
 import {
   createAiReplyDraft,
@@ -5847,24 +5850,33 @@ export async function buildApiServer() {
     });
   });
 
-  app.post("/work-orders", async (request) => {
-    const body = request.body as {
+  // Tanda UX-3 (M1, diseño §4.6): `photos?: [{ contentBase64, mimeType }]` (≤ 3, ≤ 1,5 MiB
+  // decodificada, jpeg|png|webp por magic bytes) bajo maintenance.workorder.create; parte y
+  // medios en una transacción. bodyLimit en la ruta (6 MiB de base64 + 64 KiB de JSON; patrón documents.routes.ts:107).
+  // El contrato con `photos` responde 201 (recurso creado); el cuerpo clásico conserva el 200
+  // que fijan l2-modulos-operaciones.test.mts:208 y los clientes existentes.
+  app.post("/work-orders", { bodyLimit: WORK_ORDER_PHOTOS_BODY_LIMIT }, async (request, reply) => {
+    const body = (request.body ?? {}) as {
       roomNumber?: string;
       title: string;
       description?: string;
       priority?: "emergency" | "urgent" | "normal" | "preventive";
       blocksRoom?: boolean;
+      photos?: unknown;
     };
 
-    return createWorkOrder({
+    const order = await createWorkOrder({
       context: request.userContext,
       roomNumber: body.roomNumber,
       title: body.title,
       description: body.description,
       priority: body.priority ?? "normal",
       blocksRoom: body.blocksRoom ?? false,
+      photos: body.photos,
       correlationId: createId("corr")
     });
+    if (body.photos !== undefined) reply.code(201);
+    return order;
   });
 
   app.patch("/work-orders/:id", async (request) => {
@@ -5878,16 +5890,42 @@ export async function buildApiServer() {
     });
   });
 
-  app.post("/work-orders/:id/media", async (request) => {
+  // Tanda UX-3 (M1, D3): además de `{ objectKey }`, admite `{ contentBase64, mimeType }` (foto en
+  // línea, 201) bajo maintenance.workorder.manage; mismo bodyLimit que POST /work-orders.
+  app.post("/work-orders/:id/media", { bodyLimit: WORK_ORDER_PHOTOS_BODY_LIMIT }, async (request, reply) => {
     const params = request.params as { id: string };
-    const body = request.body as { objectKey: string; mediaType?: "photo" | "video" };
-    return attachWorkOrderMedia({
+    const body = (request.body ?? {}) as { objectKey?: string; contentBase64?: unknown; mimeType?: unknown; mediaType?: "photo" | "video" };
+    const media = await attachWorkOrderMedia({
       context: request.userContext,
       workOrderId: params.id,
       objectKey: body.objectKey,
+      contentBase64: body.contentBase64,
+      mimeType: body.mimeType,
       mediaType: body.mediaType ?? "photo",
       correlationId: createId("corr")
     });
+    if (body.contentBase64 !== undefined) reply.code(201);
+    return media;
+  });
+
+  // Tanda UX-3 (M1): metadatos de los medios del parte (nunca los bytes) bajo maintenance.read.
+  app.get("/work-orders/:id/media", async (request) => {
+    const params = request.params as { id: string };
+    return listWorkOrderMedia({ context: request.userContext, workOrderId: params.id });
+  });
+
+  // Tanda UX-3 (M1): bytes de una foto en línea bajo maintenance.read; 404 opaco entre
+  // organizaciones. Cabeceras del patrón documents.routes.ts sendBinary (nosniff, private).
+  app.get("/work-orders/media/:mediaId", async (request, reply) => {
+    const params = request.params as { mediaId: string };
+    const file = await getWorkOrderMediaContent({ context: request.userContext, mediaId: params.mediaId });
+    const extension = file.mimeType === "image/png" ? "png" : file.mimeType === "image/webp" ? "webp" : "jpg";
+    reply.header("content-type", file.mimeType);
+    reply.header("content-length", String(file.bytes.length));
+    reply.header("content-disposition", `inline; filename="${file.id}.${extension}"`);
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("cache-control", "private, no-store");
+    return reply.send(file.bytes);
   });
 
   app.post("/work-orders/:id/block-room", async (request) => {

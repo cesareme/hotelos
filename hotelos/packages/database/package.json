@@ -22,6 +22,7 @@
     "db:seed:enrich": "node --env-file=../../.env --import tsx seeds/demo-pre-demo-enrichment.mjs",
     "db:seed:rbac-demo": "node --env-file=../../.env --import tsx prisma/seed-rbac-demo.ts",
     "db:seed:ux-day": "node --env-file=../../.env --import tsx prisma/seed-ux-day.ts",
+    "db:seed:ux-day-pisos": "node --env-file=../../.env --import tsx prisma/seed-ux-day-pisos.ts",
     "db:seed:checkin": "node --env-file=../../.env --import tsx prisma/seed-checkin.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
