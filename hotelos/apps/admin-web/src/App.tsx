@@ -79,6 +79,8 @@ const ConciliacionTabs = lazyTab("ConciliacionTabs");
 const EstadosContablesTabs = lazyTab("EstadosContablesTabs");
 const ContabilidadTabs = lazyTab("ContabilidadTabs");
 const ProveedoresTabs = lazyTab("ProveedoresTabs");
+// Tanda ACT · F4: Finanzas › Activo inmobiliario (ficha · documentación · tributos · obras · inspecciones y seguros · grupo).
+const ActivoInmobiliarioTabs = lazyTab("ActivoInmobiliarioTabs");
 const VerifactuTabs = lazyTab("VerifactuTabs");
 const ModelosAeatTabs = lazyTab("ModelosAeatTabs");
 const ImpuestosTabs = lazyTab("ImpuestosTabs");
@@ -291,6 +293,13 @@ const SCREEN_COMPONENTS = {
   // Documentos digitalizados: bandeja y revisión de la oficina · archivo legal (Tanda T9 · lote T9-12)
   IncomingDocumentsScreen: ProveedoresTabs,
   DocumentArchiveScreen: ProveedoresTabs,
+  // Activo inmobiliario (Tanda ACT): ficha del inmueble · documentación · tributos · obras · inspecciones y seguros · grupo
+  RealEstateAssetScreen: ActivoInmobiliarioTabs,
+  RealEstateDocumentsScreen: ActivoInmobiliarioTabs,
+  RealEstateTaxesScreen: ActivoInmobiliarioTabs,
+  RealEstateWorksScreen: ActivoInmobiliarioTabs,
+  RealEstateInspectionsScreen: ActivoInmobiliarioTabs,
+  RealEstateGroupScreen: ActivoInmobiliarioTabs,
   CommissionsScreen,
   PayrollScreen,
   // --- Cumplimiento ---

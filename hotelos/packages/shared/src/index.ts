@@ -21,6 +21,11 @@ export * from "./financial-statements-types.js";
 // DTOs, enums (PropertyKind, LegalForm, PgcVariant, VerifactuChainScope) and the
 // LegalStructureErrorCode union shared by the API and the front.
 export * from "./legal-structure-types.js";
+// Gestión del activo inmobiliario (Tanda ACT · L0a): catálogos (tenencia, unidades,
+// cargas, valoraciones, tributos y recibos, documentos, inspecciones, seguros, obras,
+// alertas), DTOs de lectura, KPIs, vista de grupo y códigos de error compartidos por
+// el API y el admin-web.
+export * from "./real-estate-types.js";
 // Coste de personal importado (Tanda 6c): lotes agregados centro × mes × grupo ×
 // departamento (nunca personas), previsualización, informe de coste y códigos de
 // error compartidos por el API, el CLI payroll:import-cost y el admin-web.

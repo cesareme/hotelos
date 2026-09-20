@@ -111,7 +111,7 @@ describe("role-tokens · roleHome (§3)", () => {
     assert.equal(roleHome("administracion"), "/finanzas/facturacion");
     assert.equal(roleHome("rrhh"), "/finanzas/nominas");
     assert.equal(roleHome("propiedad"), "/hoy/propietario");
-    assert.equal(roleHome("activos"), "/cumplimiento/centro");
+    assert.equal(roleHome("activos"), "/finanzas/activo-inmobiliario"); // Tanda ACT · F4: Finanzas › Activo inmobiliario (before: Cumplimiento › Centro de cumplimiento)
     assert.equal(roleHome("auditoria"), "/configuracion/sistema");
     assert.equal(roleHome("sistemas"), "/configuracion/usuarios");
     assert.equal(roleHomeForTokens(["recepcion", "sistemas"]), "/configuracion/usuarios", "sistemas outranks recepcion");

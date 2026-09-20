@@ -30,6 +30,8 @@ import { requirePermissions } from "../auth/auth.service.js";
 import { assertApprovedOrAuthorized, type AuthorizationOutcome } from "../rbac/approvals.service.js";
 import { defaultRbacDeps, type RbacDeps } from "../rbac/assignments.service.js";
 import { assertSeparationOfDuties, sodAuditFields, type SodCheckOutcome } from "../treasury/permissions.js";
+import { realEstateError } from "../real-estate/errors.js";
+import { assertTransition } from "../real-estate/state-machines.js";
 
 // Tanda 8a (RBAC · L2, design §4.7 «CAPEX», H8): proposing a project or an
 // item needs `capex.create` (CapexProject.createdByUserId is stamped; the
@@ -453,6 +455,24 @@ export async function updateCapexProject(input: {
   correlationId: string;
 }): Promise<CapexProjectRecord> {
   const before = await findCapexProject(input.capexProjectId);
+
+  // ACT-REV-02: el PATCH heredado respeta la máquina CAPEX_WORK (state-machines.ts: proposed → approved | cancelled →
+  // in_progress → completed; nada vuelve atrás) y nunca cambia de estado una obra ya capitalizada. `in_progress` con
+  // licencia exigida y sin registrar sigue siendo 409 LICENCE_REQUIRED, como en PATCH …/work.
+  if (input.patch.status === "approved" && before.status === "approved") {
+    // Repetir la aprobación no es una transición (no se reejecuta la puerta de aprobación ni se reaudita).
+    assertTransition("CAPEX_WORK", before.status, input.patch.status);
+  }
+  if (input.patch.status !== undefined && input.patch.status !== before.status) {
+    const row = await prisma.capexProject.findUnique({ where: { id: before.id }, select: { capitalizedFixedAssetId: true, capitalizedAt: true, licenceRequired: true, licenceDocumentId: true } });
+    if (row?.capitalizedFixedAssetId) {
+      throw realEstateError(409, "CAPEX_ALREADY_CAPITALIZED", "La obra ya está capitalizada: su estado no se modifica.", { capexProjectId: before.id, capitalizedFixedAssetId: row.capitalizedFixedAssetId, capitalizedAt: row.capitalizedAt ? row.capitalizedAt.toISOString().slice(0, 10) : null });
+    }
+    assertTransition("CAPEX_WORK", before.status, input.patch.status);
+    if (input.patch.status === "in_progress" && row?.licenceRequired && !row.licenceDocumentId) {
+      throw realEstateError(409, "LICENCE_REQUIRED", "La obra exige licencia: registra el documento de la licencia de obras (licenceDocumentId) antes de iniciarla.", { capexProjectId: before.id, from: before.status, to: input.patch.status });
+    }
+  }
 
   let approvalGate: CapexApprovalGate | null = null;
   if (input.patch.status === "approved") {

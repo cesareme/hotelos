@@ -23,8 +23,11 @@
 // Tanda UX-2 (lote D1): el segundo hotel de org_uxday para las pruebas de dirección
 // (prisma/seed-ux-direccion.ts) también es demo: prop_uxday_b (se concatena para no
 // alterar el literal que fijan los contratos de UX-1 y CHK).
+// Tanda ACT (lote L7): el tenant aislado del activo inmobiliario
+// (prisma/seed-real-estate.ts) también es demo: org_act (sus dos centros
+// prop_act_a / prop_act_b quedan acotados por el propio seed, no por esta lista).
 export const UX2_DEMO_PROPERTY_IDS: readonly string[] = ["prop_uxday_b"];
-export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday", "org_chk"];
+export const DEMO_ORG_IDS: readonly string[] = ["org_123", "org_uxday", "org_chk", "org_act"];
 export const DEMO_PROPERTY_IDS: readonly string[] = ["prop_123", "prop_canary", "prop_uxday", "prop_chk"].concat(UX2_DEMO_PROPERTY_IDS);
 
 /** One write the seed intends to perform (printed before the decision). */

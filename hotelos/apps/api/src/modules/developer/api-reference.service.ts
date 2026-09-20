@@ -142,6 +142,16 @@ function categorize(path: string): ApiCategory {
 
 /** Recursos enumerables: GET sin parámetro → «Listar <plural>.»; con parámetro → «Obtener el detalle de <singular>.». */
 export const SEGMENT_LABELS: Record<string, string> = {
+  // Activo inmobiliario (Tanda ACT)
+  units: "la unidad registral",
+  charges: "la carga",
+  valuations: "la valoración",
+  tenures: "la tenencia",
+  // Tanda ACT · ola 3 (taxes.routes.ts, works.routes.ts, inspections.routes.ts)
+  receipts: "el recibo",
+  works: "la obra",
+  inspections: "la inspección",
+  insurances: "el seguro",
   // PMS
   reservations: "la reserva",
   rooms: "la habitación",
@@ -405,6 +415,8 @@ export const SINGLETON_LABELS: Record<string, string> = {
   mapper: "el mapeador",
   "vat-settings": "los ajustes del IVA",
   "property-settings": "los ajustes del establecimiento",
+  "real-estate": "el activo inmobiliario",
+  "tax-calendar": "el calendario tributario", // Tanda ACT · ola 3: GET …/real-estate/tax-calendar
   "housekeeping-settings": "los ajustes de limpieza",
   "maintenance-settings": "los ajustes de mantenimiento",
   "billing-settings": "los ajustes de facturación",
@@ -619,6 +631,9 @@ export const ACTION_LABELS: Record<string, string> = {
   "import-csv": "Importar un fichero CSV.",
   reverse: "Revertir",
   reclassify: "Reclasificar", // FIX-1 · F2: POST /fiscal/vat-books/reclassify
+  // Tanda ACT · ola 3: el asiento se propone en borrador (nunca se contabiliza automáticamente).
+  "propose-entry": "Proponer el asiento contable en borrador de",
+  capitalize: "Capitalizar",
   revert: "Revertir",
   deactivate: "Desactivar",
   disable: "Desactivar",
@@ -976,6 +991,12 @@ export function describeEndpoint(method: string, path: string): string {
   if (verb === "DELETE" && isParam(last) && parts[lastIndex - 1] === "subscriptions" && parts[lastIndex - 2] === "webhooks") {
     return "Eliminar la suscripción y sus entregas (webhook_deliveries); responde { ok, id, deliveriesDeleted }.";
   }
+  // Tanda ACT · ola 3 (taxes.routes.ts, works.routes.ts): recibos previstos, obra y capitalización del proyecto de inversión.
+  if (verb === "POST" && last === "generate" && parts[lastIndex - 1] === "receipts") return "Generar los recibos previstos del impuesto (idempotente).";
+  if (verb === "PATCH" && last === "work" && parts[0] === "capex-projects") return "Actualizar la obra del proyecto de inversión.";
+  if (verb === "POST" && last === "approve" && parts[0] === "capex-projects") return "Aprobar el proyecto de inversión (nunca quien lo propuso).";
+  // ACT-REV-06: capitalizar solo da de alta el inmovilizado (createFixedAsset); no propone ni contabiliza ningún asiento.
+  if (verb === "POST" && last === "capitalize" && parts[0] === "capex-projects") return "Capitalizar el proyecto de inversión (alta en el registro de inmovilizado; sin asiento).";
 
   // Parámetro final: describe el recurso anterior en singular («/reservations/:id»).
   if (isParam(last)) {

@@ -11,44 +11,44 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 246,
-    "lines": 108462,
+    "files": 253,
+    "lines": 114389,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1250,
+    "cocoaButtons": 1323,
     "rawTables": 1,
-    "cocoaTables": 318,
+    "cocoaTables": 330,
     "rawInputs": 0,
-    "cocoaInputs": 1258,
+    "cocoaInputs": 1352,
     "inlineStyles": 620,
-    "cocoaCards": 35,
+    "cocoaCards": 36,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 209,
-    "withTabHost": 95,
+    "withPageHeader": 216,
+    "withTabHost": 99,
     "debtPoints": 174
   },
   "bySize": {
-    "S": 99,
-    "M": 117,
-    "L": 22,
+    "S": 100,
+    "M": 118,
+    "L": 27,
     "XL": 8
   },
   "byArchetype": {
-    "dashboard": 96,
+    "dashboard": 100,
     "lista": 19,
     "detalle": 3,
-    "formulario": 22,
+    "formulario": 23,
     "asistente": 13,
-    "workspace": 6,
+    "workspace": 7,
     "calendario": 6,
     "chat": 1,
     "dialogo": 24,
-    "contenedor": 41,
+    "contenedor": 42,
     "otro": 15
   },
   "byCategory": {
@@ -148,24 +148,24 @@
     },
     "finanzas": {
       "label": "Finanzas",
-      "files": 36,
-      "lines": 20813,
+      "files": 43,
+      "lines": 26740,
       "debtPoints": 35,
       "sizes": {
-        "S": 9,
-        "M": 19,
-        "L": 6,
+        "S": 10,
+        "M": 20,
+        "L": 11,
         "XL": 2
       },
       "archetypes": {
-        "dashboard": 17,
-        "formulario": 6,
+        "dashboard": 21,
+        "formulario": 7,
         "lista": 1,
         "asistente": 2,
         "detalle": 1,
-        "workspace": 1,
+        "workspace": 2,
         "dialogo": 2,
-        "contenedor": 6
+        "contenedor": 7
       }
     },
     "hoy": {
@@ -6733,6 +6733,234 @@
       "size": "M"
     },
     {
+      "path": "apps/admin-web/src/screens/realEstate/RealEstateAssetScreen.tsx",
+      "name": "RealEstateAssetScreen",
+      "screenKeys": [
+        "RealEstateAssetScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "workspace",
+      "lines": 1218,
+      "metrics": {
+        "lines": 1218,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 13,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 7,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": true,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
+    },
+    {
+      "path": "apps/admin-web/src/screens/realEstate/RealEstateDocumentsScreen.tsx",
+      "name": "RealEstateDocumentsScreen",
+      "screenKeys": [
+        "RealEstateDocumentsScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "formulario",
+      "lines": 884,
+      "metrics": {
+        "lines": 884,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 9,
+        "rawTables": 0,
+        "cocoaTables": 2,
+        "rawInputs": 0,
+        "cocoaInputs": 18,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
+    },
+    {
+      "path": "apps/admin-web/src/screens/realEstate/RealEstateGroupScreen.tsx",
+      "name": "RealEstateGroupScreen",
+      "screenKeys": [
+        "RealEstateGroupScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "dashboard",
+      "lines": 515,
+      "metrics": {
+        "lines": 515,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 4,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 1,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/realEstate/RealEstateInspectionsScreen.tsx",
+      "name": "RealEstateInspectionsScreen",
+      "screenKeys": [
+        "RealEstateInspectionsScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "dashboard",
+      "lines": 1353,
+      "metrics": {
+        "lines": 1353,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 18,
+        "rawTables": 0,
+        "cocoaTables": 3,
+        "rawInputs": 0,
+        "cocoaInputs": 37,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
+    },
+    {
+      "path": "apps/admin-web/src/screens/realEstate/RealEstateTaxesScreen.tsx",
+      "name": "RealEstateTaxesScreen",
+      "screenKeys": [
+        "RealEstateTaxesScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "dashboard",
+      "lines": 1053,
+      "metrics": {
+        "lines": 1053,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 14,
+        "rawTables": 0,
+        "cocoaTables": 4,
+        "rawInputs": 0,
+        "cocoaInputs": 18,
+        "inlineStyles": 0,
+        "cocoaCards": 1,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
+    },
+    {
+      "path": "apps/admin-web/src/screens/realEstate/RealEstateWorksScreen.tsx",
+      "name": "RealEstateWorksScreen",
+      "screenKeys": [
+        "RealEstateWorksScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "dashboard",
+      "lines": 872,
+      "metrics": {
+        "lines": 872,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 15,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 13,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
+    },
+    {
       "path": "apps/admin-web/src/screens/reports/ReportingCenterScreen.tsx",
       "name": "ReportingCenterScreen",
       "screenKeys": [
@@ -8289,6 +8517,40 @@
       "lines": 29,
       "metrics": {
         "lines": 29,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 0,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/tabs/finanzas/ActivoInmobiliarioTabs.tsx",
+      "name": "ActivoInmobiliarioTabs",
+      "screenKeys": [],
+      "category": "finanzas",
+      "categories": [],
+      "archetype": "contenedor",
+      "lines": 32,
+      "metrics": {
+        "lines": 32,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

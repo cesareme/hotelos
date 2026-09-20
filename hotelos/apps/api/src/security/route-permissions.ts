@@ -80,6 +80,10 @@ import { checkinRoutePermissions } from "../modules/checkin/route-permissions.pa
 // lote manual, bloqueos y comunicadas (modules/pms/room-assignment.routes.ts;
 // segundo partial del módulo pms). Claves existentes; sin rbac:sync.
 import { roomAssignmentRoutePermissions } from "../modules/pms/room-assignment-route-permissions.partial.js";
+// Activo inmobiliario (Tanda ACT): agregador modules/real-estate/route-permissions.partial.ts
+// (solo spreads de core-/taxes-/documents-/works-/inspections-/group-route-permissions.partial.ts).
+// Claves real_estate.read / real_estate.manage ya en el catálogo; sin rbac:sync.
+import { realEstateRoutePermissions } from "../modules/real-estate/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -214,6 +218,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...checkinRoutePermissions,
   // Asignación explicable (Tanda CHK · W3-B): 10 entradas, ver modules/pms/room-assignment-route-permissions.partial.ts.
   ...roomAssignmentRoutePermissions,
+  // Activo inmobiliario (Tanda ACT): ver modules/real-estate/*route-permissions.partial.ts
+  ...realEstateRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },

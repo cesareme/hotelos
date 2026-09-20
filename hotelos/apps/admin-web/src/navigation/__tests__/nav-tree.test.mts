@@ -53,8 +53,9 @@ describe("nav-tree · generated tree shape", () => {
     // Tanda T9 · ola 4 (2026-09-20): +3 tabs (Operaciones › Compras › Recepciones; Finanzas › Proveedores › Documentos y › Archivo).
     // Tanda CHK (2026-09-20): +1 tab (Hoy › Mi día › Check-in automatizado, CheckInAutomationSettingsScreen).
     // Fusión T9 + CHK (2026-09-20): 70 items · 104 tabs (medido con build-nav-tree.mjs sobre el CSV compartido).
-    assert.equal(NAV_TREE.meta.counts.items, 70);
-    assert.equal(NAV_TREE.meta.counts.tabs, 104);
+    // Tanda ACT · F4 (2026-09-20): +1 item (Finanzas › Activo inmobiliario, RealEstateAssetScreen) · +5 tabs (Documentación, Tributos, Obras, Inspecciones y seguros, Grupo) = 71 items · 109 tabs.
+    assert.equal(NAV_TREE.meta.counts.items, 71);
+    assert.equal(NAV_TREE.meta.counts.tabs, 109);
     assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
   });
@@ -139,8 +140,9 @@ describe("nav-tree · lookups", () => {
   it("lists every URL the router must register, unique and without /backoffice", () => {
     const urls = allUrls();
     // items + tabs + devOnly + public (Tanda T9: +1 item, Operaciones › Digitalizar; ola 4: +3 tabs, Recepciones / Documentos / Archivo;
-    // Tanda CHK: +1 tab, /hoy/check-in-automatizado) = 70 + 104 + 21 + 2 = 197.
-    assert.equal(urls.length, 70 + 104 + 21 + 2);
+    // Tanda CHK: +1 tab, /hoy/check-in-automatizado) = 70 + 104 + 21 + 2 = 197;
+    // Tanda ACT · F4: +1 item y +5 tabs, /finanzas/activo-inmobiliario[/…]) = 71 + 109 + 21 + 2 = 203.
+    assert.equal(urls.length, 71 + 109 + 21 + 2);
     assert.equal(new Set(urls).size, urls.length);
     assert.ok(urls.every((url) => !url.startsWith("/backoffice")));
   });
@@ -182,21 +184,22 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
     // fnb, revenue, finanzas, propiedad and admin) and the six department tokens of design §5.1
     // (computed over nav-tree.generated.json, see scripts/check-route-access.mjs).
     // Tanda T9 (Documentos, 2026-09-20): Operaciones › Digitalizar (core) adds 1 item for direccion, recepcion, pisos, mantenimiento, fnb, administracion and admin.
-    direccion: { items: 70, categories: 9 },
+    // Tanda ACT (2026-09-20): Finanzas › Activo inmobiliario (core; finanzas, direccion, admin, activos, auditoria) adds 1 item and 5 tabs.
+    direccion: { items: 71, categories: 9 },
     recepcion: { items: 25, categories: 9 },
     pisos: { items: 8, categories: 3 },
     mantenimiento: { items: 11, categories: 3 },
     revenue: { items: 22, categories: 5 },
-    finanzas: { items: 33, categories: 6 },
+    finanzas: { items: 34, categories: 6 },
     comercial: { items: 15, categories: 5 },
     fnb: { items: 8, categories: 2 },
     administracion: { items: 14, categories: 5 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación
     rrhh: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own payroll requests)
     propiedad: { items: 6, categories: 3 },
-    activos: { items: 4, categories: 3 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests)
-    auditoria: { items: 66, categories: 9 },
+    activos: { items: 5, categories: 4 }, // corrector 8a (FX-06): + Hoy › Pendientes de aprobación (its own CAPEX requests); Tanda ACT: + Finanzas › Activo inmobiliario
+    auditoria: { items: 67, categories: 9 },
     sistemas: { items: 5, categories: 2 },
-    admin: { items: 70, categories: 9 }
+    admin: { items: 71, categories: 9 }
   };
 
   for (const [token, counts] of Object.entries(expected) as Array<[RoleToken, { items: number; categories: number }]>) {
@@ -209,8 +212,8 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
 
   it("hides the 14 entries that would open 403 in Faranda (§6) and nothing else", () => {
     const visible = countVisible(["direccion"], FARANDA_MODULES);
-    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another; fusión TL: Live Timeline (core) another; Tanda T9: Digitalizar (core) another.
-    assert.equal(visible.items, 64);
+    // Tanda 6b: Estructura societaria (core) adds one visible item; Tanda 8a: Pendientes de aprobación (core) another; fusión TL: Live Timeline (core) another; Tanda T9: Digitalizar (core) another; Tanda ACT: Activo inmobiliario (core) another.
+    assert.equal(visible.items, 65);
     const upsells = visibleCategories(["direccion"], FARANDA_MODULES)
       .find((category) => category.key === "comercial")
       ?.items.find((entry) => entry.label === "Ventas adicionales");
@@ -233,8 +236,8 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
         for (const tab of entry.tabs) assert.deepEqual(tab.modulesAny, [], `${tab.label} is gated`);
       }
     }
-    // Tanda 6b: Estructura societaria is core → 51; Tanda 8a: Pendientes de aprobación is core → 52; fusión TL: Live Timeline is core → 53; Tanda T9: Digitalizar is core → 54.
-    assert.equal(countVisible(["admin"], []).items, 54);
+    // Tanda 6b: Estructura societaria is core → 51; Tanda 8a: Pendientes de aprobación is core → 52; fusión TL: Live Timeline is core → 53; Tanda T9: Digitalizar is core → 54; Tanda ACT: Activo inmobiliario is core → 55.
+    assert.equal(countVisible(["admin"], []).items, 55);
   });
 
   it("filters tabs by role inside a visible item", () => {

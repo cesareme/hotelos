@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import { Prisma } from "@prisma/client";
 import {
   JOURNAL_CSV_HEADER,
+  csvCell,
   journalEntriesToCsv,
   ledgerToCsv,
   localDateInTz,
@@ -178,6 +179,16 @@ describe("CSV exports", () => {
     assert.equal(rows.length, 4);
     assert.equal(rows[1], '2026-09-10;2026/7;430;"Factura FAC-1; con punto y coma";121,00;0,00;FAC-1;;;');
     assert.equal(rows[3], "2026-09-10;2026/7;477.10;IVA 10 %;0,00;11,00;FAC-1;;110,00;10");
+  });
+
+  it("csvCell neutraliza fórmulas (ACT-REV-05, paridad con real-estate/export.service.ts): =, +, -, @, tabulador y retorno al inicio", () => {
+    assert.equal(csvCell("=1+1"), "\"'=1+1\"");
+    assert.equal(csvCell("@SUM(A1)"), "\"'@SUM(A1)\"");
+    assert.equal(csvCell("-cmd"), "\"'-cmd\"");
+    assert.equal(csvCell("Factura FAC-1; con punto y coma"), "\"Factura FAC-1; con punto y coma\"");
+    assert.equal(csvCell("FAC-1"), "FAC-1");
+    assert.equal(csvCell(7), "7");
+    assert.equal(csvCell(null), "");
   });
 
   it("mayor: opening, movements with running balance, closing", () => {
