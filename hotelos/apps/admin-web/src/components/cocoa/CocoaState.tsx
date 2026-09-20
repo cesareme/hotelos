@@ -68,7 +68,13 @@ export interface CocoaStateProps {
   inline?: boolean;
   /** Dashed CTA box inside a card (no illustration, compact). */
   dashed?: boolean;
-  role?: "status" | "alert";
+  /**
+   * ARIA role: `status` (empty/degraded/loading) or `alert` (error) by default;
+   * `none` renders NO live region (UX-2 · corrector UX2-REV-07: an inline
+   * empty inside a card of a dashboard that already announces through the shell
+   * must not add a `role="status"` per card — one live region per page).
+   */
+  role?: "status" | "alert" | "none";
   className?: string;
   style?: CSSProperties;
 }
@@ -148,7 +154,7 @@ export function CocoaState({ kind, title, message, illustration, primaryAction, 
   if (inline) {
     return (
       <div
-        role={resolved.role}
+        role={resolved.role === "none" ? undefined : resolved.role}
         className={rootClass}
         style={{
           display: "flex",
@@ -201,7 +207,7 @@ export function CocoaState({ kind, title, message, illustration, primaryAction, 
 
   return (
     <div
-      role={resolved.role}
+      role={resolved.role === "none" ? undefined : resolved.role}
       className={rootClass}
       style={{
         display: "flex",

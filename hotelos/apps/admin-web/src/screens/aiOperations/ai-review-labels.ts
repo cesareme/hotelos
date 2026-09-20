@@ -29,15 +29,26 @@ export function humanizeKey(key: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
 }
 
-/** Review types produced today (seed + email connector). */
+/**
+ * Review types produced today (every `reviewType` the API writes: seeds, email
+ * connector, documents pipeline, AI core). Corrector UX2-REV-05: the seed of
+ * dirección (`guest_message_reply`, `rate_change`) and the AI core
+ * (`ai_tool_call`, `incoming_document_autonomous`) reached dirección as
+ * humanised English («Guest message reply»); no enum reaches the screen now.
+ */
 export const REVIEW_TYPE_LABELS: Record<string, string> = {
   rate_recommendation: "Recomendación de tarifa",
+  rate_change: "Cambio de tarifa",
   invoice_issue: "Incidencia de factura",
   guest_register_submit: "Envío del registro de viajeros",
+  guest_message_reply: "Respuesta a un mensaje del huésped",
   review_response: "Respuesta a una reseña",
   email_reservation: "Reserva por correo electrónico",
+  // Tanda L6a (núcleo de IA): herramienta de alto riesgo que espera la confirmación humana.
+  ai_tool_call: "Acción de la IA por confirmar",
   // Tanda T9 (documentos y digitalización): cola de la oficina (enqueueReview del pipeline, con o sin proveedor de IA).
-  incoming_document: "Documento digitalizado"
+  incoming_document: "Documento digitalizado",
+  incoming_document_autonomous: "Documento clasificado por la IA"
 };
 
 export function reviewTypeLabel(type: string): string {

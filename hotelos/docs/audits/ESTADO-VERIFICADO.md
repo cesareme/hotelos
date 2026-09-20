@@ -489,3 +489,61 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda UX-2 · «Feel» de dirección + ronda de corrección UX2-REV + integrador,
+2026-09-20; worktree `~/anfitorio-demo-wt-ux2/hotelos`, rama `tanda-ux2` sobre `a069906`, BD `hotelos_ux2`;
+commit del integrador en la rama, sin push; `:3000` y `:5173` sin reiniciar — sirven el código anterior a
+la tanda; informe `docs/audits/TANDA-UX2-DIRECCION-2026-09-20.md`; diseño `docs/design/UX-DIRECCION-FEEL.md`;
+runbook `docs/runbooks/ux-direccion-pruebas.md`):
+- sin migración (24 aplicadas, `migrate status` «up to date», drift «No difference detected.»), sin rutas
+  nuevas ni cambios en el manifiesto, `permissions.ts` ni `pilots/tanda5-nav-tree.csv`; seed aditivo e
+  idempotente `db:seed:ux-direccion` (tenant `org_uxday` / `prop_uxday_b` «Hotel UXDAY B (prueba)», 20 hab.,
+  17 reservas `UXDB-*`, cierre de anteayer pendiente de revisión, 3 aprobaciones, 3 ítems IA y 20 snapshots
+  diarios, `director@uxday.test` con la contraseña de demo por defecto —nunca impresa—, `--reset` acotado a
+  `prop_uxday_b`, con el API parado); Faranda solo lectura en toda la tanda
+- 10 lotes (D0 diseño · D1 seed · D2 medida «antes» · D3 servicio y panel del director · D4 aprobaciones e
+  IA · D5 cartera y ficha · D6 centro de informes y catálogo · D7 cierre del día · D8 contenido y persona ·
+  D9 cierre) + corrección UX2-REV + integrador: 40 ficheros modificados (+2.222/−609 sin el lock) y 31 nuevos
+  (4.884 líneas); `GET /dashboards/general-manager`, `portfolio` y `property-overview` resuelven «hoy» con
+  la fecha de negocio de cada propiedad (`readGmBusinessDate` + `resolveGmWindow`; `businessDate` /
+  `businessDateSource` aditivos) y cada pantalla dice su ventana; catálogo de informes en español y fichero
+  `informe-<tipo>-<propiedad>-<desde>_<hasta>.<ext>`; Mi día › Dirección en español con «Riesgos de hoy» y
+  subtítulo con la ventana; tarjeta «Pendientes · N aprobaciones · M de la IA»; una primaria «Aprobar» por
+  fila con diálogo nominal (dinero) y commit diferido + `CocoaUndoBar` 8 s en la cola de la IA; Cartera
+  «Tabla · Comparar» con delta vs media y «PyG del hotel» desde la ficha; Centro de informes con rango real
+  y formato honesto; «Cerrar día» solo con `night_audit.run` y callout «Marcar como revisado» (⌥V) del
+  último cierre pendiente; letras de acceso A · E · V y comandos ⌘K de tarea en las ocho pantallas; 0
+  `style=` inline nuevos (inventario Cocoa regenerado); contratos nuevos
+  `tests/ux-direccion-contract.test.mjs` (72) y `tests/seed-ux-direccion-contract.test.mjs` (9)
+- medida estricta (`MEASURE_STRICT=1`, specs `e2e/measure/d1…d6` desde el árbol, 8/8,
+  `docs/audits/ux-direccion/measure-correccion-2026-09-20.json`, 12:37Z; baseline
+  `measure-baseline-2026-09-20.json`, 09:41Z, antes de tocar pantallas): d1 0 clics · 11 pet. · ventana
+  pintada; d2 4 → 3 clics; d3 2 (teclado 0 clics · 41 teclas); d4 2 (2 hoteles con delta; vista Comparar 3);
+  d5 2 (teclado 0 · 41); d6 4 → 3; las seis completadas y dentro de objetivo (≤ 4 brief, d2-d6 ≤ 3, ≥ 2 solo
+  teclado); pasada completa d + t 11/14 en D9 (d2/d6 corregidas después; t1 15 pet. > 12 por el cajón de
+  check-in de CHK, no por UX-2)
+- revisión v3: 9 hallazgos confirmados (1 high · 8 medium), 0 refutados; corregidos 8 + 10 low (Cartera y
+  ficha en la fecha de negocio con el mismo lector que Mi día; commit diferido en la IA; rótulos ingleses a
+  0; specs d2/d6 al camino entregado; seed con snapshots y tercer ítem; contrato de dirección; D-1 corregida
+  —solo `manager` revisa el cierre—; `business_dates."current_date"` leída como columna —prop_123 =
+  2026-09-14, Faranda 09-16/09-17/09-19— y `l2-paginacion` anclado en `businessDate`; `CocoaState`
+  `role="none"`; `CocoaUndoBar` sin nacer pausada; bandeja sin desplazamiento a 1024; callout del cierre en
+  el primer viewport); sin cambio con motivo: lock (regla del carril), dos `GET /approvals` al aterrizar
+  (UX-3), generados y nav-tree (orquestador)
+- puerta completa final (`scratchpad/UX-2/gates-final.json`): 13/14 — typecheck:all 15 PASS · 0 FAIL · 1
+  SKIP (28,1 s) · api unit 3.589 (3.588 pass · 0 fail · 1 skip) · admin-web unit 2.133 (2.132 · 0 · 1) ·
+  ai-core 119/119 · worker 34/34 · contratos raíz 833 (831 pass · 0 fail · 2 skip) · discoverability 197 URL
+  · route-access 15 × 197 · cocoa waves al día · rbac dry-run 187 ms · migrate 24/24 + drift 0 · build
+  2,97 s · integración 983 (975 pass · 0 fail · 8 skip); puerta rápida del integrador
+  (`scratchpad/UX-2-INT/gates-integrador-quick.json`) 11/12 con las mismas cifras (typecheck 22,5 s, rbac
+  249 ms); `.husky/pre-commit` ejecutado a mano desde `hotelos/` (el `hooksPath` relativo `.husky` no existe
+  en la raíz del worktree): 15 PASS · 23,0 s; `nav-tree --check` rojo SOLO por el CSV compartido (304 filas
+  con `DirectorLaborCostsScreen` y pestañas `HrEmployeesScreen` de RRHH/ACT sin pantalla aquí): regenerar
+  `nav-tree.generated.json` en la fusión
+- pendientes con dueño (informe §6-§7): `pnpm-lock.yaml` NO se commitea desde el carril (diff ajeno
+  +64/−25; navegadores 1243 ausentes: enlaces en el scratchpad); decisión RBAC para César sobre
+  `night_audit.review` en `general_manager` (d6 no completable para dirección general); sesiones con
+  directores reales (kit en el runbook); bloque UX-2 en `CLAUDE.md` añadido por el corrector (retirar en la
+  fusión si main mantiene la política de L6a); recortes: sin menú «Más ▾» y `RevenueExportCenter` sin
+  comandos de tarea; dos `GET /approvals` al aterrizar (UX-3); DOC: `docs/manual/10-direccion.md:87-88`,
+  `:223`, `:226`, `:258` obsoletos

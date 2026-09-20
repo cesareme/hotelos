@@ -1,0 +1,207 @@
+{
+  "generatedAt": "2026-09-20T09:44:28.278Z",
+  "baseUrl": "http://127.0.0.1:5199",
+  "apiUrl": "http://127.0.0.1:3929",
+  "tasks": {
+    "d1": {
+      "task": "d1",
+      "title": "D1 · Revisar el día y los riesgos al aterrizar",
+      "clicks": 0,
+      "keys": 0,
+      "requests": 8,
+      "ms": 1261,
+      "completed": true,
+      "path": [
+        "step:goto / (aterrizaje del rol)",
+        "step:KPIs y riesgo de cancelación visibles"
+      ],
+      "target": {
+        "clicks": 0,
+        "requests": 20
+      },
+      "context": {
+        "landing": "/hoy/direccion"
+      },
+      "strict": false,
+      "measuredAt": "2026-09-20T09:41:17.426Z"
+    },
+    "d2": {
+      "task": "d2",
+      "title": "D2 · Aprobar una solicitud pendiente",
+      "clicks": 4,
+      "keys": 0,
+      "requests": 3,
+      "ms": 575,
+      "completed": true,
+      "path": [
+        "step:Mi día de dirección cargado",
+        "click:Pendientes de aprobación (tarjeta de Mi día)",
+        "click:Fila de la solicitud (bandeja)",
+        "click:Aprobar (cajón)",
+        "click:Aprobar (diálogo)"
+      ],
+      "target": {
+        "clicks": 3,
+        "requests": 16
+      },
+      "context": {
+        "approvalId": "apr_uxdb_purchase_order",
+        "status": 200,
+        "decidedStatus": "approved"
+      },
+      "strict": false,
+      "measuredAt": "2026-09-20T09:44:28.277Z"
+    },
+    "d3": {
+      "task": "d3",
+      "title": "D3 · Leer ocupación e ingresos del mes de un hotel",
+      "clicks": 2,
+      "keys": 0,
+      "requests": 3,
+      "ms": 1775,
+      "completed": true,
+      "path": [
+        "step:Mi día de dirección cargado",
+        "click:Cartera de propiedades (menú)",
+        "click:Fila del hotel (cartera)"
+      ],
+      "target": {
+        "clicks": 3,
+        "requests": 14
+      },
+      "context": {
+        "propertyId": "prop_uxday_b"
+      },
+      "strict": false,
+      "measuredAt": "2026-09-20T09:41:21.776Z",
+      "variants": {
+        "teclado": {
+          "clicks": 0,
+          "keys": 40,
+          "requests": 3,
+          "ms": 1894,
+          "completed": true,
+          "path": [
+            "step:Mi día de dirección cargado",
+            "press:⌘K",
+            "fill:Búsqueda (pantalla)(22)",
+            "press:Enter (Cartera de propiedades)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Tab (hasta la fila)",
+            "press:Enter (fila del hotel)"
+          ],
+          "note": "solo teclado (⌘K → Cartera de propiedades → Intro → Tab → Intro en «Saltar al contenido» → Tab×n → Intro)",
+          "measuredAt": "2026-09-20T09:41:25.087Z"
+        }
+      }
+    },
+    "d5": {
+      "task": "d5",
+      "title": "D5 · Exportar un informe del Centro de informes",
+      "clicks": 2,
+      "keys": 0,
+      "requests": 4,
+      "ms": 956,
+      "completed": true,
+      "path": [
+        "step:Mi día de dirección cargado",
+        "click:Centro de informes (menú)",
+        "click:Generar exportación"
+      ],
+      "target": {
+        "clicks": 3,
+        "requests": 16
+      },
+      "context": {
+        "propertyId": "prop_uxday_b",
+        "status": 200
+      },
+      "strict": false,
+      "measuredAt": "2026-09-20T09:41:30.211Z",
+      "variants": {
+        "teclado": {
+          "clicks": 0,
+          "keys": 41,
+          "requests": 4,
+          "ms": 988,
+          "completed": true,
+          "path": [
+            "step:Mi día de dirección cargado",
+            "press:⌘K",
+            "fill:Búsqueda (pantalla)(18)",
+            "press:Enter (Centro de informes)",
+            "press:⌘K (comandos de la página)",
+            "fill:Comando «Generar exportación de informe»(19)",
+            "press:Enter (Generar exportación)"
+          ],
+          "note": "solo teclado (⌘K → Centro de informes → Intro → ⌘K → Generar exportación → Intro)",
+          "measuredAt": "2026-09-20T09:41:32.579Z"
+        }
+      }
+    },
+    "d6": {
+      "task": "d6",
+      "title": "D6 · Revisar el cierre del día",
+      "clicks": 4,
+      "keys": 0,
+      "requests": 5,
+      "ms": 1109,
+      "completed": true,
+      "path": [
+        "step:Mi día de dirección cargado",
+        "click:Cierre del día (menú)",
+        "click:Fila del cierre (historial)",
+        "click:Marcar como revisado (cajón)",
+        "click:Marcar como revisado (diálogo)"
+      ],
+      "target": {
+        "clicks": 3,
+        "requests": 14
+      },
+      "context": {
+        "runId": "nar_uxdb_anteayer",
+        "status": 200
+      },
+      "strict": false,
+      "measuredAt": "2026-09-20T09:41:35.006Z"
+    },
+    "d4": {
+      "task": "d4",
+      "title": "D4 · Comparar los hoteles de la cartera por ocupación",
+      "clicks": 2,
+      "keys": 0,
+      "requests": 1,
+      "ms": 951,
+      "completed": true,
+      "path": [
+        "step:Mi día de dirección cargado",
+        "click:Cartera de propiedades (menú)",
+        "click:Ordenar por ocupación (cabecera)"
+      ],
+      "target": {
+        "clicks": 3,
+        "requests": 14
+      },
+      "context": {
+        "properties": 2,
+        "direction": "descending",
+        "sorted": true
+      },
+      "strict": false,
+      "measuredAt": "2026-09-20T09:43:06.485Z"
+    }
+  }
+}

@@ -569,6 +569,29 @@ fusión de `tanda-ux1` 4e7fdee):
   contraste 1.4.11 en claro de badges warning/success, `role=grid` para selección
   múltiple, sesiones con recepcionistas reales (kit en `docs/runbooks/ux-recepcion-pruebas.md`)
 
+Estado verificado (Tanda UX-2 · «Feel» de dirección + ronda de corrección UX2-REV, 2026-09-20,
+rama `tanda-ux2` sobre `a069906`; detalle en `docs/audits/ESTADO-VERIFICADO.md` y en el informe
+`docs/audits/TANDA-UX2-DIRECCION-2026-09-20.md` §6):
+- diseño `docs/design/UX-DIRECCION-FEEL.md` (9 lotes D0-D9): persona de dirección (director de
+  hotel `manager` · dirección general `general_manager`), seis tareas medidas d1…d6 sobre el tenant
+  `org_uxday` / `prop_uxday_b` (`db:seed:ux-direccion -- --reset`, con el API parado); sin migración,
+  sin rutas nuevas ni cambios en `permissions.ts`
+- una verdad por dato: `GET /dashboards/general-manager`, `portfolio` y `property-overview` resuelven
+  «hoy» con la FECHA DE NEGOCIO de cada propiedad (`readGmBusinessDate` + `resolveGmWindow`;
+  `businessDate` / `businessDateSource` aditivos) y cada pantalla dice su ventana; Mi día › Dirección
+  en español con «Riesgos de hoy» y comandos ⌘K de tarea; una primaria «Aprobar» por fila con diálogo
+  nominal (dinero) y commit diferido + `CocoaUndoBar` 8 s en la cola de la IA; Cartera «Tabla · Comparar»
+  y «PyG del hotel» desde la ficha; Centro de informes con rango real y formato honesto; «Cerrar día»
+  solo con `night_audit.run` y callout «Marcar como revisado» (⌥V) del último cierre pendiente
+- medida estricta desde el árbol (`e2e/measure/d1…d6`, `measure-correccion-2026-09-20.json`): d1 0 ·
+  d2 4 → 3 · d3 2 (teclado 0) · d4 2 · d5 2 (teclado 0) · d6 4 → 3 clics; contratos
+  `tests/ux-direccion-contract.test.mjs` (regiones vivas, comandos, 0 inglés, 0 fechas literales,
+  specs y helper) y `tests/seed-ux-direccion-contract.test.mjs`
+- pendientes con dueño: `pnpm-lock.yaml` no se commitea desde el carril (bump ajeno de Playwright);
+  `nav-tree --check` con el CSV compartido tras fusionar ACT; decisión RBAC para César sobre
+  `night_audit.review` en `general_manager` (hoy solo `manager` revisa el cierre); dos `GET /approvals`
+  al aterrizar (UX-3); manual `docs/manual/10-direccion.md` obsoleto (DOC)
+
 ## Servicios en local Mac Pro
 
 - Postgres 16 brew · puerto 5432 · DB hotelos / user hotelos / pass

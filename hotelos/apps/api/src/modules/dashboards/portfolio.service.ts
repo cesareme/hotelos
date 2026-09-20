@@ -2,6 +2,9 @@ import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { listOperationalProperties } from "../../lib/tenancy.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
+// Tanda UX-2 (corrector UX2-REV-01 · F-D1): la ventana «hoy» de cada propiedad es su
+// fecha de negocio, con el MISMO lector y la MISMA función pura que Mi día › Dirección.
+import { readGmBusinessDate, resolveGmWindow, type GmBusinessDateSource, type GmWindow } from "./general-manager.service.js";
 
 /**
  * Portfolio dashboard — cross-property aggregation for a single organization.
@@ -9,6 +12,18 @@ import { computeBalancesForReservations } from "../folio/folio-balance.service.j
  * Aggregates KPIs across ALL properties of the org (typical hotel groups own
  * 3–50+ properties) and surfaces per-property drill-down rows plus a
  * cross-property critical alerts feed.
+ *
+ * Tanda UX-2 (corrector UX2-REV-01 · F-D1 «una verdad por dato»): the «today»
+ * window of EVERY property is its BUSINESS DATE (business_dates.current_date,
+ * read once per property with `readGmBusinessDate` and resolved by the pure
+ * `resolveGmWindow`, both from general-manager.service.ts — the same rule as
+ * Mi día › Dirección and the night-audit preflight); without a row, the natural
+ * UTC day of `asOf`. Month-to-date figures hang from that date. Each
+ * `perProperty` row says its window (`businessDate` + `businessDateSource`,
+ * additive) so the Cartera can label its strip. Counting semantics do NOT
+ * change: `arrivalsToday` / `departuresToday` are every reservation arriving /
+ * departing on that date (Mi día › Dirección counts only the pending ones,
+ * preflight rule) — the screens label each figure with its own meaning.
  *
  * Aggregation strategy:
  *  - Fan-out: one `prisma.property.findMany({ where: { organizationId } })`
@@ -83,6 +98,9 @@ export type PortfolioDashboard = {
     region?: string;
     status: PortfolioPropertyStatus;
     roomsCount: number;
+    /** YYYY-MM-DD of the «today» window of this property (its business date; UTC day of `asOf` without a row). */
+    businessDate: string;
+    businessDateSource: GmBusinessDateSource;
     arrivalsToday: number;
     departuresToday: number;
     inHouseNow: number;
@@ -127,10 +145,6 @@ function startOfUtcDay(input?: Date | string): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
-function endOfUtcDay(start: Date): Date {
-  return new Date(start.getTime() + 24 * 60 * 60 * 1000);
-}
-
 function startOfUtcMonth(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 }
@@ -168,11 +182,13 @@ type PerPropertyAggregate = PortfolioDashboard["perProperty"][number] & {
 
 async function aggregateProperty(
   property: { id: string; name: string; status: string; municipality: string | null; province: string | null; taxRegion: string | null },
-  dayStart: Date,
-  dayEnd: Date,
-  monthStart: Date
+  window: GmWindow
 ): Promise<PerPropertyAggregate> {
   const propertyId = property.id;
+  // [dayStart, dayEnd) = the business date of THIS property (resolveGmWindow); the month hangs from it.
+  const dayStart = window.today;
+  const dayEnd = window.tomorrow;
+  const monthStart = startOfUtcMonth(dayStart);
 
   // Fire as many independent queries as we can in parallel.
   const [
@@ -436,6 +452,8 @@ async function aggregateProperty(
     region: property.taxRegion ?? property.province ?? undefined,
     status,
     roomsCount,
+    businessDate: window.businessDate,
+    businessDateSource: window.source,
     arrivalsToday,
     departuresToday,
     inHouseNow,
@@ -466,9 +484,9 @@ export async function buildPortfolioDashboard(
 ): Promise<PortfolioDashboard> {
   const organizationId = input.organizationId;
   const asOfDate = input.asOf ? (input.asOf instanceof Date ? input.asOf : new Date(input.asOf)) : new Date();
+  // `asOf` of the envelope stays the UTC day of the request; each property's
+  // window is resolved below from its own business date (UX2-REV-01).
   const dayStart = startOfUtcDay(asOfDate);
-  const dayEnd = endOfUtcDay(dayStart);
-  const monthStart = startOfUtcMonth(dayStart);
 
   // Tanda 6b (R6): only operational centres (kind = hotel) enter the portfolio
   // fan-out; the head office and other non-lodging centres have no rooms nor
@@ -507,9 +525,11 @@ export async function buildPortfolioDashboard(
     };
   }
 
-  // Fan out per-property aggregation.
+  // Fan out per-property aggregation, each property on its own business date
+  // (readGmBusinessDate is best effort: without a row or on a read failure the
+  // window falls back to the UTC day of `asOf`, and the row says so).
   const aggregates = await Promise.all(
-    properties.map((p) => aggregateProperty(p, dayStart, dayEnd, monthStart))
+    properties.map(async (p) => aggregateProperty(p, resolveGmWindow({ businessDate: await readGmBusinessDate(p.id), now: asOfDate })))
   );
 
   // Org-wide totals.
@@ -572,6 +592,8 @@ export async function buildPortfolioDashboard(
     region: a.region,
     status: a.status,
     roomsCount: a.roomsCount,
+    businessDate: a.businessDate,
+    businessDateSource: a.businessDateSource,
     arrivalsToday: a.arrivalsToday,
     departuresToday: a.departuresToday,
     inHouseNow: a.inHouseNow,

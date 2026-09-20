@@ -21,6 +21,8 @@ export interface DirectorSegmentBarsProps {
   segments: Array<DirectorSegmentBarsSegment>;
   maxBars?: number;
   valueLabel?: string;
+  /** Card heading (Spanish by default: «Segmentos»; UX-2 · corrector UX2-REV-05). */
+  title?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +189,8 @@ const emptyStyle: CSSProperties = {
 export function DirectorSegmentBars({
   segments,
   maxBars,
-  valueLabel = "ADR / Mix"
+  valueLabel = "ADR / Mix",
+  title = "Segmentos"
 }: DirectorSegmentBarsProps) {
   const limit =
     typeof maxBars === "number" && maxBars > 0
@@ -199,14 +202,14 @@ export function DirectorSegmentBars({
     <CocoaCard variant="bordered" padding="md">
       <div style={wrapperStyle}>
         <div style={headerStyle}>
-          <h3 style={headerTitleStyle}>Segments</h3>
+          <h3 style={headerTitleStyle}>{title}</h3>
           <span style={headerSubStyle}>{valueLabel}</span>
         </div>
 
         {visible.length === 0 ? (
-          <div style={emptyStyle}>No segment data available.</div>
+          <div style={emptyStyle}>Sin datos de segmentos.</div>
         ) : (
-          <div style={listStyle} role="list" aria-label="Hotel segments mix">
+          <div style={listStyle} role="list" aria-label="Mix de segmentos del hotel">
             {visible.map((segment, index) => {
               const mix = clampMixPct(segment.mixPct);
               const dColor = deltaColor(segment.deltaVsLY);

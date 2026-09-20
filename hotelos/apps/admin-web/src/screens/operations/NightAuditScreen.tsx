@@ -31,6 +31,16 @@
 //     reason code + text; > 7 days → 409 APPROVAL_REQUIRED with the request id).
 //   Permissions are read from the session (getUser().permissions, as the shell
 //   does); the API re-checks every one of them.
+// Tanda UX-2 (lote D8 · F-D3, docs/design/UX-DIRECCION-FEEL.md §1 P1/P2/P7):
+//   - the banner is honest: «Cerrar día» ONLY with night_audit.run
+//     (closeActionFor); dirección (manager / general_manager: review + reopen,
+//     never run) reads who closes and reviews it afterwards; blocked without
+//     the key → no button, «Abrir cola operativa» (banner and ⌘K);
+//   - the last run awaiting its income review gets a callout above the history
+//     with ONE primary «Marcar como revisado» (⌥V, ⌘K «Marcar el cierre como
+//     revisado») that opens the existing review dialog straight away (Enter
+//     confirms): menu → primary → confirm = 3 clicks (measure d6);
+//   - one live region of its own (the action notice of the drawer).
 // Data: GET /properties/:id/night-audit/preflight (30 s poll),
 // GET /properties/:id/night-audit/runs, GET …/runs/:runId;
 // POST /properties/:id/night-audit/run (409 NIGHT_AUDIT_ALREADY_COMPLETED /
@@ -87,14 +97,20 @@ import {
   REOPEN_REASON_LABELS,
   ROOM_CHARGE_OUTCOME_LABELS,
   RUN_REVIEW_LABELS,
+  CLOSE_BANNER_TITLES,
+  CLOSE_REVIEW_ONLY_TEXT,
+  OPEN_QUEUE_LABEL,
   blockerLabel,
-  canForceClose,
+  closeActionFor,
   labelledAmounts,
+  latestRunToReview,
   paymentMethodLabel,
   preflightOverrideSummary,
   reopenReasonLabel,
   reportSummary,
   revenueTypeLabel,
+  reviewCalloutTitle,
+  reviewedToast,
   roomChargeOutcomeTone,
   runActionsFor,
   runReviewState,
@@ -275,7 +291,9 @@ export function NightAuditScreen() {
   const reviewNoteId = useId();
   const reopenCodeId = useId();
   const reopenTextId = useId();
-  const [reviewOpen, setReviewOpen] = useState(false);
+  // The run the review dialog acts on: the drawer's run or the last unreviewed
+  // run of the callout (UX-2 · D8), never implicitly the selected row.
+  const [reviewTarget, setReviewTarget] = useState<NightAuditRunWire | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenCode, setReopenCode] = useState<NightAuditReopenReasonCode>("missing_charge");
@@ -364,18 +382,25 @@ export function NightAuditScreen() {
   }
 
   async function reviewRun() {
-    if (!shownRun) return;
+    const target = reviewTarget;
+    if (!target) return;
+    // From the drawer the notice is painted next to the report; from the
+    // callout (drawer closed) the toast carries the outcome, the 409 of the
+    // separation of duties included (its copy comes from the API).
+    const inDrawer = shownRun?.id === target.id;
     setActionBusy(true);
     try {
-      const updated = await reviewNightAuditRun(shownRun.id, reviewNote, propertyId);
-      setRunDetail(updated);
-      setReviewOpen(false);
+      const updated = await reviewNightAuditRun(target.id, reviewNote, propertyId);
+      if (inDrawer) setRunDetail(updated);
+      setReviewTarget(null);
       setReviewNote("");
-      setActionNotice({ tone: "success", text: "Cierre marcado como revisado." });
-      showToast("Cierre del día revisado.", { variant: "success" });
+      if (inDrawer) setActionNotice({ tone: "success", text: "Cierre marcado como revisado." });
+      showToast(reviewedToast(updated), { variant: "success" });
     } catch (err) {
-      setActionNotice({ tone: "danger", text: actionErrorMessage(err, "No se pudo marcar el cierre como revisado.") });
-      setReviewOpen(false);
+      const text = actionErrorMessage(err, "No se pudo marcar el cierre como revisado.");
+      if (inDrawer) setActionNotice({ tone: "danger", text });
+      else showToast(text, { variant: "error" });
+      setReviewTarget(null);
     } finally {
       setActionBusy(false);
       refreshRuns();
@@ -412,7 +437,8 @@ export function NightAuditScreen() {
   }
 
   const canClose = Boolean(preflight?.canClose);
-  const canForce = canForceClose(sessionCan);
+  const closeAction = closeActionFor(preflight, sessionCan);
+  const runToReview = latestRunToReview(runs, sessionCan);
   const runActions = shownRun ? runActionsFor(shownRun, sessionCan) : { review: false, reopen: false };
   const reviewState = shownRun ? runReviewState(shownRun) : "not_applicable";
 
@@ -433,7 +459,11 @@ export function NightAuditScreen() {
       state={state}
       skeleton={<NightAuditSkeleton />}
       error={{ title: "No se pudo cargar el cierre del día", message: perror ?? undefined, onRetry: refresh }}
-      commands={[{ id: "night-audit-refresh", label: "Actualizar el cierre del día", run: refresh }]}
+      commands={[
+        { id: "night-audit-refresh", label: "Actualizar el cierre del día", run: refresh },
+        ...(runToReview ? [{ id: "night-audit-review", label: "Marcar el cierre como revisado", shortcut: "⌥V", run: () => setReviewTarget(runToReview) }] : []),
+        ...(closeAction === "blocked" ? [{ id: "night-audit-open-queue", label: OPEN_QUEUE_LABEL, run: () => navigateTo("FrontDeskDashboard") }] : [])
+      ]}
     >
       {preflight ? (
         <>
@@ -441,28 +471,31 @@ export function NightAuditScreen() {
               data the page shows loading/error instead of a misleading red
               «no puedes cerrar» banner. With blockers the API refuses the plain
               close (409 NIGHT_AUDIT_PREFLIGHT_BLOCKED): the only way through is
-              the forced close with a reason, offered to night_audit.run only. */}
+              the forced close with a reason, offered to night_audit.run only.
+              UX-2 · D8 (P7): without night_audit.run there is NO «Cerrar día»
+              (it would answer 403): a green preflight says who closes
+              (review-only) and a blocked one offers the operational queue. */}
           <CocoaCallout
             tone={canClose ? "success" : "danger"}
             icon={canClose ? <CheckCircleIcon size={20} /> : <XCircleIcon size={20} />}
-            title={canClose ? "Puedes cerrar el día" : "No puedes cerrar todavía"}
+            title={CLOSE_BANNER_TITLES[closeAction]}
             actions={
-              canClose ? (
+              closeAction === "run" ? (
                 <CocoaButton variant="filled" tone="accent" disabled={busy} loading={busy} onClick={() => void runAudit()} title="Ejecuta el cierre del día y avanza la fecha de negocio">
                   Cerrar día
                 </CocoaButton>
-              ) : canForce ? (
+              ) : closeAction === "force" ? (
                 <CocoaButton variant="bordered" tone="destructive" disabled={busy} loading={busy} onClick={() => setForceOpen(true)} title="Cierra el día pese a los bloqueos: el motivo queda auditado y en el informe">
                   Cerrar de todos modos
                 </CocoaButton>
-              ) : (
-                <CocoaButton variant="filled" tone="accent" disabled title="Resuelve los bloqueos primero">
-                  Cerrar día
+              ) : closeAction === "blocked" ? (
+                <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => navigateTo("FrontDeskDashboard")} title="Llegadas, salidas, no-shows y folios con saldo se resuelven en la cola operativa">
+                  {OPEN_QUEUE_LABEL}
                 </CocoaButton>
-              )
+              ) : undefined
             }
           >
-            {preflight.blockingMessage ?? "Todas las comprobaciones críticas están en verde. Ejecuta el cierre del día cuando estés listo."}
+            {closeAction === "review-only" ? CLOSE_REVIEW_ONLY_TEXT : preflight.blockingMessage ?? "Todas las comprobaciones críticas están en verde. Ejecuta el cierre del día cuando estés listo."}
           </CocoaCallout>
 
           <CocoaKpiStrip min={200} stagger aria-label="Resumen de comprobaciones">
@@ -470,6 +503,30 @@ export function NightAuditScreen() {
             <CocoaKpi label="Avisos" value={preflight.summary.warning} polarity="neutral" status={preflight.summary.warning > 0 ? "warning" : "ok"} />
             <CocoaKpi label="Bloqueos" value={preflight.summary.blocker} polarity="neutral" status={preflight.summary.blocker > 0 ? "critical" : "ok"} />
           </CocoaKpiStrip>
+
+          {/* UX-2 · D8 (P1/P2): the last run awaiting its income review, with its
+              one primary; the drawer keeps the same action for older runs.
+              Corrector UX2-REV-09: above the pre-close checks so the primary of d6
+              sits in the first viewport (menu → primary → confirm, no scroll). */}
+          {runToReview ? (
+            <CocoaCallout
+              tone="info"
+              icon={<ExclamationCircleIcon size={20} />}
+              title={reviewCalloutTitle(runToReview)}
+              actions={
+                <>
+                  <CocoaButton variant="filled" tone="accent" size="small" accessKey="V" disabled={actionBusy} onClick={() => setReviewTarget(runToReview)} title="Revisión de ingresos de la mañana siguiente: la hace alguien distinto de quien ejecutó el cierre">
+                    Marcar como revisado
+                  </CocoaButton>
+                  <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setSelectedRunId(runToReview.id)}>
+                    Ver informe
+                  </CocoaButton>
+                </>
+              }
+            >
+              Pendiente de la revisión de ingresos. Ejecutado por {actorLabel(runToReview.startedBy)}.
+            </CocoaCallout>
+          ) : null}
 
           <CocoaSection title="Comprobaciones previas al cierre" meta={plural(checks.length, "comprobación", "comprobaciones")}>
             {checks.length === 0 ? (
@@ -612,7 +669,7 @@ export function NightAuditScreen() {
                 runActions.review || runActions.reopen ? (
                   <span className="cocoa-cluster">
                     {runActions.review ? (
-                      <CocoaButton variant="tinted" tone="accent" size="small" disabled={actionBusy} onClick={() => setReviewOpen(true)} title="Revisión de ingresos de la mañana siguiente: la hace alguien distinto de quien ejecutó el cierre">
+                      <CocoaButton variant="tinted" tone="accent" size="small" disabled={actionBusy} onClick={() => setReviewTarget(shownRun)} title="Revisión de ingresos de la mañana siguiente: la hace alguien distinto de quien ejecutó el cierre">
                         Marcar como revisado
                       </CocoaButton>
                     ) : null}
@@ -651,18 +708,19 @@ export function NightAuditScreen() {
         ) : null}
       </CocoaDrawer>
 
-      {/* Income audit: optional note; the API refuses the runner (409 runner_ne_reviewer). */}
+      {/* Income audit: optional note; the API refuses the runner (409 runner_ne_reviewer).
+          Focus lands on Confirm (the note is optional): Enter confirms (UX-2 · D8). */}
       <CocoaDialog
-        open={reviewOpen}
+        open={reviewTarget !== null}
         onClose={() => {
-          if (!actionBusy) setReviewOpen(false);
+          if (!actionBusy) setReviewTarget(null);
         }}
         title="Marcar el cierre como revisado"
         description="Confirma la revisión de ingresos de este cierre. Quien lo ejecutó no puede revisarlo: el sistema lo rechaza."
         confirmLabel="Marcar como revisado"
         busy={actionBusy}
+        submitOnEnter
         onConfirm={reviewRun}
-        initialFocus={() => document.getElementById(reviewNoteId)}
       >
         <CocoaField label="Nota" htmlFor={reviewNoteId} hint="opcional">
           <CocoaInput id={reviewNoteId} value={reviewNote} onChange={setReviewNote} multiline rows={3} maxLength={1000} placeholder="Observaciones de la revisión" disabled={actionBusy} />
@@ -711,7 +769,7 @@ function RunReport({ run, loading, error }: { run: NightAuditRunWire; loading: b
   return (
     <div className="cocoa-stack" data-gap="4">
       {error ? (
-        <CocoaCallout tone="warning" role="status">
+        <CocoaCallout tone="warning">
           {error} Se muestra la copia del historial.
         </CocoaCallout>
       ) : null}

@@ -26,6 +26,8 @@ export interface DirectorBarRecommendationsProps {
   onViewAll?: () => void;
   className?: string;
   style?: CSSProperties;
+  /** Card heading (Spanish by default: «Recomendaciones BAR de la IA»; UX-2 · corrector UX2-REV-05). */
+  title?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -106,7 +108,8 @@ export function DirectorBarRecommendations({
   onApply,
   onViewAll,
   className,
-  style
+  style,
+  title = "Recomendaciones BAR de la IA"
 }: DirectorBarRecommendationsProps) {
   const visible = recommendations.slice(0, MAX_VISIBLE_RECOMMENDATIONS);
   const isEmpty = visible.length === 0;
@@ -232,7 +235,7 @@ export function DirectorBarRecommendations({
           <span style={iconWrapStyle} aria-hidden="true">
             <SparkleIcon size={18} color="var(--cocoa-accent)" />
           </span>
-          <h3 style={titleStyle}>BAR Recommendations IA</h3>
+          <h3 style={titleStyle}>{title}</h3>
         </div>
 
         {isEmpty ? (

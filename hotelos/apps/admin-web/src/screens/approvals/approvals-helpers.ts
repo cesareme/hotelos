@@ -9,7 +9,12 @@
 //   - `hasApprovalKeys`: whether a profile approves anything at all (the
 //     «Pendientes de aprobación» card of Mi día, design §4.9);
 //   - `secondApproverNote`: the second signature above T4 (§4.7);
-//   - `approvalErrorMessage`: Spanish message of a failed decision.
+//   - `approvalErrorMessage`: Spanish message of a failed decision;
+//   - Tanda UX-2 · D5 (docs/design/UX-DIRECCION-FEEL.md §1 P1/P4, F-D7/F-D8):
+//     `primaryDecisionFor` (the ONE primary action of a row), the nominal
+//     dialog title / toast (`decisionDialogTitle`, `decisionToast`, never
+//     interrogative, amount in the sentence) and the label of the «Pendientes»
+//     card of Mi día that counts approvals + AI items (`pendingCardLabel`).
 
 import {
   APPROVAL_KIND_PERMISSION,
@@ -21,6 +26,7 @@ import {
   type ApprovalStatus,
   type ThresholdTier
 } from "@hotelos/shared";
+import { money, number, plural } from "../../lib/format";
 
 /** Shape of the error `apiRequest` throws (services/api-client.ts ApiError), read structurally so this pure module never loads the client. */
 export type ApiErrorLike = { status: number; message?: string; details?: unknown };
@@ -172,4 +178,85 @@ export function approvalErrorMessage(error: unknown, fallback = "No se ha podido
     return error.message || fallback;
   }
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+// ---------------------------------------------------------------- Tanda UX-2 · D5 (P1 one action per row · P4 nominal dialog)
+
+export type ApprovalPrimaryDecision = "approve" | "reject";
+
+/**
+ * The one primary decision a row offers (P1): `approve` when the viewer may
+ * approve it, `reject` when only rejecting is left, `null` when nothing is
+ * decidable from the row (own request, already decided, expired, no key in
+ * the hotel of the request). `decisionFor` keeps explaining the reason in the
+ * drawer; this only decides what the row paints.
+ */
+export function primaryDecisionFor(request: ApprovalRequestDto, viewer: ApprovalViewer, now: Date = new Date()): ApprovalPrimaryDecision | null {
+  if (request.status !== "pending" || isExpired(request, now)) return null;
+  const ability = decisionFor(request, viewer);
+  if (ability.canApprove) return "approve";
+  if (ability.canReject) return "reject";
+  return null;
+}
+
+/** The kind label as a noun inside a sentence («reembolso», «ajuste de folio»); an acronym («CAPEX») keeps its case. */
+export function approvalKindNoun(kind: ApprovalKind): string {
+  const label = APPROVAL_KIND_LABELS_ES[kind];
+  return label === label.toUpperCase() ? label : label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+/**
+ * Nominal title of the decision dialog (P4; also its confirm button):
+ * «Aprobar reembolso de 60,00 €» · «Rechazar ajuste de folio de 25,00 €» ·
+ * «Aprobar reapertura del día» (kinds without amount). Never a question.
+ */
+export function decisionDialogTitle(decision: ApprovalPrimaryDecision, request: Pick<ApprovalRequestDto, "kind" | "amount" | "currency">): string {
+  const verb = decision === "approve" ? "Aprobar" : "Rechazar";
+  const noun = approvalKindNoun(request.kind);
+  return request.amount !== null ? `${verb} ${noun} de ${money(request.amount, request.currency)}` : `${verb} ${noun}`;
+}
+
+/** Short reference of a request for people («solicitud K3M9Q2»): the last six characters of the id, never the whole cuid (FX-11). */
+export function approvalReference(id: string): string {
+  return id.slice(-6).toUpperCase();
+}
+
+/**
+ * Toast of a registered decision: «Aprobada: reembolso 60,00 € · solicitud
+ * K3M9Q2» · «Rechazada: …» · «Primera aprobación registrada: falta la
+ * segunda · solicitud …» (still pending above T4).
+ */
+export function decisionToast(updated: Pick<ApprovalRequestDto, "id" | "kind" | "amount" | "currency" | "status">): string {
+  const noun = approvalKindNoun(updated.kind);
+  const what = updated.amount !== null ? `${noun} ${money(updated.amount, updated.currency)}` : noun;
+  const reference = `solicitud ${approvalReference(updated.id)}`;
+  if (updated.status === "approved") return `Aprobada: ${what} · ${reference}`;
+  if (updated.status === "rejected") return `Rechazada: ${what} · ${reference}`;
+  return `Primera aprobación registrada: falta la segunda · ${reference}`;
+}
+
+export type PendingCardCounts = {
+  /** Pending approvals the viewer may decide; null while loading or when the profile approves nothing. */
+  approvals: number | null;
+  /** Pending AI review items (`/ai-operations/review/stats` → `pending`); null without `ai_governance.read` or while loading. */
+  ai: number | null;
+};
+
+/** Parts of the «Pendientes» card of Mi día: «2 aprobaciones» · «1 de la IA» (a null part is omitted). */
+export function pendingCardParts(counts: PendingCardCounts): string[] {
+  const parts: string[] = [];
+  if (counts.approvals !== null) parts.push(plural(counts.approvals, "aprobación", "aprobaciones"));
+  if (counts.ai !== null) parts.push(`${number(counts.ai)} de la IA`);
+  return parts;
+}
+
+/** Accessible name of the card: «Pendientes · 2 aprobaciones · 1 de la IA» («Pendientes» alone while nothing is known). */
+export function pendingCardLabel(counts: PendingCardCounts): string {
+  const parts = pendingCardParts(counts);
+  return parts.length === 0 ? "Pendientes" : `Pendientes · ${parts.join(" · ")}`;
+}
+
+/** N + M of the card (tone `warning` above zero). */
+export function pendingCardTotal(counts: PendingCardCounts): number {
+  return (counts.approvals ?? 0) + (counts.ai ?? 0);
 }

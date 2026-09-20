@@ -10,11 +10,23 @@
 // (Tanda 5); falls back to the active property. PortfolioDashboard repoints
 // the active property before navigating here, reloading when the scope
 // changes.
+//
+// Tanda UX-2 (lote D6 · F-D10): actions «PyG del hotel» (ProfitAndLossScreen
+// with `?ambito=` of this property: the statement reads its scope from the
+// URL, so it works for any hotel of the portfolio), «Cierre del día» and
+// «Exportar informe» (NightAuditScreen / ReportingCenter read the ACTIVE
+// property: from the detail of another hotel the button says so and stays
+// disabled — never a promise the screen cannot keep). The KPIs of today carry
+// the vocabulary of dirección (Llegadas hoy · Salidas hoy · En el hotel) and
+// say their window: since the corrector UX2-REV-01 property-overview.service.ts
+// counts the BUSINESS DATE of the property (the reader of Mi día › Dirección;
+// `businessDate` + `businessDateSource` in the payload) and averages the month.
 
 import { useMemo, type CSSProperties, type ReactNode } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
-import { urlForScreen } from "../../navigation/nav-tree";
+import { devQueryFrom, urlForScreen } from "../../navigation/nav-tree";
+import { withFinanceScopeParam } from "../../services/financeScope";
 import { navigateTo, type ScreenKey } from "../../lib/navigate";
 import { date, money, number, percent, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
@@ -53,6 +65,9 @@ type PropertyOverview = {
     sesHospedajesEnabled: boolean;
     verifactuEnabled: boolean;
   };
+  /** Window of the «hoy» counters (additive, UX2-REV-01): the business date of the property, or the UTC day without a row. */
+  businessDate?: string;
+  businessDateSource?: "business_date" | "utc_day";
   today: {
     arrivals: number;
     departures: number;
@@ -150,6 +165,38 @@ function navToReservation(reservationId: string) {
   if (url) openTabPath(url);
 }
 
+// PyG del hotel: /finanzas/estados-contables/perdidas-y-ganancias?ambito=<propiedad>
+// (CSV 279). ProfitAndLossScreen reads its «Ámbito» from `?ambito=`
+// (services/financeScope.ts useFinanceScope: the URL wins over storage once the
+// structure is known), so the link is honest for any hotel of the portfolio,
+// active or not. The dev query survives (openTabPath keeps it only when the
+// path has no query of its own).
+function openProfitAndLoss(propertyId: string): void {
+  if (typeof window === "undefined") return;
+  const url = urlForScreen("ProfitAndLossScreen");
+  if (!url) return;
+  openTabPath(`${url}${withFinanceScopeParam(devQueryFrom(window.location.search), propertyId)}`);
+}
+
+// Cierre del día and Centro de informes only read the ACTIVE property
+// (NightAuditScreen.tsx getActivePropertyId(); ReportingCenterScreen.tsx
+// PROPERTY_ID at module level): from the detail of another hotel the buttons
+// say so and stay disabled instead of opening the wrong hotel.
+const SWITCH_HINT = "Cambia a este hotel para verlo";
+
+/**
+ * Window of the «hoy» counters of GET /dashboards/property-overview (P7): «fecha de negocio DD/MM/AAAA» (the reader of
+ * Mi día › Dirección, corrector UX2-REV-01) or «día UTC DD/MM/AAAA» when the property has no business_dates row; an
+ * older API without the field still says «día natural (UTC)».
+ */
+export function todayWindowCaption(overview: Pick<PropertyOverview, "businessDate" | "businessDateSource"> | undefined): string {
+  if (!overview?.businessDate) return "día natural (UTC)";
+  const day = date(overview.businessDate, "short");
+  return overview.businessDateSource === "utc_day" ? `día UTC ${day}` : `fecha de negocio ${day}`;
+}
+/** Window of occupancy / ADR / RevPAR (average per day of the month to date). */
+const MONTH_AVERAGE_WINDOW = "media diaria del mes";
+
 // Right-aligned cell with the amount and its badge side by side.
 const balanceCellStyle: CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: "var(--cocoa-space-2)" };
 
@@ -202,6 +249,7 @@ export function PropertyDetailScreen({ propertyId: propertyIdProp }: { propertyI
   // Hosted inside the Cartera de propiedades container (Tanda 5): CocoaPage reads the host and lets the container paint eyebrow + H1.
   // Read through the shared service (single owner of the storage key) at mount time.
   const propertyId = useMemo(() => propertyIdProp ?? getActivePropertyId(), [propertyIdProp]);
+  const isActive = useMemo(() => propertyId === getActivePropertyId(), [propertyId]);
 
   const { data, loading, error, refresh } = useApiData<PropertyOverview>("/dashboards/property-overview", {
     pollIntervalMs: 60000,
@@ -230,6 +278,7 @@ export function PropertyDetailScreen({ propertyId: propertyIdProp }: { propertyI
 
   const pendingFiscal = finance?.pendingFiscalSubmissions ?? 0;
   const pendingBalance = finance?.pendingBalanceEur ?? 0;
+  const todayWindow = todayWindowCaption(data ?? undefined);
 
   return (
     <CocoaPage
@@ -243,6 +292,15 @@ export function PropertyDetailScreen({ propertyId: propertyIdProp }: { propertyI
           <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("PortfolioDashboard")}>
             Volver a la cartera
           </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" disabled={!isActive} title={isActive ? undefined : SWITCH_HINT} onClick={() => navigateTo("NightAuditScreen")}>
+            Cierre del día
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" disabled={!isActive} title={isActive ? undefined : SWITCH_HINT} onClick={() => navigateTo("ReportingCenter")}>
+            Exportar informe
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={() => openProfitAndLoss(propertyId)}>
+            PyG del hotel
+          </CocoaButton>
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
             {ACTIONS.refresh}
           </CocoaButton>
@@ -254,7 +312,15 @@ export function PropertyDetailScreen({ propertyId: propertyIdProp }: { propertyI
       error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
       commands={[
         { id: "cartera-propiedad-refresh", label: "Actualizar el detalle de la propiedad", run: refresh },
-        { id: "cartera-propiedad-back", label: "Volver a la cartera de propiedades", run: () => navigateTo("PortfolioDashboard") }
+        { id: "cartera-propiedad-back", label: "Volver a la cartera de propiedades", run: () => navigateTo("PortfolioDashboard") },
+        { id: "cartera-propiedad-pyg", label: "PyG del hotel", run: () => openProfitAndLoss(propertyId) },
+        // Only offered when they would open THIS hotel (both screens read the active property).
+        ...(isActive
+          ? [
+              { id: "cartera-propiedad-cierre", label: "Abrir el cierre del día", run: () => navigateTo("NightAuditScreen") },
+              { id: "cartera-propiedad-informe", label: "Exportar un informe del hotel", run: () => navigateTo("ReportingCenter") }
+            ]
+          : [])
       ]}
     >
       {property && today && finance && operations && guestExperience ? (
@@ -269,13 +335,13 @@ export function PropertyDetailScreen({ propertyId: propertyIdProp }: { propertyI
           </CocoaSection>
 
           <CocoaKpiStrip stagger aria-label="Indicadores de hoy">
-            <CocoaKpi label="Llegadas hoy" value={number(today.arrivals)} polarity="neutral" status="ok" />
-            <CocoaKpi label="Salidas hoy" value={number(today.departures)} polarity="neutral" status="ok" />
-            <CocoaKpi label="En el hotel" value={number(today.inHouse)} deltaLabel="ocupadas ahora" polarity="neutral" status="ok" />
-            <CocoaKpi label="Ocupación" value={fmtPct(today.occupancyPct)} deltaLabel="media del mes" polarity="neutral" status="ok" />
-            <CocoaKpi label="ADR" value={money(today.adrEur)} status="ok" />
-            <CocoaKpi label="RevPAR" value={money(today.revparEur)} status="ok" />
-            <CocoaKpi label="Ingresos del mes" value={money(finance.revenueMtdEur)} status="ok" />
+            <CocoaKpi label="Llegadas hoy" value={number(today.arrivals)} caption={todayWindow} polarity="neutral" status="ok" />
+            <CocoaKpi label="Salidas hoy" value={number(today.departures)} caption={todayWindow} polarity="neutral" status="ok" />
+            <CocoaKpi label="En el hotel" value={number(today.inHouse)} caption={todayWindow} polarity="neutral" status="ok" />
+            <CocoaKpi label="Ocupación" value={fmtPct(today.occupancyPct)} caption={MONTH_AVERAGE_WINDOW} polarity="neutral" status="ok" />
+            <CocoaKpi label="ADR" value={money(today.adrEur)} caption={MONTH_AVERAGE_WINDOW} status="ok" />
+            <CocoaKpi label="RevPAR" value={money(today.revparEur)} caption={MONTH_AVERAGE_WINDOW} status="ok" />
+            <CocoaKpi label="Ingresos del mes" value={money(finance.revenueMtdEur)} caption="mes natural" status="ok" />
             <CocoaKpi label="Saldo pendiente" value={money(finance.pendingBalanceEur)} deltaLabel="cuentas abiertas hoy" polarity="negative-good" status={pendingBalance > 5000 ? "warning" : "ok"} />
           </CocoaKpiStrip>
 

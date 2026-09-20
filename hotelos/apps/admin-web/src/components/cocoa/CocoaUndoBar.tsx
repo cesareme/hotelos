@@ -78,9 +78,15 @@ export function CocoaUndoBar({ entry, onUndo, onDismiss, seconds = DEFAULT_UNDO_
   // no frame with the previous value). A new entry replaces the previous one.
   const [tracked, setTracked] = useState<CocoaUndoEntry | null>(entry);
   const [left, setLeft] = useState(seconds);
+  // Pausa con el ratón encima o el foco dentro (como el toast, UX1-REV-09). Se
+  // declara antes del reinicio porque un cambio de entrada también la levanta:
+  // al pulsar «Deshacer» la barra se desmonta bajo el puntero sin `mouseleave`
+  // y la SIGUIENTE entrada nacía pausada para siempre (corrector UX2-REV-04).
+  const [paused, setPaused] = useState(false);
   if (entry !== tracked) {
     setTracked(entry);
     setLeft(seconds);
+    if (paused) setPaused(false);
   }
 
   const dismissRef = useRef(onDismiss);
@@ -90,8 +96,6 @@ export function CocoaUndoBar({ entry, onUndo, onDismiss, seconds = DEFAULT_UNDO_
     undoRef.current = onUndo;
   }, [onDismiss, onUndo]);
 
-  // Pausa con el ratón encima o el foco dentro (como el toast, UX1-REV-09).
-  const [paused, setPaused] = useState(false);
   useEffect(() => {
     if (!entry || paused) return undefined;
     const timer = setInterval(() => setLeft((n) => Math.max(0, n - 1)), 1000);

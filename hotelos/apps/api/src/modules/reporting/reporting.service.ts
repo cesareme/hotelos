@@ -100,40 +100,59 @@ function countBy<T extends string>(values: T[]) {
   }, {});
 }
 
+export type ReportCatalogEntry = {
+  code: string;
+  title: string;
+  permission: string;
+  endpoint: string;
+  formats: OperationalReportFormat[];
+  inputs: string[];
+  targetTables: string[];
+};
+
+/**
+ * Entries of the report catalogue (Tanda UX-2 · D6, F-D6: titles in Spanish,
+ * the UI language; codes, endpoints and inputs unchanged). A fresh array per
+ * call so a consumer cannot mutate the catalogue; pure, no database.
+ */
+export function reportCatalogEntries(): ReportCatalogEntry[] {
+  return [
+    {
+      code: "reservation_arrivals_departures",
+      title: "Reservas: llegadas y salidas",
+      permission: "analytics.read",
+      endpoint: "/reports/properties/:propertyId/reservations",
+      formats: ["pdf", "csv", "xlsx", "json"],
+      inputs: ["fromDate", "toDate", "status", "channel", "marketSegment", "roomTypeId"],
+      targetTables: ["reservations", "reservation_guests", "rooms", "room_types"]
+    },
+    {
+      code: "billing_invoice_payment",
+      title: "Facturación, facturas y cobros",
+      permission: "analytics.read",
+      endpoint: "/reports/properties/:propertyId/billing",
+      formats: ["pdf", "csv", "xlsx", "json"],
+      inputs: ["fromDate", "toDate", "invoiceStatus", "paymentMethod", "customerType"],
+      targetTables: ["folios", "folio_lines", "payments", "invoices", "invoice_lines"]
+    },
+    {
+      code: "revenue_history_forecast",
+      title: "Revenue: histórico y previsión",
+      permission: "revenue.history_forecast.read",
+      endpoint: "/revenue/properties/:propertyId/history-forecast",
+      formats: ["pdf", "csv", "xlsx", "json"],
+      inputs: ["fromDate", "toDate", "granularity", "channel", "segment", "revenueMode"],
+      targetTables: ["revenue_daily_snapshots", "revenue_forecast_snapshots", "revenue_report_views"]
+    }
+  ];
+}
+
 export async function getReportCatalog(propertyId: string) {
   await requireProperty(propertyId);
   return {
     propertyId,
     generatedAt: nowIso(),
-    reports: [
-      {
-        code: "reservation_arrivals_departures",
-        title: "Reservation arrivals and departures",
-        permission: "analytics.read",
-        endpoint: "/reports/properties/:propertyId/reservations",
-        formats: ["pdf", "csv", "xlsx", "json"],
-        inputs: ["fromDate", "toDate", "status", "channel", "marketSegment", "roomTypeId"],
-        targetTables: ["reservations", "reservation_guests", "rooms", "room_types"]
-      },
-      {
-        code: "billing_invoice_payment",
-        title: "Billing, invoices and payments",
-        permission: "analytics.read",
-        endpoint: "/reports/properties/:propertyId/billing",
-        formats: ["pdf", "csv", "xlsx", "json"],
-        inputs: ["fromDate", "toDate", "invoiceStatus", "paymentMethod", "customerType"],
-        targetTables: ["folios", "folio_lines", "payments", "invoices", "invoice_lines"]
-      },
-      {
-        code: "revenue_history_forecast",
-        title: "Revenue History & Forecast",
-        permission: "revenue.history_forecast.read",
-        endpoint: "/revenue/properties/:propertyId/history-forecast",
-        formats: ["pdf", "csv", "xlsx", "json"],
-        inputs: ["fromDate", "toDate", "granularity", "channel", "segment", "revenueMode"],
-        targetTables: ["revenue_daily_snapshots", "revenue_forecast_snapshots", "revenue_report_views"]
-      }
-    ]
+    reports: reportCatalogEntries()
   };
 }
 
@@ -311,7 +330,7 @@ export async function exportOperationalReport(input: {
   // frontend wraps `content` in a Blob and triggers a download under `filename`.
   // We honour the requested format with a sensible fallback (PDF/XLSX → HTML
   // print-to-PDF and a CSV companion, so the user always gets something useful).
-  const filename = buildReportFilename(input.propertyId, input.reportType, input.format);
+  const filename = buildReportFilename(input.propertyId, input.reportType, input.format, input.query);
   const content = buildReportContent(input.reportType, input.format, payload);
   const exportId = createId("report_export");
   const generatedAtMs = Date.now();
@@ -372,9 +391,19 @@ function contentTypeFor(format: OperationalReportFormat): string {
   }
 }
 
-function buildReportFilename(propertyId: string, type: OperationalReportType, format: OperationalReportFormat): string {
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * `informe-<tipo>-<propiedad>-<desde>_<hasta>.<ext>` when the query carries a
+ * real range (UX-2 · D6: the file names the month it covers), else the
+ * generation day as before. The extension is the one actually delivered
+ * (pdf → html, xlsx → csv; see contentTypeFor).
+ */
+export function buildReportFilename(propertyId: string, type: OperationalReportType, format: OperationalReportFormat, query: Record<string, unknown> = {}): string {
   const ext = format === "pdf" ? "html" : format === "xlsx" ? "csv" : format;
-  const stamp = new Date().toISOString().slice(0, 10);
+  const fromDate = typeof query.fromDate === "string" && ISO_DAY.test(query.fromDate) ? query.fromDate : undefined;
+  const toDate = typeof query.toDate === "string" && ISO_DAY.test(query.toDate) ? query.toDate : undefined;
+  const stamp = fromDate && toDate ? `${fromDate}_${toDate}` : new Date().toISOString().slice(0, 10);
   return `informe-${type}-${propertyId}-${stamp}.${ext}`;
 }
 

@@ -791,3 +791,37 @@ Convención de listas (decisión §6.12, Tanda L3 · lote E; `lib/pagination.ts`
 ### Tests de integración por módulo (L2-08)
 
 `tests/integration/l2-modulos-{operaciones,comercial,plataforma,ia,cumplimiento}.test.mts`: 26 módulos × ≥ 3 casos (79 casos) sobre organizaciones aisladas (`helpers/l2-tenant.mts`, `RBAC_STRICT=true`, sin unión demo): (1) crear/leer con ámbito y fila en Prisma con `organizationId` / `propertyId`, (2) 403 sin clave con mensaje en español (nunca el del manifiesto), (3) 404 opaco en propiedad ajena (recepción de A sobre el hotel B; organización B sobre A). Módulos: housekeeping, maintenance, assets, allotment, fnb-inventory, cancellation-policy, mapper · sales, guests, messaging, guest-portal, marketplace, webhooks, advanced · admin-console, gdpr, esrs, reporting, search, offline, mobile-keys · ai, assistant, copilot · tbai, tourist-tax (dashboards: `l2-robustez.test.mts`). Llaves móviles (corrector L2, SEC-L2-01): el resolver `mobileKey` de `lib/tenancy.ts` lee la fila `mkey_<serial>` de `guest_portal_actions` (antes una tabla inexistente → 500 en verify/revoke) y `POST /mobile-keys/:serial/revoke` revoca solo en la propiedad resuelta por el guard (`revokeWalletPass` filtra por `propertyId`); el caso de verify/revoke ya se ejecuta (22/22 en `l2-modulos-plataforma`).
+
+## Dirección · «feel» de dirección (Tanda UX-2 · 2026-09-20)
+
+Diseño `docs/design/UX-DIRECCION-FEEL.md`; informe `docs/audits/TANDA-UX2-DIRECCION-2026-09-20.md`; runbook de pruebas
+`docs/runbooks/ux-direccion-pruebas.md`. Sin rutas nuevas, sin cambios en el manifiesto ni en el catálogo de claves y sin migración
+(dos cambios de servicio aditivos y un seed de prueba `db:seed:ux-direccion`, tenant `org_uxday` / `prop_uxday_b`).
+
+- **Tanda UX-2 (lote D3)** — `GET /dashboards/general-manager?propertyId=` (`analytics.read`; contrato aditivo): la ventana «hoy» es la
+  **fecha de negocio de la propiedad** (`business_dates.current_date`, leída una vez al principio como en el preflight del cierre) y no el
+  día natural UTC; sin fila, el día UTC. La respuesta expone `businessDate` (`YYYY-MM-DD`; `asOf` es el mismo día) y `businessDateSource`
+  (`business_date` | `utc_day`) para que la pantalla diga su ventana («Datos de la fecha de negocio 19/09»). Llegadas y salidas siguen la
+  regla del preflight: `productivity.checkInsPlanned` = reservas `confirmed` con llegada en la fecha de negocio,
+  `productivity.checkOutsPlanned` = `checked_in` con salida en la fecha de negocio; ocupación y ADR del día, `vsYesterday` y la ventana de
+  30 días de `reputation.reviewsLast30` se calculan desde esa misma fecha. Pinned por
+  `apps/api/src/modules/dashboards/__tests__/general-manager-business-date.test.mts`.
+- **Tanda UX-2 (corrector UX2-REV-01)** — `GET /dashboards/portfolio?organizationId=` y `GET /dashboards/property-overview?propertyId=`
+  (contratos aditivos): la ventana «hoy» de cada propiedad es su **fecha de negocio**, resuelta con el MISMO lector y la MISMA función
+  pura que el panel del director (`readGmBusinessDate` + `resolveGmWindow` de `general-manager.service.ts`; sin fila, el día UTC de
+  `asOf`); el mes en curso cuelga de esa fecha. `property-overview` expone `businessDate` + `businessDateSource` en el sobre y
+  `portfolio` en cada fila de `perProperty` (`asOf` del sobre sigue siendo el día UTC de la petición). Las cuentas no cambian de
+  significado: `today.arrivals` / `today.departures` y `arrivalsToday` / `departuresToday` son TODAS las reservas que llegan o salen en
+  esa fecha, mientras `general-manager.productivity.checkInsPlanned` / `checkOutsPlanned` son solo las PENDIENTES (regla del preflight):
+  la ficha y la Cartera lo etiquetan («fecha de negocio DD/MM/AAAA» · «fecha de negocio de cada hotel») y Mi día › Dirección dice
+  «pendientes de llegar / salir». Ocupación/ADR/RevPAR de Cartera y ficha siguen siendo la media diaria del mes de
+  `revenue_daily_snapshots` (o el cálculo desde reservas cuando no hay snapshots: solo en Cartera). Pinned por
+  `apps/api/src/modules/dashboards/__tests__/dashboards-business-date-window.test.mts`; runtime en el informe de la tanda (corrección).
+- **Tanda UX-2 (lotes D3/D6)** — `GET /reports/properties/:propertyId/catalog` (`analytics.read`): los `title` del catálogo van en
+  español («Reservas: llegadas y salidas», «Facturación, facturas y cobros», «Revenue: histórico y previsión»); `formats` no cambia
+  (`pdf` sigue entregando HTML imprimible y `xlsx` CSV: la etiqueta honesta «PDF (HTML imprimible)» / «XLSX (se entrega CSV)» la pinta el front,
+  `screens/reports/reporting-center-rows.ts`). `POST /reports/properties/:propertyId/export` (`analytics.export`, high): cuando `query`
+  lleva `fromDate` / `toDate` (ISO `YYYY-MM-DD`) el fichero se llama `informe-<tipo>-<propiedad>-<desde>_<hasta>.<ext>` con la extensión
+  realmente entregada (`html` para `pdf`, `csv` para `xlsx`); sin rango, sello del día de generación como antes (`buildReportFilename`).
+  El front envía siempre un rango real (preset «Este mes» por defecto). Pinned por
+  `apps/api/src/modules/reporting/__tests__/report-catalog-es.test.mts`.

@@ -6,31 +6,44 @@
 // the back office copies (§1): tokens, radii, shadows, spacing and motion
 // come from the primitives, never from local styles.
 //   1. Today snapshot strip — 11 CocoaKpi tiles (CocoaKpiStrip, stagger)
-//   2. Forward pace (CocoaChart.Line) + Pickup 7d (Bars) + Cancellation risk (Gauge)
+//   1b. «Riesgos de hoy» (Tanda UX-2 · lote D3 · F-D1/F-D2): un solo bloque
+//      con los bloqueos del cierre (preflight), los pendientes de aprobación y
+//      de la IA (solo con la clave), el riesgo de cancelación y las anomalías,
+//      cada fila con su acción (CocoaButton → pantalla); comandos ⌘K de tarea
+//   2. Forward pace (CocoaChart.Line) + Captación 7 días (Bars) + Riesgo cancelación (Gauge)
 //   3. Segments + RevPAR-vs-compset + Channel mix (Donut) + BAR recommendations
-//   4. Operations health mini-cards (HK / Maintenance / Workforce / Safety / POS)
+//   4. Operations health mini-cards (Pisos / Mantenimiento / Personal / Seguridad / TPV)
 //   5. NPS · Índice de reputación (30 d) · Peticiones de servicio · VIP alojados
 //      (Tanda T8 · lote T8-G: el índice 0-100 llega en `reputationIndex` con un
 //      estado honesto — ok · insufficient · no_reviews · no_sources · module_off —
 //      y se pinta con ReputationFigure (CocoaStat + CocoaBadge, sin estilos en
 //      línea) dentro de DegradedCard; la antigua media sobre 10 se retira)
 //   6. Compliance widgets (VeriFactu · SES · TBAI · GDPR)
-//   7. AI insights — anomalies list + top 3 recommended actions + demand spikes
+//   7. Acciones recomendadas (top 3) + Caja de hoy + Picos de demanda 14 días
 //
 // Data sources:
 //   GET /dashboards/general-manager?propertyId=  — enriched director dashboard
+//     (UX-2: ventana = fecha de negocio de la propiedad; `businessDate` +
+//     `businessDateSource` dicen cuál; el subtítulo la pinta)
 //   GET /general-manager/pace?propertyId=&days=  — OTB / forecast / LY pace
+//   GET /properties/:id/night-audit/preflight     — bloqueos del cierre (60 s)
+//   GET /approvals?status=pending (listPendingApprovals) + pendingForViewer — solo con clave *_approve
+//   GET /ai-operations/review/stats                — pendientes de la IA, solo con ai_governance.read
 //
 // States (§3.10): loading → mirror skeleton with the same spans (no layout
 // shift); no payload → empty state; `degraded[]` labels → DegradedValue /
 // DegradedCard / DegradedBanner («—» with a hint, never a fake green 0).
 
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { getActiveOrganizationId, getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useNavGate } from "../../navigation/useEnabledModules";
 import { navigateTo } from "../../lib/navigate";
 import type { GmReputationIndex } from "../../services/reputation-contracts";
+import { listPendingApprovals } from "../../services/approvalsApi";
+import { getUser } from "../../services/auth-storage";
+import { useCurrentUserProfile } from "../../services/usersApi";
+import { hasApprovalKeys, pendingForViewer, viewerFromProfile } from "../approvals/approvals-helpers";
 import { canRespond, reputationFigureActionLabel, reputationFigureModel, trendTone } from "./reputation/reputation-helpers";
 import {
   CocoaBadge,
@@ -71,7 +84,9 @@ import {
   type DirectorAiInsightSeverity
 } from "../../components/cocoa-director";
 import { toArray } from "../../utils/toArray";
-import { dateTime, money, number, percent, plural } from "../../lib/format";
+import { dateTime, money, number, percent, plural, time } from "../../lib/format";
+import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
+import { DIRECCION_PANEL_INSTRUCTIONS } from "../../content/screen-instructions/direccion";
 
 // ---------------------------------------------------------------------------
 // Types — wire-shape of the dashboard endpoint. Kept aligned with
@@ -93,6 +108,9 @@ type Data = {
   propertyId: string;
   propertyName?: string;
   asOf: string;
+  // Tanda UX-2 (D3): ventana «hoy» = fecha de negocio de la propiedad (o día UTC sin fila).
+  businessDate?: string;
+  businessDateSource?: "business_date" | "utc_day";
   occupancy: { today: Compare; mtd: number; ytdRoomNightsSold: number };
   adr: { today: Compare; mtd: number };
   revpar: { today: Compare; mtd: number };
@@ -150,6 +168,30 @@ type PaceData = {
   degraded: string[];
 };
 
+// Preflight del cierre (night-audit-preflight.service.ts): solo lo que el bloque
+// «Riesgos de hoy» lee (bloqueos + mensaje); la pantalla del cierre pinta el resto.
+type PreflightSummary = {
+  businessDate?: string;
+  canClose: boolean;
+  blockingMessage?: string;
+  summary: { ok: number; warning: number; blocker: number };
+};
+
+// GET /ai-operations/review/stats (humanReviewQueueStats): solo `pending` aquí.
+type ReviewStats = { pending: number };
+
+/** Lo que el bloque «Riesgos de hoy» necesita más allá del panel (null = sin dato todavía o sin clave). */
+type RiskInputs = {
+  preflight: PreflightSummary | null;
+  preflightError: string | null;
+  /** null sin clave de aprobación; undefined mientras carga. */
+  pendingApprovals: number | null | undefined;
+  /** null sin `ai_governance.read`; undefined mientras carga. */
+  pendingAi: number | null | undefined;
+};
+
+const AI_REVIEW_KEY = "ai_governance.read";
+
 // `safe()` labels in general-manager.service.ts grouped by the UI slot they
 // feed. A slot is degraded when ANY of its labels is in `degraded[]`.
 const DEGRADED_LABEL = {
@@ -197,9 +239,28 @@ function fmtNumber(value: number): string {
   return number(value);
 }
 
-function asoFLabel(asOf?: string): string {
-  if (!asOf) return "—";
-  return asOf;
+/** «DD/MM» de una fecha ISO (`YYYY-MM-DD`); «—» si no parsea. */
+function ddmm(iso?: string): string {
+  if (!iso) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[3]}/${m[2]}` : "—";
+}
+
+/**
+ * Subtítulo honesto de la ventana (P7): «Datos de la fecha de negocio 19/09 ·
+ * actualizado 08:12»; sin fila de business_dates el API cae al día UTC y se dice.
+ */
+function windowSubtitle(k: Pick<Data, "asOf" | "businessDate" | "businessDateSource" | "generatedAt">): string {
+  const day = ddmm(k.businessDate ?? k.asOf);
+  const window = k.businessDateSource === "utc_day" ? `Datos del día UTC ${day} (la propiedad no tiene fecha de negocio)` : `Datos de la fecha de negocio ${day}`;
+  return `${window} · actualizado ${time(k.generatedAt)}`;
+}
+
+/** Delta vs hace 7 días solo cuando hay base (LY/semana = 0 ⇒ «▲100 %» sería mentira): undefined oculta el chip. */
+function deltaVsWeek(compare: Compare): number | undefined {
+  const base = compare.vsLastWeek;
+  if (!base || !(base.value > 0)) return undefined;
+  return base.pct;
 }
 
 // Format ISO timestamp like "2026-05-30T08:12:00Z" as "30 may, 10:12" (hotel time).
@@ -235,15 +296,6 @@ const mutedStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-caption)",
   color: "var(--cocoa-label-secondary)"
 };
-
-const calloutStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-callout)",
-  color: "var(--cocoa-label)"
-};
-
-const growStyle: CSSProperties = { flex: "1 1 auto" };
-
-const centerRowStyle: CSSProperties = { display: "flex", justifyContent: "center" };
 
 /** Large figure (26 px, 700, tabular): the tone HUE is allowed at this size (§2.1 rule c). */
 function figureStyle(tone: CocoaTone): CSSProperties {
@@ -320,7 +372,7 @@ function buildPickup7d(rows: PaceRow[]): CocoaBarsDatum[] {
     const parsed = new Date(r.date);
     const label = Number.isNaN(parsed.getTime()) ? (days[i] ?? "?") : days[(parsed.getUTCDay() + 6) % 7] ?? "?";
     const tone: CocoaTone = pctVsLY === undefined || pctVsLY === 0 ? "neutral" : pctVsLY > 0 ? "success" : "danger";
-    const hint = pctVsLY === undefined ? "vs LY: —" : `vs LY: ${percent(pctVsLY, { signDisplay: "always", minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+    const hint = pctVsLY === undefined ? "frente al año anterior: —" : `frente al año anterior: ${percent(pctVsLY, { signDisplay: "always", minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
     return { label, value: net, tone, hint };
   });
 }
@@ -330,7 +382,7 @@ function buildPaceSeries(rows: PaceRow[]): CocoaLineSeries[] {
   const points = (pick: (row: PaceRow) => number) => rows.map((row) => ({ x: formatDayMonth(row.date), y: pick(row) }));
   return [
     { id: "otb", label: "OTB", tone: "accent", width: 2, points: points((row) => row.otb) },
-    { id: "forecast", label: "Forecast", tone: "warning", dashed: true, width: 2, points: points((row) => row.forecast) },
+    { id: "forecast", label: "Previsión", tone: "warning", dashed: true, width: 2, points: points((row) => row.forecast) },
     { id: "last-year", label: "Año anterior", tone: "tertiary", width: 1, points: points((row) => row.lastYear) }
   ];
 }
@@ -381,21 +433,63 @@ function buildBarRecs(k: Data, asOf: string) {
 
 export function GeneralManagerScreen() {
   // Hosted in Mi día the container paints the eyebrow and the H1 and CocoaPage
-  // keeps the subtitle («datos a HH:MM») and the actions row (HostedHead).
+  // keeps the subtitle («datos de la fecha de negocio DD/MM · actualizado HH:MM»)
+  // and the actions row (HostedHead).
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
+  const organizationId = getActiveOrganizationId();
+  const gate = useNavGate();
+  const { profile } = useCurrentUserProfile();
   const { data, loading, error, refresh } = useApiData<Data>(`/dashboards/general-manager?propertyId=${propertyId}`, {
     pollIntervalMs: 60000
   });
   const { data: pace, loading: paceLoading } = useApiData<PaceData>(`/general-manager/pace?propertyId=${propertyId}&days=${PACE_DAYS}`, {
     pollIntervalMs: 120000
   });
+  // Riesgos de hoy (UX-2 · D3): bloqueos del cierre (misma fuente que la pantalla
+  // del cierre, 60 s) y pendientes de la IA solo con la clave del manifiesto.
+  const { data: preflight, error: preflightError } = useApiData<PreflightSummary>(`/properties/${propertyId}/night-audit/preflight`, {
+    pollIntervalMs: 60000
+  });
+  const canReadAi = (gate.grantedPermissions ?? []).includes(AI_REVIEW_KEY);
+  const { data: aiStats } = useApiData<ReviewStats>("/ai-operations/review/stats", {
+    query: { organizationId },
+    pollIntervalMs: 60000,
+    enabled: canReadAi
+  });
+  // Pendientes de aprobación que el usuario puede DECIDIR (mismo criterio que la
+  // tarjeta de Mi día y el badge de la bandeja: corrector 8a · FX-09).
+  const approver = hasApprovalKeys(gate.grantedPermissions);
+  const [pendingApprovals, setPendingApprovals] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (!approver) return undefined;
+    let alive = true;
+    const viewer = viewerFromProfile({ userId: getUser()?.userId ?? null, isPlatformAdmin: gate.isPlatformAdmin, grantedPermissions: gate.grantedPermissions, properties: profile?.properties ?? null });
+    listPendingApprovals()
+      .then((rows) => pendingForViewer(rows, viewer).length)
+      .then((value) => {
+        if (alive) setPendingApprovals(value);
+      })
+      .catch(() => {
+        // La bandeja explica el fallo; la fila sigue llevando a ella.
+        if (alive) setPendingApprovals(undefined);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [approver, gate.isPlatformAdmin, gate.grantedPermissions, profile]);
 
   const k = data;
   const isLoading = loading && !k;
   const degraded = toArray<string>(data?.degraded);
   const paceDegraded = toArray<string>(pace?.degraded);
   const paceRows = toArray<PaceRow>(pace?.rows).slice(0, PACE_DAYS);
+  const risks: RiskInputs = {
+    preflight: preflight ?? null,
+    preflightError: preflightError ?? null,
+    pendingApprovals: approver ? pendingApprovals : null,
+    pendingAi: canReadAi ? aiStats?.pending : null
+  };
 
   const headerActions: ReactNode = (
     <>
@@ -412,14 +506,25 @@ export function GeneralManagerScreen() {
     <CocoaPage
       eyebrow={`Gerencia · ${k?.propertyName ?? propertyName}`}
       title="Dashboard del director"
-      subtitle={k ? `Vista estratégica del día y del mes en curso · datos a ${asoFLabel(k.asOf)}` : "Vista estratégica del día y del mes en curso"}
+      subtitle={k ? windowSubtitle(k) : "Vista estratégica del día y del mes en curso"}
       actions={headerActions}
+      density="comfortable"
       state={isLoading ? "loading" : !k ? "empty" : "ready"}
       skeleton={<DashboardSkeleton />}
       empty={{ title: "Sin datos del director hoy", message: "El cuadro de mando se rellena con la actividad de la propiedad a lo largo del día." }}
-      commands={[{ id: "general-manager-refresh", label: "Actualizar dashboard del director", run: refresh }]}
+      commands={[
+        { id: "general-manager-refresh", label: "Actualizar dashboard del director", run: refresh },
+        // Tanda UX-2 (F-D11): las tareas de dirección son comandos de página, no solo «Actualizar».
+        { id: "general-manager-pendientes", label: "Ir a los pendientes de aprobación", run: () => navigateTo("ApprovalsInbox") },
+        { id: "general-manager-cierre", label: "Revisar el cierre del día", run: () => navigateTo("NightAuditScreen") },
+        { id: "general-manager-cartera", label: "Abrir la cartera de hoteles", run: () => navigateTo("PortfolioDashboard") },
+        { id: "general-manager-exportar", label: "Exportar un informe", run: () => navigateTo("ReportingCenter") }
+      ]}
     >
-      {k ? <DirectorDashboard k={k} degraded={degraded} paceRows={paceRows} paceDegraded={paceDegraded} /> : null}
+      {k ? <DirectorDashboard k={k} degraded={degraded} paceRows={paceRows} paceDegraded={paceDegraded} risks={risks} /> : null}
+
+      {/* Ayuda contextual honesta (UX-2 · D8): solo lo que existe en esta pantalla; se descarta una vez. */}
+      <CocoaScreenInstructionsCard {...DIRECCION_PANEL_INSTRUCTIONS} dismissible persistKey="direccion-panel" />
     </CocoaPage>
   );
 }
@@ -429,19 +534,22 @@ interface DirectorDashboardProps {
   degraded: string[];
   paceRows: PaceRow[];
   paceDegraded: string[];
+  risks: RiskInputs;
 }
 
-function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDashboardProps) {
+function DirectorDashboard({ k, degraded, paceRows, paceDegraded, risks }: DirectorDashboardProps) {
   // ---------------------------------------------------------------------------
-  // Row 1 — Today snapshot strip: 11 KPI tiles.
+  // Row 1 — Today snapshot strip: 11 KPI tiles. Deltas vs hace 7 días solo con
+  // base > 0 (UX-2 · P7: nunca «▲100 %» sobre un cero).
   // ---------------------------------------------------------------------------
-  const occVsLyPct = k.occupancy.today.vsLastWeek?.pct;
-  const adrVsLyPct = k.adr.today.vsLastWeek?.pct;
-  const revparVsLyPct = k.revpar.today.vsLastWeek?.pct;
-  const revVsLyPct = k.revenue.today.vsLastWeek?.pct;
+  const occVsWeekPct = deltaVsWeek(k.occupancy.today);
+  const adrVsWeekPct = deltaVsWeek(k.adr.today);
+  const revparVsWeekPct = deltaVsWeek(k.revpar.today);
+  const revVsWeekPct = deltaVsWeek(k.revenue.today);
   const arrivals = k.productivity.checkInsPlanned;
   const departures = k.productivity.checkOutsPlanned;
   const occupancySpark = paceRows.slice(0, 7).map((r) => r.otb);
+  const businessDay = ddmm(k.businessDate ?? k.asOf);
 
   // ---------------------------------------------------------------------------
   // Row 2 — pace series, pickup bars, cancellation risk.
@@ -460,7 +568,7 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
   const channelTotal = channelSlices.reduce((sum, slice) => sum + Math.max(0, slice.value), 0);
 
   // ---------------------------------------------------------------------------
-  // Row 7 — AI insights (anomalies, top 3 actions, demand spikes).
+  // Riesgos de hoy (anomalías) y Row 7 — top 3 actions, caja, demand spikes.
   // ---------------------------------------------------------------------------
   const anomalies = toArray<Anomaly>(k.aiAnomalies);
   const topAnomalies = anomalies.slice(0, 5);
@@ -500,51 +608,65 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
         <CocoaKpi
           label="Ocupación"
           value={fmtPct(k.occupancy.today.value)}
-          delta={occVsLyPct}
+          delta={occVsWeekPct}
           deltaUnit="%"
-          deltaLabel="vs LY"
+          deltaLabel={occVsWeekPct === undefined ? "sin base de comparación" : "vs hace 7 días"}
           polarity="positive-good"
           sparkline={occupancySpark}
           status={statusFromAnomalies(k, "occupancy")}
         />
-        <CocoaKpi label="ADR" value={fmtEur(k.adr.today.value)} delta={adrVsLyPct} deltaUnit="%" deltaLabel="vs LY" polarity="positive-good" status={statusFromAnomalies(k, "adr")} />
-        <CocoaKpi label="RevPAR" value={fmtEur(k.revpar.today.value)} delta={revparVsLyPct} deltaUnit="%" deltaLabel="vs LY" polarity="positive-good" status={statusFromAnomalies(k, "revpar")} />
+        <CocoaKpi label="ADR" value={fmtEur(k.adr.today.value)} delta={adrVsWeekPct} deltaUnit="%" deltaLabel={adrVsWeekPct === undefined ? "sin base de comparación" : "vs hace 7 días"} polarity="positive-good" status={statusFromAnomalies(k, "adr")} />
+        <CocoaKpi label="RevPAR" value={fmtEur(k.revpar.today.value)} delta={revparVsWeekPct} deltaUnit="%" deltaLabel={revparVsWeekPct === undefined ? "sin base de comparación" : "vs hace 7 días"} polarity="positive-good" status={statusFromAnomalies(k, "revpar")} />
         <DegradedCard label={DEGRADED_LABEL.channelCost} degraded={degraded} title="GOPPAR">
-          <CocoaKpi label="GOPPAR" value={fmtEur(k.goppar)} deltaLabel="proxy" polarity="positive-good" />
+          <CocoaKpi label="GOPPAR" value={fmtEur(k.goppar)} deltaLabel="aproximado" polarity="positive-good" />
         </DegradedCard>
-        <CocoaKpi label="En casa" value={fmtNumber(k.productivity.checkInsDone)} deltaLabel={`/${k.productivity.checkInsPlanned} planificados`} polarity="neutral" />
-        <CocoaKpi label="Arrivals" value={fmtNumber(arrivals)} deltaLabel="planificadas hoy" polarity="neutral" />
-        <CocoaKpi label="Departures" value={fmtNumber(departures)} deltaLabel="planificadas hoy" polarity="neutral" />
-        <CocoaKpi label="OOO rooms" value={fmtNumber(k.alerts.blockedRooms)} deltaLabel="bloqueadas" polarity="negative-good" status={statusFromCount(k.alerts.blockedRooms, 1, 5)} />
-        <CocoaKpi label="Ingresos hoy" value={fmtEurCompact(k.revenue.today.value)} delta={revVsLyPct} deltaUnit="%" deltaLabel="vs LY" polarity="positive-good" />
+        <CocoaKpi label="En casa" value={fmtNumber(k.productivity.checkInsDone)} deltaLabel="check-ins del día" polarity="neutral" />
+        <CocoaKpi label="Llegadas" value={fmtNumber(arrivals)} deltaLabel="pendientes de llegar" polarity="neutral" />
+        <CocoaKpi label="Salidas" value={fmtNumber(departures)} deltaLabel="pendientes de salir" polarity="neutral" />
+        <CocoaKpi label="Bloqueadas" value={fmtNumber(k.alerts.blockedRooms)} deltaLabel="habitaciones fuera de venta" polarity="negative-good" status={statusFromCount(k.alerts.blockedRooms, 1, 5)} />
+        <CocoaKpi label="Ingresos hoy" value={fmtEurCompact(k.revenue.today.value)} delta={revVsWeekPct} deltaUnit="%" deltaLabel={revVsWeekPct === undefined ? "sin base de comparación" : "vs hace 7 días"} polarity="positive-good" />
         <CocoaKpi label="Coste laboral" value={fmtEurCompact(k.totalLaborCostToday)} deltaLabel="hoy" polarity="negative-good" />
-        <DegradedCard label={DEGRADED_LABEL.channelCost} degraded={degraded} title="Net contribution">
-          <CocoaKpi label="Net contribution" value={fmtEurCompact(k.netContributionToday)} deltaLabel="hoy" polarity="positive-good" status={k.netContributionToday < 0 ? "critical" : "ok"} />
+        <DegradedCard label={DEGRADED_LABEL.channelCost} degraded={degraded} title="Contribución neta">
+          <CocoaKpi label="Contribución neta" value={fmtEurCompact(k.netContributionToday)} deltaLabel="hoy" polarity="positive-good" status={k.netContributionToday < 0 ? "critical" : "ok"} />
         </DegradedCard>
       </CocoaKpiStrip>
+
+      {/* Row 1b — Riesgos de hoy: una lista, una acción por fila (UX-2 · D3) */}
+      <CocoaSection
+        title="Riesgos de hoy"
+        meta={`fecha de negocio ${businessDay}`}
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("NightAuditScreen")}>
+            Abrir el cierre
+          </CocoaButton>
+        }
+        aria-label="Riesgos de hoy"
+      >
+        <RisksList risks={risks} riskScore={risk} riskTone={riskTone} reservationsAtRisk={reservationsAtRisk} anomalies={topAnomalies} degraded={degraded} />
+      </CocoaSection>
 
       {/* Row 2 — Forward pace + Pickup + Cancellation risk (8/2/2) */}
       <CocoaGrid aria-label="Pace, pickup y riesgo">
         <CocoaSpan cols={8} min={480}>
-          <DegradedCard label={DEGRADED_LABEL.pace} degraded={paceDegraded} title="Pace próximos 30 días">
-            <CocoaSection title="Pace próximos 30 días">
+          <DegradedCard label={DEGRADED_LABEL.pace} degraded={paceDegraded} title="Ritmo 30 días">
+            <CocoaSection title="Ritmo 30 días" meta="OTB · previsión · año anterior">
               {paceRows.length === 0 ? (
-                <CocoaState kind="empty" inline title="Sin datos de pickup todavía" />
+                <CocoaState kind="empty" inline role="none" title="Sin datos de ritmo todavía" />
               ) : (
-                <CocoaChart.Line series={paceSeries} yLabel="Revenue €" tooltipTitle={(x) => paceDates.get(x) ?? x} aria-label="Pace próximos 30 días — Revenue €" />
+                <CocoaChart.Line series={paceSeries} yLabel="Ingresos €" tooltipTitle={(x) => paceDates.get(x) ?? x} aria-label="Ritmo 30 días — Ingresos €" />
               )}
             </CocoaSection>
           </DegradedCard>
         </CocoaSpan>
         <CocoaSpan cols={2} min={200}>
-          <DegradedCard label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded} title="Pickup 7d">
-            <CocoaSection title="Pickup 7d" meta="neto vs LY">
-              <CocoaChart.Bars data={pickup} aria-label="Pickup neto últimos 7 días" />
+          <DegradedCard label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded} title="Captación 7 días">
+            <CocoaSection title="Captación 7 días" meta="neto frente al año anterior">
+              <CocoaChart.Bars data={pickup} aria-label="Captación neta de los últimos 7 días" />
             </CocoaSection>
           </DegradedCard>
         </CocoaSpan>
         <CocoaSpan cols={2} min={200}>
-          <CocoaSection title="Riesgo cancelación">
+          <CocoaSection title="Riesgo cancelación" meta="próximos 14 días">
             <CocoaChart.Gauge
               value={risk}
               thresholds={RISK_THRESHOLDS}
@@ -552,30 +674,25 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
               caption={plural(reservationsAtRisk, "reserva en riesgo", "reservas en riesgo")}
               aria-label={`Riesgo de cancelación ${Math.round(risk)}% (${gaugeToneLabel(riskTone)})`}
             />
-            <div style={centerRowStyle}>
-              <CocoaButton variant="tinted" size="small" onClick={() => navigateTo("ReservationsListScreen")}>
-                Revisar →
-              </CocoaButton>
-            </div>
           </CocoaSection>
         </CocoaSpan>
       </CocoaGrid>
 
-      {/* Row 3 — Segments + Comp-set + Channel mix + BAR recs (4/4/2/2) */}
+      {/* Row 3 — Segmentos + comp-set + mix de canales + recomendaciones BAR (4/4/2/2); rótulos en español (UX2-REV-05) */}
       <CocoaGrid aria-label="Segmentos, comp-set, canales y BAR">
         <CocoaSpan cols={4} min={320}>
-          <DirectorSegmentBars segments={buildSegmentBars(k)} valueLabel="ADR / Mix" />
+          <DirectorSegmentBars title="Segmentos" segments={buildSegmentBars(k)} valueLabel="ADR / Mix" />
         </CocoaSpan>
         <CocoaSpan cols={4} min={320}>
           <CompsetPlaceholder />
         </CocoaSpan>
         <CocoaSpan cols={2} min={240}>
           <CocoaSection title="Mix de canales" meta={plural(channelSlices.length, "canal", "canales")}>
-            <CocoaChart.Donut slices={channelSlices} centerValue={fmtEurCompact(channelTotal)} centerLabel="revenue" aria-label="Mix de canales por revenue" />
+            <CocoaChart.Donut slices={channelSlices} centerValue={fmtEurCompact(channelTotal)} centerLabel="ingresos" aria-label="Mix de canales por ingresos" />
           </CocoaSection>
         </CocoaSpan>
         <CocoaSpan cols={2} min={240}>
-          <DirectorBarRecommendations recommendations={buildBarRecs(k, k.asOf)} onApply={() => navigateTo("RevenueHomeDashboard")} onViewAll={() => navigateTo("RevenueHomeDashboard")} />
+          <DirectorBarRecommendations title="Recomendaciones BAR de la IA" recommendations={buildBarRecs(k, k.asOf)} onApply={() => navigateTo("RevenueHomeDashboard")} onViewAll={() => navigateTo("RevenueHomeDashboard")} />
         </CocoaSpan>
       </CocoaGrid>
 
@@ -583,9 +700,9 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
       <CocoaKpiStrip min={200} aria-label="Salud operativa">
         <DirectorOpsHealthMini
           module="housekeeping"
-          title="HK"
+          title="Pisos"
           primaryCount={k.alerts.blockedRooms}
-          primaryLabel="OOO"
+          primaryLabel="bloqueadas"
           status={statusFromCount(k.alerts.blockedRooms, 1, 5)}
           onDrillDown={() => navigateTo("HousekeepingDashboard")}
         />
@@ -602,23 +719,23 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
         </DegradedCard>
         <DirectorOpsHealthMini
           module="workforce"
-          title="Workforce"
+          title="Personal"
           primaryCount={k.productivity.checkInsDone + k.productivity.checkOutsDone}
           primaryLabel="movimientos hoy"
           status="ok"
           onDrillDown={() => navigateTo("ShiftManagerScreen")}
         />
-        <DegradedCard label={DEGRADED_LABEL.emergencyIncidents} degraded={degraded} title="Safety">
+        <DegradedCard label={DEGRADED_LABEL.emergencyIncidents} degraded={degraded} title="Seguridad">
           <DirectorOpsHealthMini
             module="safety"
-            title="Safety"
+            title="Seguridad"
             primaryCount={k.alerts.emergencyIncidents}
             primaryLabel="incidentes urgentes"
             status={statusFromCount(k.alerts.emergencyIncidents, 1, 3)}
             onDrillDown={() => navigateTo("SafetyDashboard")}
           />
         </DegradedCard>
-        <DirectorOpsHealthMini module="pos" title="POS" primaryCount={Math.round(k.revenue.today.value)} primaryLabel="ingresos hoy €" status="ok" onDrillDown={() => navigateTo("PosDashboard")} />
+        <DirectorOpsHealthMini module="pos" title="TPV" primaryCount={Math.round(k.revenue.today.value)} primaryLabel="ingresos hoy €" status="ok" onDrillDown={() => navigateTo("PosDashboard")} />
       </CocoaKpiStrip>
 
       {/* Row 5 — Guest experience: NPS, reputation index, service requests, VIPs */}
@@ -657,7 +774,7 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
           </CocoaSection>
         </CocoaSpan>
         <CocoaSpan cols={3} min={240}>
-          <DirectorVipList vips={vipsList} max={5} onSelectGuest={() => navigateTo("ReservationsListScreen")} />
+          <DirectorVipList title="VIP alojados" vips={vipsList} max={5} onSelectGuest={() => navigateTo("ReservationsListScreen")} />
         </CocoaSpan>
       </CocoaGrid>
 
@@ -699,28 +816,13 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
         </CocoaSpan>
       </CocoaGrid>
 
-      {/* Row 7 — AI insights: anomalies, top 3 actions, demand spikes (5/4/3) */}
-      <CocoaGrid aria-label="Insights de IA">
+      {/* Row 7 — Acciones recomendadas, caja de hoy y picos de demanda (5/4/3) */}
+      <CocoaGrid aria-label="Acciones, caja y demanda">
         <CocoaSpan cols={5} min={320}>
-          <CocoaSection
-            title="Anomalías hoy"
-            meta={
-              <>
-                <DegradedValue label={DEGRADED_LABEL.anomalies} degraded={degraded}>
-                  {topAnomalies.length}
-                </DegradedValue>{" "}
-                detectadas
-              </>
-            }
-          >
-            <AnomaliesList anomalies={topAnomalies} />
-          </CocoaSection>
-        </CocoaSpan>
-        <CocoaSpan cols={4} min={320}>
           <div className="cocoa-stack" data-gap="3">
             {top3Actions.length === 0 ? (
               <CocoaSection>
-                <CocoaState kind="empty" inline title="Sin acciones recomendadas." />
+                <CocoaState kind="empty" inline role="none" title="Sin acciones recomendadas." />
               </CocoaSection>
             ) : (
               top3Actions.map((a, i) => (
@@ -740,9 +842,14 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
             )}
           </div>
         </CocoaSpan>
+        <CocoaSpan cols={4} min={240}>
+          <CocoaSection title="Caja de hoy" meta={`fecha de negocio ${businessDay}`}>
+            <CashList cash={k.cash} />
+          </CocoaSection>
+        </CocoaSpan>
         <CocoaSpan cols={3} min={240}>
           <CocoaSection
-            title="Demand spikes 14d"
+            title="Picos de demanda 14 días"
             meta={
               <DegradedValue label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded}>
                 {demandSpikes.length}
@@ -766,7 +873,7 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
 function CompsetPlaceholder() {
   return (
     <CocoaSection title="RevPAR vs comp-set" meta="RGI · ARI · MPI">
-      <CocoaState kind="empty" dashed title="Conectar STR / CoStar" message="Sin feed externo. Activa la integración para ver el índice competitivo." />
+      <CocoaState kind="empty" dashed role="none" title="Conectar STR / CoStar" message="Sin feed externo. Activa la integración para ver el índice competitivo." />
     </CocoaSection>
   );
 }
@@ -872,25 +979,155 @@ function ServiceRequestsList({ openIncidents, emergencyIncidents, degraded }: Se
   );
 }
 
-interface AnomaliesListProps {
-  anomalies: Array<Anomaly>;
+/** Tono del gauge de riesgo (thresholdTone): success · warning · danger. */
+type GaugeTone = Parameters<typeof gaugeToneLabel>[0];
+
+type RiskRowModel = {
+  key: string;
+  title: string;
+  detail: string;
+  tone: CocoaTone;
+  badge: string;
+  action?: { label: string; onClick: () => void };
+};
+
+/**
+ * Filas del bloque «Riesgos de hoy» (pura): bloqueos del cierre, pendientes de
+ * aprobación y de la IA (solo con clave), riesgo de cancelación y anomalías. Sin
+ * dato todavía → «comprobando…» en tono neutro; sin clave → la fila no existe.
+ */
+function buildRiskRows(input: { risks: RiskInputs; riskScore: number; riskTone: GaugeTone; reservationsAtRisk: number; anomalies: Anomaly[]; anomaliesDegraded: boolean }): RiskRowModel[] {
+  const { risks, anomalies } = input;
+  const rows: RiskRowModel[] = [];
+
+  const preflight = risks.preflight;
+  const blockers = preflight?.summary.blocker ?? 0;
+  rows.push({
+    key: "cierre",
+    title: "Cierre del día",
+    detail: risks.preflightError
+      ? "No se ha podido comprobar el cierre: ábrelo para ver el detalle."
+      : !preflight
+        ? "Comprobando el cierre…"
+        : blockers > 0
+          ? (preflight.blockingMessage ?? plural(blockers, "bloqueo pendiente", "bloqueos pendientes"))
+          : preflight.summary.warning > 0
+            ? `${plural(preflight.summary.warning, "aviso", "avisos")} · nada bloquea el cierre.`
+            : "Todas las comprobaciones críticas en verde.",
+    tone: risks.preflightError || !preflight ? "neutral" : blockers > 0 ? "danger" : preflight.summary.warning > 0 ? "warning" : "success",
+    badge: risks.preflightError || !preflight ? "—" : blockers > 0 ? plural(blockers, "bloqueo", "bloqueos") : "sin bloqueos",
+    action: { label: "Revisar el cierre", onClick: () => navigateTo("NightAuditScreen") }
+  });
+
+  if (risks.pendingApprovals !== null) {
+    const n = risks.pendingApprovals;
+    rows.push({
+      key: "aprobaciones",
+      title: "Pendientes de aprobación",
+      detail: n === undefined ? "Contando las solicitudes que puedes decidir…" : n > 0 ? `${plural(n, "solicitud espera", "solicitudes esperan")} tu decisión.` : "Ninguna solicitud espera tu decisión.",
+      tone: n === undefined ? "neutral" : n > 0 ? "warning" : "success",
+      badge: n === undefined ? "—" : String(n),
+      action: { label: "Ir a aprobaciones", onClick: () => navigateTo("ApprovalsInbox") }
+    });
+  }
+
+  if (risks.pendingAi !== null) {
+    const n = risks.pendingAi;
+    rows.push({
+      key: "ia",
+      title: "Pendientes de la IA",
+      detail: n === undefined ? "Contando los ítems en revisión humana…" : n > 0 ? `${plural(n, "ítem espera", "ítems esperan")} revisión humana.` : "La cola de revisión humana está vacía.",
+      tone: n === undefined ? "neutral" : n > 0 ? "warning" : "success",
+      badge: n === undefined ? "—" : String(n),
+      action: { label: "Revisar la cola", onClick: () => navigateTo("AiHumanReviewQueueScreen") }
+    });
+  }
+
+  rows.push({
+    key: "cancelacion",
+    title: "Riesgo de cancelación",
+    detail: `${plural(input.reservationsAtRisk, "reserva en riesgo", "reservas en riesgo")} en los próximos 14 días (riesgo ${gaugeToneLabel(input.riskTone)}).`,
+    tone: input.riskTone,
+    badge: percent(input.riskScore, { maximumFractionDigits: 0 }),
+    action: { label: "Revisar reservas", onClick: () => navigateTo("ReservationsListScreen") }
+  });
+
+  if (anomalies.length === 0) {
+    rows.push({
+      key: "anomalias",
+      title: "Anomalías",
+      detail: input.anomaliesDegraded ? "No se ha podido comparar con el año anterior." : "Sin anomalías detectadas frente al año anterior.",
+      tone: input.anomaliesDegraded ? "neutral" : "success",
+      badge: input.anomaliesDegraded ? "—" : "0"
+    });
+  }
+  anomalies.forEach((a, i) => {
+    rows.push({
+      key: `anomalia-${a.kind}-${i}`,
+      title: `Anomalía · ${a.kind.replace(/_/g, " ")}`,
+      detail: a.message,
+      tone: anomalyTone(a.severity),
+      badge: a.severity === "high" ? "alta" : a.severity === "medium" ? "media" : "baja",
+      action: { label: "Ver ingresos", onClick: () => navigateTo("RevenueHomeDashboard") }
+    });
+  });
+  return rows;
 }
 
-function AnomaliesList({ anomalies }: AnomaliesListProps) {
-  if (anomalies.length === 0) {
-    return <CocoaState kind="empty" inline title="Sin anomalías detectadas." />;
-  }
+interface RisksListProps {
+  risks: RiskInputs;
+  riskScore: number;
+  riskTone: GaugeTone;
+  reservationsAtRisk: number;
+  anomalies: Anomaly[];
+  degraded: string[];
+}
+
+// «Riesgos de hoy»: c22-section__list + CocoaBadge + CocoaButton, sin estilos locales.
+function RisksList({ risks, riskScore, riskTone, reservationsAtRisk, anomalies, degraded }: RisksListProps) {
+  const rows = buildRiskRows({ risks, riskScore, riskTone, reservationsAtRisk, anomalies, anomaliesDegraded: isDegraded(DEGRADED_LABEL.anomalies, degraded) });
   return (
     <ul className="c22-section__list">
-      {anomalies.map((a, i) => (
-        <li key={`${a.kind}-${i}`}>
-          <div className="cocoa-stack" data-gap="1" style={growStyle}>
-            <div className="cocoa-row" data-gap="2" data-justify="between">
-              <strong style={calloutStyle}>{a.kind.replace(/_/g, " ")}</strong>
-              <CocoaBadge tone={anomalyTone(a.severity)}>{a.severity}</CocoaBadge>
+      {rows.map((row) => (
+        <li key={row.key}>
+          <div className="cocoa-stack" data-gap="1">
+            <div className="cocoa-row" data-gap="2" data-align="center" data-wrap="true">
+              <strong>{row.title}</strong>
+              <CocoaBadge tone={row.tone} variant="tinted" size="small" uppercase={false}>
+                {row.badge}
+              </CocoaBadge>
             </div>
-            <span style={mutedStyle}>{a.message}</span>
+            <span className="cocoa-note">{row.detail}</span>
           </div>
+          {row.action ? (
+            <CocoaButton variant="tinted" tone="accent" size="small" onClick={row.action.onClick}>
+              {row.action.label}
+            </CocoaButton>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+interface CashListProps {
+  cash: Data["cash"];
+}
+
+// Caja de la fecha de negocio (cobros capturados, devoluciones, neto y saldo abierto de los folios).
+function CashList({ cash }: CashListProps) {
+  const rows: Array<{ label: string; value: string }> = [
+    { label: "Cobrado", value: fmtEur(cash.capturedTodayEur) },
+    { label: "Devuelto", value: fmtEur(cash.refundedTodayEur) },
+    { label: "Neto", value: fmtEur(cash.netTodayEur) },
+    { label: "Saldo abierto en folios", value: fmtEur(cash.openBalanceEur) }
+  ];
+  return (
+    <ul className="c22-section__list">
+      {rows.map((r) => (
+        <li key={r.label}>
+          <span>{r.label}</span>
+          <strong>{r.value}</strong>
         </li>
       ))}
     </ul>
@@ -903,7 +1140,7 @@ interface DemandSpikeListProps {
 
 function DemandSpikeList({ rows }: DemandSpikeListProps) {
   if (rows.length === 0) {
-    return <CocoaState kind="empty" inline title="Sin demanda anómala próxima." />;
+    return <CocoaState kind="empty" inline role="none" title="Sin demanda anómala próxima." />;
   }
   return (
     <ul className="c22-section__list">
@@ -929,6 +1166,7 @@ function DashboardSkeleton() {
   return (
     <div className="cocoa-stack" data-gap="4" aria-busy="true" aria-label="Cargando dashboard del director">
       <CocoaSkeleton.Strip count={11} label="Cargando indicadores de hoy…" />
+      <CocoaSkeleton.Grid rows={[[12]]} height={200} label="Cargando riesgos de hoy…" />
       <CocoaSkeleton.Grid rows={[[8, 2, 2], [4, 4, 2, 2]]} label="Cargando pace y mix…" />
       <CocoaSkeleton.Strip count={5} min={200} label="Cargando salud operativa…" />
       <CocoaSkeleton.Grid rows={[[3, 3, 3, 3], [3, 3, 3, 3]]} height={110} label="Cargando experiencia y cumplimiento…" />

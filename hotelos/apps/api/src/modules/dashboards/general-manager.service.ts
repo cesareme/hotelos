@@ -1,6 +1,6 @@
 // General Manager dashboard — vista estratégica del director del hotel.
 //
-// Directriz HotelOS (Nov 2026):
+// Directriz ehotelOS (Nov 2026):
 //   "Gerencia: ocupación, ADR, RevPAR, caja, reputación, incidencias, productividad."
 //
 // Es distinto del FrontDeskCockpit (operación inmediata) y del ShiftManager
@@ -11,8 +11,17 @@
 //   - Producción del mes (revenue, room nights, ADR, RevPAR)
 //   - Mix por canal y segmento (top 5)
 //   - Estado de incidencias y compliance
-//   - Productividad operativa (% check-ins/outs ejecutados)
+//   - Productividad operativa: check-ins/outs hechos en la fecha de negocio y los
+//     PENDIENTES de llegar/salir en ella (regla del preflight; ya no una ratio)
 //   - Reputación (reviews recientes si existen)
+//
+// Tanda UX-2 (lote D3 · F-D1 «una verdad»): la ventana «hoy» es la FECHA DE
+// NEGOCIO de la propiedad (business_dates.current_date, leída una vez al
+// principio, como night-audit-preflight.service.ts); sin fila, el día natural
+// UTC. Llegadas y salidas siguen la regla del preflight (llegadas `confirmed`
+// con arrivalDate = fecha de negocio; salidas `checked_in` con departureDate =
+// fecha de negocio) y la respuesta expone `businessDate` + `businessDateSource`
+// (campos aditivos) para que la pantalla diga su ventana.
 
 import { prisma } from "@hotelos/database";
 import { createDegradedCollector } from "../../lib/degraded.js";
@@ -42,7 +51,11 @@ export type GmDashboard = {
   generatedAt: string;
   propertyId: string;
   propertyName?: string;
-  asOf: string;             // ISO date
+  asOf: string;             // ISO date (= businessDate)
+  // Tanda UX-2 (D3, aditivo): fecha de negocio de la ventana «hoy» y su origen
+  // (`business_date` = fila de business_dates · `utc_day` = sin fila, día UTC).
+  businessDate: string;
+  businessDateSource: GmBusinessDateSource;
 
   occupancy: { today: GmKpiCompare; mtd: number; ytdRoomNightsSold: number };
   adr: { today: GmKpiCompare; mtd: number };
@@ -57,6 +70,12 @@ export type GmDashboard = {
   channelCostPct: number;           // commissions / revenue (today), 0..100
   netContributionToday: number;     // revenue - channelCost - laborCost
 
+  // Tanda UX-2 (D3, corrector UX2-REV-08): `checkInsDone` / `checkOutsDone` son las
+  // estancias con check-in / check-out en la fecha de negocio; `checkInsPlanned` /
+  // `checkOutsPlanned` son las reservas PENDIENTES de llegar (`confirmed` con
+  // llegada) / de salir (`checked_in` con salida) en esa fecha, con la regla del
+  // preflight del cierre — no «todo lo planificado», así que hecho/planificado ya
+  // no forman una ratio. Nombres conservados (contrato aditivo; docs/api-contracts.md).
   productivity: {
     checkInsDone: number;
     checkInsPlanned: number;
@@ -198,6 +217,61 @@ function startOfMonthUtc(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 }
 
+function dateOnlyUtc(iso: string): Date {
+  return new Date(`${iso}T00:00:00.000Z`);
+}
+
+export type GmBusinessDateSource = "business_date" | "utc_day";
+
+export type GmWindow = {
+  /** YYYY-MM-DD del día que se pinta. */
+  businessDate: string;
+  source: GmBusinessDateSource;
+  /** [today, tomorrow): medianoche UTC de la fecha de negocio, como toda fecha de reserva. */
+  today: Date;
+  tomorrow: Date;
+};
+
+/**
+ * Ventana «hoy» del director (pura): la fecha de negocio de la propiedad cuando
+ * hay fila (misma regla que night-audit-preflight.service.ts) y el día natural
+ * UTC de `now` cuando no la hay. Una fecha inválida cuenta como «sin fila».
+ */
+export function resolveGmWindow(input: { businessDate?: string | null; now: Date }): GmWindow {
+  const iso = input.businessDate && /^\d{4}-\d{2}-\d{2}$/.test(input.businessDate) ? input.businessDate : null;
+  const parsed = iso ? dateOnlyUtc(iso) : null;
+  const today = parsed && !Number.isNaN(parsed.getTime()) ? parsed : startOfDayUtc(input.now);
+  return {
+    businessDate: today.toISOString().slice(0, 10),
+    source: parsed && !Number.isNaN(parsed.getTime()) ? "business_date" : "utc_day",
+    today,
+    tomorrow: new Date(today.getTime() + 86400000)
+  };
+}
+
+/** Lo que el lector necesita de Prisma (inyectable en tests). */
+export type GmBusinessDateClient = {
+  businessDate: { findUnique(args: { where: { propertyId: string } }): Promise<{ currentDate: Date } | null> };
+};
+
+/**
+ * Fecha de negocio (`YYYY-MM-DD`) de la propiedad, leída UNA vez al principio.
+ * Mejor esfuerzo como en el preflight: sin fila o con la lectura fallida devuelve
+ * undefined (avisado en consola, nunca en silencio) y el panel cae al día UTC.
+ */
+export async function readGmBusinessDate(propertyId: string, client: GmBusinessDateClient = prisma): Promise<string | undefined> {
+  try {
+    const row = await client.businessDate.findUnique({ where: { propertyId } });
+    return row ? row.currentDate.toISOString().slice(0, 10) : undefined;
+  } catch (err) {
+    console.warn("[dashboards.general-manager] businessDate lookup failed", {
+      propertyId,
+      error: err instanceof Error ? err.message : String(err)
+    });
+    return undefined;
+  }
+}
+
 function pctDelta(curr: number, prev: number): number {
   if (prev === 0) return curr > 0 ? 100 : 0;
   return Math.round(((curr - prev) / prev) * 1000) / 10;
@@ -246,15 +320,18 @@ async function roomNightsInWindow(propertyId: string, from: Date, to: Date): Pro
   return nights;
 }
 
-export async function buildGmDashboard(input: { propertyId: string; asOf?: Date }): Promise<GmDashboard> {
+export async function buildGmDashboard(input: { propertyId: string; asOf?: Date; businessDateClient?: GmBusinessDateClient }): Promise<GmDashboard> {
   const propertyId = input.propertyId;
   const now = input.asOf ?? new Date();
-  const today = startOfDayUtc(now);
-  const tomorrow = new Date(today.getTime() + 86400000);
+  // Tanda UX-2 (D3): «hoy» = fecha de negocio de la propiedad (la del preflight
+  // del cierre); sin fila, el día natural UTC. Mes y año en curso cuelgan de ella.
+  const window = resolveGmWindow({ businessDate: await readGmBusinessDate(propertyId, input.businessDateClient), now });
+  const today = window.today;
+  const tomorrow = window.tomorrow;
   const yesterday = new Date(today.getTime() - 86400000);
   const lastWeek = new Date(today.getTime() - 7 * 86400000);
-  const monthStart = startOfMonthUtc(now);
-  const yearStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+  const monthStart = startOfMonthUtc(today);
+  const yearStart = new Date(Date.UTC(today.getUTCFullYear(), 0, 1));
   const { safe, degraded } = createDegradedCollector("dashboards.general-manager", { propertyId });
 
   const [property, totalRoomsCount] = await Promise.all([
@@ -277,11 +354,14 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
     prisma.stay.count({
       where: { reservation: { propertyId }, checkoutAt: { gte: today, lt: tomorrow } }
     }),
+    // Llegadas y salidas de la fecha de negocio con la regla del preflight del
+    // cierre (night-audit-preflight.service.ts): llegadas `confirmed` que aún
+    // no han llegado y salidas `checked_in` que aún no han salido.
     prisma.reservation.count({
-      where: { propertyId, arrivalDate: { gte: today, lt: tomorrow }, status: { in: ["confirmed", "checked_in", "checked_out"] } }
+      where: { propertyId, arrivalDate: { gte: today, lt: tomorrow }, status: "confirmed" }
     }),
     prisma.reservation.count({
-      where: { propertyId, departureDate: { gte: today, lt: tomorrow }, status: { in: ["checked_in", "checked_out"] } }
+      where: { propertyId, departureDate: { gte: today, lt: tomorrow }, status: "checked_in" }
     }),
     prisma.reservation.count({
       where: { propertyId, status: "no_show", arrivalDate: { gte: today, lt: tomorrow } }
@@ -770,7 +850,9 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
     generatedAt: now.toISOString(),
     propertyId,
     propertyName: property?.name ?? undefined,
-    asOf: today.toISOString().slice(0, 10),
+    asOf: window.businessDate,
+    businessDate: window.businessDate,
+    businessDateSource: window.source,
 
     occupancy: {
       today: {

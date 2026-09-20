@@ -15,6 +15,7 @@ import type {
 } from "@hotelos/shared";
 import type { CocoaTone } from "../../components/cocoa/cocoa-tones";
 import { STATUS_LABELS } from "../../content/actions";
+import { date, time } from "../../lib/format";
 import { paymentMethodLabel } from "../pos/cash-closure-helpers";
 
 /** Step ids of night-audit.service.ts → what the operator reads. */
@@ -158,6 +159,63 @@ export function runActionsFor(
 /** Whether a session may close over blockers («Cerrar de todos modos»): the run key, nothing else. */
 export function canForceClose(can: (permission: "night_audit.run") => boolean): boolean {
   return can("night_audit.run");
+}
+
+// ── Tanda UX-2 (D8 · F-D3): honest close banner and the review of the last run ──
+
+/**
+ * What the close banner offers (pure; the API re-checks):
+ *   run          preflight green and the session holds night_audit.run → «Cerrar día»
+ *   force        blockers and the run key → «Cerrar de todos modos» (reason dialog)
+ *   review-only  preflight green WITHOUT the run key (dirección: manager /
+ *                general_manager only review) → no button, the text says who closes
+ *   blocked      blockers without the run key → no button, «Abrir cola operativa»
+ * Never a «Cerrar día» that would answer 403 (P7).
+ */
+export type CloseAction = "run" | "force" | "blocked" | "review-only";
+
+export function closeActionFor(preflight: { canClose: boolean } | null | undefined, can: (permission: "night_audit.run") => boolean): CloseAction {
+  const canRun = canForceClose(can);
+  if (preflight?.canClose) return canRun ? "run" : "review-only";
+  return canRun ? "force" : "blocked";
+}
+
+export const CLOSE_BANNER_TITLES: Readonly<Record<CloseAction, string>> = Object.freeze({
+  run: "Puedes cerrar el día",
+  force: "No puedes cerrar todavía",
+  blocked: "No puedes cerrar todavía",
+  "review-only": "Comprobaciones en verde"
+});
+
+/** Body of the banner for a session without the run key and a green preflight (P7: says who closes). */
+export const CLOSE_REVIEW_ONLY_TEXT = "Las comprobaciones están en verde; el cierre lo ejecuta recepción o auditoría nocturna y tú lo revisas cuando esté hecho.";
+
+/** Label of the fix the blocked banner and ⌘K offer without the run key (same destination as the arrivals / departures / folios checks). */
+export const OPEN_QUEUE_LABEL = "Abrir cola operativa";
+
+type ReviewableRun = Pick<NightAuditRunWire, "id" | "status" | "reviewedByUserId" | "businessDate" | "completedAt">;
+
+/**
+ * The most recent run (newest business date; latest completion on a tie) when
+ * it still awaits its income review by this session; null otherwise (reviewed,
+ * failed, in progress, or without night_audit.review).
+ */
+export function latestRunToReview<T extends ReviewableRun>(runs: readonly T[], can: (permission: "night_audit.review" | "night_audit.reopen") => boolean): T | null {
+  const latest = [...runs].sort((a, b) => b.businessDate.localeCompare(a.businessDate) || (b.completedAt ?? "").localeCompare(a.completedAt ?? ""))[0];
+  if (!latest) return null;
+  return runActionsFor(latest, can).review ? latest : null;
+}
+
+/** «Cierre del 18/09/2026 hecho a las 08:00» · reopened day: «Día del 18/09/2026 reabierto, pendiente de revisión». */
+export function reviewCalloutTitle(run: Pick<NightAuditRunWire, "status" | "businessDate" | "completedAt">): string {
+  const day = date(run.businessDate, "short");
+  if (run.status === "reopened") return `Día del ${day} reabierto, pendiente de revisión`;
+  return `Cierre del ${day} hecho a las ${time(run.completedAt)}`;
+}
+
+/** Toast of a successful review: «Cierre del 18/09/2026 marcado como revisado». */
+export function reviewedToast(run: Pick<NightAuditRunWire, "businessDate">): string {
+  return `Cierre del ${date(run.businessDate, "short")} marcado como revisado`;
 }
 
 /** Figures of the close_settled_folios step for the drawer; null on runs older than the step. */

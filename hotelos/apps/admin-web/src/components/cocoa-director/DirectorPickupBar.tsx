@@ -114,9 +114,9 @@ export function DirectorPickupBar({ data, height = DEFAULT_HEIGHT, valueLabel }:
 
           const tooltipParts: string[] = [`Pickup neto: ${formatNet(d.net)}`];
           if (typeof d.pctVsLY === "number" && !Number.isNaN(d.pctVsLY)) {
-            tooltipParts.push(`vs LY: ${formatPct(d.pctVsLY)}`);
+            tooltipParts.push(`frente al año anterior: ${formatPct(d.pctVsLY)}`);
           } else {
-            tooltipParts.push("vs LY: —");
+            tooltipParts.push("frente al año anterior: —");
           }
           const tooltipText = tooltipParts.join(" · ");
 

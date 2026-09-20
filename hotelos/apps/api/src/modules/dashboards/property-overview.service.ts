@@ -14,6 +14,9 @@ import { resolveLegalIdentity } from "../../lib/finance-scope.js";
 import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
 import { REPUTATION_MODULE_CODE } from "../reputation/reputation-context.js";
 import { getReputationSnapshot } from "../reputation/reputation-score.service.js";
+// Tanda UX-2 (corrector UX2-REV-01 · F-D1): «hoy» = fecha de negocio de la propiedad,
+// con el MISMO lector y la MISMA función pura que Mi día › Dirección y la Cartera.
+import { readGmBusinessDate, resolveGmWindow, type GmBusinessDateSource } from "./general-manager.service.js";
 
 /**
  * Property overview — single-property drill-down for the Portfolio dashboard.
@@ -30,6 +33,17 @@ import { getReputationSnapshot } from "../reputation/reputation-score.service.js
  * `portfolio.service.ts` (revenue MTD from FolioLine.total posted in-month;
  * occupancy/ADR/RevPAR averaged from RevenueDailySnapshot; pending fiscal as the
  * union of the four submission tables in non-terminal statuses).
+ *
+ * Tanda UX-2 (corrector UX2-REV-01 · F-D1 «una verdad por dato»): the «today»
+ * window ([dayStart, dayEnd)) is the BUSINESS DATE of the property
+ * (business_dates.current_date via `readGmBusinessDate` + `resolveGmWindow` of
+ * general-manager.service.ts, the rule of Mi día › Dirección and the night-audit
+ * preflight); without a row, the natural UTC day of `asOf`. The month-to-date
+ * window hangs from that date. The envelope says its window (`businessDate` +
+ * `businessDateSource`, additive) so the detail screen labels «Llegadas hoy» /
+ * «Salidas hoy» / «En el hotel» honestly. `today.arrivals` / `today.departures`
+ * keep counting EVERY reservation of that date (Mi día › Dirección counts the
+ * pending ones only).
  *
  * Sharp edges:
  *  - Folio has no `propertyId` column — we always go Reservation → Folio →
@@ -78,6 +92,9 @@ export type PropertyOverview = {
     sesHospedajesEnabled: boolean;
     verifactuEnabled: boolean;
   };
+  /** YYYY-MM-DD of the «today» window (business date of the property; UTC day of `asOf` without a row). */
+  businessDate: string;
+  businessDateSource: GmBusinessDateSource;
   today: {
     arrivals: number;
     departures: number;
@@ -134,21 +151,6 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function startOfUtcDay(input?: Date | string): Date {
-  if (input) {
-    const d = input instanceof Date ? input : new Date(input);
-    if (!Number.isNaN(d.getTime())) {
-      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-    }
-  }
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-}
-
-function endOfUtcDay(start: Date): Date {
-  return new Date(start.getTime() + 24 * 60 * 60 * 1000);
-}
-
 function startOfUtcMonth(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 }
@@ -195,8 +197,10 @@ export async function buildPropertyOverview(
 ): Promise<PropertyOverview> {
   const propertyId = input.propertyId;
   const asOfDate = input.asOf ? (input.asOf instanceof Date ? input.asOf : new Date(input.asOf)) : new Date();
-  const dayStart = startOfUtcDay(asOfDate);
-  const dayEnd = endOfUtcDay(dayStart);
+  // UX2-REV-01: «hoy» = fecha de negocio de la propiedad (sin fila, día UTC de asOf); el mes cuelga de ella.
+  const window = resolveGmWindow({ businessDate: await readGmBusinessDate(propertyId), now: asOfDate });
+  const dayStart = window.today;
+  const dayEnd = window.tomorrow;
   const monthStart = startOfUtcMonth(dayStart);
 
   const property = await prisma.property.findUnique({
@@ -431,6 +435,8 @@ export async function buildPropertyOverview(
       sesHospedajesEnabled: property?.sesHospedajesEnabled ?? false,
       verifactuEnabled: property?.verifactuEnabled ?? false
     },
+    businessDate: window.businessDate,
+    businessDateSource: window.source,
     today: {
       arrivals: arrivalsCount,
       departures: departuresCount,
