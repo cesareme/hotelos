@@ -20,10 +20,30 @@
 //   - answer (texto natural)
 //   - items (lista accionable de habitaciones/reservas/huéspedes)
 //   - suggestions (acciones recomendadas con kind+payload tipo action queue)
+//
+// Tanda L6b (L6b-08): `/copilot/*` es un alias de compatibilidad (CHK D12). answerCopilot ya no
+// despacha por su cuenta: delega en el núcleo conversacional único (assistant-core.service.ts,
+// runAssistantTurn con superficie `reception`) con un contexto de LECTURA de la propiedad
+// (actor system:checkin:copilot y las claves de las 10 lecturas, buildServiceContext de
+// checkin/service-context.ts). El núcleo enruta por reglas sobre el catálogo filtrado por RBAC
+// (copilot_<intent> de assistant-catalog.ts), registra una fila answerAnalyticsQuestion por turno
+// (routedBy, citas, coste 0) y guarda la memoria (una conversación por propiedad del actor). La
+// respuesta conserva EXACTAMENTE la forma CopilotAnswer (intent, question, answer, items,
+// suggestions, generatedAt, source, degraded; sin `mode` ni `model`): el cuerpo estructurado del
+// resolver se recoge con un AsyncLocalStorage mientras el núcleo lo ejecuta, porque el turno del
+// núcleo solo expone resúmenes. Los resolvers siguen aquí y siguen siendo solo lecturas.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { prisma } from "@hotelos/database";
+import type { PermissionKey } from "@hotelos/shared";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
 import { createDegradedCollector, type DegradedCollector } from "../../lib/degraded.js";
+import type { UserContext } from "../../lib/demo-store.js";
+import { NotFoundError } from "../../lib/http-error.js";
+import { createId } from "../../lib/ids.js";
+import type { AssistantTurn, RunAssistantTurnInput } from "../assistant/assistant-core.service.js";
+import { listAssistantConversations } from "../assistant/assistant-memory.service.js";
+import { buildServiceContext, checkInServiceContext, type CheckInActor } from "../checkin/service-context.js";
 
 export type CopilotIntent =
   | "arrivals_no_clean_room"
@@ -80,11 +100,13 @@ export type CopilotAnswer = {
 };
 
 /** Respuesta de cada intención antes de añadir `degraded` (lo hace el dispatcher). */
-type CopilotAnswerBody = Omit<CopilotAnswer, "degraded">;
+export type CopilotAnswerBody = Omit<CopilotAnswer, "degraded">;
 
 // ============================================================== intent detection
 
-const INTENT_KEYWORDS: Record<CopilotIntent, string[]> = {
+// Tanda L6b (L6b-02): exportadas para el catálogo unificado (assistant-catalog.ts), que las usa como
+// keywords de las 10 herramientas del copiloto; detectIntent sigue siendo el árbitro entre intenciones.
+export const INTENT_KEYWORDS: Record<CopilotIntent, string[]> = {
   arrivals_no_clean_room: ["sin limpiar", "no está lista", "sin habitación lista", "habitación sucia", "habitacion sucia", "no limpia"],
   arrivals_pending_balance: ["saldo pendiente", "deuda", "deben", "impago", "no han pagado"],
   rooms_ready_for_delivery: ["entregar", "puedo dar", "listas", "qué habitaciones puedo", "que habitaciones puedo", "ready", "puedo asignar"],
@@ -94,7 +116,9 @@ const INTENT_KEYWORDS: Record<CopilotIntent, string[]> = {
   rooms_blocked: ["bloqueadas", "bloqueada", "fuera de servicio", "fuera servicio", "ooo", "no se pueden vender"],
   vips_arriving: ["vip", "huésped vip", "v.i.p", "premium", "diamond", "platinum"],
   open_incidents: ["incidencias", "averías", "averias", "abiertas", "abiertos"],
-  overdue_hk_tasks: ["housekeeping retrasadas", "limpieza retrasada", "pisos retrasados", "tareas retrasadas", "hk retrasadas"],
+  // Tanda L6b (L6b-02): el preset «¿Qué tareas de housekeeping están retrasadas?» no coincidía con ninguna
+  // frase contigua (detectIntent usa `includes`) y caía en unknown; frases del propio preset añadidas.
+  overdue_hk_tasks: ["housekeeping retrasadas", "limpieza retrasada", "pisos retrasados", "tareas retrasadas", "hk retrasadas", "tareas de housekeeping", "housekeeping están retrasadas", "housekeeping estan retrasadas", "tareas de limpieza retrasadas"],
   unknown: []
 };
 
@@ -136,6 +160,8 @@ function isCleanHk(value?: string | null, fallbackStatus?: string): boolean {
 // ============================================================== resolvers
 
 type Ctx = { propertyId: string; safe: DegradedCollector["safe"] };
+/** Tanda L6b (L6b-02): contexto que reciben los resolvers cuando los ejecuta el catálogo unificado. */
+export type CopilotResolverContext = Ctx;
 
 async function listArrivalsNoCleanRoom(ctx: Ctx): Promise<CopilotAnswerBody> {
   const today = startOfDayUtc();
@@ -635,38 +661,202 @@ async function listOverdueHkTasks(ctx: Ctx): Promise<CopilotAnswerBody> {
   };
 }
 
-// ============================================================== dispatcher
+// ============================================================== catálogo unificado (Tanda L6b · L6b-02 / L6b-08)
 
-export async function answerCopilot(input: { propertyId: string; question: string; correlationId?: string }): Promise<CopilotAnswer> {
-  const intent = detectIntent(input.question);
-  const collector = createDegradedCollector("copilot.ask", { propertyId: input.propertyId, intent, correlationId: input.correlationId ?? null });
-  const ctx: Ctx = { propertyId: input.propertyId, safe: collector.safe };
-  let result: CopilotAnswerBody;
-  switch (intent) {
-    case "arrivals_no_clean_room": result = await listArrivalsNoCleanRoom(ctx); break;
-    case "arrivals_pending_balance": result = await listArrivalsPendingBalance(ctx); break;
-    case "rooms_ready_for_delivery": result = await listRoomsReadyForDelivery(ctx); break;
-    case "reservations_at_risk": result = await listReservationsAtRisk(ctx); break;
-    case "shift_summary": result = await shiftSummary(ctx); break;
-    case "late_checkouts": result = await listLateCheckouts(ctx); break;
-    case "rooms_blocked": result = await listBlockedRooms(ctx); break;
-    case "vips_arriving": result = await listVipsArriving(ctx); break;
-    case "open_incidents": result = await listOpenIncidents(ctx); break;
-    case "overdue_hk_tasks": result = await listOverdueHkTasks(ctx); break;
-    default:
-      result = {
-        intent: "unknown",
-        question: input.question,
-        answer:
-          "No reconozco esa pregunta. Prueba con: '¿qué llegadas no tienen habitación limpia?', '¿qué VIPs llegan hoy?', '¿qué habitaciones puedo entregar?', '¿qué reservas en riesgo?', 'resume el turno', '¿quién pidió late checkout?', '¿qué habitaciones bloqueadas?', '¿qué incidencias abiertas?', '¿qué tareas HK retrasadas?'.",
-        items: [],
-        suggestions: [],
-        generatedAt: new Date().toISOString(),
-        source: "router"
-      };
+export type CopilotResolvedIntent = Exclude<CopilotIntent, "unknown">;
+export type CopilotResolver = (ctx: CopilotResolverContext) => Promise<CopilotAnswerBody>;
+
+/** Implementaciones reales (Prisma) de los 10 resolvers, en el orden de los intents. */
+const RESOLVER_IMPLS: Readonly<Record<CopilotResolvedIntent, CopilotResolver>> = Object.freeze({
+  arrivals_no_clean_room: listArrivalsNoCleanRoom,
+  arrivals_pending_balance: listArrivalsPendingBalance,
+  rooms_ready_for_delivery: listRoomsReadyForDelivery,
+  reservations_at_risk: listReservationsAtRisk,
+  shift_summary: shiftSummary,
+  late_checkouts: listLateCheckouts,
+  rooms_blocked: listBlockedRooms,
+  vips_arriving: listVipsArriving,
+  open_incidents: listOpenIncidents,
+  overdue_hk_tasks: listOverdueHkTasks
+});
+
+/** Orden canónico de los 10 intents (el catálogo lo reexporta como COPILOT_RESOLVED_INTENTS desde COPILOT_RESOLVERS). */
+const COPILOT_INTENT_LIST: readonly CopilotResolvedIntent[] = Object.freeze(Object.keys(RESOLVER_IMPLS) as CopilotResolvedIntent[]);
+
+/**
+ * Cuerpo del resolver que ejecutó el núcleo durante un answerCopilot. El turno del núcleo
+ * (AssistantTurn) solo expone resúmenes y citas; el alias necesita items/suggestions/source tal
+ * cual, así que el resolver los deposita aquí cuando corre dentro de answerCopilot (y en ningún
+ * otro caso: desde el panel del asistente no hay almacén activo y no cambia nada).
+ */
+type CopilotCapture = { intent: CopilotResolvedIntent; body: CopilotAnswerBody; degraded: string[] };
+type CaptureSlot = { captured: CopilotCapture | null };
+const copilotCapture = new AsyncLocalStorage<CaptureSlot>();
+
+function resolverEntry(intent: CopilotResolvedIntent): CopilotResolver {
+  return async (ctx) => {
+    const impl = currentDeps().resolvers[intent];
+    const slot = copilotCapture.getStore();
+    if (!slot) return impl(ctx);
+    // `degraded[]` del alias: las mismas consultas secundarias que el catálogo marca en su colector.
+    const degraded: string[] = [];
+    const safe: DegradedCollector["safe"] = (label, promise, fallback) =>
+      ctx.safe(
+        label,
+        promise.then(undefined, (error: unknown) => {
+          degraded.push(label);
+          throw error;
+        }),
+        fallback
+      );
+    const body = await impl({ propertyId: ctx.propertyId, safe });
+    slot.captured = { intent, body, degraded };
+    return body;
+  };
+}
+
+/**
+ * Los 10 resolvers por intención: el catálogo unificado del asistente (assistant-catalog.ts) los
+ * expone como herramientas locales `copilot_<intent>` con permisos RBAC y superficie propios, y
+ * answerCopilot los recibe por esa misma vía. Solo lecturas; nada escribe.
+ */
+export const COPILOT_RESOLVERS: Readonly<Record<CopilotResolvedIntent, CopilotResolver>> = Object.freeze(
+  Object.fromEntries(COPILOT_INTENT_LIST.map((intent) => [intent, resolverEntry(intent)])) as Record<CopilotResolvedIntent, CopilotResolver>
+);
+
+// ============================================================== dispatcher (Tanda L6b · L6b-08: sobre el núcleo)
+
+/** Superficie del núcleo que responde al alias. */
+export const COPILOT_SURFACE = "reception" as const;
+/** Prefijo de log de las consultas degradadas del alias (contrato L2-06: `[copilot.ask] <consulta> failed → degraded fallback`). */
+export const COPILOT_LOG_SCOPE = "copilot.ask" as const;
+/** Actor sintético del alias (userId `system:checkin:copilot`, como el preset de assistant.tools.ts). */
+export const COPILOT_ACTOR: CheckInActor = Object.freeze({ kind: "system", job: "copilot" }) as CheckInActor;
+/**
+ * Claves de LECTURA del contexto del alias: la unión de las que exigen las 10 herramientas
+ * copilot_<intent> del catálogo (copilot-core.test.mts lo comprueba). Sin `ai.tool.execute`: el
+ * alias nunca ve las herramientas del registro (runner) ni ninguna escritura.
+ */
+export const COPILOT_READ_PERMISSIONS: readonly PermissionKey[] = Object.freeze(["pms.reservation.read", "folio.read", "housekeeping.read", "maintenance.read", "guests.read"] as PermissionKey[]);
+
+const UNKNOWN_ANSWER =
+  "No reconozco esa pregunta. Prueba con: '¿qué llegadas no tienen habitación limpia?', '¿qué VIPs llegan hoy?', '¿qué habitaciones puedo entregar?', '¿qué reservas en riesgo?', 'resume el turno', '¿quién pidió late checkout?', '¿qué habitaciones bloqueadas?', '¿qué incidencias abiertas?', '¿qué tareas HK retrasadas?'.";
+
+export type CopilotDeps = {
+  /** Contexto de lectura de la propiedad (404 opaco si no existe). */
+  serviceContext: (propertyId: string) => Promise<UserContext>;
+  /** Conversación abierta del actor en la propiedad (memoria del núcleo) o null para abrir una. */
+  conversationIdFor: (context: UserContext) => Promise<string | null>;
+  runTurn: (input: RunAssistantTurnInput) => Promise<AssistantTurn>;
+  resolvers: Readonly<Record<CopilotResolvedIntent, CopilotResolver>>;
+  now: () => Date;
+};
+
+type AssistantCoreModule = typeof import("../assistant/assistant-core.service.js");
+let assistantCore: Promise<AssistantCoreModule> | null = null;
+
+/** El núcleo importa el catálogo y el catálogo este módulo (COPILOT_RESOLVERS): carga diferida para no cerrar el ciclo al evaluar los módulos. */
+function loadAssistantCore(): Promise<AssistantCoreModule> {
+  assistantCore ??= import("../assistant/assistant-core.service.js");
+  return assistantCore;
+}
+
+/** Contexto de lectura de la propiedad para el alias: organización desde la propiedad (checkInServiceContext, 404 opaco) y solo COPILOT_READ_PERMISSIONS. */
+export async function copilotServiceContext(propertyId: string): Promise<UserContext> {
+  const base = await checkInServiceContext(propertyId, COPILOT_ACTOR);
+  return buildServiceContext({ organizationId: base.organizationId, propertyId, actor: COPILOT_ACTOR, permissions: COPILOT_READ_PERMISSIONS });
+}
+
+/** Última conversación abierta del actor en la propiedad y superficie del alias; un fallo de memoria nunca rompe la respuesta. */
+async function copilotConversationId(context: UserContext): Promise<string | null> {
+  try {
+    const [latest] = await listAssistantConversations({ organizationId: context.organizationId, propertyId: context.propertyId, userId: context.userId, surface: COPILOT_SURFACE, limit: 1 });
+    return latest && latest.status === "open" ? latest.id : null;
+  } catch (error) {
+    console.warn("[copilot.ask] memory lookup failed; opening a new conversation", { propertyId: context.propertyId, error: error instanceof Error ? error.message : String(error) });
+    return null;
   }
-  result.question = input.question;
-  return { ...result, degraded: collector.degraded };
+}
+
+function defaultDeps(): CopilotDeps {
+  return {
+    serviceContext: copilotServiceContext,
+    conversationIdFor: copilotConversationId,
+    runTurn: async (input) => (await loadAssistantCore()).runAssistantTurn(input),
+    resolvers: RESOLVER_IMPLS,
+    now: () => new Date()
+  };
+}
+
+export type CopilotTestOverrides = Partial<Omit<CopilotDeps, "resolvers">> & { resolvers?: Partial<Record<CopilotResolvedIntent, CopilotResolver>> };
+
+let overrides: CopilotTestOverrides | null = null;
+
+function currentDeps(): CopilotDeps {
+  const base = defaultDeps();
+  if (!overrides) return base;
+  const { resolvers, ...rest } = overrides;
+  return { ...base, ...rest, resolvers: resolvers ? { ...base.resolvers, ...resolvers } : base.resolvers };
+}
+
+/** Sustituye dependencias (tests sin Prisma). Sin argumento restaura las reales. */
+export function resetCopilotForTests(deps?: CopilotTestOverrides): void {
+  overrides = deps ?? null;
+}
+
+function unknownAnswer(question: string, generatedAt: string): CopilotAnswer {
+  return { intent: "unknown", question, answer: UNKNOWN_ANSWER, items: [], suggestions: [], generatedAt, source: "router", degraded: [] };
+}
+
+/**
+ * Un turno del alias sobre el núcleo: contexto de lectura de la propiedad → runAssistantTurn
+ * (reception, por reglas sin proveedor; con proveedor el modelo elige entre las mismas
+ * herramientas) → el cuerpo del resolver copilot_<intent> que haya corrido, tal cual. Si el
+ * núcleo no ejecutó ninguna herramienta → `unknown` con `source: "router"` (texto histórico); si
+ * ejecutó solo lecturas ajenas al copiloto (p. ej. get_arrivals_today) → `unknown` con la
+ * respuesta y las fuentes del núcleo (items vacíos: no hay forma accionable para ellas).
+ */
+export async function answerCopilot(input: {
+  propertyId: string;
+  question: string;
+  correlationId?: string;
+  /**
+   * Contexto REAL del usuario de la petición (corrector L6b · L6B-REV-04): con él mandan sus claves (RBAC del catálogo:
+   * sin folio.read no hay saldos ni resumen del turno) y su memoria (una conversación reception por usuario). Se usa
+   * cuando su propiedad activa es la pedida; si no (p. ej. un administrador de plataforma con otro `propertyId`), el
+   * contexto de servicio de la propiedad conserva el 404 opaco de existencia.
+   */
+  context?: UserContext;
+}): Promise<CopilotAnswer> {
+  const deps = currentDeps();
+  const question = (input.question ?? "").trim();
+  if (!question) return unknownAnswer(question, deps.now().toISOString());
+  const correlationId = input.correlationId ?? createId("corr");
+  const context = input.context && input.context.propertyId === input.propertyId ? input.context : await deps.serviceContext(input.propertyId);
+  const conversationId = await deps.conversationIdFor(context);
+  const slot: CaptureSlot = { captured: null };
+  const run = (id: string | null) => copilotCapture.run(slot, () => deps.runTurn({ context, surface: COPILOT_SURFACE, question, conversationId: id, correlationId, logScope: COPILOT_LOG_SCOPE }));
+  let turn: AssistantTurn;
+  try {
+    turn = await run(conversationId);
+  } catch (error) {
+    // La conversación recordada ya no existe (borrada entre la búsqueda y el turno): se abre otra.
+    if (!(conversationId && error instanceof NotFoundError)) throw error;
+    turn = await run(null);
+  }
+  const captured = slot.captured;
+  if (captured) return { ...captured.body, question, degraded: captured.degraded };
+  if (turn.citations.length === 0) return unknownAnswer(question, turn.generatedAt);
+  return {
+    intent: "unknown",
+    question,
+    answer: turn.answer,
+    items: [],
+    suggestions: [],
+    generatedAt: turn.generatedAt,
+    source: Array.from(new Set(turn.citations.map((citation) => citation.source))).join("+"),
+    degraded: []
+  };
 }
 
 export const COPILOT_PRESET_QUESTIONS: Array<{ id: string; label: string; question: string }> = [

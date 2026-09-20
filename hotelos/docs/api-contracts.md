@@ -732,9 +732,72 @@ Auditoría (`audit_events.action`): `CheckInSessionCreated`, `CheckInInvited`, `
   y `/guest-portal/chat`; rutas `/checkin` o `?checkin=1` abren el asistente, `?kiosk=1&device=<id>` el modo kiosco
   (sesión en `sessionStorage`, nunca `localStorage`).
 
+## Asistente unificado (Tanda L6b · 2026-09-20)
+
+Fuente: `docs/design/AI-CORE.md` (§6 coste, §10 runner, §14 tablas), `docs/audits/TANDA-L6A-AI-CORE-2026-09-18.md`;
+código `apps/api/src/routes/assistant.routes.ts` (plugin Fastify, 6 rutas), núcleo
+`apps/api/src/modules/assistant/assistant-core.service.ts` (`runAssistantTurn`; L6b-05), catálogo
+`assistant-catalog.ts` (`catalogFor`: 12 lecturas locales + 10 del copiloto + 15 del registro; L6b-02), router por reglas
+`assistant-router.ts` (`routeByRules`, `SUGGESTED_QUESTIONS`), prompts `assistant-prompts.ts` (`assistant_backoffice` ·
+`assistant_reception` · `assistant_guest`, publicables en `ai_prompt_versions`, respaldo en código), memoria
+`assistant-memory.service.ts`; cliente `apps/admin-web/src/services/assistantApi.ts` y panel `components/assistant/*`
+(⌘K, cajón en cualquier pantalla con el contexto de la página). Migración `20260920170000_asistente_unificado` (aditiva y
+reversible): `assistant_conversations` (una por usuario + propiedad + superficie: `surface`, `title`,
+`screen_context_json`, `status` open | archived, `last_message_at`) y `assistant_messages` (FK `ON DELETE CASCADE`; `role`
+user | assistant | tool, `content` cifrado en reposo por `PII_FIELDS.AssistantMessage`, `tool_calls_json`, `routed_by`
+rules | model, `model`, `tokens_*`, `cost_eur`); 0 columnas en tablas existentes, 0 enums. Tenencia: la propiedad activa es
+la del contexto (`:propertyId` → cabecera `x-property-id` → primera asignada); una cabecera fuera de ámbito responde el 404
+opaco «Propiedad no encontrada.» del hook de `server.ts` ANTES del handler. Las rutas por id pasan por `assertEntityAccess`
+con el resolver **`assistantConversation`** (`lib/tenancy.ts`): solo resuelve filas del PROPIO usuario
+(`request.userContext.userId`) y la propiedad de la fila manda sobre la cabecera; la de otro usuario, otra propiedad u otra
+organización es el mismo 404 «Conversación no encontrada.» (sin oráculo). Superficies: `backoffice` (defecto) ·
+`reception` · `guest`; el bot del huésped conserva su ruta (`/guest-portal/chat`) y clasificador. Manifiesto: 1031 → **1035**
+entradas (+4: conversaciones ×3 y pendientes; `tools` y `chat` ya existían); `rbac:sync -- --dry-run` +0 claves.
+
+| Método y ruta | Claves · riesgo | Cuerpo / query | Respuesta · códigos |
+|---|---|---|---|
+| `GET /assistant/tools?surface=` | — · authenticated | `surface` opcional (defecto `backoffice`) | `{ surface, items: [{ name, description, keywords, kind: local \| registry, origin: assistant \| copilot \| registry, riskLevel }], suggestedQuestions: [{ id, label, question, tool }] }`: lo que ESE usuario puede ver en ESA superficie (`visibleCatalogFor` = claves reales de la propiedad × superficie × módulos activos, `canExecuteToolForModules`); las sugeridas solo nombran herramientas visibles (cobertura 100 % por reglas). Recepción y contabilidad reciben catálogos distintos; sin claves de lectura → `items: []` (nunca 403). 400 «Superficie desconocida: …» |
+| `POST /assistant/chat` | — · authenticated | `{ question, conversationId?, surface?, screen?: { screenKey, url?, entity?: { type, id }, commands? } }` (`.strict` no: `screen` lo normaliza el núcleo con la MISMA regla que el panel — `screenKey`, `entity.type`/`entity.id` y `commands` solo ids seguros `/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/` (la entidad se descarta entera si no), `url` sin `?`/`#` y con los segmentos no seguros sustituidos por `_` — así ningún cliente mete nombres ni query strings en `screen_context_json` ni en la telemetría; corrector L6b REV-03) | `AssistantTurn` v2 (aditivo sobre v1): `{ question, answer, toolCalls: [{ name, ok, source, summary }], mode: deterministic \| llm, generatedAt, correlationId (cabecera `x-correlation-id` si viaja), surface, conversationId, routedBy: rules \| model, citations: [{ tool, source, ok, summary, aiToolCallId?, costEur? }], cost: { model, tokensInput, tokensOutput, eur \| null }, pendingToolCalls: [{ id, toolName, summary, riskLevel, createdAt, conversationId, correlationId, input }], notices: [] }`. 400 «La pregunta no puede estar vacía.» (también > 2000 caracteres, `surface` desconocida, `conversationId` que no es texto); 404 «Conversación no encontrada.» con `conversationId` ajeno o inexistente (nada se abre ni se responde); 403 `AI_BUDGET_EXCEEDED` / 429 `AI_RATE_LIMITED` solo por reglas sin respaldo (con modelo el núcleo cae a reglas con `notices`). Con proveedor, ANTES de llamar al modelo el núcleo evalúa la puerta de propiedad (`assistant-gate.ts`: `PropertyAiSetting.aiEnabled`, nivel de automatización de `answerAnalyticsQuestion` distinto de `off`, presupuesto mensual — las puertas 3/4/7 del runner, mismos ports Prisma) y, cerrada o no evaluable, responde por reglas con el aviso en `notices` y 0 llamadas facturables (corrector L6B-REV-01). Con `conversationId`, `surface` es la superficie EFECTIVA = la de la conversación guardada (catálogo y prompt incluidos); la del cuerpo solo cuenta al crearla (corrector REV-05) |
+| `GET /assistant/conversations?surface=&limit=` | — · authenticated | `surface` opcional, `limit` 1..50 (defecto 20) | `{ items: [{ id, title, surface, status, lastMessageAt, createdAt, messageCount }] }` del usuario en la propiedad activa, las más recientes primero; otro usuario de la misma propiedad recibe `[]` |
+| `GET /assistant/conversations/:id` | — · authenticated | — | `{ …summary, screenContext, messages: [{ id, role, content, createdAt, routedBy, toolCalls: [{ tool, source, ok?, summary?, aiToolCallId? }], cost \| null }] }` (los 200 más recientes; `cost` solo en los del asistente). 404 opaco si no es del usuario |
+| `DELETE /assistant/conversations/:id` | — · authenticated | — | 204 sin cuerpo (mensajes por la FK en cascada); 404 opaco si no es del usuario |
+| `GET /assistant/pending` | `ai.tool.execute` · low | — | `{ items: [{ id, toolName, summary, riskLevel, createdAt, conversationId, correlationId: null, input }] }`: filas de `ai_tool_calls` `awaiting_confirmation` sin reclamar (`confirmed_by IS NULL`) de la propiedad activa cuyo `conversation_id` es una conversación del usuario en esa propiedad O cuyo `user_id` es el propio usuario — una propuesta huérfana (conversación borrada después, o nacida sin `conversationId`) sigue siendo decidible desde el panel por quien la lanzó, nunca por otros (corrector REV-07, alternativa D6; `pendingToolCallsWhere`) — (≤ 100, las más recientes); `input` SIEMPRE redactado (`redactForTelemetry`: la fila pendiente conserva la entrada ejecutable, SEC-06) y `summary` = descripción en español de la implementación. Recepción no tiene el `audit.read` de `GET /ai/tool-calls`: esta es su vista. 403 sin la clave |
+
+**Trazabilidad (objetivo 4 del brief).** Cada turno cita herramienta y fuente (`citations[].tool` / `.source`: `prisma:…`
+para las lecturas locales, `runner:<nombre>` con `aiToolCallId` para las del registro), dice quién respondió (`routedBy`,
+`mode` honesto: `llm` SOLO si un modelo respondió de verdad, `deriveAssistantMode`) y cuánto costó (`cost`: por reglas
+`{ model: null, tokens 0, eur: 0 }`; con modelo el uso real y `eur: null` sin `AI_USD_EUR_RATE`). **Una fila
+`answerAnalyticsQuestion` por turno** en `ai_tool_calls` (`status` succeeded, `automation_level` suggest, `input_json` /
+`output_json` redactados con marcadores `[NOMBRE_n]/[TEL_n]/[EMAIL_n]…` sin mapa, `conversation_id` =
+`assistant_conversations.id`): por reglas `model` NULL, `tokens_*` 0 y **`cost_eur` 0** (AI-CORE §6: sin llamada → 0; hubo
+llamada sin tipo de cambio → NULL); con modelo `model`, tokens y coste reales. Lo persistido en memoria (pregunta y
+respuesta) pasa por el redactor de `@hotelos/ai-core` — marcadores irreversibles para documentos, teléfonos, correos, tarjetas y
+nombres con tratamiento («Sra.») o fórmula de presentación; NO reconoce un nombre suelto («¿Tiene reserva Nombre Apellido?») — y va
+cifrado en reposo: `content` y, desde el corrector L6b (REV-02), también `title` (`PII_FIELDS.AssistantConversation`; `SELECT
+left(title, 3)` devuelve `v1.`). La fila `answerAnalyticsQuestion` guarda de la pregunta solo su huella (`input_json.questionChars` y
+`questionSha256`, 16 hex), nunca el texto; `screen` solo lleva ids seguros (REV-03). El turno devuelto conserva la pregunta original.
+
+**HITL.** Las escrituras del registro (`AI_WRITE_TOOL_NAMES` con implementación, módulo activo y claves del usuario; ninguna
+en `guest`) se ofrecen al modelo como herramientas pero SIEMPRE pasan por `runAiTool` → `awaiting_confirmation`
+(`WRITE_ALWAYS_CONFIRMS`): el modelo solo PROPONE y la propuesta vuelve en `pendingToolCalls[]` (sin cita). Se decide con
+`POST /ai/tool-calls/:id/confirm { decision: approve | reject, notes? }` (`ai.tool.execute`; permisos de la definición y
+`ai.high_risk.confirm` para high | critical; 404 opaco en propiedad ajena o fila ya decidida; 409 `AI_CONFIRMATION_EXPIRED`;
+resolver `aiToolCallConfirmation`); al aprobar se ejecuta (p. ej. `createWorkOrder` → `work_orders` +1, fila `succeeded` con
+`confirmed_by`) y desaparece de `GET /assistant/pending`. Sin proveedor (`AI_PROVIDER` none) el router por reglas solo
+enruta lecturas: no hay propuestas de escritura. Una herramienta fuera del catálogo del usuario se deniega sin consultar el
+registro (`notices`).
+
+Tests: `apps/api/src/routes/__tests__/assistant-routes.test.mts` (plugin con inject y núcleo simulado: 400 vacía / superficie /
+`conversationId`, forma v2, superficie por defecto y explícita, catálogo por claves con sugeridas cubiertas, memoria privada,
+204, pendientes redactados) e `tests/integration/l6b-asistente.test.mts` (dos organizaciones `org_l2_l6b*`, `STRICT_ENV`:
+recepción vs contabilidad, chat por reglas con citas y fila `answerAnalyticsQuestion` con `model` NULL, memoria privada entre
+dos usuarios de la misma propiedad, 404 opaco entre propiedades y organizaciones, el modelo simulado propone
+`createWorkOrder` → `pending` → `confirm` ejecuta; `farandaInvariants` idénticas, `cleanupTenant`). Siguen verdes
+`l2-modulos-ia` (L2-08 assistant) y `l6a-integrador` §1 (`mode deterministic`, fila `answerAnalyticsQuestion` sin modelo).
+
 ## Tanda L2 · Persistencia y API (2026-09-18)
 
-Fuente: `docs/audits/TANDA-5-PLAN-2026-09-15.md` §3 fila L2. Principio: funcional = persiste en Postgres, responde 2xx/4xx tipado y lo que la pantalla ofrece existe en el API. Toda consulta filtra por `organizationId` y, en recursos de hotel, por `propertyId` dentro del ámbito del usuario; fuera del ámbito → 404 opaco «Propiedad no encontrada.»; sin clave → 403 «No tienes permiso para realizar esta acción (requiere: …)». El manifiesto tiene **1031 entradas** = rutas registradas (`tests/api-route-permissions-contract.test.mjs`; 948 tras L2/T8, +35 de la Tanda T9 y −2 heredadas de facturas de proveedor retiradas en T9-15 = 981; +50 de la Tanda CHK: check-in en línea y en recepción, kioscos, asignación explicable y webhook de WhatsApp = 1031 medidas en la fusión T9 + CHK del 2026-09-20).
+Fuente: `docs/audits/TANDA-5-PLAN-2026-09-15.md` §3 fila L2. Principio: funcional = persiste en Postgres, responde 2xx/4xx tipado y lo que la pantalla ofrece existe en el API. Toda consulta filtra por `organizationId` y, en recursos de hotel, por `propertyId` dentro del ámbito del usuario; fuera del ámbito → 404 opaco «Propiedad no encontrada.»; sin clave → 403 «No tienes permiso para realizar esta acción (requiere: …)». El manifiesto tiene **1035 entradas** = rutas registradas (`tests/api-route-permissions-contract.test.mjs`; 948 tras L2/T8, +35 de la Tanda T9 y −2 heredadas de facturas de proveedor retiradas en T9-15 = 981; +50 de la Tanda CHK: check-in en línea y en recepción, kioscos, asignación explicable y webhook de WhatsApp = 1031 medidas en la fusión T9 + CHK del 2026-09-20; +4 de la Tanda L6b — conversaciones ×3 y pendientes del asistente unificado — = 1035).
 
 ### Rutas retiradas (84: 82 de L2-02 + 2 de la Tanda T9; todas responden 404 «Not Found», nunca el 403 del manifiesto)
 

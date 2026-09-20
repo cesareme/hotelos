@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { callStatusLabel, callStatusTone, readinessCheckLabel, readinessDetail, type ReadinessCheckLike } from "../ai-operations-labels.ts";
+import {
+  aiUsageStatus,
+  callStatusLabel,
+  callStatusTone,
+  COST_UNKNOWN_TITLE,
+  costCallsTotal,
+  costLabel,
+  readinessCheckLabel,
+  readinessDetail,
+  type ReadinessCheckLike
+} from "../ai-operations-labels.ts";
+import { money } from "../../../lib/format";
 
 // Regression of the fix:10-B lot (Cocoa 22 · ola 10 · lote 10-B): qa#3 (the
 // readiness checklist of /configuracion/ia painted the API's English
@@ -10,9 +21,14 @@ import { callStatusLabel, callStatusTone, readinessCheckLabel, readinessDetail, 
 // /configuracion/ia/actividad), qa#4 (disconnecting a mailbox without a
 // dialog; Gmail rows created while the authorisation is unavailable) and
 // qa#18 («Descartar cambios» without a dirty guard).
+// Tanda L6b · lote 04 (front honesto de IA-ops): `skipped` and the runtime
+// readiness checks `provider` / `budget` have a Spanish label and a tone, a
+// NULL cost is «—» with its reason, and «En uso» needs real tool calls.
 
 const SCREENS = fileURLToPath(new URL("../", import.meta.url));
 const read = (file: string) => readFileSync(`${SCREENS}${file}`, "utf8");
+const check = (key: string, status: ReadinessCheckLike["status"], detail = "raw"): ReadinessCheckLike => ({ key, label: key, status, detail });
+const ENGLISH = /\b(AI|locale|configured|disabled|enabled|disclosure|provider|budget|model|raw)\b/;
 
 /** Live payload of GET /ai-operations/property/readiness (Rías Altas, 2026-09-16, evidence of qa#3). */
 const RIAS_ALTAS: ReadinessCheckLike[] = [
@@ -43,15 +59,14 @@ describe("ai-operations-labels · preparación de la IA (qa#3)", () => {
   });
 
   it("covers the warning and error variants of every check", () => {
-    const check = (key: string, status: ReadinessCheckLike["status"]): ReadinessCheckLike => ({ key, label: key, status, detail: "raw" });
     assert.equal(readinessDetail(check("enabled", "ok")), "La IA está activada para esta propiedad.");
     assert.equal(readinessDetail(check("disclosure", "error")), "No hay aviso de IA al huésped. Informar al huésped de que interviene la IA es un requisito legal.");
     assert.equal(readinessDetail(check("voice_locales", "warn")), "No hay idiomas de voz configurados: la IA de voz no tendría ningún idioma en el que responder.");
     assert.equal(readinessDetail(check("voice_locales", "ok"), { voiceLocales: ["es-ES"] }), "1 idioma configurado: es-ES.");
     assert.equal(readinessDetail(check("voice_locales", "ok")), "Hay idiomas de voz configurados.");
     assert.equal(
-      readinessDetail(check("automation_level", "ok"), { automationLevel: "autonomous", approvedBy: "Juana Pérez" }),
-      "Modo autónomo, aprobado por Juana Pérez."
+      readinessDetail(check("automation_level", "ok"), { automationLevel: "autonomous", approvedBy: "Responsable de prueba" }),
+      "Modo autónomo, aprobado por Responsable de prueba."
     );
     assert.equal(
       readinessDetail(check("automation_level", "error"), { automationLevel: "autonomous" }),
@@ -65,9 +80,9 @@ describe("ai-operations-labels · preparación de la IA (qa#3)", () => {
   });
 
   it("keeps the API text for checks it does not know", () => {
-    const unknown: ReadinessCheckLike = { key: "budget", label: "Monthly budget", status: "ok", detail: "Budget is set." };
-    assert.equal(readinessCheckLabel(unknown), "Monthly budget");
-    assert.equal(readinessDetail(unknown), "Budget is set.");
+    const unknown: ReadinessCheckLike = { key: "runtime", label: "Runtime", status: "ok", detail: "Runtime is fine." };
+    assert.equal(readinessCheckLabel(unknown), "Runtime");
+    assert.equal(readinessDetail(unknown), "Runtime is fine.");
   });
 });
 
@@ -90,10 +105,84 @@ describe("ai-operations-labels · estado de las acciones de la IA (qa#11)", () =
   });
 });
 
+describe("ai-operations-labels · skipped, provider y budget tienen etiqueta y tono (L6b-04)", () => {
+  it("«skipped» (respaldo por reglas sin modelo) es «omitida (sin modelo)» en tono neutral, no un aviso", () => {
+    assert.equal(callStatusLabel("skipped"), "omitida (sin modelo)");
+    assert.equal(callStatusLabel("SKIPPED"), "omitida (sin modelo)");
+    assert.equal(callStatusTone("skipped"), "neutral");
+    assert.equal(callStatusTone("Skipped"), "neutral");
+  });
+
+  it("titles the runtime checks of Tanda L6a in Spanish whatever the API label says", () => {
+    assert.equal(readinessCheckLabel({ key: "provider", label: "Model provider" }), "Proveedor de IA");
+    assert.equal(readinessCheckLabel({ key: "budget", label: "Monthly budget" }), "Presupuesto de IA");
+  });
+
+  it("provider: warn (sin modelo) and error/ok without usable API data speak Spanish", () => {
+    const warn = readinessDetail(check("provider", "warn", "Model provider is not configured."));
+    assert.equal(warn, "Sin modelo configurado: la IA responde por reglas y las funciones de modelo quedan omitidas.");
+    const error = readinessDetail(check("provider", "error"));
+    assert.equal(error, "El proveedor de IA no es utilizable: la IA responde por reglas hasta corregir la configuración.");
+    const ok = readinessDetail(check("provider", "ok", ""));
+    assert.equal(ok, "Proveedor de IA configurado: las funciones de modelo están disponibles.");
+    for (const text of [warn, error, ok]) assert.doesNotMatch(text, ENGLISH);
+  });
+
+  it("provider: keeps the API sentence only when it carries the model id (ok) or the typed reason (error)", () => {
+    const live = "Proveedor anthropic con modelo claude-sonnet-5 (clasificación: claude-haiku-4-5-20251001).";
+    assert.equal(readinessDetail(check("provider", "ok", live)), live);
+    const reason = "Presupuesto de IA no aplicable: falta el tipo de cambio USD→EUR (AI_USD_EUR_RATE): la IA responde por reglas hasta corregir la configuración.";
+    assert.equal(readinessDetail(check("provider", "error", reason)), reason);
+    // A warn never keeps the API text, even a Spanish one: the screen owns it.
+    assert.equal(readinessDetail(check("provider", "warn", live)), "Sin modelo configurado: la IA responde por reglas y las funciones de modelo quedan omitidas.");
+  });
+
+  it("budget: keeps the API amounts when present and otherwise speaks Spanish by status", () => {
+    const withAmounts = "Presupuesto mensual: 25,00 € (gastado 3,10 €).";
+    assert.equal(readinessDetail(check("budget", "ok", withAmounts)), withAmounts);
+    const exceeded = "Presupuesto mensual agotado: 25,00 € (gastado 25,40 €).";
+    assert.equal(readinessDetail(check("budget", "error", exceeded)), exceeded);
+    assert.equal(readinessDetail(check("budget", "ok")), "Presupuesto mensual de IA dentro del límite.");
+    assert.equal(readinessDetail(check("budget", "warn", "Budget almost exhausted.")), "Presupuesto mensual de IA casi agotado: al alcanzarlo la IA dejará de llamar al modelo.");
+    assert.equal(readinessDetail(check("budget", "error", "Budget exceeded.")), "Presupuesto mensual de IA agotado: la IA no llama al modelo hasta el mes siguiente.");
+    for (const status of ["ok", "warn", "error"] as const) assert.doesNotMatch(readinessDetail(check("budget", status)), ENGLISH);
+  });
+
+  it("costLabel: NULL (hubo llamada sin coste calculable) is «—» with its reason; 0 and figures are real euros", () => {
+    assert.deepEqual(costLabel(null), { text: "—", title: COST_UNKNOWN_TITLE });
+    assert.deepEqual(costLabel(undefined), { text: "—", title: COST_UNKNOWN_TITLE });
+    assert.deepEqual(costLabel(Number.NaN), { text: "—", title: COST_UNKNOWN_TITLE });
+    assert.equal(COST_UNKNOWN_TITLE, "hubo llamada sin tipo de cambio");
+    // Real euros go through lib/format money() (es-ES, non-breaking space before «€»); no title.
+    assert.deepEqual(costLabel(0), { text: money(0) });
+    assert.deepEqual(costLabel(1.5), { text: money(1.5) });
+    assert.match(costLabel(1.5).text, /^1,50\s€$/);
+  });
+
+  it("costCallsTotal: the cost dashboard has no callsTotal, it is the sum of byTool[].calls", () => {
+    assert.equal(costCallsTotal(undefined), undefined);
+    assert.equal(costCallsTotal(null), undefined);
+    assert.equal(costCallsTotal({}), undefined);
+    assert.equal(costCallsTotal({ byTool: [] }), 0);
+    assert.equal(costCallsTotal({ byTool: [{ calls: 3 }, { calls: 4 }, { calls: Number.NaN }] }), 7);
+  });
+
+  it("aiUsageStatus: «En uso» only with real calls, «Sin modelo» while provider is not ok, never by aiEnabled alone", () => {
+    assert.deepEqual(aiUsageStatus({ aiEnabled: false, providerOk: true, callsTotal: 12 }), { value: "Apagada", caption: "Sin uso", ok: false });
+    assert.deepEqual(aiUsageStatus({ aiEnabled: true, providerOk: false, callsTotal: 12 }), { value: "Encendida", caption: "Sin modelo", ok: false });
+    assert.deepEqual(aiUsageStatus({ aiEnabled: true, providerOk: true, callsTotal: 0 }), { value: "Encendida", caption: "Sin uso en 30 días", ok: true });
+    assert.deepEqual(aiUsageStatus({ aiEnabled: true, providerOk: true, callsTotal: 1, windowDays: 7 }), { value: "Encendida", caption: "En uso · 1 acción en 7 días", ok: true });
+    assert.deepEqual(aiUsageStatus({ aiEnabled: true, providerOk: true, callsTotal: 12 }), { value: "Encendida", caption: "En uso · 12 acciones en 30 días", ok: true });
+    // Readiness not answered yet: the calls decide; cost not answered: no guess.
+    assert.match(aiUsageStatus({ aiEnabled: true, providerOk: undefined, callsTotal: 2 }).caption, /^En uso/);
+    assert.deepEqual(aiUsageStatus({ aiEnabled: true, providerOk: true, callsTotal: undefined }), { value: "Encendida", caption: "Uso no disponible", ok: true });
+  });
+});
+
 describe("aiOperations · contratos de fuente del lote fix:10-B", () => {
   it("AiPipelineStatusScreen paints statuses through the shared labels (qa#11)", () => {
     const source = read("AiPipelineStatusScreen.tsx");
-    assert.match(source, /import \{ callStatusLabel, callStatusTone \} from "\.\/ai-operations-labels";/);
+    assert.match(source, /import \{ callStatusLabel, callStatusTone, costLabel \} from "\.\/ai-operations-labels";/);
     assert.doesNotMatch(source, /const CALL_STATUS_LABEL/);
   });
 
@@ -124,5 +213,38 @@ describe("aiOperations · contratos de fuente del lote fix:10-B", () => {
     assert.match(source, /const canAdd = !busy && !providerUnavailable && !imapIncomplete && !shadowIncomplete;/);
     assert.match(source, /if \(!canAdd\) return;/);
     assert.match(source, /\{oauthProvider \? "Iniciar autorización" : "Añadir buzón"\}/);
+  });
+});
+
+describe("aiOperations · contratos de fuente del lote L6b-04 (front honesto)", () => {
+  it("AiOwnerSummaryScreen decides «Estado de la IA» with aiUsageStatus over readiness + real calls, never by aiEnabled alone", () => {
+    const source = read("AiOwnerSummaryScreen.tsx");
+    assert.match(source, /import \{ aiUsageStatus, costCallsTotal \} from "\.\/ai-operations-labels";/);
+    assert.match(source, /useApiData<AiReadiness>\("\/ai-operations\/property\/readiness"/);
+    assert.match(source, /check\.key === "provider"/);
+    assert.match(source, /aiUsageStatus\(\{ aiEnabled, providerOk, callsTotal, windowDays: cost\.data\?\.windowDays \}\)/);
+    assert.match(source, /value: usage\.value,\s*caption: usage\.caption,\s*ok: usage\.ok/);
+    assert.doesNotMatch(source, /caption: aiEnabled \? "En uso"/);
+    // A null projection (no real cost) is never painted as «0,00 €».
+    assert.doesNotMatch(source, /money\(n \?\? 0\)/);
+    assert.match(source, /projectedMonthlyEur: number \| null;/);
+    assert.match(source, /cost\.data\.projectedMonthlyEur === null \? "sin coste real todavía: no se proyecta"/);
+    // Cocoa: 0 inline styles added by the lot (5 token-only text styles pre-existed).
+    assert.equal((source.match(/ style=/g) ?? []).length, 5);
+  });
+
+  it("AiPipelineStatusScreen paints every cost through costLabel (NULL → «—» with title), never money() on a nullable cost", () => {
+    const source = read("AiPipelineStatusScreen.tsx");
+    assert.doesNotMatch(source, /money\((r|c|detail|kpis)\.costEur\)|money\(kpis\.costMtdEur\)/);
+    assert.match(source, /function costCell\(costEur: number \| null \| undefined\)/);
+    assert.match(source, /<span title=\{cost\.title\}>\{cost\.text\}<\/span>/);
+    assert.match(source, /render: \(r\) => costCell\(r\.costEur\)/);
+    assert.match(source, /render: \(c\) => costCell\(c\.costEur\)/);
+    assert.match(source, /<strong>\{costCell\(detail\.costEur\)\}<\/strong>/);
+    assert.match(source, /const mtdCost = costLabel\(kpis\?\.costMtdEur\);/);
+    assert.match(source, /value=\{mtdCost\.text\} caption=\{mtdCost\.title \?\? "mes natural actual"\}/);
+    assert.match(source, /costMtdEur: number \| null;/);
+    // Cocoa: 0 inline styles added by the lot (3 overflow clips + 2 codeStyle pre-existed).
+    assert.equal((source.match(/ style=/g) ?? []).length, 5);
   });
 });

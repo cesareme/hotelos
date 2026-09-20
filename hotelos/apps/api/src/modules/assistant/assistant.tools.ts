@@ -24,9 +24,15 @@
 // «mañana» son los del huso horario de la propiedad (Property.timezone, como
 // las llegadas de recepción), no el día UTC de las tools históricas: a las
 // 00:30 en Madrid las llegadas del día ya son las de hoy.
+//
+// Tanda L6b (L6b-02): «hoy» unificado — TODAS las lecturas de hoy (get_*_today, in-house, pickup)
+// usan propertyToday (Property.timezone); isoToday (día UTC) desaparece. El catálogo unificado con
+// permisos y superficies vive en assistant-catalog.ts y el router por reglas en assistant-router.ts;
+// ASSISTANT_TOOLS y findToolsByKeyword se conservan para el chat actual (/assistant/chat).
 
 import { prisma } from "@hotelos/database";
 import { missingForSession } from "../checkin/checkin-session.service.js";
+import { getComplianceCenter } from "../compliance/compliance-center.service.js";
 import { checkInServiceContext } from "../checkin/service-context.js";
 import { todayInTimezone } from "../pms/pms.service.js";
 import { suggestForReservation } from "../pms/room-assignment.service.js";
@@ -43,10 +49,6 @@ type ToolContext = {
   propertyId: string;
 };
 
-function isoToday(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -60,7 +62,8 @@ function startOfDayUtc(iso: string): Date {
 // ---------------------------------------------------------------------------
 
 export async function getArrivalsToday(ctx: ToolContext): Promise<ToolResult> {
-  const today = startOfDayUtc(isoToday());
+  const date = await propertyToday(ctx.propertyId);
+  const today = startOfDayUtc(date);
   const rows = await prisma.reservation.findMany({
     where: {
       propertyId: ctx.propertyId,
@@ -71,28 +74,29 @@ export async function getArrivalsToday(ctx: ToolContext): Promise<ToolResult> {
   });
   return {
     ok: true,
-    data: { count: rows.length, items: rows },
-    source: "prisma:Reservation.arrivalDate=today",
+    // `date` (día de la propiedad): el resumen del núcleo lo nombra («hoy (dd/mm/aaaa)») para que la cita sea auto-explicativa (REV-06).
+    data: { count: rows.length, items: rows, date: ymd(today) },
+    source: "prisma:Reservation.arrivalDate=today(Property.timezone)",
     generatedAt: new Date().toISOString()
   };
 }
 
 export async function getDeparturesToday(ctx: ToolContext): Promise<ToolResult> {
-  const today = startOfDayUtc(isoToday());
+  const today = startOfDayUtc(await propertyToday(ctx.propertyId));
   const rows = await prisma.reservation.findMany({
     where: { propertyId: ctx.propertyId, departureDate: today, status: { in: ["checked_in", "checked_out"] } },
     select: { id: true, code: true, status: true, bookerName: true, channel: true }
   });
   return {
     ok: true,
-    data: { count: rows.length, items: rows },
-    source: "prisma:Reservation.departureDate=today",
+    data: { count: rows.length, items: rows, date: ymd(today) },
+    source: "prisma:Reservation.departureDate=today(Property.timezone)",
     generatedAt: new Date().toISOString()
   };
 }
 
 export async function getInHouseGuests(ctx: ToolContext): Promise<ToolResult> {
-  const today = startOfDayUtc(isoToday());
+  const today = startOfDayUtc(await propertyToday(ctx.propertyId));
   const count = await prisma.reservation.count({
     where: {
       propertyId: ctx.propertyId,
@@ -104,7 +108,7 @@ export async function getInHouseGuests(ctx: ToolContext): Promise<ToolResult> {
   return {
     ok: true,
     data: { count },
-    source: "prisma:Reservation.status=checked_in",
+    source: "prisma:Reservation.status=checked_in (today · Property.timezone)",
     generatedAt: new Date().toISOString()
   };
 }
@@ -114,7 +118,7 @@ export async function getInHouseGuests(ctx: ToolContext): Promise<ToolResult> {
 // ---------------------------------------------------------------------------
 
 export async function getOccupancyToday(ctx: ToolContext): Promise<ToolResult> {
-  const today = startOfDayUtc(isoToday());
+  const today = startOfDayUtc(await propertyToday(ctx.propertyId));
   const [totalRooms, occupiedRooms] = await Promise.all([
     prisma.room.count({ where: { propertyId: ctx.propertyId, active: true, sellable: true } }),
     prisma.reservation.count({
@@ -129,8 +133,8 @@ export async function getOccupancyToday(ctx: ToolContext): Promise<ToolResult> {
   const occupancyPct = totalRooms > 0 ? Math.round((occupiedRooms / totalRooms) * 1000) / 10 : 0;
   return {
     ok: true,
-    data: { totalRooms, occupiedRooms, occupancyPct },
-    source: "prisma:Room + Reservation.status=checked_in",
+    data: { totalRooms, occupiedRooms, occupancyPct, date: ymd(today) },
+    source: "prisma:Room + Reservation.status=checked_in (today · Property.timezone)",
     generatedAt: new Date().toISOString()
   };
 }
@@ -168,7 +172,7 @@ export async function getRecentRevenueSnapshot(ctx: ToolContext): Promise<ToolRe
 }
 
 export async function getPickup7d(ctx: ToolContext): Promise<ToolResult> {
-  const today = startOfDayUtc(isoToday());
+  const today = startOfDayUtc(await propertyToday(ctx.propertyId));
   const sevenDaysAgo = new Date(today.getTime() - 7 * 86_400_000);
   const recent = await prisma.reservation.count({
     where: {
@@ -180,7 +184,7 @@ export async function getPickup7d(ctx: ToolContext): Promise<ToolResult> {
   return {
     ok: true,
     data: { window: "last_7_days", reservationsCreated: recent },
-    source: "prisma:Reservation.createdAt >= today-7d",
+    source: "prisma:Reservation.createdAt >= today(Property.timezone)-7d",
     generatedAt: new Date().toISOString()
   };
 }
@@ -262,24 +266,28 @@ export async function getHousekeepingStatus(ctx: ToolContext): Promise<ToolResul
 // Compliance: critical controls
 // ---------------------------------------------------------------------------
 
+/** Estados del Centro de cumplimiento que cuentan como control abierto (el resto: cumplido, en vigor, no aplica). */
+const OPEN_COMPLIANCE_STATUSES: ReadonlySet<string> = new Set(["NON_COMPLIANT", "EXPIRED", "PENDING", "EXPIRING_SOON", "UNDER_REVIEW"]);
+
 export async function getComplianceSummary(ctx: ToolContext): Promise<ToolResult> {
-  // The Compliance Center tables may not be seeded in every demo. Catch and
-  // return a graceful fallback rather than throwing.
+  // Tanda L6b (L6b-02): la consulta cruda anterior (`compliance_requirements.severity` por
+  // `property_id`) no podía ejecutarse — esa tabla es el catálogo de obligaciones por jurisdicción
+  // (riskLevel, sin propiedad) — y la pregunta sugerida «Resumen de cumplimiento normativo» siempre
+  // caía en «sin datos». Ahora lee el Centro de cumplimiento (getComplianceCenter, solo lectura):
+  // `bySeverity` = controles ABIERTOS por nivel de riesgo (lo que renderiza assistant.service.ts) y
+  // los KPIs (cumplidos, vencidos, próximos a vencer, pendientes, críticos abiertos).
   try {
-    // Best-effort: count overdue control requirements on this property.
-    const result = await prisma.$queryRawUnsafe<Array<{ severity: string; cnt: bigint }>>(
-      `SELECT severity, COUNT(*)::bigint as cnt
-       FROM compliance_requirements
-       WHERE property_id = $1
-       GROUP BY severity`,
-      ctx.propertyId
-    );
+    const center = await getComplianceCenter(ctx.propertyId);
     const bySeverity: Record<string, number> = {};
-    for (const row of result) bySeverity[row.severity] = Number(row.cnt);
+    for (const control of center.controls) {
+      if (!OPEN_COMPLIANCE_STATUSES.has(control.status)) continue;
+      const level = String(control.riskLevel ?? "UNKNOWN").toLowerCase();
+      bySeverity[level] = (bySeverity[level] ?? 0) + 1;
+    }
     return {
       ok: true,
-      data: { bySeverity },
-      source: "prisma:ComplianceRequirement (raw)",
+      data: { bySeverity, kpis: center.kpis, controls: center.controls.length, asOf: center.asOf },
+      source: "compliance-center.service:getComplianceCenter (ComplianceItem × ComplianceRequirement.riskLevel)",
       generatedAt: new Date().toISOString()
     };
   } catch {
@@ -504,7 +512,7 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
   {
     name: "get_open_balance",
     description: "Saldo pendiente actual de los folios abiertos del hotel.",
-    keywords: ["saldo", "pendiente", "balance", "cobrar", "deudores", "open balance"],
+    keywords: ["saldo", "pendiente", "balance", "cobrar", "por cobrar", "deudores", "open balance"],
     run: getOpenBalance
   },
   {
@@ -545,7 +553,7 @@ export const ASSISTANT_TOOLS: ToolDefinition[] = [
  * signos `¿?¡!.,;:` y con los espacios colapsados. Los guiones se conservan
  * («check-in», «in-house» son un solo token).
  */
-function normalizeForRouting(text: string): string {
+export function normalizeForRouting(text: string): string {
   return text
     .toLowerCase()
     .normalize("NFD")
@@ -575,18 +583,30 @@ export function keywordMatchesQuestion(keyword: string, question: string): boole
   return kwTokens.every((t) => qTokens.has(t));
 }
 
-/** Tokens (normalizados) que sitúan la pregunta en otra fecha que hoy: mañana, ayer, semana, mes, fin de semana, próximo, pasado, días de la semana o una fecha dd/mm. */
-const OTHER_DATE_TOKENS: ReadonlySet<string> = new Set(["manana", "ayer", "anteayer", "semana", "mes", "proximo", "proxima", "proximos", "proximas", "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo", "tomorrow", "yesterday", "week", "month"]);
+/** Tokens (normalizados) que sitúan la pregunta en otra fecha que hoy: mañana, ayer, semana, mes, fin de semana, próximo, pasado, días de la semana, un mes del año o una fecha dd/mm / ISO. */
+const OTHER_DATE_TOKENS: ReadonlySet<string> = new Set([
+  "manana", "ayer", "anteayer", "semana", "mes", "proximo", "proxima", "proximos", "proximas", "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo", "tomorrow", "yesterday", "week", "month",
+  // Corrector L6b (REV-06): «el 15 de septiembre», «en octubre» tampoco son preguntas de hoy.
+  "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "setiembre", "octubre", "noviembre", "diciembre"
+]);
+/** Fechas explícitas: dd/mm[/aaaa], dd-mm-aaaa, ISO aaaa-mm-dd y «15 de septiembre [de 2026]». */
+const EXPLICIT_DATE_RES: readonly RegExp[] = [
+  /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/,
+  /\b\d{1,2}-\d{1,2}-\d{2,4}\b/,
+  /\b\d{4}-\d{2}-\d{2}\b/,
+  /\b\d{1,2}\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/i
+];
 
 /**
  * Corrector FIX-1 (F8): true cuando la pregunta nombra otra fecha que hoy («mañana», «la semana que viene», «el
- * 24/12»…); las herramientas «de hoy» (`*_today`) no se enrutan entonces. «hoy» presente no anula la exclusión
- * («llegadas de hoy y de mañana» tampoco es una pregunta de hoy). Pura.
+ * 24/12», «el 15 de septiembre», «2026-09-15»…); las herramientas «de hoy» (`*_today`) no se enrutan entonces. «hoy»
+ * presente no anula la exclusión («llegadas de hoy y de mañana» tampoco es una pregunta de hoy). Pura.
  */
 export function mentionsAnotherDate(question: string): boolean {
   const tokens = tokenize(question);
   if (tokens.some((token) => OTHER_DATE_TOKENS.has(token))) return true;
-  return /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/.test(question);
+  const normalized = normalizeForRouting(question);
+  return EXPLICIT_DATE_RES.some((re) => re.test(question) || re.test(normalized));
 }
 
 export function findToolsByKeyword(question: string): ToolDefinition[] {

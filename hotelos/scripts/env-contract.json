@@ -255,6 +255,37 @@
         "packages/compliance/src/spain/verifactu/software.ts"
       ]
     },
+    "ASSISTANT_MEMORY_PURGE_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva la purga periódica de la memoria del asistente (assistant_conversations por retención).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "ASSISTANT_MEMORY_PURGE_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 10000,
+      "max": 86400000,
+      "default": "21600000",
+      "doc": "Periodo de la purga de la memoria del asistente (ms).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "ASSISTANT_MEMORY_RETENTION_DAYS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 1,
+      "max": 3650,
+      "default": "90",
+      "doc": "Retención (días desde last_message_at) de las conversaciones del asistente unificado antes de purgarlas con sus mensajes (runbook asistente-ia §5, decisión D5).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
     "AUTH_EXPOSE_RESET_TOKEN": {
       "section": "Tests",
       "format": "bool",

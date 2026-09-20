@@ -1217,6 +1217,33 @@ tenant aislado `org_chk` / `prop_chk` («Hotel CHK (prueba)») con tres usuarios
     (migración `20260920160000_checkin_pago_en_recepcion`), recepción cierra sesiones que el
     huésped no cerró (`PATCH …/check-in/guests/:guestId`, `POST …/check-in/resolve-handoff`,
     `dryRun` en `/complete`).
+19. **Tanda L6b · Asistente unificado (2026-09-20):** (a) CORREGIDO por el corrector
+    (L6B-REV-07): purga por retención `[assistant.purge]` en `server.ts` bajo el líder de
+    schedulers (`ASSISTANT_MEMORY_RETENTION_DAYS` 90 · `ASSISTANT_MEMORY_PURGE_INTERVAL_MS` ·
+    `ASSISTANT_MEMORY_PURGE_DISABLED`) y supresión RGPD de los hilos `guest:<id>` en
+    `gdpr.service.ts` (`eraseAssistantConversationsOfUsers`); las conversaciones del personal
+    que mencionan a un huésped solo las agota la retención (cifradas y redactadas, no se
+    buscan por sujeto). Además `title` va cifrado (`PII_FIELDS.AssistantConversation`) y la
+    telemetría del turno guarda solo la huella de la pregunta (REV-02); (b)
+    `AiIntent`/`AiIntentName` (`packages/shared/src/types.ts`) siguen sin consumidor: el
+    núcleo usa `AssistantTurn`/`routedBy` (cierra la decisión de la deuda 16: retirarlos);
+    (c) tool use sin humo real: el camino con modelo del núcleo (`answerByModel`), la
+    clasificación y la respuesta del bot y los prompts publicados están cubiertos solo por
+    tests con `fetch` simulado (`assistant-core.test.mts`, `guest-bot.test.mts`,
+    `tests/integration/l6b-asistente.test.mts`); la puerta de propiedad (aiEnabled · nivel
+    off · presupuesto) SÍ se evalúa ya antes de cada llamada directa del turno y del
+    clasificador (`assistant-gate.ts`, L6B-REV-01), pero solo con tests simulados;
+    (d) `/copilot/ask` y `/copilot/presets` son un alias sobre el núcleo sin consumidor en
+    admin-web ni móvil; corre ya con `request.userContext` (L6B-REV-04: claves y memoria del
+    usuario; el actor `system:checkin:copilot` solo si el `propertyId` pedido no es el activo);
+    los 10 resolvers de `copilot.service.ts` calculan «hoy» en UTC frente a `Property.timezone`
+    de las 12 lecturas locales; una lectura ajena al copiloto responde `intent unknown`:
+    retirarlo en L7 o darle consumidor. Otros abiertos (informe
+    `docs/audits/TANDA-L6B-ASISTENTE-2026-09-20.md` §5): `nav-tree.generated.json` desfasado
+    frente al CSV compartido (filas 19/31 `retire → AssistantChat`), e2e del panel
+    (`apps/admin-web/e2e/assistant-panel.spec.ts`) sin navegador Playwright instalado ni entrada
+    en `tests/seed-ux-day-contract.test.mjs`, plantilla `general_manager` sin
+    `maintenance.workorder.manage`.
 
 ## Docs prioritarios
 
@@ -1252,6 +1279,8 @@ Antes de tomar decisiones de producto, lee:
 - `docs/runbooks/documentos-digitalizacion.md` — operación del módulo de documentos (Tanda T9): almacén (inline / disk cifrado / S3, backup), buzón por centro, flujo centro → oficina paso a paso, IA con y sin proveedor, tabla exacta de rutas y claves (§6.1), códigos de error, retención / purga / GDPR, seed de demo, puertas y lo que solo César puede aportar
 - `docs/design/DOCUMENTOS-DIGITALIZACION.md` — diseño de la digitalización por centro: marco legal (Orden EHA/962/2007, RD 1619/2012, e-factura B2B RD 238/2026), captura, pipeline IA con fallback, flujo y RBAC, contabilización y archivo, modelo de datos, API (§9), front (§10), lotes; con las correcciones «[actualizado 2026-09-19]» de la implementación
 - `docs/design/olas/T9-MERGE-LINES.md` — mergeLines de la Tanda T9 (anclas de texto por fichero compartido, orden de la migración tras fix1, post-fusión: tools/sync, rbac:sync, env:census:write, drift heredado)
+- `docs/runbooks/asistente-ia.md` — operación del asistente ehotelOS unificado (Tanda L6b): superficies (back office, recepción, huésped), catálogo y permisos, enrutado sin y con proveedor, memoria y PII (cifrado, redacción irreversible, retención 90 d sin job, borrado), trazabilidad (citas, coste, fila `answerAnalyticsQuestion`), HITL (pendientes, confirm), rutas y manifiesto, puertas y comandos exactos, comprobaciones en runtime, límites y lo que solo César puede aportar
+- `docs/audits/TANDA-L6B-ASISTENTE-2026-09-20.md` — cierre de la Tanda L6b · Asistente unificado: qué construyó cada lote (qué, cómo, tests, verificación), delta frente al dosier, puertas base → final, decisiones D1-D12 con el defecto aplicado, pendientes con dueño, ficheros compartidos a fusionar (route-permissions, tenancy, BackOfficeLayout, CommandPalette, guest-bot, copilot), migración y mensaje de commit
 
 ## Primera tarea en cada sesión nueva
 

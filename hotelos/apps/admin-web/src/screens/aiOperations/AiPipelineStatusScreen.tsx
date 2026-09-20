@@ -8,14 +8,16 @@
 // (CocoaChart.Bars), recent actions and anomalies. The drill-down of an
 // action (input / output JSON) is fetched on demand from /calls/:id and opens
 // in a CocoaDrawer instead of the old inline card. Same endpoints and query.
+// Tanda L6b · lote 04: a NULL cost (a model call without a computable euro
+// amount) paints «—» with the reason as title, never «0,00 €» (costLabel).
 
 import { getActiveOrganizationId } from "../../services/activeProperty";
-import { callStatusLabel, callStatusTone } from "./ai-operations-labels";
+import { callStatusLabel, callStatusTone, costLabel } from "./ai-operations-labels";
 import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { toArray } from "../../utils/toArray";
-import { date, dateTime, money, number, percent, plural } from "../../lib/format";
+import { date, dateTime, number, percent, plural } from "../../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { useTabHost } from "../tabs/TabHost";
 import {
@@ -49,7 +51,8 @@ type PipelineDashboard = {
     avgConfidence: number;
     awaitingConfirmation: number;
     failed24h: number;
-    costMtdEur: number;
+    /** Sum of cost_eur of the month; null only if the API cannot compute it. */
+    costMtdEur: number | null;
     tokensMtd: number;
   };
   byTool: Array<{
@@ -155,6 +158,12 @@ function automationLabel(level: string | null | undefined): string {
   return level ? (AUTOMATION_LABEL[level] ?? level) : "—";
 }
 
+/** Cost cell: «—» with the reason as title when the API says null (never «0,00 €»); the real figure otherwise. */
+function costCell(costEur: number | null | undefined) {
+  const cost = costLabel(costEur);
+  return cost.title ? <span title={cost.title}>{cost.text}</span> : cost.text;
+}
+
 // JSON of the action detail: tokens only (rule 6).
 const codeStyle: CSSProperties = {
   margin: 0,
@@ -179,7 +188,7 @@ const TOOL_COLUMNS: CocoaTableColumn<ToolRow>[] = [
   { key: "successRatePct", label: "% éxito", align: "right", fit: true, sortable: true, render: (r) => fmtPct(r.successRatePct) },
   { key: "avgLatencyMs", label: "Tiempo medio", align: "right", fit: true, sortable: true, hideOnNarrow: true, render: (r) => fmtMs(r.avgLatencyMs) },
   { key: "avgConfidence", label: "Confianza media", align: "right", fit: true, sortable: true, showFrom: "laptop", render: (r) => fmtConfidence(r.avgConfidence) },
-  { key: "costEur", label: "Coste", align: "right", fit: true, sortable: true, render: (r) => money(r.costEur) }
+  { key: "costEur", label: "Coste", align: "right", fit: true, sortable: true, render: (r) => costCell(r.costEur) }
 ];
 
 const MODULE_COLUMNS: CocoaTableColumn<ModuleRow>[] = [
@@ -193,7 +202,7 @@ const RECENT_COLUMNS: CocoaTableColumn<RecentCall>[] = [
   { key: "status", label: "Estado", fit: true, render: (c) => statusBadge(c.status) },
   { key: "confidence", label: "Confianza", align: "right", fit: true, hideOnNarrow: true, render: (c) => fmtConfidence(c.confidence) },
   { key: "latencyMs", label: "Tiempo", align: "right", fit: true, render: (c) => fmtMs(c.latencyMs) },
-  { key: "costEur", label: "Coste", align: "right", fit: true, render: (c) => money(c.costEur) },
+  { key: "costEur", label: "Coste", align: "right", fit: true, render: (c) => costCell(c.costEur) },
   { key: "automationLevel", label: "Automatización", fit: true, showFrom: "laptop", render: (c) => automationLabel(c.automationLevel) },
   { key: "createdAt", label: "Creada", fit: true, showFrom: "desktop", render: (c) => dateTime(c.createdAt) }
 ];
@@ -284,6 +293,7 @@ export function AiPipelineStatusScreen() {
   }
 
   const successStatus = !kpis || kpis.callsTotal === 0 ? "ok" : kpis.successRatePct >= 90 ? "ok" : kpis.successRatePct >= 70 ? "warning" : "critical";
+  const mtdCost = costLabel(kpis?.costMtdEur);
 
   return (
     <CocoaPage
@@ -318,7 +328,7 @@ export function AiPipelineStatusScreen() {
           <CocoaKpi label="Confianza media" value={fmtConfidence(kpis.avgConfidence)} caption="confianza del modelo" polarity="positive-good" status="ok" />
           <CocoaKpi label="Pendientes de confirmar" value={number(kpis.awaitingConfirmation)} caption="a la espera de una persona" polarity="negative-good" status={kpis.awaitingConfirmation > 0 ? "warning" : "ok"} />
           <CocoaKpi label="Fallidas (24 h)" value={number(kpis.failed24h)} caption="fallos en las últimas 24 h" polarity="negative-good" status={kpis.failed24h > 0 ? "critical" : "ok"} />
-          <CocoaKpi label="Coste (mes en curso)" value={money(kpis.costMtdEur)} caption="mes natural actual" polarity="neutral" status="ok" />
+          <CocoaKpi label="Coste (mes en curso)" value={mtdCost.text} caption={mtdCost.title ?? "mes natural actual"} polarity="neutral" status="ok" />
           <CocoaKpi label="Tokens (mes en curso)" value={number(kpis.tokensMtd)} caption="uso del modelo · entrada + salida" polarity="neutral" status="ok" />
         </CocoaKpiStrip>
       ) : null}
@@ -491,7 +501,7 @@ export function AiPipelineStatusScreen() {
                 </li>
                 <li>
                   <span>Coste</span>
-                  <strong>{money(detail.costEur)}</strong>
+                  <strong>{costCell(detail.costEur)}</strong>
                 </li>
                 <li>
                   <span>Automatización</span>

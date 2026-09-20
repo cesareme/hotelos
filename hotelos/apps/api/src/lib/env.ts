@@ -718,6 +718,9 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   GROUP_CUTOFF_SCHEDULER_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva el cutoff automático de grupos." },
   MAILBOX_POLL_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva el sondeo de las bandejas de correo integradas." },
   MAILBOX_POLL_INTERVAL_MS: { section: "Schedulers", ...INTERVAL, default: "300000", doc: "Periodo del sondeo de buzones (ms)." },
+  ASSISTANT_MEMORY_PURGE_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva la purga periódica de la memoria del asistente (assistant_conversations por retención)." },
+  ASSISTANT_MEMORY_PURGE_INTERVAL_MS: { section: "Schedulers", ...INTERVAL, default: "21600000", doc: "Periodo de la purga de la memoria del asistente (ms)." },
+  ASSISTANT_MEMORY_RETENTION_DAYS: { section: "Schedulers", format: "int", min: 1, max: 3650, default: "90", doc: "Retención (días desde last_message_at) de las conversaciones del asistente unificado antes de purgarlas con sus mensajes (runbook asistente-ia §5, decisión D5)." },
 
   // -------------------------------------------------------------------- IA
   AI_PROVIDER: {

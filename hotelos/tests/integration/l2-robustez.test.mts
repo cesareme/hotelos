@@ -517,6 +517,10 @@ describe("L2-06 · (3) /search y /copilot/ask nombran la consulta que falló en 
 describe("L2-06 · (4) operaciones Prisma por petición bajo umbral fijo (N+1 resueltos)", () => {
   it(`GET /reservations/:id/activity con 5 conversaciones ≤ ${MAX_OPS_GUEST_ACTIVITY}`, async (t) => {
     await withEnv(STRICT_ENV, async () => {
+      // El contador intercepta TODO el cliente Prisma: se vacían antes las colas de persistencia de
+      // auditoría/eventos (encadenadas en segundo plano por peticiones de suites anteriores) para que
+      // solo cuenten las operaciones de esta petición.
+      await flushAuditQueues();
       const { result, total, byOp } = await countPrismaOps(() =>
         getJson<{ counts: { messages: number }; items: Array<{ kind: string }> }>(app, `/reservations/${activityReservationId}/activity`, owner.headers)
       );
@@ -533,6 +537,7 @@ describe("L2-06 · (4) operaciones Prisma por petición bajo umbral fijo (N+1 re
 
   it(`GET /properties/A/night-audit/preflight con 5 alojadas + 3 llegadas ≤ ${MAX_OPS_PREFLIGHT}`, async (t) => {
     await withEnv(STRICT_ENV, async () => {
+      await flushAuditQueues(); // mismo motivo que en /activity: solo las operaciones de esta petición
       const { result, total, byOp } = await countPrismaOps(() =>
         getJson<{ checks: Array<{ id: string; count: number | null; items?: Array<{ label: string }> }> }>(app, `/properties/${tenant.propertyA}/night-audit/preflight`, owner.headers)
       );
@@ -549,6 +554,7 @@ describe("L2-06 · (4) operaciones Prisma por petición bajo umbral fijo (N+1 re
   });
 
   it(`releaseExpired con 5 cupos × 3 días ≤ ${MAX_OPS_ALLOTMENT_RELEASE} y libera 15 días / 25 habitaciones`, async (t) => {
+    await flushAuditQueues(); // mismo motivo que en /activity
     const { result, total, byOp } = await countPrismaOps(() => releaseExpired({ propertyId: tenant.propertyA }));
     t.diagnostic(`release: ${total} operaciones (${describeOps(byOp)})`);
     assert.deepEqual(result, { releasedDays: 15, releasedRooms: 25 });

@@ -376,7 +376,9 @@ export const SEGMENT_LABELS: Record<string, string> = {
   kiosks: "el kiosco",
   // Asignación explicable (Tanda CHK · W3-B · pms/room-assignment.routes.ts): sugerencias del motor y habitaciones comunicadas.
   "assignment-suggestions": "la sugerencia de asignación",
-  "room-connections": "la conexión de habitaciones (comunicadas o contiguas)"
+  "room-connections": "la conexión de habitaciones (comunicadas o contiguas)",
+  // Asistente unificado (Tanda L6b · assistant.routes.ts): GET /assistant/pending, escrituras propuestas pendientes de confirmar.
+  pending: "la escritura pendiente"
 };
 
 /** Recursos únicos (sin colección): GET → «Obtener <label>.», PUT → «Sustituir <label>.». */

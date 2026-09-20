@@ -11,23 +11,40 @@
 // Copy: the API ships review types, entity types and payload keys as raw
 // English identifiers; ./ai-review-labels.ts translates and formats them
 // (qa#15) and lifts the reserved `_review` envelope into its own section.
+//
+// Tanda L6b (lote L6b-09 · L6A audit §6.16, AI-CORE §10.3): an item whose
+// relatedEntityType is `ai_tool_call` is a write the tool runner left
+// awaiting_confirmation. Approving it in the queue used to close only the
+// review; now «Aprobar y ejecutar» / «Rechazar» go to POST /ai/tool-calls/:id
+// /confirm (services/assistantApi.confirmToolCall), which executes the tool
+// or closes the row and closes the review itself with the notes / reason.
+// The outcome (succeeded · failed · rejected · 403 sin permiso · 409 caducada)
+// is shown as a callout and a badge; nothing else changes for the other items.
 
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { getActiveOrganizationId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { useToast } from "../../components/Toast";
+import { useToast, type ToastVariant } from "../../components/Toast";
+import { confirmToolCall, type AssistantToolCallDecision } from "../../services/assistantApi";
 import { toArray } from "../../utils/toArray";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { dateTime, number, plural } from "../../lib/format";
 import {
+  AI_TOOL_CALL_ACTION_LABELS,
+  aiToolCallDecisionHint,
+  confirmErrorOutcome,
+  confirmResultOutcome,
   entityTypeLabel,
   formatPayloadValue,
+  isAiToolCallReview,
   payloadKeyLabel,
   reviewEnvelopeRows,
   reviewHistoryRows,
   reviewTypeLabel,
-  splitReviewPayload
+  splitReviewPayload,
+  type ConfirmOutcome,
+  type ConfirmOutcomeTone
 } from "./ai-review-labels";
 import {
   CocoaBadge,
@@ -123,6 +140,28 @@ function statusBadge(status: ReviewStatus) {
   );
 }
 
+/** Toast variant of a confirm outcome tone (L6b-09). */
+const OUTCOME_TOAST_VARIANT: Record<ConfirmOutcomeTone, ToastVariant> = {
+  success: "success",
+  danger: "error",
+  warning: "warning",
+  neutral: "info"
+};
+
+/** `payloadJson.toolName` of an `ai_tool_call` item (written by the runner), if any. */
+function toolNameOf(item: ReviewItem): string | null {
+  const value = item.payloadJson?.toolName;
+  return typeof value === "string" && value ? value : null;
+}
+
+/** Label of the approve button: an `ai_tool_call` item executes the tool on approval. */
+function approveLabel(item: ReviewItem): string {
+  return isAiToolCallReview(item) ? AI_TOOL_CALL_ACTION_LABELS.approve : ACTIONS.approve;
+}
+
+/** Outcome of the last confirm call, tied to its item (badge in the drawer, callout in the feedback slot). */
+type ItemOutcome = { itemId: string; outcome: ConfirmOutcome };
+
 // Text styles (tokens only; layout comes from the utilities).
 const secondaryStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
 
@@ -165,9 +204,16 @@ const COLUMNS: CocoaTableColumn<ReviewItem>[] = [
     hideOnNarrow: true,
     render: (item) =>
       item.relatedEntityType ? (
-        <span>
-          {entityTypeLabel(item.relatedEntityType)}
-          {item.relatedEntityId ? <span style={secondaryStyle}> · {item.relatedEntityId}</span> : null}
+        <span className="cocoa-cluster">
+          <span>
+            {entityTypeLabel(item.relatedEntityType)}
+            {item.relatedEntityId ? <span style={secondaryStyle}> · {item.relatedEntityId}</span> : null}
+          </span>
+          {isAiToolCallReview(item) ? (
+            <CocoaBadge tone="ai" variant="tinted" size="small">
+              Ejecuta al aprobar
+            </CocoaBadge>
+          ) : null}
         </span>
       ) : (
         <span style={secondaryStyle}>—</span>
@@ -195,6 +241,7 @@ export function AiHumanReviewQueueScreen() {
   const [runningAction, setRunningAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [itemOutcome, setItemOutcome] = useState<ItemOutcome | null>(null);
 
   const query = useMemo(
     () => ({
@@ -258,6 +305,7 @@ export function AiHumanReviewQueueScreen() {
     setRunningAction(key);
     setActionError(null);
     setActionMessage(null);
+    setItemOutcome(null);
     try {
       await apiRequest(path, { method: "POST", body });
       setActionMessage("Hecho.");
@@ -285,18 +333,59 @@ export function AiHumanReviewQueueScreen() {
     }
   }
 
+  // Tanda L6b (L6b-09): the decision of an `ai_tool_call` item goes to the confirm
+  // route. `approve` re-checks the permissions and the gates, claims the row and
+  // executes the tool with the recorded input; `reject` closes the row. Both close
+  // the review with the notes / reason (runner closeReview), so the queue's own
+  // approve/reject is NOT called: it would only mark the review and leave the
+  // tool pending (or, on a 403 / 409 here, leave «aprobada» next to a row that
+  // never ran). The outcome stays tied to the item until the next action.
+  async function decideToolCall(item: ReviewItem, decision: AssistantToolCallDecision) {
+    const toolCallId = item.relatedEntityId;
+    if (!toolCallId) return;
+    setRunningAction(`${decision}-${item.id}`);
+    setActionError(null);
+    setActionMessage(null);
+    setItemOutcome(null);
+    const toolName = toolNameOf(item);
+    try {
+      const result = await confirmToolCall(toolCallId, decision, decision === "approve" ? notes.trim() || undefined : reason.trim());
+      const outcome = confirmResultOutcome(result, toolName);
+      setItemOutcome({ itemId: item.id, outcome });
+      setNotes("");
+      setReason("");
+      setRejectHint(false);
+      showToast(outcome.label, { variant: OUTCOME_TOAST_VARIANT[outcome.tone] });
+    } catch (err) {
+      const outcome = confirmErrorOutcome(err);
+      setItemOutcome({ itemId: item.id, outcome });
+      showToast(outcome.label, { variant: OUTCOME_TOAST_VARIANT[outcome.tone] });
+    } finally {
+      setRunningAction(null);
+      // 409 (caducada) rejects the row and closes the review on the API side; 403 leaves everything as it was.
+      refreshAll();
+    }
+  }
+
   const assign = (item: ReviewItem) => runAction(`/ai-operations/review/${item.id}/assign`, { userId: CURRENT_USER_ID }, `assign-${item.id}`);
   const approve = (item: ReviewItem, withNotes: boolean) =>
-    runAction(`/ai-operations/review/${item.id}/approve`, withNotes ? { notes: notes || undefined } : {}, `approve-${item.id}`);
-  const reject = (item: ReviewItem) => runAction(`/ai-operations/review/${item.id}/reject`, { reason }, `reject-${item.id}`);
+    isAiToolCallReview(item)
+      ? decideToolCall(item, "approve")
+      : runAction(`/ai-operations/review/${item.id}/approve`, withNotes ? { notes: notes || undefined } : {}, `approve-${item.id}`);
+  const reject = (item: ReviewItem) =>
+    isAiToolCallReview(item) ? decideToolCall(item, "reject") : runAction(`/ai-operations/review/${item.id}/reject`, { reason }, `reject-${item.id}`);
   const escalate = (item: ReviewItem) => runAction(`/ai-operations/review/${item.id}/escalate`, { toRole: escalateRole || undefined }, `escalate-${item.id}`);
 
-  const feedback =
-    actionError || actionMessage ? (
-      <CocoaCallout tone={actionError ? "danger" : "success"} role="status">
-        {actionError ?? actionMessage}
-      </CocoaCallout>
-    ) : null;
+  const feedback = itemOutcome ? (
+    <CocoaCallout tone={itemOutcome.outcome.tone} title={itemOutcome.outcome.label} role="status">
+      {itemOutcome.outcome.message}
+    </CocoaCallout>
+  ) : actionError || actionMessage ? (
+    <CocoaCallout tone={actionError ? "danger" : "success"} role="status">
+      {actionError ?? actionMessage}
+    </CocoaCallout>
+  ) : null;
+  const liveMessage = itemOutcome ? `${itemOutcome.outcome.label}: ${itemOutcome.outcome.message}` : (actionError ?? actionMessage ?? "");
 
   let body;
   if (loading && !queueData) {
@@ -323,7 +412,7 @@ export function AiHumanReviewQueueScreen() {
                 {ACTIONS.assign}
               </CocoaButton>
               <CocoaButton variant="plain" tone="accent" size="small" loading={isRunning("approve", item.id)} disabled={decided || runningAction !== null} onClick={() => void approve(item, false)}>
-                {ACTIONS.approve}
+                {approveLabel(item)}
               </CocoaButton>
               <CocoaButton variant="plain" tone="destructive" size="small" disabled={decided || runningAction !== null} onClick={() => openDetail(item.id, true)}>
                 {ACTIONS.reject}
@@ -355,7 +444,7 @@ export function AiHumanReviewQueueScreen() {
       skeleton={<QueueSkeleton />}
       commands={[{ id: "ai-review-refresh", label: "Actualizar los pendientes de la IA", run: refreshAll }]}
     >
-      <CocoaLiveRegion message={actionError ?? actionMessage ?? ""} announceKey={runningAction ?? undefined} />
+      <CocoaLiveRegion message={liveMessage} announceKey={runningAction ?? undefined} />
 
       <CocoaKpiStrip min={200} stagger aria-label="Resumen de la cola de revisión">
         <CocoaKpi label="Pendientes" value={stats ? stats.pending : "—"} deltaLabel="esperando decisión" polarity="neutral" status={stats && stats.pending > 0 ? "warning" : "ok"} degraded={!stats} />
@@ -406,7 +495,7 @@ export function AiHumanReviewQueueScreen() {
                 loading={isRunning("approve", selected.id)}
                 onClick={() => void approve(selected, true)}
               >
-                {ACTIONS.approve}
+                {approveLabel(selected)}
               </CocoaButton>
             </>
           ) : undefined
@@ -419,6 +508,11 @@ export function AiHumanReviewQueueScreen() {
               {selected.slaBreached ? (
                 <CocoaBadge tone="danger" variant="tinted" size="small">
                   Fuera de plazo
+                </CocoaBadge>
+              ) : null}
+              {itemOutcome && itemOutcome.itemId === selected.id ? (
+                <CocoaBadge tone={itemOutcome.outcome.tone} variant="tinted" size="small" title={itemOutcome.outcome.message}>
+                  {itemOutcome.outcome.label}
                 </CocoaBadge>
               ) : null}
             </div>
@@ -493,6 +587,11 @@ export function AiHumanReviewQueueScreen() {
                 </>
               }
             >
+              {isAiToolCallReview(selected) && !isDecided(selected.status) ? (
+                <CocoaCallout tone="ai" title={AI_TOOL_CALL_ACTION_LABELS.approve}>
+                  {aiToolCallDecisionHint(toolNameOf(selected))}
+                </CocoaCallout>
+              ) : null}
               <CocoaField label="Notas de aprobación" hint={STATUS_LABELS.optional}>
                 <CocoaInput value={notes} onChange={setNotes} multiline rows={2} placeholder="Notas adjuntas a la aprobación…" />
               </CocoaField>

@@ -8,6 +8,7 @@ import { scrubReviewMetaForErasure } from "../reputation/review-meta.store.js";
 // Documentos digitalizados (Tanda T9 · T9-13, diseño §3.4 / §7.5): documentos con guestId del sujeto →
 // searchText / campos extraídos pseudonimizados y, sin efecto fiscal, purga del fichero.
 import { eraseGuestDocuments } from "../documents/retention.service.js";
+import { eraseAssistantConversationsOfUsers } from "../assistant/assistant-memory.service.js";
 
 export type GdprRequestType = "dsar" | "erasure" | "rectification" | "portability";
 
@@ -182,6 +183,17 @@ async function compileDossier(input: {
     ? await prisma.message.findMany({ where: { conversationId: { in: conversationIds } } })
     : [];
   sections.push({ table: "Message", rowsFound: messages.length, rows: messages });
+
+  // AssistantConversation / AssistantMessage (Tanda L6b · corrector L6B-REV-07): el hilo del huésped con el bot en la
+  // memoria del núcleo (user_id guest:<conversationId>); `content` y `title` los descifra la extensión de Prisma.
+  const assistantConversations = conversationIds.length
+    ? await prisma.assistantConversation.findMany({ where: { organizationId: input.organizationId, userId: { in: conversationIds.map((id) => `guest:${id}`) } } })
+    : [];
+  sections.push({ table: "AssistantConversation", rowsFound: assistantConversations.length, rows: assistantConversations });
+  const assistantMessages = assistantConversations.length
+    ? await prisma.assistantMessage.findMany({ where: { conversationId: { in: assistantConversations.map((c) => c.id) } }, orderBy: { createdAt: "asc" } })
+    : [];
+  sections.push({ table: "AssistantMessage", rowsFound: assistantMessages.length, rows: assistantMessages });
 
   // GuestUpsellPurchase (linked by reservation)
   const upsells = reservationIds.length
@@ -564,6 +576,17 @@ export async function executeErasure(
       action: "retained_by_law",
       note: "Conversation envelopes retained as audit trail; message bodies pseudonymized."
     });
+  }
+
+  // --- AssistantConversation (Tanda L6b · corrector L6B-REV-07): el hilo del propio huésped con el bot
+  // vive en la memoria del núcleo bajo user_id guest:<conversationId>; se borra con sus mensajes (FK en
+  // cascada). Las conversaciones del personal que lo mencionan van cifradas y redactadas y no se pueden
+  // buscar por sujeto: las purga la retención (ASSISTANT_MEMORY_RETENTION_DAYS).
+  if (conversationIds.length) {
+    const assistantErased = await eraseAssistantConversationsOfUsers({ organizationId: request.organizationId, userIds: conversationIds.map((id) => `guest:${id}`) });
+    if (assistantErased) {
+      tables.push({ name: "AssistantConversation", rowsAffected: assistantErased, action: "deleted", note: "Hilo del huésped con el asistente (memoria del núcleo) borrado con sus mensajes." });
+    }
   }
 
   // --- SurveyResponse: pseudonymize responsesJson ---

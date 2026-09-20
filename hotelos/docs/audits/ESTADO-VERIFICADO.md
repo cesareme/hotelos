@@ -489,3 +489,69 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda L6b · Asistente ehotelOS unificado, 2026-09-20, integrador de la
+tanda; informe `docs/audits/TANDA-L6B-ASISTENTE-2026-09-20.md` v3, runbook
+`docs/runbooks/asistente-ia.md`):
+- rama `tanda-l6b` sobre a069906 (BD `hotelos_l6b`, `:3933/:5203`), 11 lotes en 4 olas con
+  ficheros exclusivos + puertas completas + 2 revisores (11 hallazgos confirmados, 0 refutados)
+  + corrector (17 corregidos, 1 fuera del carril) + commit del integrador en la rama del carril:
+  43 ficheros modificados (+2.958/−597) + 22 nuevos (6.538 líneas); `pnpm-lock.yaml` restaurado
+  a HEAD y fuera del commit; sin dependencias nuevas; 0 `style=` nuevos (inventario Cocoa 22
+  regenerado: 107.680 líneas · 171 puntos)
+- núcleo conversacional único `modules/assistant/assistant-core.service.ts` (`runAssistantTurn`)
+  sobre `@hotelos/ai-core`: memoria por usuario + propiedad + superficie (migración
+  `20260920170000_asistente_unificado`: `assistant_conversations` + `assistant_messages`, 0
+  enums; `content` y `title` cifrados por `PII_FIELDS`, redacción solo de tratamientos,
+  documentos, teléfonos, correos y tarjetas; purga `[assistant.purge]` a los 90 días y supresión
+  RGPD de los hilos `guest:<id>`), catálogo de 37 lecturas (12 locales + 10 del copiloto + 15 del
+  registro) filtrado por RBAC × superficie × módulos, router por reglas con las 19 sugeridas al
+  100 % sin proveedor y «otra fecha» explícita reconocida, tool use con proveedor (≤ 3 turnos,
+  respaldo por reglas con aviso, puerta de propiedad `assistant-gate.ts` —aiEnabled · nivel ·
+  presupuesto— antes de cada llamada directa, 13 escrituras solo como `awaiting_confirmation` y
+  solo las que el usuario podría confirmar), prompts `assistant_backoffice/reception/guest`
+  publicables, `screen` saneado en el núcleo (solo ids seguros), `AssistantTurn` v2 (`routedBy`,
+  `citations`, `cost`, `pendingToolCalls`) y una fila `answerAnalyticsQuestion` por turno con
+  huella de la pregunta (`questionChars` + `questionSha256`) y `cost_eur` 0 por reglas; rutas
+  `GET /assistant/tools`, `POST /assistant/chat`, `GET/DELETE /assistant/conversations[/:id]`,
+  `GET /assistant/pending` (manifiesto 1.031 → 1.035, 0 claves nuevas, resolver
+  `assistantConversation` con 404 opaco; pendientes acotados a conversaciones y propuestas del
+  propio usuario); `/copilot/ask` alias sobre el núcleo con el `UserContext` real y bot del
+  huésped con clasificación y respuesta sobre el núcleo (superficie `guest`, actor
+  `guest:<conversación>`)
+- front: panel `components/assistant/*` montado una vez en `BackOfficeLayout` (botón «Asistente
+  ehotelOS», menú compacto, ⌘K «Preguntar al asistente…» que abre hilo nuevo, evento
+  `hotelos-open-assistant`, superficie `reception` en la categoría «Recepción», lista de
+  conversaciones por superficie, citas correctas al reabrir), `/asistente` con el mismo hilo,
+  Pendientes IA ejecuta al aprobar (`POST /ai/tool-calls/:id/confirm`), pantallas de IA honestas
+  («Sin modelo»/«En uso», coste NULL «—», `skipped`); e2e `apps/admin-web/e2e/assistant-panel.spec.ts`
+  (5/6 medidos por L6b-10 antes de corregir la cita al reabrir; fuera de las puertas hasta
+  instalar chromium 1243)
+- verificación en runtime sin proveedor (instancias propias, tenant UXDAY y `org_chk`; runbook
+  §11; `scratchpad/L6b-REV/*`, `scratchpad/L6b-corr-walk.json`): catálogo 31 herramientas · 19
+  sugeridas, turno por reglas con cita `get_arrivals_today · prisma:…today(Property.timezone)` y
+  coste 0, «hoy (20/09/2026)» en el resumen, memoria por `conversationId`, privacidad entre
+  usuarios de la misma propiedad (lista sin ella · 404 · 404), `title` en reposo `v1.`,
+  `input_json` sin `question`, `screen.url '/recepcion/huespedes/_'`, recepción solo ve
+  `assignRoom` como escritura, alias del copiloto a nombre del usuario, `shift_summary`/
+  `aggregated`, 204 → 404, 401 sin sesión, 400 vacía; navegador: ⌘K → panel «POR REGLAS» ·
+  «sin coste», conversación reabierta con citas, compositor 591/640 px, cola con «Aprobar y
+  ejecutar» → «Ejecutada» / «Rechazada» / «Caducada» / «Sin permiso»
+- cifras de la puerta completa final (2026-09-20 15:00, `scratchpad/L6b/gates-final.json`):
+  13/14 puertas: typecheck:all 15 PASS · 0 FAIL · 1 SKIP · 22,6 s · api unit 3.647 (3.646 pass ·
+  0 fail · 1 skip) · admin-web unit 2.063 (2.062 · 0 · 1) · ai-core 119 (119 · 0 · 0) · worker 34
+  (34 · 0 · 0) · contratos raíz 772 (770 · 0 · 2) · discoverability 197 · nav-tree --check ROJO ·
+  route-access 15 tokens × 197 URLs · cocoa waves §6 al día · rbac:sync dry-run OK (+0 claves) ·
+  migrate status 25/25 + drift «No difference detected.» · admin-web build 3,07 s · integración
+  993 (985 pass · 0 fail · 8 skip). Única roja externa al carril: `nav-tree.generated.json`
+  (idéntico a HEAD) frente al CSV compartido avanzado por RRHH/ACT con pantallas que no existen en
+  este worktree → regenerar en la fusión. Línea base del día: 12/12 rápidas (api unit 3.569 ·
+  admin-web 2.014 · contratos 765). Puerta rápida del integrador tras las docs: informe §3.2
+- pendientes con dueño (informe §6, runbook §12 N1-N9): regenerar `nav-tree.generated.json` sobre
+  el árbol con RRHH/ACT y el lock una sola vez (`--frozen-lockfile` falla por `@playwright/test`/
+  `zod`/`@fontsource-variable/inter` de admin-web, preexistente); renumerar la migración si otro
+  carril aporta una marca posterior; `CLAUDE.md` conflicto manual (tomar `tanda-l6b`); e2e del
+  panel con navegador instalado; `general_manager` sin `maintenance.workorder.manage`; `/copilot/*`
+  alias (resolvers en UTC) y `AiIntent` sin consumidor; tool use y prompts publicados sin humo con
+  clave real; residuos sintéticos en `hotelos_l6b` borrables por id; `core.hooksPath=.husky` no
+  resuelve en este layout (hook ejecutado a mano por el integrador)

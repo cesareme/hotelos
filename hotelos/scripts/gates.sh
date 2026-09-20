@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Puertas deterministas de ehotelOS · uso: bash scripts/gates.sh [--quick] [--json <fichero>]
+# Con --json, la salida completa de cada puerta queda en <fichero sin .json>.<puerta>.log (L6B-REV-10).
 # Ejecuta las puertas del repo en orden y resume cifras; salida 0 solo si todas pasan.
 # --quick: typecheck + unitarios + contratos (sin build, sin integración, sin e2e).
 # Pensado para que lo invoque el orquestador/CI y los agentes solo diagnostiquen fallos.
@@ -11,6 +12,9 @@ declare -a NAMES=() STATUS=() FIGS=(); FAILS=0
 run() { # nombre · comando (se evalúa en este shell) · patrón de cifra (grep -E, última coincidencia)
   local name="$1" cmd="$2" pat="$3" out rc fig
   out="$(eval "$cmd" 2>&1 </dev/null)"; rc=$?
+  # Corrector L6b (L6B-REV-10): con --json se guarda la salida COMPLETA de cada puerta junto al JSON
+  # (<json sin .json>.<puerta>.log) para poder nombrar un test intermitente cuando la cifra sea roja.
+  if [ -n "$JSON" ]; then printf '%s\n' "$out" > "${JSON%.json}.$(printf '%s' "$name" | tr -c 'A-Za-z0-9' '_').log"; fi
   fig="$(printf '%s\n' "$out" | grep -E "$pat" | tail -1 | tr -s ' ' | cut -c1-160)"
   if printf '%s\n' "$out" | grep -qE '^ℹ fail [1-9]|^not ok|FAIL  |error TS|✖'; then rc=1; fi
   NAMES+=("$name"); STATUS+=("$rc"); FIGS+=("${fig:-sin cifra}")

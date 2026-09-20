@@ -28,10 +28,13 @@ export const GUEST_MESSAGE_REPLY_SYSTEM =
 /** Único remitente admitido para un texto generado por IA (SEC-10): nunca `staff`. */
 const AI_SENDER_TYPES = ["ai"] as const;
 
-/** PII conocida del huésped de la conversación (descifrada por la extensión de Prisma); [] si no hay huésped. */
-export async function knownGuestPii(conversationId: string | undefined): Promise<KnownPii[]> {
+/**
+ * PII conocida del huésped de la conversación (descifrada por la extensión de Prisma); [] si no hay huésped.
+ * Acotada a la propiedad del contexto (corrector L6b · L6B-REV-12): un conversationId de otra propiedad no siembra nada.
+ */
+export async function knownGuestPii(conversationId: string | undefined, propertyId?: string): Promise<KnownPii[]> {
   if (!conversationId) return [];
-  const conversation = await prisma.conversation.findUnique({ where: { id: conversationId }, select: { guestId: true } });
+  const conversation = await prisma.conversation.findFirst({ where: { id: conversationId, ...(propertyId ? { propertyId } : {}) }, select: { guestId: true } });
   if (!conversation?.guestId) return [];
   const guest = await prisma.guest.findUnique({ where: { id: conversation.guestId }, select: { firstName: true, surname1: true, surname2: true, email: true, phone: true, mobilePhone: true } });
   if (!guest) return [];
@@ -67,7 +70,7 @@ export const answerGuestQuestionTool = defineAiTool({
     const languageName = input.language && input.language !== "auto" ? REPLY_LANGUAGE_NAMES[input.language.toLowerCase()] : undefined;
     const languageHint = languageName ? ` Responde SIEMPRE en ${languageName}.` : " Responde en el mismo idioma del huésped.";
     const toneHint = input.tone ? ` Usa un tono ${input.tone}.` : "";
-    const knownPii = await knownGuestPii(input.conversationId);
+    const knownPii = await knownGuestPii(input.conversationId, ctx.user.propertyId);
     const result = await getAiCore().complete(
       { system: base + languageHint + toneHint, prompt: input.guestQuestion, maxTokens: 250 },
       aiContextFor(ctx, "answerGuestQuestion", "complete", input.conversationId),

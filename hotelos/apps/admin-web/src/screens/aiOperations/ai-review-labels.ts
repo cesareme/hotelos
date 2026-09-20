@@ -5,6 +5,8 @@
 // to paint them merely word-split («Rate Recommendation», «Current Rate»).
 // Every dictionary falls back to the humanised key so unknown producers still
 // render something readable. Pure module (no JSX) so it is unit-testable.
+// Tanda L6b (lote L6b-09): the `ai_tool_call` items of the tool runner and the
+// label / tone / sentence of every outcome of POST /ai/tool-calls/:id/confirm.
 
 import { STATUS_LABELS } from "../../content/actions";
 import { dateTime, money, number, percent } from "../../lib/format";
@@ -37,7 +39,9 @@ export const REVIEW_TYPE_LABELS: Record<string, string> = {
   review_response: "Respuesta a una reseña",
   email_reservation: "Reserva por correo electrónico",
   // Tanda T9 (documentos y digitalización): cola de la oficina (enqueueReview del pipeline, con o sin proveedor de IA).
-  incoming_document: "Documento digitalizado"
+  incoming_document: "Documento digitalizado",
+  // Tanda L6b (L6b-09): escritura high|critical que el tool runner dejó awaiting_confirmation (ai-core runner.ts, enqueueReview).
+  ai_tool_call: "Acción propuesta por la IA"
 };
 
 export function reviewTypeLabel(type: string): string {
@@ -53,7 +57,9 @@ export const ENTITY_TYPE_LABELS: Record<string, string> = {
   inbound_email: "Correo entrante",
   reservation: "Reserva",
   guest: "Huésped",
-  incoming_document: "Documento entrante"
+  incoming_document: "Documento entrante",
+  // Tanda L6b (L6b-09): `relatedEntityId` es la fila ai_tool_calls; aprobar ejecuta (ver isAiToolCallReview).
+  ai_tool_call: "Acción propuesta por la IA"
 };
 
 export function entityTypeLabel(type: string): string {
@@ -76,7 +82,16 @@ export const PAYLOAD_KEY_LABELS: Record<string, string> = {
   subject: "Asunto",
   source: "Origen",
   parseSource: "Origen del análisis",
-  draft: "Borrador de reserva"
+  draft: "Borrador de reserva",
+  // Tanda L6b (L6b-09): payloadJson de los ítems ai_tool_call (toolName, riskLevel, proposal, requiresApprovalRole).
+  toolName: "Herramienta",
+  proposal: "Propuesta",
+  requiresApprovalRole: "Rol que debe aprobar",
+  // Claves habituales de `proposal` (preview de las herramientas de escritura: operations/pms.tools.ts).
+  action: "Acción",
+  workOrderId: "Orden de trabajo",
+  roomNumber: "Habitación",
+  reservationId: "Reserva"
 };
 
 export function payloadKeyLabel(key: string): string {
@@ -180,4 +195,109 @@ export function reviewHistoryRows(envelope: ReviewEnvelope): Array<{ key: string
       label: `${historyActionLabel(entry.action)} · ${dateTime(entry.at)}`,
       value: entry.detail && entry.detail !== entry.userId ? entry.detail : entry.userId || "—"
     }));
+}
+
+// ---------------------------------------------------------------------------
+// Tanda L6b · lote L6b-09 · aprobar ejecuta la herramienta propuesta.
+//
+// An item whose `relatedEntityType` is `ai_tool_call` is a write the tool
+// runner left `awaiting_confirmation` (packages/ai-core runner.ts,
+// `enqueueReview`) and its `relatedEntityId` is the `ai_tool_calls` row. The
+// queue's plain approve only closes the review (L6A audit §6.16): the decision
+// of these items goes to POST /ai/tool-calls/:id/confirm, which re-checks the
+// permissions, executes the tool (approve) or closes the row (reject) and
+// closes the review itself with the notes / reason (runner §10.3). These
+// helpers give the screen the button labels and the label, tone and sentence
+// of every outcome of that call (result or typed error).
+// ---------------------------------------------------------------------------
+
+export const AI_TOOL_CALL_ENTITY_TYPE = "ai_tool_call";
+/** Permission the runner demands to confirm high|critical tools (HIGH_RISK_CONFIRM_PERMISSION, runner.ts). */
+export const HIGH_RISK_CONFIRM_PERMISSION = "ai.high_risk.confirm";
+/** `details.code` of the 403 the confirm route answers when permissions or the approval role are missing. */
+export const AI_TOOL_CONFIRM_FORBIDDEN_CODE = "AI_TOOL_CONFIRM_FORBIDDEN";
+/** `details.code` of the 409 answered when the pending row is older than 24 h (it is rejected on the spot). */
+export const AI_CONFIRMATION_EXPIRED_CODE = "AI_CONFIRMATION_EXPIRED";
+
+/** True when deciding the item must go through the confirm route (the tool executes on approval). */
+export function isAiToolCallReview(item: { relatedEntityType?: string | null; relatedEntityId?: string | null }): boolean {
+  return item.relatedEntityType === AI_TOOL_CALL_ENTITY_TYPE && typeof item.relatedEntityId === "string" && item.relatedEntityId.length > 0;
+}
+
+/** Decision buttons of an `ai_tool_call` item: approving executes, so the label says so. */
+export const AI_TOOL_CALL_ACTION_LABELS = {
+  approve: "Aprobar y ejecutar",
+  reject: "Rechazar"
+} as const;
+
+/** Sentence of the decision form of an `ai_tool_call` item (what approving / rejecting does). */
+export function aiToolCallDecisionHint(toolName?: string | null): string {
+  const tool = toolName ? ` «${toolName}»` : "";
+  return `Al aprobar, la herramienta${tool} se ejecuta con la propuesta tal cual está registrada y la revisión queda aprobada; al rechazar, la propuesta se cierra sin ejecutarse. Ambas decisiones exigen el permiso ${HIGH_RISK_CONFIRM_PERMISSION} y los de la herramienta.`;
+}
+
+export type ConfirmOutcomeKind = "succeeded" | "failed" | "rejected" | "forbidden" | "expired" | "gone" | "error";
+/** Subset of CocoaTone the outcome badge / callout uses. */
+export type ConfirmOutcomeTone = "success" | "warning" | "danger" | "neutral";
+export type ConfirmOutcome = { kind: ConfirmOutcomeKind; label: string; tone: ConfirmOutcomeTone; message: string };
+
+/** Label and tone of every outcome of the confirm route. */
+export const CONFIRM_OUTCOME_LABELS: Record<ConfirmOutcomeKind, { label: string; tone: ConfirmOutcomeTone }> = {
+  succeeded: { label: "Ejecutada", tone: "success" },
+  failed: { label: "Ejecución fallida", tone: "danger" },
+  rejected: { label: "Rechazada", tone: "neutral" },
+  forbidden: { label: "Sin permiso", tone: "danger" },
+  expired: { label: "Caducada", tone: "warning" },
+  gone: { label: "Ya no pendiente", tone: "warning" },
+  error: { label: "Error", tone: "danger" }
+};
+
+function outcome(kind: ConfirmOutcomeKind, message: string): ConfirmOutcome {
+  return { kind, ...CONFIRM_OUTCOME_LABELS[kind], message };
+}
+
+/** Mirror of the 200 body of POST /ai/tool-calls/:id/confirm (ConfirmToolResult, packages/ai-core runner/types.ts). */
+export type ConfirmResultLike = { status: "succeeded" | "failed" | "rejected"; message?: string; reason?: string };
+
+/** 200 of the confirm route → outcome: `succeeded` executed, `failed` executed and failed (row `failed`), `rejected` closed without executing. */
+export function confirmResultOutcome(result: ConfirmResultLike, toolName?: string | null): ConfirmOutcome {
+  const tool = toolName ? ` «${toolName}»` : "";
+  if (result.status === "succeeded") return outcome("succeeded", `La herramienta${tool} se ha ejecutado y la revisión queda aprobada.`);
+  if (result.status === "failed") {
+    const detail = result.message?.trim() || (result.reason ? humanizeKey(result.reason) : "error desconocido");
+    return outcome("failed", `La herramienta${tool} no se ha podido ejecutar: ${detail}`);
+  }
+  return outcome("rejected", `La propuesta${tool} se ha rechazado: la herramienta no se ejecutará.`);
+}
+
+/** Shape of the ApiError of services/api-client.ts (status + details.code) or any Error. */
+export type ConfirmErrorLike = { status?: number; details?: unknown; message?: string };
+
+/**
+ * Error of the confirm route → outcome. 403 `AI_TOOL_CONFIRM_FORBIDDEN` names
+ * the missing permissions (`details.missing`, else ai.high_risk.confirm) and
+ * the approval role; 409 `AI_CONFIRMATION_EXPIRED` → «Caducada» (the row was
+ * rejected by the API); 404 (decided, claimed or foreign row) → «Ya no
+ * pendiente»; anything else keeps the API message (already in Spanish).
+ */
+export function confirmErrorOutcome(error: unknown): ConfirmOutcome {
+  const err: ConfirmErrorLike = typeof error === "object" && error !== null ? (error as ConfirmErrorLike) : {};
+  const details = isPlainObject(err.details) ? err.details : {};
+  const code = typeof details.code === "string" ? details.code : "";
+  const message = typeof err.message === "string" && err.message.trim() ? err.message.trim() : String(error);
+  if (err.status === 403) {
+    if (code !== AI_TOOL_CONFIRM_FORBIDDEN_CODE) return outcome("forbidden", message);
+    const missing = Array.isArray(details.missing) ? details.missing.filter((value): value is string => typeof value === "string" && value.length > 0) : [];
+    const role = typeof details.requiresApprovalRole === "string" && details.requiresApprovalRole ? details.requiresApprovalRole : "";
+    const needs = missing.length > 0 ? missing.join(", ") : HIGH_RISK_CONFIRM_PERMISSION;
+    const roleNote = role ? ` La herramienta exige la aprobación del rol ${humanizeKey(role)}.` : "";
+    return outcome("forbidden", `No se ha ejecutado: necesitas ${needs} para confirmar esta acción.${roleNote}`);
+  }
+  if (err.status === 409 && code === AI_CONFIRMATION_EXPIRED_CODE) {
+    return outcome("expired", "La propuesta llevaba más de 24 h pendiente: ha caducado y se ha rechazado sin ejecutarse.");
+  }
+  if (err.status === 404) {
+    return outcome("gone", "La acción ya no está pendiente de confirmación (decidida, caducada o reclamada por otra persona). Actualiza la cola.");
+  }
+  return outcome("error", message);
 }
