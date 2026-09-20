@@ -616,7 +616,7 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
   });
 
   // ---- SEPA ---------------------------------------------------------------------------
-  it("SEPA remittances persist with status transitions (Norma 19 and Norma 34)", async () => {
+  it("SEPA remittances persist with status transitions (Norma 19; a hand-made Norma 34 is refused on the generic route)", async () => {
     const norma19 = await api<{ id: string; status: string; messageId: string; xml: string; totalAmount: string; transactions: number }>("POST", "/treasury/sepa/remittances", {
       kind: "norma19",
       propertyId: PROPERTY_ID,
@@ -650,7 +650,11 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
     assert.equal(detail.body.kind, "norma19");
     assert.match(detail.body.xml, /<CtrlSum>250\.00<\/CtrlSum>/);
 
-    const norma34 = await api<{ id: string; status: string; xml: string; totalAmount: string }>("POST", "/treasury/sepa/remittances", {
+    // Corrector CIERRE-1 (REV-02 / FUN-02): a hand-made Norma 34 (a payment order) is refused by the service BEFORE parsing
+    // and persisting — the transfer file only leaves through POST /treasury/sepa/supplier-payments (payables.pay + per-bill
+    // SoD gate); the platform-admin session of this suite does not bypass it (the gate is not a permission).
+    const remittancesBefore = await prisma.workerJobRun.count({ where: { jobName: SEPA_JOB_NAME } });
+    const norma34 = await api("POST", "/treasury/sepa/remittances", {
       kind: "norma34",
       propertyId: PROPERTY_ID,
       body: {
@@ -659,11 +663,15 @@ describe("tesorería · banca · comisiones · nóminas (app.inject, prop_123)",
         creditors: [{ name: "Suministros del Noroeste SL", iban: "ES9121000418450200051332", amount: "0.10", description: "Factura F-2026-119", endToEndId: `SB-${suffix}`, category: "SUPP" }]
       }
     });
-    assert.equal(norma34.status, 200, norma34.raw);
-    remittanceIds.push(norma34.body.id);
-    assert.match(norma34.body.xml, /pain\.001\.001\.03/);
-    assert.equal(norma34.body.totalAmount, "0.10");
-    const strict = await api("POST", "/treasury/sepa/remittances", { kind: "norma34", propertyId: PROPERTY_ID, body: { executionDate: "2026-09-26", debtor: { name: "x", taxId: "B12345674", iban: FIXTURE_IBAN }, creditors: [], extra: true } });
+    assert.equal(norma34.status, 403, norma34.raw);
+    assert.equal(norma34.body.details?.code, "SUPPLIER_PAYMENT_ROUTE_REQUIRED");
+    assert.equal((norma34.body.details as { route?: string } | undefined)?.route, "POST /treasury/sepa/supplier-payments");
+    assert.equal(await prisma.workerJobRun.count({ where: { jobName: SEPA_JOB_NAME } }), remittancesBefore, "the refused Norma 34 leaves no row");
+    const strict = await api("POST", "/treasury/sepa/remittances", {
+      kind: "norma19",
+      propertyId: PROPERTY_ID,
+      body: { schema: "CORE", collectionDate: "2026-09-25", sequenceType: "OOFF", creditor: { name: "x", creditorId: "ES11000B12345674", iban: FIXTURE_IBAN }, debtors: [], extra: true }
+    });
     assert.equal(strict.status, 400, strict.raw);
     assert.equal(strict.body.details?.code, "VALIDATION_ERROR");
   });

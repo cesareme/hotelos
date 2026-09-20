@@ -74,7 +74,11 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.equal(describeEndpoint("GET", "/guests/:id"), "Obtener el detalle del huésped.");
     assert.equal(describeEndpoint("POST", "/reservations"), "Crear o registrar una reserva.");
     assert.equal(describeEndpoint("PATCH", "/reservations/:id"), "Actualizar la reserva.");
-    assert.equal(describeEndpoint("DELETE", "/webhooks/subscriptions/:id"), "Eliminar la suscripción.");
+    // Tanda CIERRE-1: el DELETE de la suscripción borra también sus entregas y responde `deliveriesDeleted` (caso fijo).
+    assert.equal(
+      describeEndpoint("DELETE", "/webhooks/subscriptions/:id"),
+      "Eliminar la suscripción y sus entregas (webhook_deliveries); responde { ok, id, deliveriesDeleted }."
+    );
     assert.ok(describeEndpoint("PUT", "/fiscal/vat-settings").startsWith("Sustituir"));
     assert.equal(describeEndpoint("PUT", "/fiscal/vat-settings"), "Sustituir los ajustes del IVA.");
     assert.equal(describeEndpoint("PUT", "/backoffice/properties/:propertyId/taxes/rates"), "Sustituir las tarifas.");
@@ -89,6 +93,19 @@ describe("api-reference · descriptions in Spanish (qa#17)", () => {
     assert.match(describeEndpoint("POST", "/developer/apps/:appId/rotate-secret"), /aplicación de desarrollador/);
     assert.equal(describeEndpoint("GET", "/properties/:propertyId/housekeeping-settings"), "Obtener los ajustes de limpieza.");
     assert.equal(describeEndpoint("POST", "/channel-manager/channels/:channelId/ingest"), "Cargar los datos del canal.");
+  });
+
+  it("Tanda CIERRE-1: the webhook subscription DELETE is a fixed case and the generic DELETE rule is unchanged", () => {
+    const subscription = describeEndpoint("DELETE", "/webhooks/subscriptions/:id");
+    assert.match(subscription, /webhook_deliveries/);
+    assert.match(subscription, /deliveriesDeleted/);
+    // Otro DELETE sobre «/…/:id» sigue con la regla genérica «Eliminar <recurso>.» (sin entregas ni respuesta).
+    assert.equal(describeEndpoint("DELETE", "/developer/apps/:appId"), "Eliminar la aplicación.");
+    assert.equal(describeEndpoint("DELETE", "/email/connections/:id"), "Eliminar la conexión.");
+    assert.doesNotMatch(describeEndpoint("DELETE", "/rate-plans/:id"), /deliveriesDeleted|webhook_deliveries/);
+    // La suscripción por sí misma (PATCH) y sus entregas (GET) no cambian.
+    assert.equal(describeEndpoint("PATCH", "/webhooks/subscriptions/:id"), "Actualizar la suscripción.");
+    assert.equal(describeEndpoint("GET", "/webhooks/subscriptions/:id/deliveries"), "Listar entregas de la suscripción.");
   });
 
   it("ola 11 · R6: the segments that still echoed English read in Spanish and a DELETE on a match undoes it", () => {

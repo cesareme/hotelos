@@ -234,7 +234,7 @@ Rec = receptionist · AudN = night_auditor · JRec = front_office_manager · Cam
 
 ### 4.5 Matriz central (sociedad / grupo) · plantilla → módulo
 
-DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = controller · RRHH = payroll_hr · Cumpl = compliance · Act = asset_manager · DG = general_manager · Prop = owner · Aud = auditor · Adm = admin.
+DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = controller · RRHH = payroll_hr · Cumpl = compliance · Act = asset_manager · DG = general_manager · Prop = owner · Aud = auditor · Adm = admin. ⁴ CIERRE-1 (2026-09-20, aditiva sin bump de `ROLE_TEMPLATE_VERSION`): solo `users.read` (selector «Persona» de la ficha de personal → `GET /rbac/users`); efecto colateral aceptado: `/configuracion/usuarios` por URL en solo lectura (`docs/runbooks/accesos-por-departamento.md` §2.2 y nota CIERRE-1).
 
 | Módulo | DirOps | Rev | Cont | DirFin | RRHH | Cumpl | Act | DG | Prop | Aud | Adm |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -260,7 +260,7 @@ DirOps = operations_director · Rev = revenue · Cont = accountant · DirFin = c
 | M18b Cuadro del propietario | V C | – | – | V | – | – | V | V C | V C | V | – |
 | M19 Configuración | V E | V | V | V | – | V | – | V E | V | V | V E |
 | M20 Estructura y fiscal | V | – | V | V E | – | V | V | V E | V | V | E (solo `organization.structure.manage`) |
-| M21 Usuarios y roles | V C X | – | – | – | – | – | – | V C X | V | V | V C E X |
+| M21 Usuarios y roles | V C X | – | – | – | V⁴ | – | – | V C X | V | V | V C E X |
 | M22 Módulos | V | V | V | V | V | V | V | V E | V | V | V E |
 | M22b Integraciones y desarrollo | V | – | V | V | – | V | – | V | – | V | V C E |
 | M23 IA | V C A | V C A | V C A | V C A | C A | V C A E | C A | V C A E | C | V | C A E |

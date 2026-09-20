@@ -28,6 +28,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { localDay } from "./helpers/local-day.mts";
 import type { UserContext } from "../../apps/api/src/lib/demo-store.js";
 
 try {
@@ -78,10 +79,9 @@ async function expectStatus<T>(promise: Promise<T>, statusCode: number, code?: s
   assert.fail(`se esperaba ${statusCode} ${code ?? ""}`);
 }
 
-/** Fecha ISO (UTC) de hoy + n días. */
+/** Hoy + n días en la ZONA DEL HOTEL: el servidor ancla el corte al día local de la propiedad (`localDateTime`, pms-shadow.service), no a UTC (flake 00:00-02:00 CEST · CIERRE-1 C4a). */
 function day(offset: number): string {
-  const now = new Date();
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + offset * 86400000).toISOString().slice(0, 10);
+  return localDay(offset, TIMEZONE);
 }
 /** Máscara `YYYYMMDD` del export Responsys. */
 const ymd = (offset: number): string => day(offset).replace(/-/g, "");

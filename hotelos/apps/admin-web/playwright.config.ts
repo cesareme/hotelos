@@ -23,6 +23,12 @@ import { defineConfig, devices } from "@playwright/test";
  *        corepack pnpm --filter @hotelos/admin-web e2e
  *      corepack pnpm --filter @hotelos/admin-web e2e:measure   (solo measure)
  *    Ejecuta antes el seed rearmado: corepack pnpm --filter @hotelos/database db:seed:ux-day -- --reset
+ *  - Navegador (CIERRE-1 · C4a): `E2E_CHROMIUM_EXECUTABLE` (opcional) fija el
+ *    binario Chromium de los proyectos `chromium` y `touch` (`launchOptions.executablePath`)
+ *    cuando la caché `~/Library/Caches/ms-playwright` no tiene la build que pide la
+ *    versión instalada de @playwright/test y no se puede descargar (p. ej. la
+ *    `chromium_headless_shell-1228/chrome-headless-shell-mac-arm64/chrome-headless-shell`
+ *    de otra versión). Sin la variable, Playwright resuelve su navegador como siempre.
  *  - Límite del API: la suite completa hace ~1.250 peticiones contadas (más de
  *    1.000 preflights OPTIONS que no cuentan) en menos de 2 min con un solo usuario
  *    e IP (cada carga de página son 11-12 GET del shell). Con el techo base
@@ -32,6 +38,10 @@ import { defineConfig, devices } from "@playwright/test";
  *      cd apps/api && PORT=3913 RUN_SCHEDULERS=false TENANT_BOOTSTRAP_SKIP=true \
  *        RATE_LIMIT_MAX=5000 node --env-file-if-exists=../../.env --import tsx src/server.ts
  */
+// CIERRE-1 · C4a: binario Chromium alternativo solo si la variable existe (ver cabecera).
+const chromiumExecutable = process.env.E2E_CHROMIUM_EXECUTABLE;
+const chromiumLaunch = chromiumExecutable ? { launchOptions: { executablePath: chromiumExecutable } } : {};
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 45_000,
@@ -61,13 +71,13 @@ export default defineConfig({
       testIgnore: /measure/,
       // U10: la spec de tablet (target-size) corre solo en el proyecto `touch`.
       testMatch: /^(?!.*target-size).*\.spec\.ts$/,
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 900 } }
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 900 }, ...chromiumLaunch }
     },
     {
       // Tablet emulada (U10): la spec fija viewport y colorScheme por bloque (`test.use`).
       name: "touch",
       testMatch: /target-size\.spec\.ts$/,
-      use: { browserName: "chromium", viewport: { width: 1024, height: 768 }, hasTouch: true, deviceScaleFactor: 2, colorScheme: "light" }
+      use: { browserName: "chromium", viewport: { width: 1024, height: 768 }, hasTouch: true, deviceScaleFactor: 2, colorScheme: "light", ...chromiumLaunch }
     }
   ]
 });

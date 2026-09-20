@@ -10,6 +10,7 @@ Para quien tiene la plantilla **«RRHH y nóminas»** (en la lista de plantillas
 - Ver el coste de personal y la plantilla, crear turnos y registrar fichajes.
 - Consultar el Live Timeline de recepción **en solo lectura** (reservas y huéspedes).
 - Ver la bandeja de aprobaciones para las solicitudes de tipo «Nómina».
+- Abrir **Configuración › Usuarios y roles** (`/configuracion/usuarios`) escribiendo la URL, **en solo lectura** (permiso «users.read», añadido a la plantilla el 20/09/2026 para que el selector «Persona» de «Nueva ficha» liste a las personas del centro): no aparece en tu menú y desde ahí no puedes invitar, editar ni asignar plantillas.
 
 Lo que **no** incluye la plantilla: aprobar el registro mensual de nómina (esa clave la tienen las plantillas de dirección: Dirección de hotel, Dirección de operaciones y Dirección general), la contabilidad y los estados contables, los modelos de la AEAT y la configuración de la sociedad (NIF, centros, códigos de cuenta de cotización). Cuando en esta guía te remitimos a esas pantallas, pídeselo a administración o a dirección (ver [20-administracion.md](20-administracion.md) y [10-direccion.md](10-direccion.md)).
 
@@ -31,6 +32,7 @@ Tu menú tiene **3 categorías · 4 entradas** (así lo dice el pie de la barra 
 
 - Al entrar aterrizas directamente en **Nóminas** (`/finanzas/nominas`).
 - No tienes «Mi día»: si abres `/hoy` verás «Sin acceso · Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» con el botón «Ir a mi página de inicio». Lo mismo ocurre con Estados contables y con el resto de pantallas de Finanzas y Cumplimiento.
+- Excepción: `/configuracion/usuarios` (Usuarios y roles) sí se abre por URL, en solo lectura, aunque no esté en tu menú (ver «Para quién»).
 - No ves el botón «+ Nueva reserva» de la barra superior.
 - El buscador «Buscar en el menú» de la barra lateral y la búsqueda global (⌘K) funcionan igual que para el resto de perfiles (ver [00-primeros-pasos.md](00-primeros-pasos.md)).
 
@@ -74,7 +76,7 @@ La ficha vincula a una persona **con acceso a ehotelOS** (ver la ficha de formac
 1. Pulsa **«Nueva ficha»** (arriba a la derecha, junto a «Nuevo contrato»; también en el bloque vacío «Aún no hay contratos» cuando no existe ninguna ficha). Se abre el cajón «Nueva ficha de personal» («La ficha vincula a una persona con acceso a la aplicación con su centro de trabajo; el contrato se da de alta después sobre la ficha.»).
 2. Bloque **«Persona y centro»**:
    - **«Centro de trabajo»** (solo aparece cuando el «Ámbito» de la pantalla es toda la sociedad; con un centro elegido en el ámbito, la ficha es de ese centro).
-   - **«Persona»** (obligatorio): lista «nombre · correo» de las personas con acceso en ese centro. Si la persona no aparece, primero hay que invitarla en Configuración › Usuarios y roles.
+   - **«Persona»** (obligatorio): lista «nombre · correo» de las personas con acceso en ese centro. Si la persona no aparece, primero hay que invitarla en Configuración › Usuarios y roles (tú puedes consultar esa pantalla por URL, en solo lectura; invitar es de sistemas o dirección).
    - **«Código de empleado»** (opcional, hasta 32 caracteres): el código de tu convenio o de la gestoría; es lo que verás en las tablas en vez del identificador interno.
    - **«Departamento»** (opcional): los departamentos del centro. Si tu plantilla no tiene el permiso de configuración del centro, el selector queda vacío y la ficha se crea sin departamento.
    - **«Modalidad»**: Indefinido · Temporal · Fijo discontinuo · Prácticas · Otro.
@@ -355,7 +357,7 @@ Para RRHH: puedes **pedir** aprobaciones de tipo «Nómina» (tu plantilla tiene
 | Mensaje | Qué significa | Qué hacer |
 |---|---|---|
 | «Sin acceso · Tu perfil no tiene permiso para ver esta pantalla. Pide acceso a dirección.» | Has abierto una URL fuera de tu menú (`/hoy`, Estados contables, Modelos AEAT…) | Vuelve a tu inicio (Nóminas); si necesitas esa pantalla, pídelo a dirección |
-| «No se pudo guardar · Perfil de empleado no encontrado.» | El identificador no es una ficha de personal del hotel | Pide a sistemas el identificador correcto; hoy no hay pantalla de alta de fichas |
+| «No se pudo guardar · Perfil de empleado no encontrado.» | La ficha de personal elegida ya no existe o es de un centro fuera de tu ámbito | Pulsa «Actualizar» y vuelve a elegirla; si no está, crea la ficha en «Nueva ficha» (apartado 2.1) y después el contrato |
 | «El periodo debe tener el formato AAAA-MM.» | Mes mal escrito | Escribe, por ejemplo, `2026-10` |
 | «No se pudo abrir el periodo · El periodo 2026-09 ya existe.» | Ya estaba abierto | Búscalo en «Periodos» |
 | «Calcula el periodo de nómina antes de exportarlo o pagarlo.» | El periodo está abierto sin calcular, o no tiene líquido a pagar (0,00 €) | Calcula; si el neto es 0, no hay nada que pagar |
@@ -368,7 +370,7 @@ Para RRHH: puedes **pedir** aprobaciones de tipo «Nómina» (tu plantilla tiene
 
 ## Qué no hace todavía
 
-- **Fichas de personal:** no hay pantalla de alta, edición ni baja; sin ficha no hay contrato, y sin contratos el periodo se calcula vacío. Los indicadores de Personal y turnos (PLANTILLA, ACTIVOS HOY, HORAS) también dependen de ellas.
+- **Fichas de personal:** el alta existe («Nueva ficha», apartado 2.1), pero no hay edición ni baja de la ficha desde la pantalla; sin ficha no hay contrato, y sin contratos el periodo se calcula vacío. Los indicadores de Personal y turnos (PLANTILLA, ACTIVOS HOY, HORAS) también dependen de ellas.
 - **Aprobación del registro de nómina:** existe en el servidor, sin botón en Nóminas y sin solicitud automática en Pendientes de aprobación; el pago exige esa aprobación para tu plantilla.
 - **Cálculo simplificado:** porcentajes fijos de Seguridad Social (6,35 % / 30,5 %), IRPF orientativo por tramos, sin bases de cotización, convenio ni pagas extras prorrateadas. Los formatos A3 y Sage son «compatibles», no el diseño de registro oficial: valídalos con la gestoría.
 - **Sin integración con la gestoría laboral ni con la TGSS:** solo el fichero de «Exportar y descargar». El modelo 111 se calcula en Cumplimiento › Modelos AEAT (contabilidad), sin presentación telemática.

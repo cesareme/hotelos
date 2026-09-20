@@ -12,7 +12,7 @@
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
     "files": 245,
-    "lines": 107434,
+    "lines": 107443,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
@@ -148,7 +148,7 @@
     "finanzas": {
       "label": "Finanzas",
       "files": 36,
-      "lines": 20797,
+      "lines": 20806,
       "debtPoints": 35,
       "sizes": {
         "S": 9,
@@ -482,9 +482,9 @@
         "finanzas"
       ],
       "archetype": "asistente",
-      "lines": 1968,
+      "lines": 1977,
       "metrics": {
-        "lines": 1968,
+        "lines": 1977,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

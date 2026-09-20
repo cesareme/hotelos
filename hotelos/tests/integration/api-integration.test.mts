@@ -33,6 +33,14 @@ const { assertRoutePermission, resetRbacStrictModeForTests } = await import(
 const { assertDemoAuthPolicy } = await import("../../apps/api/src/lib/auth-context.js");
 const { parsePageQuery, MAX_PAGE_LIMIT } = await import("../../apps/api/src/lib/pagination.js");
 const { BadRequestError } = await import("../../apps/api/src/lib/http-error.js");
+// Corrector CIERRE-1 (REVF-01): the role and reservation cases of the two «Tanda 4» suites below used
+// to run on the FIRST property of the box (`GET /properties` → first row, `room.findFirst` without a
+// tenant filter) — the pilot organisation when the file runs against the live database (3 reservations
+// + 1 role created and deleted per run, their audit events left behind). They now create and destroy
+// an isolated tenant (helpers/l2-tenant.mts, `org_l2_it<run>`): no business row nor audit event of a
+// real organisation is written by this file.
+const { createIsolatedTenant, cleanupTenant, newRunId, login: loginTenantUser, STRICT_ENV } = await import("./helpers/l2-tenant.mts");
+type IsolatedTenant = Awaited<ReturnType<typeof createIsolatedTenant>>;
 
 function applyEnv(entries: Record<string, string | undefined>): void {
   for (const [key, value] of Object.entries(entries)) {
@@ -754,13 +762,17 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
 
   const health = (headers: Headers = {}) => app.inject({ method: "GET", url: "/health", headers });
   const acao = (res: { headers: Record<string, unknown> }) => res.headers["access-control-allow-origin"];
+  /** Isolated tenant of the role cases (REVF-01): the roles are created in ITS organisation, never in the first property of the box. */
+  let tenant: IsolatedTenant | null = null;
 
   before(async () => {
     app = await buildApiServer();
     await app.ready();
+    tenant = await createIsolatedTenant(`it${newRunId()}`);
   });
 
   after(async () => {
+    if (tenant) await cleanupTenant(tenant.organizationId);
     if (app) await app.close();
   });
 
@@ -845,10 +857,9 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
     });
   });
 
-  it("POST …/roles: the token-less demo fallback is refused (401, riskLevel high) before any validation or DB access", async (t) => {
+  it("POST …/roles: the token-less demo fallback is refused (401, riskLevel high) before any validation or DB access", async () => {
     await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
-      const [propertyId] = await listPropertyIds(app);
-      if (!propertyId) return t.skip("no property reachable through /properties");
+      const propertyId = tenant!.propertyA;
       const res = await app.inject({
         method: "POST",
         url: `/backoffice/properties/${propertyId}/roles`,
@@ -864,8 +875,7 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
       const session = await loginDemo(app);
       if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
       const headers = { authorization: `Bearer ${session.token}` };
-      const [propertyId] = await listPropertyIds(app, headers);
-      if (!propertyId) return t.skip("no property reachable through /properties");
+      const propertyId = tenant!.propertyA;
       const url = `/backoffice/properties/${propertyId}/roles`;
       const unknownTemplate = await app.inject({ method: "POST", url, headers, payload: { name: "Equipo noche", templateKey: "night-shift" } });
       assert.equal(unknownTemplate.statusCode, 400, unknownTemplate.body);
@@ -884,11 +894,10 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
       const session = await loginDemo(app);
       if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
       const headers = { authorization: `Bearer ${session.token}` };
-      const [propertyId] = await listPropertyIds(app, headers);
-      if (!propertyId) return t.skip("no property reachable through /properties");
+      const propertyId = tenant!.propertyA;
       const url = `/backoffice/properties/${propertyId}/roles`;
-      // Unique per run (unique [organizationId, name]); removed at the end so
-      // the demo dataset is left exactly as found.
+      // Unique per run (unique [organizationId, name]); removed at the end (and the
+      // isolated tenant with it) so nothing of a real organisation is touched.
       const name = `Rol T4 rutas-cors ${Date.now().toString(36)}`;
       const created = await app.inject({ method: "POST", url, headers, payload: { name, templateKey: "receptionist" } });
       if (created.statusCode === 403) return t.skip(`session lacks roles.manage: ${created.body}`);
@@ -924,11 +933,15 @@ describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role 
 
 describe("Tanda 4 · cierre: reservation codes survive gaps and check-out tolerates a folio-less stay", () => {
   let app: ApiApp;
+  /** Isolated tenant (REVF-01): the reservations and the check-in land in ITS hotel A, never in the first free room of the box. */
+  let tenant: IsolatedTenant | null = null;
   before(async () => {
     app = await buildApiServer();
     await app.ready();
+    tenant = await createIsolatedTenant(`it${newRunId()}`);
   });
   after(async () => {
+    if (tenant) await cleanupTenant(tenant.organizationId);
     await app.close();
   });
 
@@ -938,16 +951,17 @@ describe("Tanda 4 · cierre: reservation codes survive gaps and check-out tolera
     return d.toISOString().slice(0, 10);
   };
 
-  /** A sellable, unblocked, unoccupied room whose type the reservation can book; null when the box has none. */
+  /** A sellable, unblocked, unoccupied room of the isolated tenant's hotel A (REVF-01: never a room of another organisation); null when it has none. */
   async function findFreeRoom(): Promise<{ id: string; propertyId: string; roomTypeId: string; status: string; housekeepingStatus: string } | null> {
     const { prisma } = await import("@hotelos/database");
+    const propertyId = tenant!.propertyA;
     const busy = await prisma.reservation.findMany({
-      where: { assignedRoomId: { not: null }, status: { in: ["confirmed", "checked_in"] } },
+      where: { propertyId, assignedRoomId: { not: null }, status: { in: ["confirmed", "checked_in"] } },
       select: { assignedRoomId: true }
     });
     const busyIds = busy.map((r) => r.assignedRoomId).filter((id): id is string => Boolean(id));
     return prisma.room.findFirst({
-      where: { active: true, sellable: true, status: { not: "occupied" }, maintenanceStatus: { not: "blocked" }, id: { notIn: busyIds } },
+      where: { propertyId, active: true, sellable: true, status: { not: "occupied" }, maintenanceStatus: { not: "blocked" }, id: { notIn: busyIds } },
       select: { id: true, propertyId: true, roomTypeId: true, status: true, housekeepingStatus: true },
       orderBy: { number: "asc" }
     });
@@ -967,10 +981,19 @@ describe("Tanda 4 · cierre: reservation codes survive gaps and check-out tolera
     }
   }
 
+  /**
+   * Real session of the tenant's receptionist (REVF-01): the demo super-user holds no role in the
+   * isolated organisation, so `pms.checkin.execute` would be refused; the receptionist template
+   * carries pms.reservation.create / pms.checkin.execute / pms.checkout.execute (auth real, RBAC strict).
+   */
+  async function loginReceptionist(): Promise<{ token: string } | null> {
+    return withEnv(STRICT_ENV, () => loginTenantUser(app, tenant!.users.receptionist.email, tenant!.password, "integration-it-receptionist"));
+  }
+
   it("POST /properties/:id/reservations allocates consecutive codes from MAX(code)+1, never count+1 (regresión T4)", async (t) => {
-    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
-      const session = await loginDemo(app);
-      if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
+    await withEnv(STRICT_ENV, async () => {
+      const session = await loginReceptionist();
+      if (!session) return t.skip("receptionist login of the isolated tenant failed");
       const headers = { authorization: `Bearer ${session.token}` };
       const room = await findFreeRoom();
       if (!room) return t.skip("no sellable room on this box");
@@ -1004,9 +1027,9 @@ describe("Tanda 4 · cierre: reservation codes survive gaps and check-out tolera
   });
 
   it("POST /reservations/:id/check-out is 200 (folio: null) for an in-house reservation without folio; check-in opens the primary folio", async (t) => {
-    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
-      const session = await loginDemo(app);
-      if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
+    await withEnv(STRICT_ENV, async () => {
+      const session = await loginReceptionist();
+      if (!session) return t.skip("receptionist login of the isolated tenant failed");
       const headers = { authorization: `Bearer ${session.token}` };
       const room = await findFreeRoom();
       if (!room) return t.skip("no sellable room on this box");
@@ -1033,7 +1056,6 @@ describe("Tanda 4 · cierre: reservation codes survive gaps and check-out tolera
           headers,
           payload: { roomId: room.id, allowEarlyCheckIn: true, overrideReason: "integration test (Tanda 4 cierre)" }
         });
-        if (checkIn.statusCode === 403) return t.skip(`session cannot check in: ${checkIn.body}`);
         assert.equal(checkIn.statusCode, 200, checkIn.body);
         const checkInBody = JSON.parse(checkIn.body) as { status: string; folio?: { id: string; created: boolean } | null };
         assert.equal(checkInBody.status, "checked_in");

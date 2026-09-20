@@ -13,7 +13,9 @@
 //     sin pisarse en merges.
 
 import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
 import { assertEntityAccess } from "../lib/tenancy.js";
+import { parseOr400 } from "../modules/rate-manager/rate-grid.schemas.js";
 import {
   listSubscriptions,
   createSubscription,
@@ -24,6 +26,21 @@ import {
   WEBHOOK_EVENT_TYPES
 } from "../modules/webhooks/webhooks.service.js";
 
+/**
+ * Corrector CIERRE-1 (REV-07 / FUN-04): body of POST /webhooks/subscriptions, zod `.strict()`
+ * before the service — `propertyId: ""` (which slipped past `pickPropertyId` and the
+ * organisation check and was persisted as ""), non-string fields and unknown keys are
+ * 400 `VALIDATION_ERROR`; `null` keeps the FIX-1 meaning «organisation-wide row».
+ */
+const createSubscriptionBodySchema = z
+  .object({
+    targetUrl: z.string().url().max(2048),
+    eventTypes: z.array(z.enum(WEBHOOK_EVENT_TYPES)).min(1).max(WEBHOOK_EVENT_TYPES.length),
+    propertyId: z.string().min(1).max(200).nullable().optional(),
+    developerAppId: z.string().min(1).max(200).optional()
+  })
+  .strict();
+
 export const webhooksRoutes: FastifyPluginAsync = async (app) => {
   app.get("/webhooks/event-types", async () => ({ items: [...WEBHOOK_EVENT_TYPES] }));
 
@@ -33,7 +50,8 @@ export const webhooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/webhooks/subscriptions", async (request) => {
-    return createSubscription({ context: request.userContext, payload: request.body as never });
+    const payload = parseOr400(createSubscriptionBodySchema, request.body ?? {}, "body");
+    return createSubscription({ context: request.userContext, payload });
   });
 
   app.patch("/webhooks/subscriptions/:id", async (request) => {

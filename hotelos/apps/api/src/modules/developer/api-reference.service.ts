@@ -970,6 +970,12 @@ export function describeEndpoint(method: string, path: string): string {
   // Cocoa 22 · ola 11 · R6: DELETE sobre una conciliación la deshace (no «Conciliar»); «/ai/analyze» analiza el proyecto con IA.
   if (verb === "DELETE" && (last === "match" || last === "reconcile")) return `${withParent("Deshacer la conciliación", parentLabel(parts, lastIndex))}.`;
   if (last === "analyze" && parts[lastIndex - 1] === "ai") return "Analizar el proyecto con IA.";
+  // Tanda CIERRE-1 (webhooks.service.ts deleteSubscription): el borrado de la suscripción arrastra sus entregas
+  // (webhook_deliveries, sin cascade en el esquema) en la misma transacción y la respuesta añade `deliveriesDeleted`.
+  // Caso fijo: la regla genérica de DELETE sobre «/…/:id» («Eliminar <recurso>.») no cambia para el resto de rutas.
+  if (verb === "DELETE" && isParam(last) && parts[lastIndex - 1] === "subscriptions" && parts[lastIndex - 2] === "webhooks") {
+    return "Eliminar la suscripción y sus entregas (webhook_deliveries); responde { ok, id, deliveriesDeleted }.";
+  }
 
   // Parámetro final: describe el recurso anterior en singular («/reservations/:id»).
   if (isParam(last)) {

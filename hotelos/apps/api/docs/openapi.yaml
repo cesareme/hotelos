@@ -13772,6 +13772,7 @@ paths:
     post:
       summary: "POST /reservations/:id/check-in/complete"
       operationId: "post-reservations-by-id-check-in-complete"
+      description: "Corrector REV3-03: dryRun: true comprueba las precondiciones (sesión, ventana, identidad, firmas) sin asignar, cobrar ni alojar y responde PrecheckCheckInResult { ok, dryRun, reservationId, sessionId, actor, identityMethod, recordsCreated, warnings } con los mismos 409 (el cajón lo llama antes del cobro). allowEarlyCheckIn exige overrideReason. Corrector REV3-04: los viajeros con datos completos sin parte lo reciben aquí. Auditoría GUEST_CHECKED_IN_ASSISTED."
       tags:
       - reservations
       x-permissions:
@@ -13790,7 +13791,7 @@ paths:
         404:
           description: Resource not found
         409:
-          description: "CHECKIN_INCOMPLETE | GUEST_REGISTER_INCOMPLETE | ROOM_NOT_READY | CHECKIN_ALREADY_DONE"
+          description: "CHECKIN_INCOMPLETE | GUEST_REGISTER_INCOMPLETE | ROOM_NOT_READY | ROOM_BLOCKED | CHECKIN_ALREADY_DONE"
         429:
           description: Too many requests
         500:
@@ -13829,6 +13830,154 @@ paths:
                 allowEarlyCheckIn:
                   type: boolean
                 overrideReason:
+                  type: string
+                  maxLength: 500
+                dryRun:
+                  type: boolean
+  /reservations/{id}/check-in/guests/{guestId}:
+    patch:
+      summary: "PATCH /reservations/:id/check-in/guests/:guestId"
+      operationId: "patch-reservations-by-id-check-in-guests-by-guestid"
+      description: "Corrector REV3-04: recepción corrige viajeros (guest_register.edit) de una sesión invited / in_progress / handed_off. Cuerpo = GuestInput del portal (checkin.schemas.ts GuestInputSchema: todos los campos opcionales y anulables, additionalProperties false; sex H/M/O con F/M admitidos; nationality y residenceCountry código ISO/ICAO; dateOfBirth y documentExpiryDate fecha ISO; phoneMobile con prefijo internacional; providedByCheckInGuestId = adulto de la misma sesión que aporta los datos de un menor). Si el viajero ya tiene parte y queda completo, el parte se actualiza. Auditoría CheckInGuestUpdated (actor user)."
+      tags:
+      - reservations
+      x-permissions:
+      - guest_register.edit
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "CheckInGuestDto: { guest, missing[], session }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: CHECKIN_SESSION_CLOSED (sesión checked_in / cancelled / expired)
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: guestId
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                firstName:
+                  type: string
+                  maxLength: 80
+                surname1:
+                  type: string
+                  maxLength: 80
+                surname2:
+                  type: string
+                  maxLength: 80
+                sex:
+                  type: string
+                  maxLength: 10
+                nationality:
+                  type: string
+                  maxLength: 3
+                dateOfBirth:
+                  type: string
+                  maxLength: 10
+                documentType:
+                  type: string
+                  maxLength: 20
+                documentNumber:
+                  type: string
+                  maxLength: 30
+                documentSupportNumber:
+                  type: string
+                  maxLength: 30
+                documentExpiryDate:
+                  type: string
+                  maxLength: 10
+                email:
+                  type: string
+                  maxLength: 160
+                phoneMobile:
+                  type: string
+                  maxLength: 20
+                residenceFullAddress:
+                  type: string
+                  maxLength: 200
+                residenceLocality:
+                  type: string
+                  maxLength: 100
+                residenceCountry:
+                  type: string
+                  maxLength: 3
+                kinship:
+                  type: string
+                  maxLength: 40
+                guardianTitle:
+                  type: string
+                  maxLength: 80
+                providedByCheckInGuestId:
+                  type: string
+                  maxLength: 80
+  /reservations/{id}/check-in/resolve-handoff:
+    post:
+      summary: "POST /reservations/:id/check-in/resolve-handoff"
+      operationId: "post-reservations-by-id-check-in-resolve-handoff"
+      description: "Corrector REV3-04: recepción resuelve la derivación y reabre la sesión: handed_off (o arrived con handoffKind) vuelve a ready_for_arrival (partes creados) si los datos están completos o a in_progress si faltan; handoffKind y handoffReason se vacían. Cuerpo ResolveHandoffSchema { note? ≤ 500 }. Auditoría CheckInHandoffResolved (actor user)."
+      tags:
+      - reservations
+      x-permissions:
+      - pms.checkin.execute
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "Sesión de check-in: CheckInSessionDto & { policy, steps, resolvedTo, missing[] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: CHECKIN_NOT_HANDED_OFF
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                note:
                   type: string
                   maxLength: 500
   /reservations/{id}/assignment-suggestions:
@@ -15791,69 +15940,6 @@ paths:
         required: true
         schema:
           type: string
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: true
-  /properties/{propertyId}/supplier-bills:
-    get:
-      summary: "GET /properties/:propertyId/supplier-bills"
-      operationId: "get-properties-by-propertyid-supplier-bills"
-      tags:
-      - properties
-      x-permissions:
-      - accounting.journal.post
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
-      parameters:
-      - name: propertyId
-        in: path
-        required: true
-        schema:
-          type: string
-  /supplier-bills/drafts:
-    post:
-      summary: "POST /supplier-bills/drafts"
-      operationId: "post-supplier-bills-drafts"
-      tags:
-      - "supplier-bills"
-      x-permissions:
-      - ai.tool.execute
-      x-risk-level: medium
-      x-manifest-entry: true
-      responses:
-        200:
-          description: Successful response
-        400:
-          description: Bad request
-        401:
-          description: Unauthorized
-        403:
-          description: Forbidden — missing required permission
-        404:
-          description: Resource not found
-        429:
-          description: Too many requests
-        500:
-          description: Internal server error
       requestBody:
         required: false
         content:
@@ -26060,3 +26146,565 @@ paths:
                 notes:
                   type: string
                   maxLength: 2000
+# ---- Rutas de módulo / plugin añadidas a mano (corrector CIERRE-1 · FUN-03): el generador solo parsea server.ts; la referencia servida (GET /developer/api-reference) es la fuente completa (1.031 operaciones). ----
+  /accounting/ledger-imports/third-parties:
+    get:
+      summary: "GET /accounting/ledger-imports/third-parties"
+      operationId: "get-accounting-ledger-imports-third-parties"
+      description: "FIX-1 F11 · directorio de terceros importados desde Sage 200 (paginación keyset por cursor). Clave escrita en el manifiesto parcial accounting.read, efectiva accounting.reports.read (requireAccountingReportsKey). R11 (CIERRE-1): el directorio es de toda la sociedad y no tiene dimensión de centro: sin accounting.entity.read ni ámbito de sociedad responde 404 { details.code: ENTITY_SCOPE_REQUIRED, requiredPermission: accounting.entity.read } con mensaje propio (corrector CIERRE-1 · FUN-01: «…es de toda la sociedad y no tiene dimensión de centro; requiere el permiso accounting.entity.read»); la consulta es .strict(): ?propertyId= → 400 VALIDATION_ERROR."
+      tags:
+      - accounting
+      x-permissions:
+      - accounting.reports.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "LedgerThirdPartyPage { rows[], total, nextCursor } (+ cabecera X-Total-Count)"
+        400:
+          description: "VALIDATION_ERROR (clave no admitida, p. ej. propertyId; cursor no válido)"
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: ENTITY_SCOPE_REQUIRED (sin ámbito de toda la sociedad)
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 120
+      - name: role
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [customer, supplier, creditor, other]
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          type: string
+  /treasury/sepa/remittances:
+    post:
+      summary: "POST /treasury/sepa/remittances"
+      operationId: "post-treasury-sepa-remittances"
+      description: "Genera y persiste una remesa SEPA (worker_job_runs, jobName treasury.sepa_remittance) y audita SEPA_REMITTANCE_GENERATED. Corrector CIERRE-1 (REV-02 / FUN-02): kind norma34 (transferencias = orden de pago) se rechaza con 403 SUPPLIER_PAYMENT_ROUTE_REQUIRED antes de parsear el cuerpo y sin fila (las transferencias a proveedores solo salen por POST /treasury/sepa/supplier-payments con payables.pay y la puerta SoD por factura); esta ruta persiste adeudos Norma 19."
+      tags:
+      - treasury
+      x-permissions:
+      - banking.reconcile
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: SepaRemittanceRecord + xml (pain.008 Norma 19)
+        400:
+          description: VALIDATION_ERROR (cuerpo .strict()) · IBAN no válido
+        401:
+          description: Unauthorized
+        403:
+          description: "SUPPLIER_PAYMENT_ROUTE_REQUIRED (kind norma34 sin procedencia de supplier-payments) · permiso"
+        404:
+          description: Resource not found
+        409:
+          description: ISSUER_TAX_ID_MISSING
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                kind:
+                  type: string
+                  enum: [norma19, norma34]
+                propertyId:
+                  type: string
+                bankAccountId:
+                  type: string
+                body:
+                  type: object
+                  additionalProperties: true
+    get:
+      summary: "GET /treasury/sepa/remittances"
+      operationId: "get-treasury-sepa-remittances"
+      description: "Lista las remesas SEPA de la organización (opcionalmente de un centro). Corrector CIERRE-1 (FUN-07): las remesas construidas por supplier-payments llevan billIds[] y sod[] (resultado de la separación de funciones por factura); nunca el XML."
+      tags:
+      - treasury
+      x-permissions:
+      - banking.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ items: SepaRemittanceRecord[] } (+ billIds, sod en las remesas de proveedores)"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+  /treasury/sepa/remittances/{id}:
+    get:
+      summary: "GET /treasury/sepa/remittances/:id"
+      operationId: "get-treasury-sepa-remittances-by-id"
+      description: "Detalle de una remesa SEPA con su XML. Corrector CIERRE-1 (FUN-07): billIds[] y sod[] en las remesas de proveedores (antes solo visibles con audit.read en SEPA_REMITTANCE_GENERATED)."
+      tags:
+      - treasury
+      x-permissions:
+      - banking.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "SepaRemittanceRecord + xml (+ billIds, sod)"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: La remesa no existe (opaco fuera de la organización)
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /treasury/sepa/remittances/{id}/status:
+    post:
+      summary: "POST /treasury/sepa/remittances/:id/status"
+      operationId: "post-treasury-sepa-remittances-by-id-status"
+      description: "Cambia el estado de la remesa (generated → sent → accepted | rejected; cancelled desde generated / sent)."
+      tags:
+      - treasury
+      x-permissions:
+      - banking.reconcile
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: Successful response
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        409:
+          description: REMITTANCE_STATUS_TRANSITION
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                status:
+                  type: string
+                  enum: [sent, accepted, rejected, cancelled]
+                note:
+                  type: string
+                  maxLength: 500
+  /treasury/sepa/supplier-payments:
+    post:
+      summary: "POST /treasury/sepa/supplier-payments"
+      operationId: "post-treasury-sepa-supplier-payments"
+      description: "Construye (y con generate: true persiste y audita) la remesa Norma 34 de facturas de proveedor contabilizadas y no pagadas (T9 deuda 17d, Tanda CIERRE-1): cada factura pasa por assertSupplierBillPaymentAuthorized (registrador ≠ pagador, aprobador ≠ pagador salvo controller del centro); una factura en conflicto rechaza la remesa COMPLETA (fail-closed, nada en skipped ni persistido). Respuesta: { body, skipped[], totalAmount, billIds[], sod[], remittance? }."
+      tags:
+      - treasury
+      x-permissions:
+      - payables.pay
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ body, skipped[], totalAmount, billIds, sod, remittance? }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: "Propiedad, cuenta bancaria o factura fuera del ámbito (opaco)"
+        409:
+          description: "RBAC_SOD_CONFLICT { rule: creator_ne_payer | approver_ne_payer, authorUserId, billId } · ISSUER_TAX_ID_MISSING"
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                propertyId:
+                  type: string
+                bankAccountId:
+                  type: string
+                billIds:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                  maxItems: 500
+                executionDate:
+                  type: string
+                  pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+                generate:
+                  type: boolean
+  /webhooks/event-types:
+    get:
+      summary: "GET /webhooks/event-types"
+      operationId: "get-webhooks-event-types"
+      description: "Catálogo de tipos de evento admitidos por las suscripciones (WEBHOOK_EVENT_TYPES)."
+      tags:
+      - webhooks
+      x-permissions: []
+      x-risk-level: authenticated
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ items: string[] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+  /webhooks/subscriptions:
+    get:
+      summary: "GET /webhooks/subscriptions"
+      operationId: "get-webhooks-subscriptions"
+      description: "Suscripciones de la organización (apps y propiedades de la organización + la app sintética app_<organizationId>); el secreto viaja enmascarado."
+      tags:
+      - webhooks
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ items: WebhookSubscription[] } (secretMasked)"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: propertyId
+        in: query
+        required: false
+        schema:
+          type: string
+    post:
+      summary: "POST /webhooks/subscriptions"
+      operationId: "post-webhooks-subscriptions"
+      description: "Crea una suscripción; el secreto completo viaja UNA sola vez en la respuesta. CIERRE-1: propertyId debe pertenecer a la organización (400) y sin developerAppId cuelga de la app sintética app_<organizationId>. Corrector CIERRE-1 (REV-07 / FUN-04): cuerpo zod .strict() — propertyId \"\", tipos incorrectos, evento desconocido o clave desconocida → 400 VALIDATION_ERROR; propertyId null = fila de organización."
+      tags:
+      - webhooks
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: WebhookSubscription + secret (una sola vez)
+        400:
+          description: VALIDATION_ERROR · «La propiedad indicada no pertenece a esta organización.» · «La aplicación indicada no pertenece a esta organización.»
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                targetUrl:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+                eventTypes:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                propertyId:
+                  type: string
+                  nullable: true
+                  minLength: 1
+                  maxLength: 200
+                developerAppId:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+  /webhooks/subscriptions/{id}:
+    patch:
+      summary: "PATCH /webhooks/subscriptions/:id"
+      operationId: "patch-webhooks-subscriptions-by-id"
+      description: "Actualiza eventTypes, targetUrl o active de la suscripción (404 opaco fuera de la organización)."
+      tags:
+      - webhooks
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: WebhookSubscription
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Suscripción de webhook no encontrada.
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                eventTypes:
+                  type: array
+                  items: { type: string }
+                targetUrl:
+                  type: string
+                active:
+                  type: boolean
+    delete:
+      summary: "DELETE /webhooks/subscriptions/:id"
+      operationId: "delete-webhooks-subscriptions-by-id"
+      description: "Elimina la suscripción y sus entregas (webhook_deliveries, sin cascade en el esquema) en la misma transacción (Tanda CIERRE-1)."
+      tags:
+      - webhooks
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: high
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ ok: true, id, deliveriesDeleted }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Suscripción de webhook no encontrada.
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /webhooks/subscriptions/{id}/deliveries:
+    get:
+      summary: "GET /webhooks/subscriptions/:id/deliveries"
+      operationId: "get-webhooks-subscriptions-by-id-deliveries"
+      description: "Entregas (intentos) de la suscripción, las más recientes primero."
+      tags:
+      - webhooks
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ items: WebhookDelivery[] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Suscripción de webhook no encontrada.
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+  /webhooks/subscriptions/{id}/test:
+    post:
+      summary: "POST /webhooks/subscriptions/:id/test"
+      operationId: "post-webhooks-subscriptions-by-id-test"
+      description: "Envía un evento de prueba firmado (HMAC) y persiste la entrega (delivered o permanent_failure)."
+      tags:
+      - webhooks
+      x-permissions:
+      - developer.manage_webhooks
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ delivered, responseStatus, errorMessage }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Suscripción de webhook no encontrada.
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+        502:
+          description: El destino no respondió
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /rbac/users:
+    get:
+      summary: "GET /rbac/users"
+      operationId: "get-rbac-users"
+      description: "Personas del ámbito (organización o centro) para los selectores de asignación y de la ficha de personal (Tanda CIERRE-1 · C4b: la plantilla payroll_hr gana users.read; la clave abre además GET /rbac/assignments y GET /backoffice/properties/{propertyId}/users)."
+      tags:
+      - rbac
+      x-permissions:
+      - users.read
+      x-risk-level: medium
+      x-manifest-entry: true
+      responses:
+        200:
+          description: "{ items: [{ id, fullName, email, … }] }"
+        400:
+          description: Bad request
+        401:
+          description: Unauthorized
+        403:
+          description: Forbidden — missing required permission
+        404:
+          description: Resource not found
+        429:
+          description: Too many requests
+        500:
+          description: Internal server error
+      parameters:
+      - name: scopeType
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [property, property_group, legal_entity, organization]
+      - name: ref
+        in: query
+        required: false
+        schema:
+          type: string

@@ -9,10 +9,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { HttpError } from "../../../../lib/http-error.js";
 import { encodeCursor } from "../../../../lib/pagination.js";
+import type { UserContext } from "../../../../lib/demo-store.js";
 import {
+  THIRD_PARTIES_ENTITY_SCOPE_MESSAGE,
   buildThirdPartyWhere,
   isLegalEntityTaxId,
   latestLotByThirdParty,
+  listLedgerThirdParties,
   parseThirdPartyCursorKey,
   thirdPartyCursorKey,
   thirdPartyCursorWhere,
@@ -21,6 +24,32 @@ import {
 } from "../ledger-third-parties.service.js";
 
 const ORG = "org_f11_test";
+
+// Corrector CIERRE-1 (FUN-01): the R11 guard runs BEFORE any query, so a centre-scoped context is refused without a database.
+describe("CIERRE-1 · R11 en listLedgerThirdParties: 404 ENTITY_SCOPE_REQUIRED con mensaje propio del directorio", () => {
+  const centreScoped = { organizationId: ORG, propertyId: "prop_f11_a", userId: "usr_f11", fullName: "Contable de centro", deviceId: "f11-test", permissions: ["accounting.read", "accounting.reports.read"], assignedPropertyIds: ["prop_f11_a"], orgScope: false } as unknown as UserContext;
+
+  it("usuario de centro sin accounting.entity.read → 404 con details.code, requiredPermission y una frase sin «propertyId» (la ruta no lo admite)", async () => {
+    await assert.rejects(listLedgerThirdParties({ context: centreScoped, limit: 5 }), (error: unknown) => {
+      assert.ok(error instanceof HttpError);
+      assert.equal(error.statusCode, 404);
+      assert.deepEqual(error.details, { code: "ENTITY_SCOPE_REQUIRED", requiredPermission: "accounting.entity.read" });
+      assert.equal(error.message, THIRD_PARTIES_ENTITY_SCOPE_MESSAGE);
+      assert.match(error.message, /toda la sociedad/);
+      assert.doesNotMatch(error.message, /propertyId|indica el centro/, "never the generic finance sentence that names a remedy this route lacks");
+      return true;
+    });
+  });
+
+  it("sin accounting.read → 403 del gate de permisos, antes del ámbito (nunca el 404 del directorio)", async () => {
+    await assert.rejects(listLedgerThirdParties({ context: { ...centreScoped, permissions: ["accounting.reports.read"] } as UserContext }), (error: unknown) => {
+      const status = (error as { statusCode?: number }).statusCode;
+      assert.equal(status, 403, `expected the permission gate, got ${String((error as Error).message)}`);
+      assert.notEqual((error as { details?: { code?: string } }).details?.code, "ENTITY_SCOPE_REQUIRED");
+      return true;
+    });
+  });
+});
 
 describe("F11 · buildThirdPartyWhere", () => {
   it("sin filtros: solo la organización", () => {

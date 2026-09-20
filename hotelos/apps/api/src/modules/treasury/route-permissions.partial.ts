@@ -21,6 +21,12 @@
 // admite payables.pay (REMITTANCE_WRITE_KEYS de permissions.ts) en
 // buildSupplierPaymentRemittance / createRemittance / updateRemittanceStatus,
 // así que la ruta es usable por dirección financiera (controller).
+//
+// Corrector CIERRE-1 (REV-02 / FUN-02): `POST /treasury/sepa/remittances` sigue
+// bajo banking.reconcile porque persiste adeudos Norma 19 (cobros); un cuerpo
+// `kind: "norma34"` sin procedencia de buildSupplierPaymentRemittance lo rechaza
+// el servicio con 403 SUPPLIER_PAYMENT_ROUTE_REQUIRED (la puerta SoD por factura
+// de supplier-payments no se sortea reenviando el cuerpo construido).
 
 import type { ApiRoutePermission } from "../../security/route-permissions.js";
 

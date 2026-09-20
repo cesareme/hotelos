@@ -428,7 +428,7 @@ describe("RBAC · SoD · pares estáticos (§4.7)", () => {
     not("admin_clerk", ["payables.approve", "payables.pay", "accounting.journal.post", "night_audit.run"]);
     must("controller", ["payables.approve", "payables.pay", "accounting.period.close", "night_audit.reopen", "invoice.cancel_approve", "payments.refund_approve"]);
     not("controller", ["payables.create", "accounting.journal.post", "banking.reconcile"]);
-    must("payroll_hr", ["payroll.manage", "workforce.payroll_export", "pms.reservation.read", "guests.read"]); // v3: lectura del Live Timeline
+    must("payroll_hr", ["payroll.manage", "workforce.payroll_export", "pms.reservation.read", "guests.read", "users.read"]); // v3: lectura del Live Timeline · CIERRE-1: users.read (selector «Persona» de la ficha de personal → GET /rbac/users, aditiva sin bump)
     not("payroll_hr", ["payroll.approve", "pms.reservation.create", "guests.manage"]);
     must("operations_director", ["payables.approve", "purchase_orders.approve", "revenue.rates.approve", "payroll.approve", "users.assign", "compliance.read", "housekeeping.read", "maintenance.read"]);
     must("general_manager", ["security.break_glass", "payables.approve", "payroll.approve", "asset.capex.approve", "users.assign"]);

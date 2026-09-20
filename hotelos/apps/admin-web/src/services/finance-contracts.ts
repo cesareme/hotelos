@@ -138,6 +138,7 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.f
   SUPPLIER_BILL_AMOUNT_MISMATCH: "El importe de la factura recibida no coincide con el movimiento bancario.",
   REMITTANCE_STATUS_TRANSITION: "El estado de la remesa no admite ese cambio.",
   REMITTANCE_EMPTY: "La remesa no tiene operaciones.",
+  SUPPLIER_PAYMENT_ROUTE_REQUIRED: "Las transferencias a proveedores (Norma 34) se generan desde Facturas de proveedor › Pagar por remesa, que comprueba la separación de funciones por factura; la remesa genérica solo admite adeudos Norma 19.",
   COMMISSION_NOT_ACCRUED: "La comisión no está devengada.",
   COMMISSION_SETTLED: "La comisión ya está liquidada.",
   PAYROLL_PERIOD_EXISTS: "Ya existe un periodo de nómina con ese código.",

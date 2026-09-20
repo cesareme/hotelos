@@ -296,6 +296,21 @@ function listed(values: readonly string[]): string {
  * sentence. Anything else falls back to finance-contracts (API message, then
  * `fallback`).
  */
+/**
+ * R11 on the third-party directory (corrector CIERRE-1 · FUN-01): the directory
+ * is of the whole sociedad and has NO centre dimension — the generic finance
+ * sentence («elige un centro en «Ámbito»») names a remedy that does not exist
+ * for `GET /accounting/ledger-imports/third-parties` (the route has no
+ * `propertyId`), so its 404 `ENTITY_SCOPE_REQUIRED` gets this sentence.
+ */
+export const THIRD_PARTIES_ENTITY_SCOPE_MESSAGE = "El directorio de terceros es de toda la sociedad y no tiene dimensión de centro, así que ningún centro lo desbloquea: pide a dirección el permiso «Finanzas de toda la sociedad» (accounting.entity.read).";
+
+/** Message of a directory error: `ENTITY_SCOPE_REQUIRED` → the sociedad-only sentence; anything else as `ledgerImportErrorMessage`. */
+export function ledgerThirdPartiesErrorMessage(error: unknown, fallback: string = "No se pudieron cargar los terceros importados."): string {
+  if (financeErrorCode(error) === "ENTITY_SCOPE_REQUIRED") return THIRD_PARTIES_ENTITY_SCOPE_MESSAGE;
+  return ledgerImportErrorMessage(error, fallback);
+}
+
 export function ledgerImportErrorMessage(error: unknown, fallback: string = DEFAULT_IMPORT_ERROR): string {
   if (financeErrorStatus(error) === 413) return LEDGER_IMPORT_ERROR_MESSAGES.LEDGER_IMPORT_TOO_LARGE;
   const code = financeErrorCode(error);

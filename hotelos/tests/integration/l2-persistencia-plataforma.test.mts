@@ -312,7 +312,9 @@ describe("L2-04 · HITL del check-in por escaneo en Prisma", () => {
 
 describe("L2-04 · remesas SEPA con ámbito por columna (worker_job_runs)", () => {
   it("la remesa de A escribe organizationId/propertyId y es invisible para B (lista, detalle y estado)", async () => {
-    const created = await call(
+    // Corrector CIERRE-1 (REV-02 / FUN-02): la ruta genérica persiste adeudos Norma 19; un Norma 34 a mano (pago a
+    // proveedores sin payables.pay ni puerta SoD por factura) se rechaza con 403 antes de parsear y sin fila.
+    const norma34 = await call(
       app,
       "POST",
       "/treasury/sepa/remittances",
@@ -324,6 +326,28 @@ describe("L2-04 · remesas SEPA con ámbito por columna (worker_job_runs)", () =
           executionDate: "2026-10-01",
           debtor: { name: `L2 Test ${RUN_A} SL`, taxId: tenantA.taxId, iban: "ES9121000418450200051332" },
           creditors: [{ name: "Proveedor de prueba", iban: "ES7921000813610123456789", amount: "10.00", description: "Prueba L2", endToEndId: `E2E-${RUN_A}` }]
+        }
+      },
+      tenantA.propertyA
+    );
+    assert.equal(norma34.status, 403, JSON.stringify(norma34.body));
+    assert.equal((norma34.body.details as { code?: string } | undefined)?.code, "SUPPLIER_PAYMENT_ROUTE_REQUIRED");
+    assert.equal(await prisma.workerJobRun.count({ where: { organizationId: tenantA.organizationId } }), 0, "el Norma 34 rechazado no deja fila");
+
+    const created = await call(
+      app,
+      "POST",
+      "/treasury/sepa/remittances",
+      accountantA,
+      {
+        kind: "norma19",
+        propertyId: tenantA.propertyA,
+        body: {
+          schema: "CORE",
+          collectionDate: "2026-10-01",
+          sequenceType: "OOFF",
+          creditor: { name: `L2 Test ${RUN_A} SL`, creditorId: `ES00000${tenantA.taxId}`, iban: "ES9121000418450200051332" },
+          debtors: [{ mandateId: `MND-${RUN_A}`, mandateSignedAt: "2026-01-10", name: "Cliente de prueba", iban: "ES7921000813610123456789", amount: "10.00", description: "Prueba L2", endToEndId: `E2E-${RUN_A}` }]
         }
       },
       tenantA.propertyA
@@ -344,7 +368,8 @@ describe("L2-04 · remesas SEPA con ámbito por columna (worker_job_runs)", () =
     assert.ok((list.body.items as Array<{ id: string }>).some((item) => item.id === remittanceId));
     const detail = await call(app, "GET", `/treasury/sepa/remittances/${remittanceId}`, accountantA, undefined, tenantA.propertyA);
     assert.equal(detail.status, 200);
-    assert.ok(typeof detail.body.xml === "string" && detail.body.xml.includes("pain.001"));
+    assert.ok(typeof detail.body.xml === "string" && detail.body.xml.includes("pain.008"));
+    assert.equal("billIds" in detail.body, false, "un Norma 19 no lleva procedencia de facturas (FUN-07: solo las remesas de supplier-payments)");
 
     const foreignDetail = await call(app, "GET", `/treasury/sepa/remittances/${remittanceId}`, ownerB, undefined, tenantB.propertyA);
     assert.equal(foreignDetail.status, 404, JSON.stringify(foreignDetail.body));

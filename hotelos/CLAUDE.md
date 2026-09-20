@@ -569,6 +569,52 @@ fusión de `tanda-ux1` 4e7fdee):
   contraste 1.4.11 en claro de badges warning/success, `role=grid` para selección
   múltiple, sesiones con recepcionistas reales (kit en `docs/runbooks/ux-recepcion-pruebas.md`)
 
+Estado verificado (Tanda CIERRE-1 · restos de FIX-1, T9, CHK y del manual, 2026-09-20, rama
+`tanda-cierre` sobre a069906, informe `docs/audits/TANDA-CIERRE-1-2026-09-20.md`):
+- seguridad: `GET /accounting/ledger-imports/third-parties` con R11 (`assertFinanceReadScope`,
+  404 `ENTITY_SCOPE_REQUIRED`); `POST /webhooks/subscriptions` exige `propertyId` de la
+  organización (400) y `DELETE` borra `webhook_deliveries` (`deliveriesDeleted`, también en
+  `GET /developer/api-reference`); `/dashboards/procurement` por organización del contexto
+  (T9 17e); remesa SEPA de proveedores con `assertSupplierBillPaymentAuthorized` por factura,
+  fail-closed 409, `billIds` + `sod` persistidos y auditoría `SEPA_REMITTANCE_GENERATED` en
+  toda remesa (T9 17d + REV-01); REV-02 cerrado en la 2.ª pasada del corrector: `kind: norma34`
+  en `POST /treasury/sepa/remittances` → 403 `SUPPLIER_PAYMENT_ROUTE_REQUIRED` antes de parsear y
+  sin fila (la genérica persiste adeudos Norma 19; las transferencias solo por `supplier-payments`)
+- corrector · 2.ª pasada (revisión funcional en runtime FUN-01…07 + REVF): 404 del directorio de
+  terceros con mensaje propio y pestaña «Terceros» con estado propio para perfiles de centro
+  (`ledgerThirdPartiesErrorMessage`, sin «elige un centro»); `billIds` + `sod` en el DTO de
+  `GET /treasury/sepa/remittances[/:id]`; zod `.strict()` en `POST /webhooks/subscriptions`
+  (`propertyId: ""` → 400); `topSuppliers` sin «Unknown supplier»; `openapi.yaml` 761/1.031
+  operaciones (+14 a mano: third-parties, SEPA, webhooks, `/rbac/users`);
+  `api-integration.test.mts` con tenant aislado `org_l2_it<run>` (ya no escribe en la
+  organización piloto); runbooks con las 3 rutas de `users.read`
+- tests: `pms-shadow-*` con «hoy» en la zona del hotel (`tests/integration/helpers/local-day.mts`);
+  e2e «solo teclado» autónoma (`provisionArrival`) y ejecutada con `E2E_CHROMIUM_EXECUTABLE`
+  (`playwright.config.ts`; 1 passed) — sin teardown sobre `prop_uxday` (reset con
+  `db:seed:ux-day -- --reset`); `payroll_hr` + `users.read` aditiva sin bump (top-up en el
+  arranque del API o `rbac:sync` real; sellar la v4 con `--upgrade-templates` sigue pendiente)
+- docs: manual sin los defectos corregidos por FIX-1 y en concordancia con F9/F10
+  («Falta 1 comprobación», alta de fichas, «Tomar» asigna); `auditoria-eventos.md` §6 (T9, CHK,
+  FIX-1, SEPA); `openapi.yaml` al día (−2 rutas T9, +2 CHK, `dryRun`); `api-contracts.md:236`;
+  `[:<recepción>]` en `schema.prisma:150`; runbook Sage §3.2 (re-enmascarado por id, tokens de
+  7 cifras); `RBAC-DEPARTAMENTOS.md` M21 RRHH `V⁴`
+- PII (fuera del repo): plan `remask-pii-vat.plan.json` (39 filas de
+  `vat_book_entries.counterparty_name`) con dry-run listo; el apply y la reclasificación de
+  libros de IVA (`POST /fiscal/vat-books/reclassify`, 53.291 filas Sage sin régimen) son
+  decisiones de César (informe §7)
+- puertas: `--quick` 12/12 en todas las olas; completa 14/14 en el run 2 del orquestador
+  (`gates-full.json`: integración 994 · 986 pass · 0 fail · 8 skip; el run 1 fue 13/14 por
+  `structure-l4.test.mts:424`, corregido en `:96` con `payables.pay`); revisión 0 high ·
+  2 medium · 6 low; BD viva: 0 escrituras de negocio en la organización piloto por los lotes
+  (la suite preexistente `api-integration.test.mts` creaba y borraba un rol y 3 reservas en la
+  primera propiedad de la BD al correr la completa contra la BD viva — 21 `RESERVATION_CREATED`
+  y 7 `ROLE_CREATED_FROM_TEMPLATE` en `audit_events` el 2026-09-20, 0 filas residuales —,
+  corregido con tenant aislado en la 2.ª pasada del corrector); sin migraciones ni
+  dependencias; `pnpm-lock.yaml` modificado antes de la tanda y fuera del commit (HEAD `a069906`
+  no instala con `--frozen-lockfile`: el lock de HEAD no refleja `packages/ai-core`,
+  `@playwright/test`, `@fontsource-variable/inter`, `zod` del admin-web ni `qrcode-terminal`;
+  decisión de César: commit `chore(deps)` propio con el lock regenerado)
+
 ## Servicios en local Mac Pro
 
 - Postgres 16 brew · puerto 5432 · DB hotelos / user hotelos / pass
@@ -1189,11 +1235,30 @@ tenant aislado `org_chk` / `prop_chk` («Hotel CHK (prueba)») con tres usuarios
     funciones detectado en la revisión: la remesa `POST /treasury/sepa/supplier-payments`
     (`payables.pay`) no pasa por `assertSupplierBillPaymentAuthorized` (creador ≠
     aprobador ≠ pagador), así que quien aprueba un documento y queda como registrador de
-    la factura podría ordenar su pago por tesorería; (e) fuga de proveedores en
+    la factura podría ordenar su pago por tesorería — cerrado en CIERRE-1 (2026-09-20):
+    `treasury/sepa-remittance.service.ts:459-479` pasa cada factura por
+    `assertSupplierBillPaymentAuthorized` (fail-closed: 409 `RBAC_SOD_CONFLICT`
+    `creator_ne_payer` / `approver_ne_payer` rechaza toda la remesa; controller y
+    plataforma como en el pago) y, desde el corrector CIERRE-1 (REV-01), devuelve
+    `billIds` + `sod`, los persiste en el `payloadJson` de la remesa y audita
+    `SEPA_REMITTANCE_GENERATED` en toda remesa (`:345-364`; nunca XML ni IBAN); tests
+    `tests/integration/rbac-sod.test.mts` bloque «Tanda CIERRE-1 · remesa SEPA de
+    proveedores» (4), runbooks `finanzas-contabilidad.md` §13 y `auditoria-eventos.md`
+    §6.3. QUEDA ABIERTO (REV-02, preexistente): `POST /treasury/sepa/remittances` con
+    `kind: norma34` bajo `banking.reconcile` sortea esa puerta (decisión: `payables.pay`
+    en el manifiesto para norma34 o rechazar norma34 en la genérica; informe CIERRE-1 §3);
+    (e) fuga de proveedores en
     `GET /dashboards/procurement`: `dashboards/procurement.service.ts` lee
     `prisma.supplier.findMany({ where: { active: true } })` sin `organizationId` (recon
-    T9 §2.4); además `emailApi.ts` sigue con dos propósitos de buzón y `openapi.yaml`
-    conserva las dos rutas retiradas (mergeLines §14.6); `POST …/email/ingest` con
+    T9 §2.4) — cerrado en CIERRE-1 (2026-09-20): `buildProcurementDashboard` recibe
+    `organizationId` del contexto (`server.ts:7695-7696`) o lo resuelve por la propiedad y
+    lee `supplier.findMany({ active: true, organizationId })` (sin organización no hay
+    consulta; `deps.db` inyectable), test
+    `apps/api/src/modules/dashboards/__tests__/procurement-org-scope.test.mts` (2); el
+    KPI `supplierCount` sigue contando proveedores activos referenciados por pedidos del
+    centro; además `emailApi.ts` sigue con dos propósitos de buzón y `openapi.yaml`
+    conservaba las dos rutas retiradas (mergeLines §14.6; retiradas en CIERRE-1 · C3b,
+    que añadió las 2 rutas de CHK y `dryRun`); `POST …/email/ingest` con
     `attachments` y `PayablesErrorCode` con `SUPPLIER_BILL_MATCH_REQUIRED` + los 400 de
     recepciones en `DOCUMENT_ERROR_CODES` los cerró el corrector T9 (informe §4).
 18. **Tanda CHK · Check-in automatizado (2026-09-19):** (a) índice único
@@ -1249,6 +1314,7 @@ Antes de tomar decisiones de producto, lee:
 - `docs/runbooks/checkin-automatizado.md` — operación del módulo: variables y qué pasa sin cada una, 9 tablas y máquinas de estados, rutas y permisos por etapa, motor de asignación y pesos, identidad/MRZ/PII/purga, firma y PDF, pagos, jobs del líder, kiosco y adaptadores, bot y confirmaciones, seed `org_chk`, puertas, límites y lo que solo César puede aportar, métricas §1.8
 - `docs/audits/TANDA-CHK-CHECKIN-IA-2026-09-19.md` — cierre de la Tanda CHK: qué construyó cada lote (qué, cómo, tests, verificación), migraciones y datos del carril, puertas línea base → final con las 3 rojas atribuidas a T9, 20 hallazgos confirmados + 12 low y su corrección, pendientes con dueño, decisiones D1-D14 para César con la opción por defecto aplicada, ficheros a fusionar y mensaje de commit
 - `docs/audits/TANDA-T9-DOCUMENTOS-2026-09-19.md` — cierre de la Tanda T9 · Documentos y digitalización: qué construyó cada lote y cómo se verificó, puertas por ola (12/14 final, rojos externos), los 18 hallazgos confirmados y 2 refutados con su corrección, qué es real sin clave / cuenta / escáner, pendientes, decisiones de César con el defecto aplicado y mensaje de commit
+- `docs/audits/TANDA-CIERRE-1-2026-09-20.md` — cierre de la Tanda CIERRE-1 (run 1 + run 2): restos de FIX-1, T9, CHK y del manual (R11 en terceros importados, webhooks por organización y con borrado de entregas, tablero de compras por organización, remesa SEPA con separación de funciones + `billIds`/`sod` auditados, PII de `vat_book_entries` con plan listo, manual sin defectos ya corregidos y en concordancia con F9/F10, auditoría §6, openapi y referencia pública al día, `pms-shadow-*` sin flake horario, e2e autónoma y ejecutada, `payroll_hr` + `users.read`), puertas por ola y completa final (13/14, única roja `structure-l4` con fix de 1 token), revisión 0 high · 2 medium · 6 low (REV-01 corregido, REV-02 norma34 pendiente de decisión), datos escritos en la BD viva (incluida la suite `api-integration` que escribe y borra en la primera propiedad), delta frente a los dosieres, pendientes con dueño, decisiones, instrucciones para César (apply de remask-vat §7.1 y reclasificación de libros de IVA §7.2 con comando y recuento) y mensaje de commit
 - `docs/runbooks/documentos-digitalizacion.md` — operación del módulo de documentos (Tanda T9): almacén (inline / disk cifrado / S3, backup), buzón por centro, flujo centro → oficina paso a paso, IA con y sin proveedor, tabla exacta de rutas y claves (§6.1), códigos de error, retención / purga / GDPR, seed de demo, puertas y lo que solo César puede aportar
 - `docs/design/DOCUMENTOS-DIGITALIZACION.md` — diseño de la digitalización por centro: marco legal (Orden EHA/962/2007, RD 1619/2012, e-factura B2B RD 238/2026), captura, pipeline IA con fallback, flujo y RBAC, contabilización y archivo, modelo de datos, API (§9), front (§10), lotes; con las correcciones «[actualizado 2026-09-19]» de la implementación
 - `docs/design/olas/T9-MERGE-LINES.md` — mergeLines de la Tanda T9 (anclas de texto por fichero compartido, orden de la migración tras fix1, post-fusión: tools/sync, rbac:sync, env:census:write, drift heredado)

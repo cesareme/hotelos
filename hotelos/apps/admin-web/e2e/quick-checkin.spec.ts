@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { E2E_API_URL, UXDAY, assertNoLoginGate, loginAsUxDay } from "./_helpers";
+import { E2E_API_URL, UXDAY, assertNoLoginGate, loginAsUxDay, provisionArrival } from "./_helpers";
 
 /** Acción primaria de una llegada confirmada (U6): «Hacer check-in» o «Check-in en 118» (habitación sugerida). */
 const CHECK_IN_ROW = /^(Hacer check-in|Check-in en \d+[A-Za-z]?)$/;
@@ -142,8 +142,10 @@ test("el drawer de check-in cobra el saldo de UXDAY-A5 (saldo > 0) con Intro y r
  * Solo teclado por el camino diseñado (§5.1 inspector, P2, §8.3 «≥ 1 tarea solo
  * con teclado»; corrector L-01): Intro en la fila abre el inspector, Tab llega a
  * «Hacer check-in» del detalle, Intro abre el cajón y el foco ENTRA en él aunque
- * el CTA nazca deshabilitado; Intro confirma. Se registra la segunda llegada sin
- * habitación (UXDAY-A2) o, si ya está alojada, la llegada con habitación UXDAY-A3.
+ * el CTA nazca deshabilitado; Intro confirma. La llegada la crea la propia spec por
+ * API (`provisionArrival`: hoy → mañana, Doble sin habitación, huésped ficticio),
+ * así no depende de UXDAY-A2/A3, del orden de specs ni del proyecto «measure»
+ * (CIERRE-1 · C4a); `db:seed:ux-day -- --reset` la borra.
  */
 test("solo teclado: inspector → Intro → cajón con el foco dentro → Intro registra la llegada (L-01)", async ({ page, request }, testInfo) => {
   const session = await loginAsUxDay(page, request);
@@ -153,10 +155,11 @@ test("solo teclado: inspector → Intro → cajón con el foco dentro → Intro 
   const arrivals = page.getByRole("table", { name: "Llegadas de hoy" });
   await expect(arrivals).toBeVisible({ timeout: 15_000 });
 
-  const confirmed = (await (await request.get(`${E2E_API_URL}/properties/${UXDAY.propertyId}/reservations?status=confirmed&arrivalFrom=${new Date().toISOString().slice(0, 10)}&arrivalTo=${new Date().toISOString().slice(0, 10)}`, { headers })).json()) as Array<{ id: string; code: string }>;
-  const target = confirmed.find((row) => row.code === "UXDAY-A2") ?? confirmed.find((row) => row.code === "UXDAY-A3") ?? confirmed[0];
-  expect(target, "ninguna llegada confirmada de hoy; rearma el seed con --reset").toBeTruthy();
-  const row = arrivals.getByRole("row").filter({ hasText: target!.code }).first();
+  // Llegada propia de la spec (sin habitación, como UXDAY-A2; su código va en «Peticiones»); recarga para que «Llegadas de hoy» la liste.
+  const target = await provisionArrival(request, headers, { guest: { firstName: "Teclado", surname1: "Prueba" } });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await assertNoLoginGate(page, testInfo);
+  const row = arrivals.getByRole("row").filter({ hasText: target.code }).first();
   await expect(row).toBeVisible({ timeout: 10_000 });
 
   // Intro en la fila → inspector (no modal) con la primaria del detalle.
@@ -170,7 +173,7 @@ test("solo teclado: inspector → Intro → cajón con el foco dentro → Intro 
   await page.keyboard.press("Enter");
 
   // El cajón abre y el foco entra en él (antes se quedaba en la fila y Tab recorría la tabla por detrás del velo).
-  const drawer = page.getByRole("dialog").filter({ hasText: target!.code }).first();
+  const drawer = page.getByRole("dialog").filter({ hasText: target.code }).first();
   await expect(drawer).toBeVisible({ timeout: 10_000 });
   const confirm = drawer.getByRole("button", { name: /^(Hacer check-in|Cobrar .* y hacer check-in)$/ });
   await expect(confirm).toBeEnabled({ timeout: 10_000 });
@@ -182,6 +185,6 @@ test("solo teclado: inspector → Intro → cajón con el foco dentro → Intro 
   await page.keyboard.press("Enter");
 
   await expect(page.locator('[data-cocoa="toast"]').filter({ hasText: /Check-in de la \S+ hecho/ }).first()).toBeVisible({ timeout: 15_000 });
-  const after = (await (await request.get(`${E2E_API_URL}/reservations/${target!.id}`, { headers })).json()) as { status: string };
+  const after = (await (await request.get(`${E2E_API_URL}/reservations/${target.id}`, { headers })).json()) as { status: string };
   expect(after.status).toBe("checked_in");
 });

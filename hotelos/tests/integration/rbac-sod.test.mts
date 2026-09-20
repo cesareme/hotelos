@@ -25,7 +25,14 @@
  *   · nómina: pay sin approve → 409 PAYROLL_NOT_APPROVED; approve por dirección
  *     general y pay por controller → ok;
  *   · reserva con 20 % de descuento por recepción → 409 APPROVAL_REQUIRED y con
- *     override por jefatura → 201; 5 % por recepción → 201 (banda T1).
+ *     override por jefatura → 201; 5 % por recepción → 201 (banda T1);
+ *   · Tanda CIERRE-1 (T9 deuda 17d): remesa SEPA de proveedores
+ *     (POST /treasury/sepa/supplier-payments) por el registrador de la factura
+ *     → 409 creator_ne_payer y nada persistido; por el controller que la
+ *     aprobó → 200 con 1 acreedor (excepción controller); recepción → 403.
+ *     Corrector CIERRE-1 (REV-01): con `generate: true` la remesa persistida
+ *     guarda `billIds` + `sod` (controllerException) en payloadJson y se
+ *     audita SEPA_REMITTANCE_GENERATED (worker_job_run) sin XML ni IBAN.
  *
  * Run: cd apps/api && node --import tsx --test ../../tests/integration/rbac-sod.test.mts
  */
@@ -197,6 +204,9 @@ async function cleanup(): Promise<void> {
     await prisma.withholdingTaxRecord.deleteMany({ where: { organizationId: ORG } }).catch(() => undefined);
     await prisma.supplierBill.deleteMany({ where: { organizationId: ORG } });
   }
+  // Remesas SEPA (worker_job_runs: organization_id sin FK a organizations, no cae en cascada).
+  await prisma.workerJobRun.deleteMany({ where: { organizationId: ORG } });
+  await prisma.bankAccount.deleteMany({ where: { organizationId: ORG } });
   await prisma.supplier.deleteMany({ where: { organizationId: ORG } }).catch(() => undefined);
   const periods = await prisma.payrollPeriod.findMany({ where: { organizationId: ORG }, select: { id: true } });
   if (periods.length) {
@@ -480,6 +490,180 @@ describe("Tanda 8a · L2 · factura de proveedor de 5.000 €: registrar ≠ apr
     const byCtrl = await inject("POST", `/properties/${A}/payables/supplier-bills/${billId}/pay`, s("ctrl"), { paymentDate: "2026-09-18" });
     assert.equal(byCtrl.status, 200, byCtrl.text.slice(0, 400));
     assert.equal(byCtrl.body.status, "paid");
+  });
+});
+
+describe("Tanda CIERRE-1 · remesa SEPA de proveedores (POST /treasury/sepa/supplier-payments): registrador ≠ pagador, aprobador ≠ pagador salvo controller", () => {
+  // T9 deuda 17d: the remittance runs `assertSupplierBillPaymentAuthorized` per
+  // bill (the gate of …/supplier-bills/:id/pay), fail-closed for the whole
+  // remittance. Without `generate` nothing is persisted either way.
+  const bankAccountId = `bank_sod_${RUN}`;
+  const supplierId = `sup_sod_${RUN}`;
+  const IBAN = "ES9121000418450200051332";
+  let billId2 = "";
+  let billTotal = 0;
+  const remittance = (session: Session) => inject("POST", "/treasury/sepa/supplier-payments", session, { propertyId: A, bankAccountId, billIds: [billId2], executionDate: "2026-09-30" });
+
+  it("por su registrador (clerkctrl, con payables.pay) → 409 RBAC_SOD_CONFLICT rule creator_ne_payer y nada persistido", async () => {
+    assert.ok(seeded, seedError ?? "seed failed");
+    await prisma.bankAccount.create({
+      data: { id: bankAccountId, propertyId: A, organizationId: ORG, legalEntityId: LE, name: "Cuenta SoD", iban: IBAN, currencyCode: "EUR", ledgerAccountCode: "572" }
+    });
+    // The bills above name their supplier by NIF only (`supplierId` null), which no remittance can pay: F2 hangs from a Supplier row with IBAN.
+    await prisma.supplier.create({ data: { id: supplierId, organizationId: ORG, name: "Proveedor SoD SL", taxId: SUPPLIER_TAX_ID, countryCode: "ES", iban: IBAN } });
+    const created = await inject("POST", `/properties/${A}/payables/supplier-bills`, s("clerkctrl"), {
+      supplierId,
+      supplierName: "Proveedor SoD SL",
+      supplierTaxId: SUPPLIER_TAX_ID,
+      invoiceNumber: `SOD-${RUN}-F2`,
+      issueDate: "2026-09-10",
+      lines: [{ description: "Mantenimiento anual", expenseAccountCode: "622", base: 5000, taxRate: 21 }]
+    });
+    assert.ok(created.status === 200 || created.status === 201, created.text.slice(0, 400));
+    billId2 = String(created.body.id);
+    const approved = await inject("POST", `/properties/${A}/payables/supplier-bills/${billId2}/approve`, s("ctrl"), {});
+    assert.equal(approved.status, 200, approved.text.slice(0, 300));
+    const posted = await inject("POST", `/properties/${A}/payables/supplier-bills/${billId2}/post`, s("acc"), {});
+    assert.equal(posted.status, 200, posted.text.slice(0, 400));
+    const row = await prisma.supplierBill.findUnique({ where: { id: billId2 }, select: { createdByUserId: true, approvedBy: true, status: true, supplierId: true, total: true } });
+    assert.equal(row?.createdByUserId, USERS.clerkctrl.id);
+    assert.equal(row?.approvedBy, USERS.ctrl.id);
+    assert.equal(row?.status, "posted");
+    assert.equal(row?.supplierId, supplierId);
+    billTotal = Number(row?.total);
+    const refused = await remittance(s("clerkctrl"));
+    assert.equal(refused.status, 409, refused.text.slice(0, 400));
+    assert.equal(refused.body.details?.code, "RBAC_SOD_CONFLICT");
+    assert.equal(refused.body.details?.rule, "creator_ne_payer");
+    assert.equal(refused.body.details?.authorUserId, USERS.clerkctrl.id);
+    assert.equal(refused.body.details?.billId, billId2);
+    const still = await prisma.supplierBill.findUnique({ where: { id: billId2 }, select: { status: true, paymentDate: true } });
+    assert.equal(still?.status, "posted");
+    assert.equal(still?.paymentDate, null);
+    assert.equal(await prisma.workerJobRun.count({ where: { organizationId: ORG } }), 0, "no remittance persisted");
+  });
+
+  it("por el controller que la aprobó → 200 con 1 acreedor y totalAmount de la factura (excepción controller)", async () => {
+    const built = await remittance(s("ctrl"));
+    assert.equal(built.status, 200, built.text.slice(0, 400));
+    const body = built.body as unknown as {
+      body?: { debtor?: { taxId?: string; iban?: string }; creditors?: Array<{ iban?: string; amount?: string; endToEndId?: string }> };
+      skipped?: unknown[];
+      totalAmount?: string;
+    };
+    assert.deepEqual(body.skipped, []);
+    assert.equal(body.body?.creditors?.length, 1);
+    assert.equal(body.body?.creditors?.[0]?.iban, IBAN);
+    assert.equal(body.body?.creditors?.[0]?.amount, "6050.00");
+    assert.equal(body.body?.creditors?.[0]?.endToEndId, `SB-${billId2}`.slice(0, 35));
+    assert.equal(body.body?.debtor?.taxId, LE_TAX_ID);
+    assert.equal(body.body?.debtor?.iban, IBAN);
+    assert.equal(body.totalAmount, "6050.00");
+    assert.equal(Number(body.totalAmount), billTotal);
+    // Built only (no `generate`): the bill stays posted and unpaid, nothing persisted.
+    const still = await prisma.supplierBill.findUnique({ where: { id: billId2 }, select: { status: true, paymentDate: true } });
+    assert.equal(still?.status, "posted");
+    assert.equal(still?.paymentDate, null);
+    assert.equal(await prisma.workerJobRun.count({ where: { organizationId: ORG } }), 0);
+  });
+
+  it("recepción sin payables.pay → 403", async () => {
+    const byRec = await remittance(s("rec"));
+    assert.equal(byRec.status, 403, byRec.text.slice(0, 300));
+    assert.equal(await prisma.workerJobRun.count({ where: { organizationId: ORG } }), 0);
+  });
+
+  it("corrector CIERRE-1 (REV-01) · controller con generate: true → 200; la remesa persistida guarda billIds + sod (controllerException) y se audita SEPA_REMITTANCE_GENERATED sin XML ni IBAN", async () => {
+    const generated = await inject("POST", "/treasury/sepa/supplier-payments", s("ctrl"), { propertyId: A, bankAccountId, billIds: [billId2], executionDate: "2026-09-30", generate: true });
+    assert.equal(generated.status, 200, generated.text.slice(0, 400));
+    const body = generated.body as unknown as {
+      billIds?: string[];
+      sod?: Array<{ billId?: string; controllerException?: boolean; approver?: unknown; creator?: { rule?: string; authorUserId?: string | null; authorUnknown?: boolean; privileged?: string | null } }>;
+      remittance?: { id?: string; status?: string; kind?: string; totalAmount?: string };
+    };
+    assert.deepEqual(body.billIds, [billId2]);
+    assert.equal(body.sod?.length, 1);
+    assert.equal(body.sod?.[0]?.billId, billId2);
+    assert.equal(body.sod?.[0]?.controllerException, true, "the controller who approved pays through the audited exception");
+    assert.equal(body.sod?.[0]?.approver, null);
+    assert.deepEqual(body.sod?.[0]?.creator, { rule: "creator_ne_payer", authorUserId: USERS.clerkctrl.id, authorUnknown: false, privileged: null });
+    const remittanceId = String(body.remittance?.id);
+    assert.equal(body.remittance?.status, "generated");
+    assert.equal(body.remittance?.kind, "norma34");
+    assert.equal(body.remittance?.totalAmount, "6050.00");
+    // Persisted payload: the bills paid and their SoD outcomes travel with the remittance (before REV-01 the ids only survived inside the XML as endToEndId).
+    const rows = await prisma.workerJobRun.findMany({ where: { organizationId: ORG } });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.id, remittanceId);
+    const payload = rows[0]!.payloadJson as { billIds?: string[]; sod?: Array<{ billId?: string; controllerException?: boolean }> };
+    assert.deepEqual(payload.billIds, [billId2]);
+    assert.equal(payload.sod?.[0]?.billId, billId2);
+    assert.equal(payload.sod?.[0]?.controllerException, true);
+    // Audit row of the generation: control data + SoD, never the XML nor the IBAN.
+    await flushAuditQueues();
+    const audit = await prisma.auditEvent.findFirst({ where: { action: "SEPA_REMITTANCE_GENERATED", entityId: remittanceId } });
+    assert.ok(audit, "SEPA_REMITTANCE_GENERATED audited");
+    assert.equal(audit.organizationId, ORG);
+    assert.equal(audit.propertyId, A);
+    assert.equal(audit.actorUserId, USERS.ctrl.id);
+    assert.equal(audit.entityType, "worker_job_run");
+    const after = audit.afterJson as { kind?: string; totalAmount?: string; transactions?: number; bankAccountId?: string; billIds?: string[]; sod?: Array<{ billId?: string; controllerException?: boolean; creator?: { privileged?: string | null } }> };
+    assert.equal(after.kind, "norma34");
+    assert.equal(after.totalAmount, "6050.00");
+    assert.equal(after.transactions, 1);
+    assert.equal(after.bankAccountId, bankAccountId);
+    assert.deepEqual(after.billIds, [billId2]);
+    assert.equal(after.sod?.[0]?.billId, billId2);
+    assert.equal(after.sod?.[0]?.controllerException, true);
+    assert.equal(after.sod?.[0]?.creator?.privileged, null);
+    const serialised = JSON.stringify(audit.afterJson);
+    assert.ok(!serialised.includes(IBAN), "the audit never carries the IBAN");
+    assert.ok(!serialised.includes("<?xml"), "the audit never carries the XML");
+    // Generating the file does not pay the bill (the payment is posted when the bank confirms).
+    const still = await prisma.supplierBill.findUnique({ where: { id: billId2 }, select: { status: true, paymentDate: true } });
+    assert.equal(still?.status, "posted");
+    assert.equal(still?.paymentDate, null);
+  });
+
+  it("corrector CIERRE-1 (REV-02 / FUN-02 · FUN-07) · el cuerpo devuelto por supplier-payments reenviado a POST /treasury/sepa/remittances → 403 SUPPLIER_PAYMENT_ROUTE_REQUIRED (contabilidad y controller) sin fila nueva; banking.read ve billIds + sod en detalle y lista", async () => {
+    const built = await remittance(s("ctrl"));
+    assert.equal(built.status, 200, built.text.slice(0, 400));
+    const body = (built.body as { body?: unknown }).body;
+    assert.ok(body && typeof body === "object", "the built Norma 34 body");
+    const before = await prisma.workerJobRun.count({ where: { organizationId: ORG } });
+    assert.equal(before, 1, "only the remittance generated by the previous case");
+    // REV-02 as confirmed in runtime (FUN-02): contabilidad (banking.reconcile, no payables.pay) replays the built body
+    // through the generic route — before, it persisted a supplier payment without the gate.
+    const replay = await inject("POST", "/treasury/sepa/remittances", s("acc"), { kind: "norma34", propertyId: A, bankAccountId, body });
+    assert.equal(replay.status, 403, replay.text.slice(0, 300));
+    assert.equal(replay.body.details?.code, "SUPPLIER_PAYMENT_ROUTE_REQUIRED", replay.text.slice(0, 300));
+    assert.equal(replay.body.details?.route, "POST /treasury/sepa/supplier-payments");
+    assert.equal(replay.body.details?.requiredPermission, "payables.pay");
+    // The controller (payables.pay, never banking.reconcile: static SoD pair) does not even reach the service on the generic route.
+    const byCtrl = await inject("POST", "/treasury/sepa/remittances", s("ctrl"), { kind: "norma34", propertyId: A, bankAccountId, body });
+    assert.equal(byCtrl.status, 403, byCtrl.text.slice(0, 300));
+    assert.match(String(byCtrl.body.message), /banking\.reconcile/, byCtrl.text.slice(0, 300));
+    assert.equal(await prisma.workerJobRun.count({ where: { organizationId: ORG } }), before, "the generic route persisted nothing");
+    await flushAuditQueues();
+    assert.equal(await prisma.auditEvent.count({ where: { organizationId: ORG, action: "SEPA_REMITTANCE_GENERATED" } }), 1, "no generation audited for the refused replays");
+    // FUN-07: the provenance persisted by REV-01 reaches the DTO of banking.read (before, only audit.read saw it).
+    const generated = await prisma.workerJobRun.findFirst({ where: { organizationId: ORG }, select: { id: true } });
+    assert.ok(generated);
+    const detail = await inject("GET", `/treasury/sepa/remittances/${generated.id}`, s("acc"));
+    assert.equal(detail.status, 200, detail.text.slice(0, 300));
+    assert.deepEqual(detail.body.billIds, [billId2]);
+    const sod = detail.body.sod as Array<{ billId?: string; controllerException?: boolean; approver?: unknown; creator?: { rule?: string } }> | undefined;
+    assert.equal(sod?.length, 1);
+    assert.equal(sod?.[0]?.billId, billId2);
+    assert.equal(sod?.[0]?.controllerException, true);
+    assert.equal(sod?.[0]?.creator?.rule, "creator_ne_payer");
+    const list = await inject("GET", `/treasury/sepa/remittances?propertyId=${A}`, s("acc"));
+    assert.equal(list.status, 200, list.text.slice(0, 300));
+    const item = (list.body.items as Array<{ id: string; billIds?: string[]; sod?: unknown[]; xml?: string }>).find((row) => row.id === generated.id);
+    assert.ok(item, "the generated remittance is listed");
+    assert.deepEqual(item.billIds, [billId2]);
+    assert.equal(item.sod?.length, 1);
+    assert.equal(item.xml, undefined, "the list never carries the XML");
   });
 });
 

@@ -101,7 +101,7 @@ const HOLDERS = {
   "documents.admin": ["controller", "general_manager", "owner", "admin"]
 };
 
-/** Tamaño de cada plantilla en la versión 3 (antes de T9-02), medido con este mismo parser. */
+/** Tamaño de cada plantilla en la versión 3 (antes de T9-02), medido con este mismo parser; payroll_hr incluye el +1 aditivo de CIERRE-1 (users.read, sin bump). */
 const TEMPLATE_SIZES_V3 = {
   receptionist: 75,
   night_auditor: 51,
@@ -119,7 +119,7 @@ const TEMPLATE_SIZES_V3 = {
   revenue: 53,
   accountant: 57,
   controller: 80,
-  payroll_hr: 13,
+  payroll_hr: 14, // v3 13 + users.read (CIERRE-1, aditiva)
   compliance: 58,
   asset_manager: 29,
   general_manager: 119,

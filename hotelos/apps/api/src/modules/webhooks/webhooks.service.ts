@@ -119,9 +119,16 @@ export async function createSubscription(input: {
   // guard resolves by suffix. Before, `propertyId` null + synthetic app
   // answered 404 on PATCH/DELETE/deliveries/test to every row created from
   // the screen.
+  // CIERRE-1 (F7 residue): whichever branch resolved it, a non-null
+  // `propertyId` must be a property of THIS organisation (400, same shape as
+  // the developer-app check). Before, a body `propertyId` of another tenant
+  // was persisted as-is and the row hung from that foreign property.
+  // Corrector CIERRE-1 (REV-07 / FUN-04): the route refuses `""` with the zod
+  // schema (400); for direct callers an empty string is normalised to null (an
+  // organisation-wide row, the FIX-1 meaning) instead of being persisted as "".
   const organizationId = input.context.organizationId;
   let developerAppId = `app_${organizationId}`;
-  let propertyId: string | null = p.propertyId ?? null;
+  let propertyId: string | null = p.propertyId || null;
   if (typeof p.developerAppId === "string" && p.developerAppId.length > 0) {
     const app = await prisma.developerApp.findFirst({
       where: { id: p.developerAppId, organizationId },
@@ -130,7 +137,11 @@ export async function createSubscription(input: {
     if (!app) throw new BadRequestError("La aplicación indicada no pertenece a esta organización.");
     developerAppId = app.id;
   } else {
-    propertyId = p.propertyId ?? input.context.propertyId ?? null;
+    propertyId = p.propertyId || input.context.propertyId || null;
+  }
+  if (propertyId) {
+    const property = await prisma.property.findFirst({ where: { id: propertyId, organizationId }, select: { id: true } });
+    if (!property) throw new BadRequestError("La propiedad indicada no pertenece a esta organización.");
   }
   const secret = generateSecret();
   const row = await prisma.webhookSubscription.create({
@@ -175,10 +186,18 @@ export async function updateSubscription(input: {
   return row;
 }
 
+/**
+ * CIERRE-1 (F7 residue): `webhook_deliveries` has no cascade on the
+ * subscription, so the deliveries go in the same transaction as the row;
+ * `{ ok, id }` is kept and `deliveriesDeleted` is additive.
+ */
 export async function deleteSubscription(input: { context: UserContext; id: string }) {
   requirePermissions(input.context, ["developer.manage_webhooks"]);
-  await prisma.webhookSubscription.delete({ where: { id: input.id } });
-  return { ok: true, id: input.id };
+  const [deliveries] = await prisma.$transaction([
+    prisma.webhookDelivery.deleteMany({ where: { webhookSubscriptionId: input.id } }),
+    prisma.webhookSubscription.delete({ where: { id: input.id } })
+  ]);
+  return { ok: true, id: input.id, deliveriesDeleted: deliveries.count };
 }
 
 export async function listDeliveries(input: {

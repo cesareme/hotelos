@@ -402,7 +402,8 @@ de NIF son personas físicas o desconocidos y nunca muestran nombre, sin diccion
 personas: sobre la carga real quedan con nombre 1.412 clientes y 3.038 proveedores con CIF más
 38 + 1.238 con NIF-IVA extranjero reconocido, y quedan ocultos 9.527 clientes y 475 proveedores
 con DNI / NIE (huéspedes y empleados, incluidas las 37 filas del plan `remask-pii` de F12: 26
-DNI, 1 NIE, 9 pasaportes y 1 CIF —esta última sale con nombre hasta el apply de F12—), 5.946
+DNI, 1 NIE, 9 pasaportes y 1 CIF —esta última salió con nombre hasta el apply de F12 del
+2026-09-20 03:48 UTC (§3.2); desde entonces lleva token y la regla EMPLEADO la oculta—), 5.946
 con otros identificadores y 110 sin NIF. Los proveedores y clientes sociedad sí se ven; un
 autónomo (DNI) no. La pantalla: buscador («Código,
 NIF, cuenta o nombre», con retardo de 300 ms) + selector de rol (Todos · Clientes · Proveedores),
@@ -410,10 +411,92 @@ tabla compacta (Código · NIF · Cuenta Sage · Rol · Nombre · Lote «fichero
 y «Cargar más» mientras el API devuelva `nextCursor`. Solo lectura: no hay alta, edición ni
 vínculo con `suppliers` desde aquí.
 
+Ámbito (regla R11, Tanda CIERRE-1): el directorio es de la **sociedad** (nunca de un centro), así
+que la ruta aplica `assertFinanceReadScope(context, null)` como los libros de IVA, el 347 y el
+diario: sin `accounting.entity.read` ni ámbito de toda la sociedad → 404 con `details.code =
+"ENTITY_SCOPE_REQUIRED"` y `requiredPermission = "accounting.entity.read"`. Las plantillas con solo
+`accounting.reports.read` + `accounting.read` y ámbito de centro (manager, admin_clerk) no listan
+terceros; platform admin y los contextos con `accounting.entity.read` siguen recibiendo 200.
+
 Verificación sobre la carga real (2026-09-19, API local de la tanda): `GET
 /accounting/ledger-imports/third-parties?role=supplier&limit=20` → 200 con `X-Total-Count` =
 número de proveedores de Faranda en `ledger_third_parties` y `lote` relleno en los del lote
 `third_parties`; los de las subcuentas 465 llegan con `name: null`.
+
+### 3.2 · Re-enmascarado de PII por id explícito (F12 · CIERRE-1 · C2)
+
+El preprocesado de la carga real (`pilots/faranda-celuisma/sage200-real/prep`, fuera del repo)
+sustituye los nombres de empleados por tokens «EMPLEADO nnnn» antes de que los ficheros lleguen
+al importador, pero el diccionario del 2026-09-18 dejó texto con nombre en columnas ya cargadas.
+F12 lo corrige **por id explícito**, sin recargar ningún lote, con dos herramientas que viven
+fuera del repo e importan prisma y la auditoría por ruta absoluta del árbol principal:
+
+| Herramienta | Qué hace |
+| --- | --- |
+| `prep/tools/pii_ids.py` | psql en modo solo lectura (`default_transaction_read_only=on`) + diccionario `prep_common.masker()`; escribe un plan JSON `{ table, id, column, after[, path][, journalEntryId] }` cuyo `after` es el texto **ya enmascarado** (nunca el original) y un SQL de comprobación que solo imprime recuentos y patrones letras→X. Flags `--tables` (por defecto las 5 tablas de F12), `--plan-out`, `--sql-out`; se niega a sobrescribir un plan o SQL existente sin `--force`. Por pantalla, solo recuentos |
+| `prep/tools/remask-pii.ts` | aplica el plan fila a fila en **una** transacción (`updateMany({ id, organizationId })` exigiendo `count === 1`, si no rollback); `--dry-run` por defecto, `--apply --confirm <organizationId>` para escribir; `--plan <ruta>` elige el plan; audita `LEDGER_PII_REMASKED` (`entityType ledger_import`, `entityId` = lote `plan`, `afterJson` = recuentos por tabla, tablas y `planFile`, nunca textos); log `prep/apply/remask-pii.log` con ids, nunca textos. Salida 0 ok · 1 plan inválido / id ausente / otra organización · 2 uso |
+| `prep/tools/remask-pii.test.mts` | 8 tests sin BD con datos inventados: `node --import tsx --test "$PREP/tools/remask-pii.test.mts"` |
+
+**Plan F12 (aplicado).** `prep/apply/remask-pii.plan.json` (331 entradas en 5 tablas) se aplicó
+el **2026-09-20 03:48 UTC**: auditoría `LEDGER_PII_REMASKED`, entidad `ledger_import
+cmu7jk0gi0000fyd83w3krprb` (el lote `plan`), recuentos `journal_lines` 221 · `ledger_imports`
+38 (`mapping_json.accounts[].sourceName`) · `journal_entries` 17 · `ledger_account_maps` 18 ·
+`ledger_third_parties` 37; copia previa `~/anfitorio-demo/backups/hotelos-pre-remask-20260920-054358.dump`.
+Ese plan y su `prep/tools/remask-pii.sql` son el **registro del apply** y no se regeneran
+(`pii_ids.py` los protege); hoy `--dry-run` sobre el plan devuelve `ya_aplicadas=331 pendientes=0`.
+
+**Tokens de 7 cifras (decisión por defecto: mantener).** La serie «EMPLEADO 0001…1042» quedó
+congelada con la carga del 2026-09-18 (mismo nombre → mismo token en todas las tablas y en los
+ficheros preprocesados). Las dos subcuentas 465 que el diccionario no reconoció entonces y F12
+corrigió reciben «EMPLEADO 0040312» y «EMPLEADO 0070307» (las 7 últimas cifras de la subcuenta).
+Se mantienen: renumerarlas dentro de la serie obligaría a reescribir tokens ya cargados en cinco
+tablas y rompería la correspondencia con los ficheros preprocesados, y todos los consumidores
+aceptan de 4 a 7 cifras (`validatePlanEntry` exige `EMPLEADO (\d{4,7}|\*{4})`; la regla EMPLEADO
+de `ledger-third-parties.service.ts` oculta cualquier nombre con la palabra, con la longitud que
+sea; el SQL de comprobación busca `^EMPLEADO [0-9]{4,7}$`). Si algún día se renumeran, será con un
+plan nuevo por id explícito sobre las cinco tablas y los libros de IVA, nunca a mano.
+
+**Extensión a `vat_book_entries.counterparty_name` (CIERRE-1 · C2, pendiente de aplicar).** Los
+libros de IVA (paso 4 de §3) guardan el nombre del cliente / proveedor de cada documento; sobre
+la carga real 53.238 filas llevan `counterparty_name` y el diccionario detecta nombre de empleado
+en **39** (37 `emitidas` —2025-Q1 5 · 2025-Q2 4 · 2025-Q3 6 · 2025-Q4 9 · 2026-Q1 5 · 2026-Q2 8—
+y 2 `recibidas` de 2025-Q4; todas `sourceType sage200`, todas con NIF, ninguna con token). Los
+sirve `GET /fiscal/vat-books` y el Modelo 347 los usa como etiqueta del NIF
+(`modelo-347.service.ts`). Plan y SQL propios (los de F12 quedan intactos), ya generados y con el
+dry-run en verde:
+
+```bash
+export PREP=/Users/cfernandez/anfitorio-demo/pilots/faranda-celuisma/sage200-real/prep
+# 1 · plan (solo lectura; por pantalla solo recuentos) → prep/apply/remask-pii-vat.plan.json (39 entradas:
+#     3 por nombre exacto + 36 por conjunto de tokens) y prep/tools/remask-pii-vat.sql. Ya ejecutado el 2026-09-20.
+python3 "$PREP/tools/pii_ids.py" --tables vat_book_entries \
+  --plan-out "$PREP/apply/remask-pii-vat.plan.json" --sql-out "$PREP/tools/remask-pii-vat.sql"
+```
+
+Procedimiento para aplicarlo (César, BD viva `hotelos`; desde `apps/api`, `DATABASE_URL` de
+`../../.env`):
+
+```bash
+# 2 · copia previa (obligatoria: el plan no guarda el texto original; solo se revierte desde el dump)
+pg_dump -Fc "$DATABASE_URL" > ~/anfitorio-demo/backups/hotelos-pre-remask-vat-$(date +%Y%m%d-%H%M%S).dump
+# 3 · SQL antes (solo lectura): bloque 6 → ids_plan 39 · filas_encontradas 39 · aplicadas 0 · pendientes 39;
+#     bloque 9 → eventos_remask 1 (el apply de F12)
+PGOPTIONS='-c default_transaction_read_only=on' psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$PREP/tools/remask-pii-vat.sql"
+# 4 · dry-run: entradas=39 pendientes=39 ya_aplicadas=0 bloqueantes=0, exit 0 (con un id ausente → BLOQUEADO, exit 1, nada escrito)
+node --env-file-if-exists=../../.env --import tsx "$PREP/tools/remask-pii.ts" --dry-run --plan "$PREP/apply/remask-pii-vat.plan.json"
+# 5 · apply con el API :3000 parado (o reiniciarlo después: la cadena de auditoría en memoria diverge)
+node --env-file-if-exists=../../.env --import tsx "$PREP/tools/remask-pii.ts" --apply --confirm cmrhw9jy30002fyvb6tsdiugt --plan "$PREP/apply/remask-pii-vat.plan.json"
+# 6 · SQL después: bloque 6 → aplicadas 39 · pendientes 0; bloque 9 → eventos_remask 2, el nuevo con
+#     after_json.counts.vat_book_entries = 39 y plan_file = …/remask-pii-vat.plan.json
+PGOPTIONS='-c default_transaction_read_only=on' psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f "$PREP/tools/remask-pii-vat.sql"
+```
+
+Efecto: `GET /fiscal/vat-books` y el Modelo 347 dejan de servir esos 39 nombres (pasan a
+«EMPLEADO nnnn»); NIF, bases, cuotas, periodos y `regime` no cambian, así que 303 / 390 / 347 no
+se mueven en importes ni en número de declarados. `rebuildVatBooks` conserva las filas `sage200`
+(§2.5), de modo que el token sobrevive a un rebuild; solo una recarga del lote `vat_books` con
+`replace` volvería a escribir el nombre, y para entonces el diccionario del preprocesado ya lo
+enmascara (las 2 cuentas 465 de F12 están en `prep_common`).
 
 ## 4 · Mapa de cuentas y mapa analítico
 
@@ -810,7 +893,7 @@ efectivas y riesgo en `finanzas-contabilidad.md` §13; cuerpos `.strict()` en
 | Mapa analítico | `GET /accounting/ledger-imports/analytics-map` · `PUT /accounting/ledger-imports/analytics-map` | `accounting.reports.read` · `accounting.configure` |
 | Reconciliar (escribe solo `ledger_reconciliations`) | `POST /accounting/ledger-imports/reconciliation` | `accounting.journal.post` |
 | Historial, detalle y CSV de reconciliaciones | `GET /accounting/ledger-imports/reconciliation` · `GET /accounting/ledger-imports/reconciliation/:id` · `GET /accounting/ledger-imports/reconciliation/:id/csv` | `accounting.reports.read` |
-| Directorio de terceros importados (`?q=&role=&limit=&cursor=`, §3.1; FIX-1 · F11) | `GET /accounting/ledger-imports/third-parties` | `accounting.reports.read` |
+| Directorio de terceros importados (`?q=&role=&limit=&cursor=`, §3.1; FIX-1 · F11) | `GET /accounting/ledger-imports/third-parties` | `accounting.reports.read` (+ R11: `accounting.entity.read` o ámbito de sociedad, si no 404 `ENTITY_SCOPE_REQUIRED`; CIERRE-1) |
 
 ## 8 · SQL de verificación (solo lectura)
 

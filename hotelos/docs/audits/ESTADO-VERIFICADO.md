@@ -489,3 +489,109 @@ resumen — bloque completo en `docs/audits/ESTADO-VERIFICADO.md`, informe de ci
   CLAUDE.md = main + deltas CHK (conflicto manual: tomar `tanda-chk`), regenerar nav-tree tras T9,
   renumerar las migraciones CHK si hay marca posterior; lo que solo César puede aportar: runbook
   `docs/runbooks/checkin-automatizado.md` §13 e informe §6
+
+Estado verificado (Tanda CIERRE-1 · restos de FIX-1, T9, CHK y manual, 2026-09-20, integrador;
+informe `docs/audits/TANDA-CIERRE-1-2026-09-20.md`):
+- rama `tanda-cierre` sobre a069906 (BD VIVA `hotelos`, solo lectura sobre la organización piloto),
+  run 1: 7 lotes en 2 olas (C1a, C1b, C2, C4a · C3a, C3b, C4b) + C5 no ejecutada por brief; run 2
+  (10:16-11:20 CEST): R1 e2e, R2 docs de API, R3 manual/RBAC, revisor REV, corrector COR, informe;
+  2.ª pasada del corrector (12:00-12:45) tras la revisión funcional en runtime; commit único del
+  integrador en la rama `tanda-cierre` al cierre de este bloque (2026-09-20, ~13:15 CEST): 59
+  ficheros modificados (+2.003/−253, incluidos este bloque y CLAUDE.md) + 4 nuevos (3 de
+  código/tests, 221 líneas, y el informe); `pnpm-lock.yaml` (+64/−25) previo a la tanda, excluido
+  del commit y aún modificado en el árbol; sin migraciones (24/24, drift 0), dependencias ni claves
+  RBAC nuevas
+  (`schema.prisma:150` solo comentario `///`)
+- seguridad: `GET /accounting/ledger-imports/third-parties` con `assertFinanceReadScope(context, null)`
+  (R11 → 404 `ENTITY_SCOPE_REQUIRED`); `POST /webhooks/subscriptions` valida `propertyId` de la
+  organización (400) y `DELETE` borra `webhook_deliveries` (`deliveriesDeleted`, también en la
+  referencia pública `GET /developer/api-reference`, R2); `/dashboards/procurement` lee proveedores
+  solo de la organización del contexto (T9 17e; por HTTP el hook de tenencia ya la re-apunta a la de
+  la propiedad, también para plataforma); `POST /treasury/sepa/supplier-payments` con
+  `assertSupplierBillPaymentAuthorized` por factura, fail-closed 409 `RBAC_SOD_CONFLICT` (T9 17d) y,
+  desde el corrector (REV-01), `billIds` + `sod` en la respuesta y en el `payloadJson` de la remesa
+  persistida + auditoría `SEPA_REMITTANCE_GENERATED` en toda remesa (`sepa-remittance.service.ts:345-364`,
+  `auditoria-eventos.md` §6.3); tests: `ledger-import-routes` 19/19, `l2-modulos-plataforma` 29/29,
+  `rbac-sod` 20/20, `procurement-org-scope` 2/2
+- revisión (seguridad-regresiones, `scratchpad/CIERRE-1/review-seguridad.md`): 0 high · 2 medium ·
+  6 low; REV-01 corregido (arriba); REV-02 corregido en la 2.ª pasada del corrector:
+  `POST /treasury/sepa/remittances` `kind: norma34` → 403 `SUPPLIER_PAYMENT_ROUTE_REQUIRED` en
+  `createRemittance` antes de parsear y sin fila (la genérica persiste adeudos Norma 19; las
+  transferencias solo por `supplier-payments`; L2-04 pasa a Norma 19, `treasury-banking` y
+  `rbac-sod` pinan el 403); low REV-03/05/08 con dueño (informe §3), REV-06 (frase con las 3 rutas
+  de `users.read` en los runbooks) y REV-07 (zod `.strict()` en `POST /webhooks/subscriptions`)
+  corregidos; COR-01 (`structure-l4.test.mts:96` con `payables.pay`) aplicado en el árbol;
+  revisiones posteriores (funcional en runtime + seguridad-datos-regresiones): 3 medium
+  confirmados y corregidos (FUN-01 mensaje y pestaña del directorio de terceros, FUN-02 = REV-02,
+  REVF-01 tenant aislado en `api-integration`), 1 refutado (REVF-02: ventana transitoria de una
+  sonda, BD limpia después), low corregidos salvo el lock (FUN-06/REVF-05); balance en el informe §3.2
+- corrector · 2.ª pasada (revisión funcional en runtime FUN-01…07 + REVF-01/04/06/07/08): 404 de
+  `GET /accounting/ledger-imports/third-parties` con mensaje propio (sin «indica el centro
+  (propertyId)», que la ruta no admite) y pestaña «Terceros» con estado propio para perfiles de
+  centro (`thirdPartiesEntityLocked`, `ledgerThirdPartiesErrorMessage`); `billIds` + `sod` en
+  `SepaRemittanceRecord` (lista y detalle, `banking.read`); `topSuppliers` omite proveedores no
+  resueltos (sin «Unknown supplier»); `openapi.yaml` 761/1.031 operaciones (+14 a mano);
+  `api-integration.test.mts` con tenant aislado `org_l2_it<run>` (las dos suites «Tanda 4» ya no
+  escriben en la primera propiedad de la BD); recuento en la organización piloto el 2026-09-20:
+  21 `RESERVATION_CREATED` + 7 `ROLE_CREATED_FROM_TEMPLATE` en `audit_events`, 0 filas residuales
+- tests y RBAC: `pms-shadow-{routes,sync}` con «hoy» en la zona del hotel (`tests/integration/helpers/local-day.mts`,
+  sin flake 00:00-02:00 CEST; 19/19 y 10/10); `quick-checkin.spec.ts` «solo teclado» crea su llegada
+  (`provisionArrival`) y CORRIÓ en run 2 (R1): `playwright.config.ts` acepta `E2E_CHROMIUM_EXECUTABLE`
+  (headless shell 1228 en caché, sin descarga ni cambio del lock) → 1 passed (3,8 s) con API :3927 y
+  Vite :5197 propios; residuos low: ventana 00:00-02:00 CEST de `front-desk.service.ts:303` (REV-04) y
+  sin teardown (REV-05: RES-00056 `checked_in` en `room_uxday_101`, RES-00055 cancelada con
+  penalización de 89 €, hasta `db:seed:ux-day -- --reset`); `payroll_hr` + `users.read` aditiva sin
+  bump (`rbac:sync --dry-run` `+0 created · 3 topped up`; el arranque del API tras la fusión la
+  entrega a los 3 roles; REV-06: la clave abre 3 rutas GET, no solo `/rbac/users`)
+- docs: manual sin los defectos ya corregidos por FIX-1 (8 guías/fichas) y en concordancia con
+  F9/F10 y C4b (R3: «Falta 1 comprobación» ×10, `30-rrhh.md` alta de fichas + `users.read`,
+  ficha 10 «Tomar» asigna, `RBAC-DEPARTAMENTOS.md` M21 RRHH `V⁴`; contrato 45/45);
+  `docs/runbooks/auditoria-eventos.md` §6 (T9, CHK, FIX-1, `SEPA_REMITTANCE_GENERATED`);
+  `openapi.yaml` sin las 2 rutas retiradas de T9, con `PATCH …/check-in/guests/{guestId}`,
+  `POST …/check-in/resolve-handoff` y `dryRun`; `api-contracts.md:236` bullet CIERRE-1 y `:595`
+  `DOCUMENT_SETTINGS_UPDATED` con entidad `document_settings`; `[:<recepción>]` en `schema.prisma:150`
+  y `finanzas-contabilidad.md:50`; §13 con `third-parties` y la remesa con `payables.pay` + SoD +
+  auditoría; runbook Sage §3.2 (re-enmascarado por id, tokens de 7 cifras); residuo: ayuda in-app
+  `manual-guides.ts:154` («No hay alta de fichas») contradice F10
+- PII (fuera del repo): plan `prep/apply/remask-pii-vat.plan.json` (39 filas de
+  `vat_book_entries.counterparty_name`) + `prep/tools/remask-pii-vat.sql`, dry-run `pendientes=39`,
+  `remask-pii.test.mts` 8/8; el apply de F12 (331 entradas) YA está hecho (2026-09-20 03:48 UTC,
+  `LEDGER_PII_REMASKED`), el de vat lo aplica César (informe §7.1)
+- puertas `--quick` 12/12 en línea base (08:56 y 10:13), olas 1-2 de run 1 y olas 1-3 de run 2
+  (11:07): typecheck 15 PASS · api unit 3.572 (3.571 pass · 1 skip; base 3.569) · admin-web 2.014 ·
+  ai-core 119 · worker 34 · contratos raíz 765 (763 · 2 skip) · discoverability 197 · nav-tree
+  70/104/205 · route-access 15 × 197 · cocoa §6 · rbac dry-run OK · migrate 24/24 + drift «No
+  difference detected.»; puerta completa final (2026-09-20 11:13, `scratchpad/CIERRE-1/gates-final.json`):
+  13/14 en ese run — las 12 anteriores + admin-web build OK · integración 994 (985 pass · 1 fail · 8 skip;
+  CHK final 881/873/0/8) en rojo SOLO por COR-01 (`structure-l4` R2, 403 `payables.pay`; suite sola
+  9 tests · 8 pass · 1 fail); **run 2 del orquestador con el fix de `:96` (`scratchpad/CIERRE-1/gates-full.json`):
+  14/14, integración 994 · 986 pass · 0 fail · 8 skip**; puerta completa tras la 2.ª pasada del
+  corrector (12:49-12:55, `gates-final.json` sobrescrito): **13/14** — typecheck 15 PASS · api unit
+  3.574 (3.573 · 1 skip) · admin-web 2.015 (2.014 · 1 skip) · ai-core 119 · worker 34 · contratos
+  raíz 765 (763 · 2 skip) · discoverability 197 · route-access 15 × 197 · cocoa §6 · rbac dry-run OK ·
+  migrate 24/24 + drift 0 · build OK · integración 996 (989 pass · 0 fail · 7 skip); la única roja,
+  `nav-tree --check`, es EXTERNA al carril: el CSV compartido `pilots/tanda5-nav-tree.csv` cambió a
+  las 12:19 (+6 filas de la Tanda ACT, `/finanzas/activo-inmobiliario*`, sin pantalla en este
+  worktree), `nav-tree.generated.json` es idéntico a HEAD y estaba en verde con ese JSON a las 11:45;
+  vuelve a verde al fusionar ACT y regenerar el árbol (informe §2.4); `--quick` del integrador tras
+  sus ediciones (13:05): 11/12 con la misma roja; hook `hotelos/.husky/pre-commit` a mano rc 0
+- datos: 0 escrituras de negocio en la organización piloto por los lotes (53.291 filas Sage siguen
+  con `regime IS NULL`, 0 `VAT_BOOKS_RECLASSIFIED`); tenants de tests creados y borrados (0 residuos
+  antes y después de la completa; `organizations` = 3); los audit_events de la organización piloto
+  (08:50-08:52 y 11:09:53 CEST: rol + 3 reservas, borrados) los produce la suite preexistente
+  `tests/integration/api-integration.test.mts` (`findFreeRoom` = `room.findFirst` sin filtro de
+  propiedad) al correr contra la BD viva → tenant propio para la suite o BD de carril para la
+  completa (informe §4); 49 `webhook_deliveries` huérfanas anteriores a la tanda (REV-08, César);
+  recuento del integrador (13:00, SQL de solo lectura): `organizations` = 3, residuos de tenants 0,
+  organización piloto con 21 `RESERVATION_CREATED` / 7 `ROLE_CREATED_FROM_TEMPLATE` en el día y 0
+  eventos desde las 12:45 → la completa de las 12:49-12:55 ya no escribió en ella (REVF-01 cerrado)
+- para César: apply de `remask-pii-vat` (informe §7.1; decidir antes si `after` = solo token),
+  decisión C5 `POST /fiscal/vat-books/reclassify` 2025/2026 (§7.2: dry-run → apply → comprobar
+  `/fiscal/regime`, 390 y 303), reset de `prop_uxday` y huérfanas de webhooks, y el lock: HEAD
+  `a069906` no instala con `--frozen-lockfile` (falta `packages/ai-core`, `@playwright/test`,
+  `@fontsource-variable/inter`, `zod` del admin-web, `qrcode-terminal`; conserva `apps/ai-gateway`)
+  → commit `chore(deps)` propio con el lock regenerado; orquestador: sellar la v4 de plantillas
+  (`--upgrade-templates`), fusión de `tanda-cierre` (commit único sin `pnpm-lock.yaml`; regenerar el
+  nav-tree tras ACT; decidir si el bloque CIERRE-1 de CLAUDE.md se conserva o queda solo este) y
+  alinear `core.hooksPath` (hoy `.husky` relativo a la raíz del worktree, donde no existe: `git
+  commit` no ejecuta `hotelos/.husky/pre-commit` en ningún carril; el integrador lo corrió a mano)

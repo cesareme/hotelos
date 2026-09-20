@@ -24,6 +24,12 @@
 //       caso null. Un DNI / NIE, un pasaporte o un NIF ausente son personas físicas o
 //       desconocidos: el directorio nunca muestra su nombre (huéspedes, empleados con nombre
 //       en otro orden —C-03—, autónomos), sin necesidad de diccionario de personas.
+//     · R11 (CIERRE-1): sin `accounting.entity.read` ni ámbito de sociedad → 404
+//       `ENTITY_SCOPE_REQUIRED` (assertFinanceReadScope(context, null)), como libros / 347 /
+//       diario: un usuario de ámbito de centro con solo reports.read no lista los terceros de
+//       toda la sociedad (residuo SEC-03 del dosier FIX-1). Mensaje propio (corrector CIERRE-1 ·
+//       FUN-01): el directorio no tiene dimensión de centro y la ruta no admite `propertyId`, así
+//       que el 404 no pide «indica el centro» sino la clave `accounting.entity.read`.
 //
 // Los constructores puros (where, cursor, regla de nombres, lote por tercero) están
 // exportados y probados sin base de datos en __tests__/ledger-third-parties.test.mts.
@@ -41,6 +47,7 @@ import {
   type LedgerThirdPartyRole
 } from "@hotelos/shared";
 import type { UserContext } from "../../../lib/demo-store.js";
+import { assertFinanceReadScope } from "../../../lib/finance-scope.js";
 import { BadRequestError } from "../../../lib/http-error.js";
 import { buildPage, decodeCursor, type CursorKey } from "../../../lib/pagination.js";
 import { requirePermissions } from "../../auth/auth.service.js";
@@ -199,8 +206,19 @@ function toDto(row: ThirdPartyRow, lote: LedgerThirdPartyLotRef | null): LedgerT
  * Directorio de solo lectura de los terceros importados de la organización: página keyset
  * ordenada por rol y código Sage con `total` del filtro, `nextCursor` y el lote de cada fila.
  */
+/**
+ * 404 `ENTITY_SCOPE_REQUIRED` of the directory (corrector CIERRE-1 · FUN-01): the route has no
+ * `propertyId` (400 `VALIDATION_ERROR` if sent), so the generic sentence of `lib/finance-scope.ts`
+ * («indica el centro de trabajo asignado (propertyId)») would name a remedy that does not exist.
+ */
+export const THIRD_PARTIES_ENTITY_SCOPE_MESSAGE = "Ámbito no disponible: el directorio de terceros es de toda la sociedad y no tiene dimensión de centro; requiere el permiso accounting.entity.read.";
+
 export async function listLedgerThirdParties(input: { context: UserContext; q?: string | null; role?: LedgerThirdPartyRole | null; limit?: number | null; cursor?: string | null }): Promise<LedgerThirdPartyPage> {
   requirePermissions(input.context, ["accounting.read"]);
+  // R11 (CIERRE-1): los terceros son de la sociedad (nunca de un centro) → ámbito de toda la
+  // sociedad, como libros / 347 / diario; sin él, 404 ENTITY_SCOPE_REQUIRED (lib/finance-scope.ts)
+  // con el mensaje propio del directorio (ningún centro lo desbloquea).
+  assertFinanceReadScope(input.context, null, { entityScopeMessage: THIRD_PARTIES_ENTITY_SCOPE_MESSAGE });
   const organizationId = input.context.organizationId;
   const limit = Math.min(Math.max(Math.trunc(input.limit ?? LEDGER_THIRD_PARTY_LIST_DEFAULT_LIMIT), 1), LEDGER_THIRD_PARTY_LIST_MAX_LIMIT);
   const cursor = decodeCursor(input.cursor ?? null);
