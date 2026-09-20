@@ -1,13 +1,22 @@
 // Documentos (Tanda L6a, lote 3): clasificación de ficheros de onboarding
 // (pura, sin modelo) y clasificación/extracción de documentos entrantes con
-// ai-core. Sin persistencia: el módulo documents es de otra tanda. El texto
-// viaja redactado (ai-core redacta prompt/messages por defecto); los bytes de
-// PDF/imagen no se redactan y nunca llegan a la telemetría (record sin bytes).
+// ai-core. El texto viaja redactado (ai-core redacta prompt/messages por
+// defecto); los bytes de PDF/imagen no se redactan y nunca llegan a la
+// telemetría (record sin bytes).
+// Tanda T9 (lote T9-06a): el módulo documents (modules/documents/pipeline.service.ts)
+// llama a classifyIncomingDocument / extractIncomingDocumentFields a través de
+// runAiTool (documents-ai.core-adapter.ts) y añade aquí la escritura
+// proposeIncomingDocumentAction (propuesta de acción de dominio sobre la última
+// extracción; siempre awaiting_confirmation). Este fichero sigue sin importar
+// módulos de dinero/fiscal (tools-coverage lo vigila): la propuesta la calcula
+// el servicio de documentos.
 
 import { z } from "zod";
 import type { JsonSchema } from "@hotelos/ai-core";
 import { classifyDocument } from "@hotelos/ai-tools";
+import type { JsonValue } from "@hotelos/ai-core/runner";
 import { getAiCore } from "../../../lib/ai-client.js";
+import { proposeDocumentAction, type ProposeDocumentActionResult } from "../../documents/pipeline.service.js";
 import { aiContextFor, defineAiTool, fromAiResult, usageOf } from "./context.js";
 
 export const INCOMING_DOCUMENT_KINDS = ["invoice", "delivery_note", "receipt", "letter", "administrative_notice", "contract", "other"] as const;
@@ -108,5 +117,41 @@ export const extractIncomingDocumentFieldsTool = defineAiTool({
     if (!("output" in wrapped)) return wrapped;
     // Telemetría sin bytes: páginas, tamaño y huella del documento más lo extraído (no PII de huéspedes: documentos de proveedores/administración).
     return { ...wrapped, record: { document: wrapped.output.document, documentType: wrapped.output.data.documentType, issuer: wrapped.output.data.issuer, total: wrapped.output.data.total, fields: wrapped.output.data.fields.length } };
+  }
+});
+
+/** Resumen determinista de la propuesta (tarjeta de confirmación y outputJson): sin texto del documento ni importes línea a línea. */
+function proposalSummary(result: ProposeDocumentActionResult): JsonValue {
+  const checks = Object.fromEntries(Object.entries(result.checks).map(([key, check]) => [key, check.status]));
+  return {
+    documentId: result.documentId,
+    registryNumber: result.registryNumber,
+    kind: result.kind,
+    runNo: result.runNo,
+    proposedAction: result.proposal.action,
+    targetPropertyId: result.proposal.targetPropertyId,
+    needsManual: result.proposal.needsManual,
+    needsAccount: result.proposal.needsAccount,
+    supplierProposal: result.proposal.supplierProposal ? { fromSage: result.proposal.supplierProposal.fromSage, taxId: result.proposal.supplierProposal.taxId ?? null } : null,
+    checks,
+    autonomy: { level: result.autonomy.level, wouldAutoArchive: result.autonomy.wouldAutoArchive, wouldCreateDraft: result.autonomy.wouldCreateDraft },
+    notes: result.proposal.notes.length
+  };
+}
+
+export const proposeIncomingDocumentActionTool = defineAiTool({
+  name: "proposeIncomingDocumentAction",
+  effect: "write",
+  description: "Propone la acción de dominio de un documento digitalizado (factura de proveedor en borrador, gasto, recepción, tarea o archivo) sobre su última extracción y la guarda como propuesta; una persona la aprueba desde la revisión del documento.",
+  inputSchema: z.object({ documentId: z.string().trim().min(1).max(64) }).strict(),
+  outputSchema: z.custom<ProposeDocumentActionResult>(),
+  modelInputSchema: { type: "object", additionalProperties: false, required: ["documentId"], properties: { documentId: { type: "string" } } },
+  async preview(input, ctx) {
+    const result = await proposeDocumentAction({ documentId: input.documentId, organizationId: ctx.organizationId, propertyId: ctx.propertyId, correlationId: ctx.correlationId, userId: ctx.userId, persist: false });
+    return { action: "proposeIncomingDocumentAction", ...(proposalSummary(result) as Record<string, JsonValue>) };
+  },
+  async execute(input, ctx) {
+    const result = await proposeDocumentAction({ documentId: input.documentId, organizationId: ctx.organizationId, propertyId: ctx.propertyId, correlationId: ctx.correlationId, userId: ctx.userId, persist: true });
+    return { output: result, record: proposalSummary(result) };
   }
 });

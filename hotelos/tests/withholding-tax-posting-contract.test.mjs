@@ -90,12 +90,25 @@ describe("Withholding-tax posting rule (Modelo 111 IRPF) contract", () => {
     );
   });
 
-  it("exposes retention fields on the supplier-bill HTTP route", () => {
-    assert.match(server, /\/supplier-bills\/drafts/);
-    // Body fields are forwarded to the service.
+  it("exposes retention fields on the canonical supplier-bill HTTP route (the legacy draft route was retired in Tanda T9)", () => {
+    // Tanda T9 (lote T9-15, dosier §3.4): POST /supplier-bills/drafts is gone from
+    // server.ts and the manifest (comments are not registrations).
+    const code = server.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+    assert.doesNotMatch(code, /app\.post\("\/supplier-bills\/drafts"/);
+    // The canonical route forwards the HTTP body to the payables service…
+    const payablesRoutes = readFileSync(new URL("../apps/api/src/modules/payables/payables.routes.ts", import.meta.url), "utf8");
     assert.match(
-      server,
-      /createSupplierBillDraft\(\{[\s\S]*?retentionRate:\s*body\.retentionRate[\s\S]*?retentionAmount:\s*body\.retentionAmount[\s\S]*?rowCode:\s*body\.rowCode/
+      payablesRoutes,
+      /app\.post\("\/properties\/:propertyId\/payables\/supplier-bills",[\s\S]*?createSupplierBill\(\{[\s\S]*?body:\s*request\.body/
+    );
+    // …whose billSchema accepts the retention fields (rate as a percentage, AEAT row code)…
+    const payables = readFileSync(new URL("../apps/api/src/modules/payables/supplier-bills.service.ts", import.meta.url), "utf8");
+    assert.match(payables, /retentionRate:\s*percentInput\(\)\.nullable\(\)\.optional\(\)/);
+    assert.match(payables, /retentionRowCode:\s*z\.enum\(RETENTION_ROW_CODES\)/);
+    // …and persists them on the bill the withholding record is built from.
+    assert.match(
+      payables,
+      /tx\.supplierBill\.create\(\{[\s\S]*?retentionRate:\s*header\.retentionRate,[\s\S]*?retentionAmount:\s*totals\.retentionAmount,[\s\S]*?rowCode:\s*header\.retentionRowCode/
     );
   });
 

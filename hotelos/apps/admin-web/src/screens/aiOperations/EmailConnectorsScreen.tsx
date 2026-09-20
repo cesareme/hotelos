@@ -19,6 +19,10 @@
 // go to the shadow ingest; optional sender-domain and subject filters travel in
 // the payload as `fromDomain` / `subjectContains`). The list shows the purpose
 // as a badge. No inline style added (the 4 tolerated ones stay as they were).
+//
+// Tanda T9 (T9-07): third purpose «Documentos del centro» — every PDF / image /
+// XML attachment of the mailbox becomes an incoming document of the active
+// centre (module documents); no filter is required. Still no inline style.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -69,20 +73,57 @@ const PROVIDER_OPTIONS = ["gmail", "microsoft", "imap", "manual"].map((value) =>
 /** Providers whose mailbox needs an external authorisation (the server creates them as `pending_auth`). */
 const OAUTH_PROVIDERS = new Set(["gmail", "microsoft"]);
 const STATUS_LABEL: Record<string, string> = { connected: "conectado", pending_auth: "pendiente de autorizar", disconnected: "desconectado", error: "error" };
-/** Purpose of a mailbox (Tanda 7b): the AI reservation flow or the OPERA shadow-mode ingest. */
-const PURPOSE_LABEL: Record<EmailConnectionPurpose, string> = { reservation_ai: "Reservas por IA", pms_shadow: "Modo sombra OPERA" };
-const PURPOSE_OPTIONS = (Object.keys(PURPOSE_LABEL) as EmailConnectionPurpose[]).map((value) => ({ value, label: PURPOSE_LABEL[value] }));
-const PURPOSE_TONE: Record<EmailConnectionPurpose, CocoaTone> = { reservation_ai: "ai", pms_shadow: "info" };
+/**
+ * Purpose of a mailbox: the AI reservation flow, the OPERA shadow-mode ingest (Tanda 7b) or the
+ * documents mailbox of the centre (Tanda T9 · T9-07: every PDF / image / XML attachment becomes an
+ * incoming document). `documents` is accepted by the API schema (EMAIL_CONNECTION_PURPOSES) but the
+ * client type of services/emailApi.ts is still the Tanda 7b pair, so the screen widens it locally.
+ */
+type MailboxPurpose = EmailConnectionPurpose | "documents";
+const PURPOSE_LABEL: Record<MailboxPurpose, string> = { reservation_ai: "Reservas por IA", pms_shadow: "Modo sombra OPERA", documents: "Documentos del centro" };
+const PURPOSE_OPTIONS = (Object.keys(PURPOSE_LABEL) as MailboxPurpose[]).map((value) => ({ value, label: PURPOSE_LABEL[value] }));
+const PURPOSE_TONE: Record<MailboxPurpose, CocoaTone> = { reservation_ai: "ai", pms_shadow: "info", documents: "success" };
+const PURPOSE_HELP: Record<MailboxPurpose, string> = {
+  reservation_ai: "Cada correo se convierte en un borrador de reserva que una persona revisa.",
+  pms_shadow: "Los adjuntos (CSV, XML, XLSX) van al ingest del modo sombra; ningún correo pasa por la IA.",
+  documents: "Cada adjunto PDF/imagen/XML crea un documento entrante en este centro; el cuerpo del correo no se guarda."
+};
+
+/** `config.purpose` of a connection including `documents`; anything else reads as the API does (emailConnectionPurpose). */
+function mailboxPurpose(connection: Pick<EmailConnection, "config">): MailboxPurpose {
+  return connection.config?.purpose === ("documents" as string) ? "documents" : emailConnectionPurpose(connection);
+}
+
+function isMailboxPurpose(value: string): value is MailboxPurpose {
+  return value in PURPOSE_LABEL;
+}
 const FILTER_MAX = 120;
 const INBOUND_STATUS: Record<string, { label: string; tone: CocoaTone }> = {
   received: { label: "recibido", tone: "info" },
   review: { label: "en revisión", tone: "warning" },
   ignored: { label: "ignorado", tone: "neutral" },
   reservation_created: { label: "reserva creada", tone: "success" },
-  error: { label: "error", tone: "danger" }
+  error: { label: "error", tone: "danger" },
+  // Buzón «Documentos del centro» (T9-07): el correo no es una reserva; cada adjunto es un documento entrante.
+  documents_ingested: { label: "documentos creados", tone: "success" },
+  documents_ignored: { label: "sin documentos", tone: "neutral" }
 };
 
 type Draft = { arrivalDate?: string; departureDate?: string; roomTypeName?: string; guestName?: string };
+/** `draftJson` of a documents mailbox row (email-reservation.service.ts processDocumentsEmail): counts per attachment, never bytes. */
+type DocumentsDraft = { purpose?: string; ingested?: number; ignored?: number; failed?: number; reason?: string };
+
+/** «2 documentos · 1 ignorado» for a documents mailbox row; the reason when nothing was captured. */
+function documentsSummary(i: InboundEmail): string {
+  const d = i.draft as DocumentsDraft;
+  if (i.status === "documents_ignored" && (d.ingested ?? 0) === 0) {
+    return d.reason === "filter" ? "descartado por los filtros del buzón" : d.reason === "no_attachment" ? "sin adjunto PDF/imagen/XML" : plural(d.ignored ?? 0, "adjunto ignorado", "adjuntos ignorados");
+  }
+  const parts = [plural(d.ingested ?? 0, "documento", "documentos")];
+  if (d.ignored) parts.push(plural(d.ignored, "ignorado", "ignorados"));
+  if (d.failed) parts.push(plural(d.failed, "fallido", "fallidos"));
+  return parts.join(" · ");
+}
 
 function connectionTone(status: string): CocoaTone {
   return status === "connected" ? "success" : status === "error" ? "danger" : status === "disconnected" ? "neutral" : "warning";
@@ -127,7 +168,14 @@ const INBOUND_COLUMNS: CocoaTableColumn<InboundEmail>[] = [
     label: "Borrador",
     minWidth: 200,
     showFrom: "laptop",
-    render: (i) => (i.status === "ignored" ? <span className="cocoa-note">no es reserva</span> : <span className="cocoa-note">{draftSummary(i)}</span>)
+    render: (i) =>
+      i.status === "ignored" ? (
+        <span className="cocoa-note">no es reserva</span>
+      ) : i.status === "documents_ingested" || i.status === "documents_ignored" ? (
+        <span className="cocoa-note">{documentsSummary(i)}</span>
+      ) : (
+        <span className="cocoa-note">{draftSummary(i)}</span>
+      )
   },
   {
     key: "status",
@@ -174,8 +222,8 @@ export function EmailConnectorsScreen() {
   const [host, setHost] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  // purpose (Tanda 7b): pms_shadow adds the optional sender-domain and subject filters
-  const [purpose, setPurpose] = useState<EmailConnectionPurpose>("reservation_ai");
+  // purpose (Tanda 7b): pms_shadow adds the optional sender-domain and subject filters; documents (T9-07) needs none
+  const [purpose, setPurpose] = useState<MailboxPurpose>("reservation_ai");
   const [fromDomain, setFromDomain] = useState("");
   const [subjectContains, setSubjectContains] = useState("");
 
@@ -231,7 +279,8 @@ export function EmailConnectorsScreen() {
 
   async function addConnection() {
     if (!canAdd) return;
-    const payload: CreateEmailConnectionPayload = { provider, purpose };
+    // `documents` widens the Tanda 7b client type (services/emailApi.ts) until it carries the third purpose; the API schema already accepts it.
+    const payload = { provider, purpose } as CreateEmailConnectionPayload;
     if (provider === "imap") Object.assign(payload, { host, username, password, port: 993 });
     // The filters only make sense for the shadow-mode ingest; blank ones never travel (the API schema rejects empty strings).
     if (purpose === "pms_shadow") {
@@ -347,8 +396,8 @@ export function EmailConnectorsScreen() {
                           <CocoaBadge tone={connectionTone(c.status)} variant="tinted" size="small">
                             {STATUS_LABEL[c.status] ?? c.status}
                           </CocoaBadge>
-                          <CocoaBadge tone={PURPOSE_TONE[emailConnectionPurpose(c)]} variant="outline" size="small" uppercase={false} title={c.config?.fromDomain || c.config?.subjectContains ? `Filtros: ${[c.config?.fromDomain ? `remitente ${c.config.fromDomain}` : null, c.config?.subjectContains ? `asunto «${c.config.subjectContains}»` : null].filter(Boolean).join(" · ")}` : undefined}>
-                            {PURPOSE_LABEL[emailConnectionPurpose(c)]}
+                          <CocoaBadge tone={PURPOSE_TONE[mailboxPurpose(c)]} variant="outline" size="small" uppercase={false} title={c.config?.fromDomain || c.config?.subjectContains ? `Filtros: ${[c.config?.fromDomain ? `remitente ${c.config.fromDomain}` : null, c.config?.subjectContains ? `asunto «${c.config.subjectContains}»` : null].filter(Boolean).join(" · ")}` : undefined}>
+                            {PURPOSE_LABEL[mailboxPurpose(c)]}
                           </CocoaBadge>
                         </div>
                         <span className="cocoa-note">
@@ -390,7 +439,7 @@ export function EmailConnectorsScreen() {
 
             <CocoaFormSection
               title="Añadir buzón"
-              description="Gmail y Microsoft 365 abren la autorización externa en el mismo paso; IMAP pide los datos del servidor. El propósito decide qué se hace con cada correo: extraer reservas con IA o entregar los adjuntos al modo sombra de OPERA."
+              description="Gmail y Microsoft 365 abren la autorización externa en el mismo paso; IMAP pide los datos del servidor. El propósito decide qué se hace con cada correo: extraer reservas con IA, entregar los adjuntos al modo sombra de OPERA o crear un documento entrante del centro por cada adjunto."
               actions={
                 <CocoaButton variant="filled" tone="accent" size="small" disabled={!canAdd} loading={busy} onClick={() => void addConnection()}>
                   {oauthProvider ? "Iniciar autorización" : "Añadir buzón"}
@@ -408,8 +457,8 @@ export function EmailConnectorsScreen() {
                 <CocoaField label="Proveedor">
                   <CocoaSelect value={provider} onChange={setProvider} options={PROVIDER_OPTIONS} />
                 </CocoaField>
-                <CocoaField label="Propósito" help={purpose === "pms_shadow" ? "Los adjuntos (CSV, XML, XLSX) van al ingest del modo sombra; ningún correo pasa por la IA." : "Cada correo se convierte en un borrador de reserva que una persona revisa."}>
-                  <CocoaSelect value={purpose} onChange={(value) => setPurpose(value === "pms_shadow" ? "pms_shadow" : "reservation_ai")} options={PURPOSE_OPTIONS} />
+                <CocoaField label="Propósito" help={PURPOSE_HELP[purpose]}>
+                  <CocoaSelect value={purpose} onChange={(value) => setPurpose(isMailboxPurpose(value) ? value : "reservation_ai")} options={PURPOSE_OPTIONS} />
                 </CocoaField>
                 {purpose === "pms_shadow" ? (
                   <CocoaField label="Dominio remitente" required help="Obligatorio: solo se procesan los correos cuyo remitente pertenece a este dominio (o a un subdominio); sin él cualquier remitente podría contabilizar ingresos o cancelar reservas.">

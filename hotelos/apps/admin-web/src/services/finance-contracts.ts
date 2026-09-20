@@ -5,10 +5,17 @@
 //   · FINANCE_ERROR_MESSAGES — every `details.code` the finance modules answer
 //     with (packages/shared/src/*-types.ts: LEDGER_ERROR_CODES,
 //     PAYMENT_ERROR_CODES, PosErrorCode, PayablesErrorCode, TreasuryErrorCode,
-//     fiscal and gestoría codes) → the Spanish sentence the screens show;
+//     fiscal and gestoría codes; since Tanda T9 · T9-11 also the RBAC gates of
+//     the supplier-bill approval (RBAC_SOD_CONFLICT · RBAC_LEVEL_EXCEEDED), the
+//     match guard SUPPLIER_BILL_MATCH_REQUIRED and the DOCUMENT_* codes of
+//     documents-types.ts, same sentences as screens/documents/documents-helpers.ts
+//     DOCUMENT_ERROR_MESSAGES — copied, not imported: that module imports this
+//     one, and services never import screens) → the Spanish sentence the screens show;
 //   · financeErrorMessage(error) — code first, then the API message, then a
 //     fallback (PSP_NOT_CONFIGURED appends `details.psp.message`,
-//     PREVIOUS_PERIOD_MISSING lists `details.pendingPeriods`);
+//     PREVIOUS_PERIOD_MISSING lists `details.pendingPeriods`,
+//     RBAC_LEVEL_EXCEEDED names the tiers and the pending `requestId`,
+//     SUPPLIER_BILL_MATCH_REQUIRED says why: variance or pending receipts);
 //   · query builders that mirror the zod query schemas of the routes (drop
 //     empty values, booleans as "1"/"0", `envelope=1` on keyset lists);
 //   · settlement-period helpers (`2026-Q3` · `2026-09` · `2026`) and the
@@ -189,7 +196,29 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.f
   PAYROLL_IMPORT_OVERLAP: "Algún centro y mes del informe ya está contabilizado por otro lote: marca «Sustituir los lotes anteriores» para revertirlos enteros y volver a importar el rango completo.",
   PAYROLL_IMPORT_ALREADY_POSTED: "La importación ya está contabilizada: no se contabiliza dos veces.",
   PAYROLL_IMPORT_REVERSED: "La importación está revertida: vuelve a importar el informe para contabilizarlo de nuevo.",
-  PAYROLL_IMPORT_ENTRY_EXISTS: "Ya existe un asiento con el mismo origen para ese centro y mes: no se ha contabilizado nada."
+  PAYROLL_IMPORT_ENTRY_EXISTS: "Ya existe un asiento con el mismo origen para ese centro y mes: no se ha contabilizado nada.",
+  // --- aprobación de facturas recibidas (Tanda 8a · RBAC por departamento; T9-11): quién y hasta qué tramo ---
+  RBAC_SOD_CONFLICT: "Quien registró la factura no puede aprobarla ni pagarla: otra persona con la clave de aprobación debe hacerlo.",
+  RBAC_LEVEL_EXCEEDED: "El importe supera tu tramo de aprobación: pide autorización a un supervisor presente o abre la solicitud en Hoy › Pendientes de aprobación.",
+  // --- documentos y digitalización (Tanda T9: DOCUMENT_ERROR_CODES de documents-types.ts; los códigos ya presentes arriba conservan su frase) ---
+  DOCUMENT_MIME_NOT_ALLOWED: "Tipo de fichero no admitido: sube un PDF, una imagen (JPEG, PNG, WebP) o una factura electrónica XML.",
+  DOCUMENT_CONTENT_MISMATCH: "El contenido del fichero no corresponde con su tipo: vuelve a exportarlo o escanéalo de nuevo.",
+  DOCUMENT_ACTION_INVALID_FOR_KIND: "Esa acción no vale para este tipo de documento: corrige el tipo o elige otra acción.",
+  DOCUMENT_NOT_FOUND: "El documento no existe o no pertenece a este centro.",
+  DOCUMENT_DUPLICATE_FILE: "Este fichero ya está capturado (mismo contenido): abre el documento existente o marca la copia como permitida.",
+  DOCUMENT_STATUS_TRANSITION: "El documento no admite esa acción en su estado actual.",
+  DOCUMENT_BLOCKED: "El documento está bloqueado por retención: solo un administrador de documentos puede consultarlo.",
+  DOCUMENT_LEGAL_HOLD: "El documento tiene bloqueo legal: no se puede purgar ni desbloquear sin retirarlo.",
+  DOCUMENT_CHECKS_FAILED: "Hay comprobaciones en rojo: corrígelas o aprueba con un motivo explícito.",
+  GOODS_RECEIPT_DUPLICATE: "Ya existe una recepción con ese número de albarán para el proveedor.",
+  SUPPLIER_BILL_MATCH_REQUIRED: "La factura necesita cotejarse con sus albaranes antes de aprobarse.",
+  DOCUMENT_TOO_LARGE: "El fichero supera el tamaño máximo admitido: comprímelo o divide el documento.",
+  AI_PROVIDER_UNAVAILABLE: "El proveedor de IA no está disponible: los campos se rellenan a mano o con el extractor de texto.",
+  DOCUMENT_PAGE_IMAGE_UNAVAILABLE: "Esta página no tiene imagen: el original no está rasterizado, ábrelo con «Ver original».",
+  // --- recepciones de mercancía (T9-09: códigos 400 de goods-receipts.service.ts) ---
+  INVENTORY_ITEM_INVALID: "El artículo de inventario de la línea no existe en este centro.",
+  STOCK_LOCATION_INVALID: "La ubicación de almacén no existe en este centro.",
+  STOCK_QUANTITY_TOO_SMALL: "La cantidad recibida es demasiado pequeña para anotar un movimiento de almacén: redondea a dos decimales."
 });
 
 export const FINANCE_ERROR_FALLBACK = "No se pudo completar la operación. Inténtalo de nuevo.";
@@ -242,6 +271,7 @@ export function financeErrorMessage(error: unknown, fallback: string = FINANCE_E
       const pending = details?.pendingPeriods;
       return Array.isArray(pending) && pending.length > 0 ? `${base} Contabiliza antes: ${pending.map(String).join(", ")}.` : base;
     }
+    if (code === "RBAC_LEVEL_EXCEEDED" || code === "SUPPLIER_BILL_MATCH_REQUIRED") return withApprovalDetails(code, base, details);
     return withStructureDetails(code, base, details);
   }
   const message = asErrorLike(error)?.message;
@@ -253,6 +283,38 @@ export function financeErrorMessage(error: unknown, fallback: string = FINANCE_E
 function detailString(details: Record<string, unknown> | null, key: string): string | null {
   const value = details?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Tanda T9 (T9-11): the approval gates of a supplier bill carry what the
+ * approver needs to act — RBAC_LEVEL_EXCEEDED names the tier of the amount and
+ * the caller's maximum (`tier` · `maxTier`) and, when the engine already holds a
+ * pending request, its `requestId` (Hoy › Pendientes de aprobación);
+ * SUPPLIER_BILL_MATCH_REQUIRED says why (`reason` variance · pending_receipts,
+ * `pendingReceipts`). Pure; unit-tested with payables-helpers.
+ */
+export function withApprovalDetails(code: string, base: string, details: Record<string, unknown> | null): string {
+  switch (code) {
+    case "RBAC_LEVEL_EXCEEDED": {
+      const tier = detailString(details, "tier");
+      const maxTier = detailString(details, "maxTier");
+      const requestId = detailString(details, "requestId");
+      const parts = [tier && maxTier ? `Tramo del importe: ${tier}; tu tramo máximo: ${maxTier}.` : null, requestId ? `Solicitud pendiente: ${requestId}.` : null].filter(Boolean);
+      return parts.length > 0 ? `${base} ${parts.join(" ")}` : base;
+    }
+    case "SUPPLIER_BILL_MATCH_REQUIRED": {
+      const reason = detailString(details, "reason");
+      if (reason === "variance") return `${base} El cotejo tiene diferencias fuera de tolerancia: resuélvelas con el albarán antes de aprobar.`;
+      if (reason === "pending_receipts") {
+        const pending = details?.pendingReceipts;
+        const count = typeof pending === "number" && Number.isFinite(pending) ? pending : null;
+        return count !== null ? `${base} El proveedor tiene ${count} ${count === 1 ? "albarán pendiente" : "albaranes pendientes"} de cotejar y la factura lleva líneas de compra.` : `${base} El proveedor tiene albaranes pendientes de cotejar.`;
+      }
+      return base;
+    }
+    default:
+      return base;
+  }
 }
 
 /**

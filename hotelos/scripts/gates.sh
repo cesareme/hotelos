@@ -31,7 +31,10 @@ run "rbac:sync --dry-run" "corepack pnpm --filter @hotelos/api rbac:sync -- --dr
 run "migrate status + drift" "corepack pnpm --filter @hotelos/database db:migrate:status && corepack pnpm --filter @hotelos/database db:drift:check" 'up to date|No difference'
 if [ "$QUICK" -eq 0 ]; then
   run "admin-web build" "corepack pnpm --filter @hotelos/admin-web build" 'built in'
-  run "integración" "node --test --test-concurrency=1 tests/integration/*.test.mts | sum" 'tests [0-9]+'
+  # Como `pnpm run test:integration`: desde apps/api (ahí se resuelven @hotelos/* y tsx; en la raíz no hay enlaces de workspace) y con el cargador tsx (los fuentes importan `.js` → `.ts`).
+  # `--env-file-if-exists=../../.env` (como los scripts db:* y el arranque del API): fija la DATABASE_URL del carril ANTES de que las suites
+  # que hacen `process.env.DATABASE_URL ??= …/hotelos` (rbac-scope, rbac-sod, ledger-import, treasury-banking…) caigan en la BD principal.
+  run "integración" "(cd apps/api && node --env-file-if-exists=../../.env --import tsx --test --test-concurrency=1 ../../tests/integration/*.test.mts) | sum" 'tests [0-9]+'
 fi
 echo "== $((${#NAMES[@]}-FAILS))/${#NAMES[@]} puertas en verde"
 if [ -n "$JSON" ]; then { echo '['; for i in "${!NAMES[@]}"; do printf '  {"gate":"%s","ok":%s,"figures":"%s"}%s\n' "${NAMES[$i]}" "$([ "${STATUS[$i]}" -eq 0 ] && echo true || echo false)" "$(printf '%s' "${FIGS[$i]}" | sed 's/"/\\"/g')" "$([ $i -lt $((${#NAMES[@]}-1)) ] && echo ,)"; done; echo ']'; } > "$JSON"; fi

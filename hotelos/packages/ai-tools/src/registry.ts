@@ -247,6 +247,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   // Documentos (compliance_hub): clasificación y extracción sin persistencia (módulo documents de otra tanda)
   advancedTool("classifyIncomingDocument", "compliance_hub", null, "low", false, "read"),
   advancedTool("extractIncomingDocumentFields", "compliance_hub", null, "medium", true, "read"),
+  // Documentos y digitalización (Tanda T9 · lote T9-06a, erp_accounting): propuesta de acción de dominio sobre la última extracción
+  // (factura en borrador, gasto, recepción, tarea o archivo); escritura → siempre awaiting_confirmation (§5.2).
+  advancedTool("proposeIncomingDocumentAction", "erp_accounting", "documents.review", "high", true, "write"),
   // Onboarding
   advancedTool("extractPropertyMap", "ai_onboarding_migration", "property.map.read", "medium", false, "read")
 ];

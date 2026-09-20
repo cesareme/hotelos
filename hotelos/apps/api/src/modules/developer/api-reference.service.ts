@@ -181,6 +181,12 @@ export const SEGMENT_LABELS: Record<string, string> = {
   "category-templates": "la plantilla de categoría",
   documents: "el documento",
   files: "el fichero",
+  // Documentos y digitalización (Tanda T9): GET …/documents/:id/pages/:n/image.
+  pages: "la página",
+  // Documentos y digitalización (Tanda T9 · ola 3): recepciones de mercancía (goods-receipts.routes.ts)
+  // y valija (workflow.routes.ts: POST …/documents/dispatch-batches, …/:batchId/receive).
+  "goods-receipts": "la recepción de mercancía",
+  "dispatch-batches": "la valija",
   media: "el archivo multimedia",
   duplicates: "el duplicado",
   // Establecimiento y estructura
@@ -478,6 +484,11 @@ export const SINGLETON_LABELS: Record<string, string> = {
   "low-stock": "las existencias bajas",
   usage: "el uso",
   queue: "la cola",
+  // Documentos y digitalización (Tanda T9): GET …/documents/:id/file y …/pages/:n/image.
+  file: "el fichero original",
+  image: "la imagen",
+  // Documentos y digitalización (Tanda T9 · ola 3): GET …/documents/dispatch-batches/:batchId/sheet (una hoja por valija).
+  sheet: "la hoja de remesa",
   "human-review": "la revisión humana",
   "human-review-queue": "la cola de revisión humana",
   "data-quality": "la calidad de datos",
@@ -649,6 +660,15 @@ export const ACTION_LABELS: Record<string, string> = {
   // Reputación (Tanda T8): POST /reputation/reviews/:id/draft y …/quality-case.
   draft: "Redactar un borrador de respuesta a",
   "quality-case": "Abrir un caso de calidad desde",
+  // Documentos y digitalización (Tanda T9): transiciones del centro, POST …/documents/:id/send-to-office | recapture.
+  "send-to-office": "Enviar el documento a la oficina.",
+  recapture: "Recapturar el documento devuelto al centro (fichero nuevo, mismo número de registro).",
+  // Documentos y digitalización (Tanda T9 · ola 3): POST …/goods-receipts/:id/dispute.
+  dispute: "Poner en disputa",
+  // Documentos y digitalización (Tanda T9 · ola 4): retención del archivo, POST …/documents/:id/block | unblock | purge (documents.admin).
+  block: "Bloquear el documento por retención (solo lectura; opcionalmente con retención legal).",
+  unblock: "Desbloquear el documento retenido.",
+  purge: "Purgar el documento bloqueado (borrado definitivo del fichero; 409 con retención legal).",
   query: "Consultar",
   edit: "Editar",
   publish: "Publicar",

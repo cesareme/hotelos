@@ -10,6 +10,11 @@ export * from "./fiscal-types.js";
 export * from "./payments-types.js";
 export * from "./pos-types.js";
 export * from "./payables-types.js";
+// Documentos y digitalización con IA (Tanda T9 · L0): catálogos (tipos, estados,
+// canales, acciones propuestas, motivos de rechazo, comprobaciones), DTOs de
+// documento / extracción / propuesta, recepciones de mercancía, cotejo y códigos
+// de error compartidos por el API y el admin-web.
+export * from "./documents-types.js";
 export * from "./treasury-types.js";
 export * from "./financial-statements-types.js";
 // Estructura societaria (Tanda 6b · L1, integración): LegalEntity / work-centre

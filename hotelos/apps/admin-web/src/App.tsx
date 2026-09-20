@@ -110,6 +110,8 @@ const WorkforceDashboard = lazyNamed(() => import("./screens/operations/Workforc
 const SafetyDashboard = lazyNamed(() => import("./screens/operations/SafetyDashboard"), "SafetyDashboard");
 const AssetsDashboard = lazyNamed(() => import("./screens/operations/AssetsDashboard"), "AssetsDashboard");
 const EnergyDashboard = lazyNamed(() => import("./screens/operations/EnergyDashboard"), "EnergyDashboard");
+// Tanda T9 · documentos: Operaciones › Digitalizar (captura del centro, ítem propio sin gate de módulo).
+const DocumentCaptureScreen = lazyNamed(() => import("./screens/documents/DocumentCaptureScreen"), "DocumentCaptureScreen");
 const SalesPipelineDashboard = lazyNamed(() => import("./screens/operations/SalesPipelineDashboard"), "SalesPipelineDashboard");
 const RevenueHomeDashboard = lazyNamed(() => import("./screens/revenue/RevenueHomeDashboard"), "RevenueHomeDashboard");
 const RatePlansScreen = lazyNamed(() => import("./screens/admin/RatePlansScreen"), "RatePlansScreen");
@@ -222,8 +224,11 @@ const SCREEN_COMPONENTS = {
   SafetyDashboard,
   ProcurementDashboard: ComprasInventarioTabs,
   InventoryDashboard: ComprasInventarioTabs,
+  // Recepciones de mercancía y cotejo con facturas (Tanda T9 · lote T9-12)
+  GoodsReceiptsScreen: ComprasInventarioTabs,
   AssetsDashboard,
   EnergyDashboard,
+  DocumentCaptureScreen,
   // --- Comercial ---
   CrmDashboard: ClientesTabs,
   GuestSegmentsReal: ClientesTabs,
@@ -281,6 +286,9 @@ const SCREEN_COMPONENTS = {
   ExpensesScreen: ProveedoresTabs,
   SuppliersScreen: ProveedoresTabs,
   FixedAssetsScreen: ProveedoresTabs,
+  // Documentos digitalizados: bandeja y revisión de la oficina · archivo legal (Tanda T9 · lote T9-12)
+  IncomingDocumentsScreen: ProveedoresTabs,
+  DocumentArchiveScreen: ProveedoresTabs,
   CommissionsScreen,
   PayrollScreen,
   // --- Cumplimiento ---

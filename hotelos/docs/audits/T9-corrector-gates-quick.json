@@ -1,0 +1,14 @@
+[
+  {"gate":"typecheck:all","ok":true,"figures":"15 PASS · 0 FAIL · 0 XFAIL (conocidos, no bloquean) · 1 SKIP (explícitos) · 20.2 s"},
+  {"gate":"api unit","ok":false,"figures":"ℹ tests 3242 ℹ pass 3228 ℹ fail 13 ℹ skipped 1 "},
+  {"gate":"admin-web unit","ok":false,"figures":"ℹ tests 1916 ℹ pass 1914 ℹ fail 1 ℹ skipped 1 "},
+  {"gate":"ai-core","ok":true,"figures":"ℹ tests 119 ℹ pass 119 ℹ fail 0 ℹ skipped 0 "},
+  {"gate":"worker","ok":true,"figures":"ℹ tests 34 ℹ pass 34 ℹ fail 0 ℹ skipped 0 "},
+  {"gate":"contratos raíz","ok":false,"figures":"ℹ tests 608 ℹ pass 604 ℹ fail 2 ℹ skipped 2 "},
+  {"gate":"discoverability","ok":true,"figures":" Tree URLs registered : 196"},
+  {"gate":"nav-tree --check","ok":false,"figures":"sin cifra"},
+  {"gate":"route-access","ok":true,"figures":"OK: el router abre exactamente lo que el menú pinta para 15 tokens × 196 URLs."},
+  {"gate":"cocoa waves --check","ok":true,"figures":"§6 al día"},
+  {"gate":"rbac:sync --dry-run","ok":true,"figures":"[rbac:sync] DRY-RUN (no writes) · 175 ms"},
+  {"gate":"migrate status + drift","ok":false,"figures":"Database schema is up to date!"}
+]

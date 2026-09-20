@@ -21,6 +21,7 @@
  * is the demo super-user (INTEGRATION_LOGIN_EMAIL / _PASSWORD override).
  * Run with: corepack pnpm test:integration
  */
+import "./helpers/load-env.mts";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 

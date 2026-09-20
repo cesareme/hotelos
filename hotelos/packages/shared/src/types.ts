@@ -292,6 +292,12 @@ export type PermissionKey =
   | "payables.create"
   | "payables.approve"
   | "payables.pay"
+  // Tanda T9 (documentos y digitalización con IA): captura en el centro, revisión
+  // en la oficina, lectura del archivo y administración (retención, bloqueo, purga).
+  | "documents.capture"
+  | "documents.review"
+  | "documents.archive.read"
+  | "documents.admin"
   | "accounting.period.close"
   | "payroll.approve"
   | "revenue.rates.approve"

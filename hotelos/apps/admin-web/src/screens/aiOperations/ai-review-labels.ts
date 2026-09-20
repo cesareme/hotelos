@@ -35,7 +35,9 @@ export const REVIEW_TYPE_LABELS: Record<string, string> = {
   invoice_issue: "Incidencia de factura",
   guest_register_submit: "Envío del registro de viajeros",
   review_response: "Respuesta a una reseña",
-  email_reservation: "Reserva por correo electrónico"
+  email_reservation: "Reserva por correo electrónico",
+  // Tanda T9 (documentos y digitalización): cola de la oficina (enqueueReview del pipeline, con o sin proveedor de IA).
+  incoming_document: "Documento digitalizado"
 };
 
 export function reviewTypeLabel(type: string): string {
@@ -50,7 +52,8 @@ export const ENTITY_TYPE_LABELS: Record<string, string> = {
   guest_review: "Reseña",
   inbound_email: "Correo entrante",
   reservation: "Reserva",
-  guest: "Huésped"
+  guest: "Huésped",
+  incoming_document: "Documento entrante"
 };
 
 export function entityTypeLabel(type: string): string {

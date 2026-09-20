@@ -51,6 +51,23 @@ import { ledgerImportRoutePermissions as ledgerImportRoutePermissionsAsWritten }
 // clave DINÁMICA en el servicio (DYNAMIC_KEY_ROUTES del contract test).
 import { rbacRoutePermissions } from "../modules/rbac/route-permissions.partial.js";
 import { reputationRoutePermissions } from "../modules/reputation/route-permissions.partial.js";
+// Documentos y digitalización con IA (Tanda T9): captura, registro, descarga y
+// archivo (modules/documents/route-permissions.partial.ts · lote T9-05a) y
+// pipeline de clasificación/extracción/cotejo (modules/documents/
+// pipeline-route-permissions.partial.ts · lote T9-06a). Claves documents.capture /
+// documents.review / documents.archive.read / documents.admin del catálogo v4 (T9-02).
+import { documentsRoutePermissions } from "../modules/documents/route-permissions.partial.js";
+import { documentPipelineRoutePermissions } from "../modules/documents/pipeline-route-permissions.partial.js";
+// Flujo de la oficina, dividir / unir, tareas y valija (modules/documents/
+// workflow-route-permissions.partial.ts · lote T9-08): documents.review (high) en
+// assign / review / approve / reject / archive; la clave extra de la acción al
+// aprobar la exige el servicio.
+import { documentWorkflowRoutePermissions } from "../modules/documents/workflow-route-permissions.partial.js";
+// Archivo, KPIs, ajustes por organización y retención (modules/documents/
+// archive-route-permissions.partial.ts · lote T9-13): documents.archive.read /
+// documents.review (medium, + R11 en el servicio) y documents.admin (high en
+// ajustes; critical en block / unblock / purge).
+import { documentArchiveRoutePermissions } from "../modules/documents/archive-route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -173,6 +190,12 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...rbacRoutePermissions,
   // Reputación y reseñas (Tanda T8): 12 entradas, ver modules/reputation/route-permissions.partial.ts.
   ...reputationRoutePermissions,
+  // Documentos y digitalización (Tanda T9): ver modules/documents/route-permissions.partial.ts
+  // (captura/registro/descarga/archivo) y modules/documents/pipeline-route-permissions.partial.ts (pipeline).
+  ...documentsRoutePermissions,
+  ...documentPipelineRoutePermissions,
+  ...documentWorkflowRoutePermissions,
+  ...documentArchiveRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },
@@ -723,8 +746,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/organizations/:organizationId/journal-entries", permissions: ["accounting.journal.post"], riskLevel: "medium" },
   { method: "POST", path: "/journal-entries/drafts", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "POST", path: "/journal-entries/:id/post", permissions: ["accounting.journal.post", "ai.high_risk.confirm"], riskLevel: "critical" },
-  { method: "GET", path: "/properties/:propertyId/supplier-bills", permissions: ["accounting.journal.post"], riskLevel: "medium" },
-  { method: "POST", path: "/supplier-bills/drafts", permissions: ["ai.tool.execute"], riskLevel: "medium" },
+  // Tanda T9 (T9-15): las entradas heredadas GET /properties/:propertyId/supplier-bills y POST /supplier-bills/drafts
+  // se retiraron con sus rutas (canónicas en modules/payables/route-permissions.partial.ts).
   // Tanda 5 (L1c · api): bank data is accounting, not a dashboard — banking.read
   // (owner/manager/accountant) instead of analytics.read (every template).
   { method: "GET", path: "/banking/accounts", permissions: ["banking.read"], riskLevel: "medium" },

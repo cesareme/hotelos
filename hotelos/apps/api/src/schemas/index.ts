@@ -12,3 +12,5 @@ export * from "./folios.schemas.js";
 export * from "./guests.schemas.js";
 export * from "./finance.schemas.js";
 export * from "./payroll-commissions.schemas.js";
+// Documentos y digitalización (Tanda T9 · lote T9-05a): cuerpos de captura, ficheros, acciones y ajustes.
+export * from "./documents.schemas.js";

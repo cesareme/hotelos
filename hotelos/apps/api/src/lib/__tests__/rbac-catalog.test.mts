@@ -317,7 +317,7 @@ describe("role templates", () => {
       }
       assert.deepEqual([...templateRevocationKeys(key)].sort(), [...new Set(ROLE_TEMPLATE_REVOCATIONS[key])].sort());
     }
-    assert.equal(ROLE_TEMPLATE_VERSION, 3); // v3 (fusión TL): aditiva, ver packages/shared/src/permissions.ts
+    assert.equal(ROLE_TEMPLATE_VERSION, 4); // v4 (Tanda T9 · documents.*): aditiva, ver packages/shared/src/permissions.ts
   });
 
   it("rejects unknown template keys", () => {
@@ -709,12 +709,14 @@ describe("ensureRoleHasPermissions (fake store)", () => {
 // backfillTemplateRoles (boot)
 // ---------------------------------------------------------------------------
 
-/** The org scope of template version 1 (the HEAD before Tanda 8a): today's catalog minus the 27 keys L0 added. */
+/** The org scope of template version 1 (the HEAD before Tanda 8a): today's catalog minus the 27 keys L0 added and the 4 documents.* keys Tanda T9 added (v4). */
 const V1_NEW_KEYS = new Set<string>([
   "pms.reservation.discount", "pms.reservation.override", "folio.adjust", "folio.adjust_approve", "invoice.cancel_request", "invoice.cancel_approve",
   "night_audit.run", "night_audit.review", "night_audit.reopen", "housekeeping.read", "maintenance.read", "maintenance.workorder.create", "pos.order.void",
   "payables.read", "payables.create", "payables.approve", "payables.pay", "accounting.period.close", "payroll.approve", "revenue.rates.approve",
-  "real_estate.read", "real_estate.manage", "real_estate.documents.manage", "property_tax.manage", "users.assign", "compliance.read", "security.break_glass"
+  "real_estate.read", "real_estate.manage", "real_estate.documents.manage", "property_tax.manage", "users.assign", "compliance.read", "security.break_glass",
+  // Tanda T9 (template v4): the four documents.* keys did not exist in v1 either.
+  "documents.capture", "documents.review", "documents.archive.read", "documents.admin"
 ]);
 const ORG_V1_KEYS: PermissionKey[] = ORG_PERMISSION_KEYS.filter((key) => !V1_NEW_KEYS.has(key));
 /** What a converged v1 template role holds today: the v2 template plus the keys v2 revokes (top-up already delivered). */
@@ -962,8 +964,8 @@ describe("upgradeRoleTemplate (fake store)", () => {
     const dry = createFakeDb(seed);
     const plan = await backfillTemplateRoles({ db: dry.db, dryRun: true, upgrade: true, audit: false });
     assert.equal(plan.upgraded?.length, 2, "Dirección and the adopted Owner would be upgraded");
-    assert.ok(plan.upgraded?.some((line) => line.startsWith("Dirección (org_a) ← manager v0→v3: +") && line.endsWith("−16 [dry-run]")));
-    assert.ok(plan.upgraded?.some((line) => line.startsWith("Owner (org_a) ← owner v0→v3:")));
+    assert.ok(plan.upgraded?.some((line) => line.startsWith("Dirección (org_a) ← manager v0→v4: +") && line.endsWith("−16 [dry-run]")));
+    assert.ok(plan.upgraded?.some((line) => line.startsWith("Owner (org_a) ← owner v0→v4:")));
     assert.deepEqual(plan.revocationsByRole?.mgr, managerRevoked);
     assert.deepEqual(plan.revocationsByRole?.own, [...templateRevocationKeys("owner")].sort());
     assert.equal(plan.revocationsByRole?.custom, undefined, "managed=false: never listed");

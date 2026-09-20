@@ -90,6 +90,19 @@ export type SupplierUpsertRequest = {
 export const SUPPLIER_BILL_STATUSES = ["draft", "approved", "posted", "paid", "cancelled"] as const;
 export type SupplierBillStatus = (typeof SUPPLIER_BILL_STATUSES)[number];
 
+/**
+ * Origen de la factura (Tanda T9 · documentos): alta manual, digitalizada desde un
+ * `IncomingDocument` o factura electrónica. Columna `SupplierBill.source` como texto
+ * con catálogo aquí (criterio `JournalEntry.sourceType`; el enum `SupplierBillStatus`
+ * no se toca).
+ */
+export const SUPPLIER_BILL_SOURCES = ["manual", "digitized", "e_invoice"] as const;
+export type SupplierBillSource = (typeof SUPPLIER_BILL_SOURCES)[number];
+
+/** Cotejo con albaranes (Tanda T9, `SupplierBill.matchStatus`): none · partial · full · variance (fuera de tolerancia). */
+export const SUPPLIER_BILL_MATCH_STATUSES = ["none", "partial", "full", "variance"] as const;
+export type SupplierBillMatchStatus = (typeof SUPPLIER_BILL_MATCH_STATUSES)[number];
+
 export const PAYABLE_ACCOUNT_CODES = ["400", "410", "4100", "4109"] as const;
 export type PayableAccountCode = (typeof PAYABLE_ACCOUNT_CODES)[number];
 
@@ -109,6 +122,11 @@ export type SupplierBillLineRequest = {
   retention?: number | string;
   costCenterId?: string | null;
   investmentGood?: boolean;
+  /** Tanda T9 (albaranes): cantidad (Decimal(12,3)) y precio unitario (Decimal(12,4)); informativos, la base sigue mandando. */
+  quantity?: number | string | null;
+  unitPrice?: number | string | null;
+  /** Nº de albarán citado en la línea (cotejo por referencia, diseño de documentos §7.2). */
+  deliveryNoteRef?: string | null;
 };
 
 export type SupplierBillRequest = {
@@ -129,6 +147,12 @@ export type SupplierBillRequest = {
   documentObjectKey?: string | null;
   attachment?: InlineAttachment;
   roomId?: string | null;
+  /** Tanda T9: fecha de recepción (el libro de recibidas usa `receptionDate ?? issueDate`); por defecto la captura del documento o la fecha de alta. */
+  receptionDate?: IsoDay | null;
+  /** Tanda T9: `IncomingDocument` del que nace la factura; solo lo fija el flujo de documentos. */
+  incomingDocumentId?: string | null;
+  /** Tanda T9: `manual` por defecto; `digitized` / `e_invoice` los fija el flujo de documentos. */
+  source?: SupplierBillSource;
   lines: SupplierBillLineRequest[];
 };
 
@@ -144,6 +168,10 @@ export type SupplierBillLineDto = {
   costCenterId: string | null;
   investmentGood: boolean;
   fixedAssetId: string | null;
+  /** Tanda T9: cadena decimal (3 / 4 decimales) o null en facturas sin albarán. */
+  quantity: string | null;
+  unitPrice: string | null;
+  deliveryNoteRef: string | null;
 };
 
 export type LedgerLineDto = {
@@ -213,6 +241,11 @@ export type SupplierBillDto = {
   total: MoneyString;
   payableAccountCode: string | null;
   status: SupplierBillStatus;
+  /** Tanda T9 (documentos): recepción, documento origen, procedencia y cotejo con albaranes. */
+  receptionDate: IsoDay | null;
+  incomingDocumentId: string | null;
+  source: SupplierBillSource;
+  matchStatus: SupplierBillMatchStatus;
   hasAttachment: boolean;
   journalEntryId: string | null;
   paidJournalEntryId: string | null;
@@ -441,6 +474,8 @@ export type PayablesErrorCode =
   | "PAYMENT_BEFORE_ISSUE"
   | "COUNTER_ACCOUNT_INVALID"
   | "SUPPLIER_BILL_DUPLICATE"
+  /** 409 al aprobar con `matchStatus = variance` (o `none` con albaranes pendientes) y `requireMatchForApproval` (Tanda T9). */
+  | "SUPPLIER_BILL_MATCH_REQUIRED"
   | "INVALID_STATUS_TRANSITION"
   | "BILL_HAS_FIXED_ASSETS"
   | "ATTACHMENT_INVALID"

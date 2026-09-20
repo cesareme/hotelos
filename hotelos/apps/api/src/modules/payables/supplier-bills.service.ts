@@ -29,9 +29,23 @@
 // cancelling keep accounting.journal.post at the route. A bill written
 // before the migration (createdByUserId null) is «autor desconocido»: never
 // blocks, annotated in the audit.
+//
+// Tanda T9 (documentos · lote T9-08, diseño §7.1): la factura puede nacer de
+// un IncomingDocument (`incomingDocumentId`, `source digitized | e_invoice`,
+// `receptionDate` = captura, `documentObjectKey` = clave `org/…` del almacén
+// de documentos). `createSupplierBillInTx(tx, …)` expone el alta dentro de la
+// transacción del approve del documento; el libro de recibidas fecha por
+// `receptionDate ?? issueDate`; `postSupplierBill` pasa el documento enlazado
+// approved → posted y `cancelSupplierBill` lo devuelve a in_review con aviso;
+// `approveSupplierBill` gana la guarda opcional `requireMatchForApproval`
+// (DocumentSettings) → 409 SUPPLIER_BILL_MATCH_REQUIRED. Las líneas llevan
+// quantity / unitPrice / deliveryNoteRef (cotejo con albaranes, §7.2);
+// `getSupplierBillAttachment` resuelve una clave `org/…` a la descarga binaria
+// del documento (`downloadPath`) en vez de devolver un enlace muerto.
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@prisma/client";
+import { SUPPLIER_BILL_SOURCES, type SupplierBillMatchStatus, type SupplierBillSource } from "@hotelos/shared";
 import { z } from "zod";
 import type { UserContext } from "../../lib/demo-store.js";
 import { HttpError, NotFoundError, RbacForbiddenError } from "../../lib/http-error.js";
@@ -44,6 +58,8 @@ import { getThresholds, maxTierFor, tierFor, tierWithin } from "../rbac/threshol
 import { assertSeparationOfDuties, sodAuditFields, type SodCheckOutcome } from "../treasury/permissions.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { registerFixedAssetFromBillLine } from "../fixed-assets/fixed-assets.service.js";
+// Tanda T9 (corrector RV-04): retención del documento enlazado al pasar a posted (módulo puro, sin ciclo con actions.service.ts).
+import { retentionKindOf, retentionUntilFor } from "../documents/retention-rules.js";
 import { getLedgerPort, type LedgerEntryResult, type LedgerLineInput } from "./ledger-port.js";
 import { dayInput, dayOf, daysBetween, dec, money, moneyInput, pct, percentInput, round2, sum, utcDay, ZERO, type Decimal } from "./money.js";
 import { defaultRetentionRowCode, RETENTION_ROW_CODES, requireSupplier, resolveSupplierTaxId } from "./suppliers.service.js";
@@ -67,6 +83,24 @@ const attachmentSchema = z
   })
   .strict();
 
+/** zod input for a positive decimal with at most `scale` decimals (quantities 12,3 · unit prices 12,4), parsed as Decimal. */
+export function decimalInput(scale: number): z.ZodType<Decimal, z.ZodTypeDef, string | number> {
+  return z
+    .union([z.number().finite(), z.string().regex(/^-?\d{1,9}(\.\d{1,6})?$/, "número no válido")])
+    .transform((raw, ctx) => {
+      const value = dec(raw);
+      if (value.decimalPlaces() > scale) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `el valor no puede tener más de ${scale} decimales` });
+        return z.NEVER;
+      }
+      if (value.lt(ZERO)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "el valor no puede ser negativo" });
+        return z.NEVER;
+      }
+      return value;
+    });
+}
+
 const lineSchema = z
   .object({
     description: z.string().trim().min(1, "obligatorio").max(300),
@@ -78,7 +112,12 @@ const lineSchema = z
     /** Per-line retention override (default: base × bill retentionRate). */
     retention: moneyInput().optional(),
     costCenterId: z.string().trim().min(1).max(64).nullable().optional(),
-    investmentGood: z.boolean().optional()
+    investmentGood: z.boolean().optional(),
+    /** Tanda T9 (albaranes): cantidad (3 decimales) y precio unitario (4 decimales) informativos; la base sigue mandando. */
+    quantity: decimalInput(3).nullable().optional(),
+    unitPrice: decimalInput(4).nullable().optional(),
+    /** Nº de albarán citado en la línea (cotejo por proveedor + albarán). */
+    deliveryNoteRef: z.string().trim().min(1).max(60).nullable().optional()
   })
   .strict();
 
@@ -97,6 +136,12 @@ const billSchema = z
     documentObjectKey: z.string().trim().min(1).max(500).nullable().optional(),
     attachment: attachmentSchema.optional(),
     roomId: z.string().trim().min(1).max(64).nullable().optional(),
+    /** Tanda T9: fecha de recepción (el libro de recibidas usa receptionDate ?? issueDate). */
+    receptionDate: dayInput().nullable().optional(),
+    /** Tanda T9: documento entrante del que nace la factura (lo fija el flujo de documentos). */
+    incomingDocumentId: z.string().trim().min(1).max(64).nullable().optional(),
+    /** Tanda T9: manual (por defecto) · digitized · e_invoice. */
+    source: z.enum(SUPPLIER_BILL_SOURCES).optional(),
     lines: z.array(lineSchema).min(1, "la factura necesita al menos una línea").max(200)
   })
   .strict();
@@ -130,6 +175,10 @@ export type ComputedBillLine = {
   retention: Decimal;
   costCenterId: string | null;
   investmentGood: boolean;
+  /** Tanda T9: informativos (cotejo con albaranes); null cuando la factura no detalla unidades. */
+  quantity: Decimal | null;
+  unitPrice: Decimal | null;
+  deliveryNoteRef: string | null;
 };
 
 export type BillTotals = {
@@ -182,7 +231,10 @@ export function computeBillTotals(lines: ReadonlyArray<z.output<typeof lineSchem
       quota,
       retention,
       costCenterId: line.costCenterId ?? null,
-      investmentGood: line.investmentGood === true
+      investmentGood: line.investmentGood === true,
+      quantity: line.quantity ?? null,
+      unitPrice: line.unitPrice ?? null,
+      deliveryNoteRef: line.deliveryNoteRef ?? null
     };
   });
   const baseTotal = sum(computed.map((l) => l.base));
@@ -252,6 +304,10 @@ export type SupplierBillLineDto = {
   costCenterId: string | null;
   investmentGood: boolean;
   fixedAssetId: string | null;
+  /** Tanda T9: cadena decimal (3 / 4 decimales) o null en facturas sin albarán. */
+  quantity: string | null;
+  unitPrice: string | null;
+  deliveryNoteRef: string | null;
 };
 
 export type SupplierBillDto = {
@@ -273,6 +329,12 @@ export type SupplierBillDto = {
   total: string;
   payableAccountCode: string | null;
   status: BillStatus;
+  /** Tanda T9 (documentos): recepción, documento origen, procedencia y cotejo con albaranes. */
+  receptionDate: string | null;
+  incomingDocumentId: string | null;
+  source: SupplierBillSource;
+  matchStatus: SupplierBillMatchStatus;
+  /** true con adjunto en línea (data:) o con clave `org/…` del almacén de documentos. */
   hasAttachment: boolean;
   journalEntryId: string | null;
   paidJournalEntryId: string | null;
@@ -305,8 +367,22 @@ function toLineDto(row: BillRow["lines"][number]): SupplierBillLineDto {
     retention: money(row.retention),
     costCenterId: row.costCenterId ?? null,
     investmentGood: row.investmentGood,
-    fixedAssetId: row.fixedAssetId ?? null
+    fixedAssetId: row.fixedAssetId ?? null,
+    quantity: row.quantity === null || row.quantity === undefined ? null : dec(row.quantity).toFixed(3),
+    unitPrice: row.unitPrice === null || row.unitPrice === undefined ? null : dec(row.unitPrice).toFixed(4),
+    deliveryNoteRef: row.deliveryNoteRef ?? null
   };
+}
+
+/** Catálogo cerrado de payables-types: una fila con un valor fuera de catálogo (nunca escrito por el API) se lee como el valor por defecto. */
+function sourceOf(value: string | null | undefined): SupplierBillSource {
+  return (SUPPLIER_BILL_SOURCES as readonly string[]).includes(value ?? "") ? (value as SupplierBillSource) : "manual";
+}
+
+const MATCH_STATUSES: readonly SupplierBillMatchStatus[] = ["none", "partial", "full", "variance"];
+
+function matchStatusOf(value: string | null | undefined): SupplierBillMatchStatus {
+  return (MATCH_STATUSES as readonly string[]).includes(value ?? "") ? (value as SupplierBillMatchStatus) : "none";
 }
 
 function toDto(row: BillRow): SupplierBillDto {
@@ -329,6 +405,10 @@ function toDto(row: BillRow): SupplierBillDto {
     total: money(row.total),
     payableAccountCode: row.suggestedAccountCode ?? null,
     status: row.status as BillStatus,
+    receptionDate: dayOf(row.receptionDate),
+    incomingDocumentId: row.incomingDocumentId ?? null,
+    source: sourceOf(row.source),
+    matchStatus: matchStatusOf(row.matchStatus),
     hasAttachment: Boolean(row.documentObjectKey),
     journalEntryId: row.journalEntryId ?? null,
     paidJournalEntryId: row.paidJournalEntryId ?? null,
@@ -526,12 +606,39 @@ async function loadEntryDto(tx: Tx, organizationId: string, journalEntryId: stri
   };
 }
 
-export async function getSupplierBillAttachment(propertyId: string, billId: string): Promise<{ inline: boolean; documentObjectKey: string | null; mimeType: string | null; fileName: string | null; base64: string | null }> {
+export type SupplierBillAttachment = {
+  inline: boolean;
+  documentObjectKey: string | null;
+  mimeType: string | null;
+  fileName: string | null;
+  base64: string | null;
+  /** Tanda T9: clave `org/…` del almacén de documentos → documento y ruta de descarga binaria (GET …/documents/:id/file). */
+  documentId?: string;
+  downloadPath?: string;
+};
+
+/** Documento de una clave del almacén `org/<org>/prop/<prop>/doc/<doc>/<sha>.<ext>` (null si no tiene esa forma). */
+export function documentIdOfStorageKey(key: string): string | null {
+  const match = /^org\/[^/]+\/prop\/([^/]+)\/doc\/([^/]+)\/[a-f0-9]{64}\.[a-z]+$/.exec(key);
+  return match ? match[2]! : null;
+}
+
+export function documentDownloadPath(propertyId: string, documentId: string): string {
+  return `/properties/${propertyId}/documents/${documentId}/file`;
+}
+
+export async function getSupplierBillAttachment(propertyId: string, billId: string): Promise<SupplierBillAttachment> {
   const row = await requireBill(prisma, propertyId, billId);
   const key = row.documentObjectKey ?? null;
   if (!key) return { inline: false, documentObjectKey: null, mimeType: null, fileName: null, base64: null };
   const match = /^data:([^;]+);name=([^;]*);base64,(.*)$/s.exec(key);
-  if (!match) return { inline: false, documentObjectKey: key, mimeType: null, fileName: null, base64: null };
+  if (!match) {
+    // Tanda T9: la clave del almacén de documentos no se sirve aquí (los bytes salen por la
+    // descarga binaria auditada del módulo de documentos); se devuelve el documento y su ruta.
+    const documentId = row.incomingDocumentId ?? documentIdOfStorageKey(key);
+    if (documentId) return { inline: false, documentObjectKey: key, mimeType: null, fileName: null, base64: null, documentId, downloadPath: documentDownloadPath(row.propertyId, documentId) };
+    return { inline: false, documentObjectKey: key, mimeType: null, fileName: null, base64: null };
+  }
   return { inline: true, documentObjectKey: null, mimeType: match[1]!, fileName: decodeURIComponent(match[2]!), base64: match[3]! };
 }
 
@@ -683,73 +790,139 @@ export async function assertSupplierBillPaymentAuthorized(
   return { creator, approver, controllerException };
 }
 
-export async function createSupplierBill(input: CommandInput & { body: unknown }): Promise<SupplierBillDto> {
+function lineCreateData(l: ComputedBillLine): Prisma.SupplierBillLineCreateWithoutSupplierBillInput {
+  return {
+    lineNo: l.lineNo,
+    description: l.description,
+    expenseAccountCode: l.expenseAccountCode,
+    base: l.base,
+    taxRate: l.taxRate,
+    quota: l.quota,
+    retention: l.retention,
+    costCenterId: l.costCenterId,
+    investmentGood: l.investmentGood,
+    quantity: l.quantity,
+    unitPrice: l.unitPrice,
+    deliveryNoteRef: l.deliveryNoteRef
+  };
+}
+
+export type CreateSupplierBillInTxInput = {
+  context: UserContext;
+  propertyId: string;
+  /** Organización del centro (se resuelve en la transacción si falta). */
+  organizationId?: string;
+  body: unknown;
+  /** Tanda T9: `null` para altas sin persona (decisión autónoma); por defecto context.userId (SoD: registrador). */
+  createdByUserId?: string | null;
+  /**
+   * Tanda T9 (corrector SEC-01): solo el flujo de documentos (actions.service.ts) enlaza un
+   * IncomingDocument y fija `source` digitized | e_invoice; por HTTP ambos campos se rechazan
+   * (400) y el documento enlazado se recomprueba SIEMPRE contra la organización y el centro
+   * de la factura (404 opaco DOCUMENT_NOT_FOUND).
+   */
+  origin?: "documents";
+};
+
+type LinkedDocumentFields = { incomingDocumentId?: string | null; source?: SupplierBillSource };
+
+/** SEC-01: por HTTP `incomingDocumentId` y `source` (salvo manual) no se aceptan: los fija el flujo de documentos. */
+export function assertLinkedDocumentFieldsAllowed(data: LinkedDocumentFields, origin: "documents" | undefined): void {
+  if (origin === "documents") return;
+  if (data.incomingDocumentId) {
+    throw typed(400, "VALIDATION_ERROR", "incomingDocumentId lo fija el flujo de documentos (aprobar el documento entrante): no se admite en el cuerpo.", { field: "incomingDocumentId" });
+  }
+  if (data.source !== undefined && data.source !== "manual") {
+    throw typed(400, "VALIDATION_ERROR", "source solo admite «manual» al registrar a mano; digitized y e_invoice los fija el flujo de documentos.", { field: "source", value: data.source });
+  }
+}
+
+/** SEC-01: el documento enlazado debe existir, no estar purgado y colgar de la organización y del centro de la factura. */
+async function assertLinkedDocumentOwned(tx: Tx, input: { organizationId: string; propertyId: string; incomingDocumentId: string | null | undefined }): Promise<void> {
+  if (!input.incomingDocumentId) return;
+  const document = await tx.incomingDocument.findFirst({ where: { id: input.incomingDocumentId, organizationId: input.organizationId, propertyId: input.propertyId, deletedAt: null }, select: { id: true } });
+  if (!document) throw typed(404, "DOCUMENT_NOT_FOUND", "Documento no encontrado.", { incomingDocumentId: input.incomingDocumentId });
+}
+
+/**
+ * Tanda T9 (documentos): alta de la factura DENTRO de una transacción ajena
+ * (approve del documento: factura + transición del documento en el mismo
+ * commit). Mismas validaciones que createSupplierBill (cabecera, totales,
+ * cuentas, duplicado); NO audita: el llamante registra SUPPLIER_BILL_REGISTERED
+ * tras el commit con `auditSupplierBillRegistered`.
+ */
+export async function createSupplierBillInTx(tx: Tx, input: CreateSupplierBillInTxInput): Promise<SupplierBillDto> {
   requirePermissions(input.context, ["payables.create"]);
   const data = parseOr400(billSchema, input.body ?? {}, "Factura recibida");
-  const organizationId = await organizationOfProperty(prisma, input.propertyId);
-  const row = await prisma.$transaction(async (tx) => {
-    const header = await resolveHeader(tx, organizationId, data);
-    const totals = computeBillTotals(data.lines, header.retentionRate, data.expectedTotal ?? null);
-    await assertLineAccounts(tx, organizationId, totals.lines);
-    await assertNotDuplicate(tx, { organizationId, supplierId: header.supplierId, supplierTaxId: header.supplierTaxId, invoiceNumber: data.invoiceNumber, issueDate: data.issueDate });
-    const documentObjectKey = data.attachment ? inlineAttachmentUri(data.attachment) : (data.documentObjectKey ?? null);
-    return tx.supplierBill.create({
-      data: {
-        propertyId: input.propertyId,
-        organizationId,
-        supplierId: header.supplierId,
-        supplierName: header.supplierName,
-        supplierTaxId: header.supplierTaxId,
-        invoiceNumber: data.invoiceNumber,
-        issueDate: data.issueDate,
-        dueDate: header.dueDate,
-        baseTotal: totals.baseTotal,
-        taxTotal: totals.taxTotal,
-        retentionRate: header.retentionRate,
-        retentionAmount: totals.retentionAmount,
-        rowCode: header.retentionRowCode,
-        total: totals.total,
-        suggestedAccountCode: data.payableAccountCode ?? defaultPayableAccount(totals.lines),
-        roomId: data.roomId ?? null,
-        status: "draft",
-        documentObjectKey,
-        // Tanda 8a (SoD): the registrar never approves nor pays its own bill.
-        createdByUserId: input.context.userId,
-        lines: {
-          create: totals.lines.map((l) => ({
-            lineNo: l.lineNo,
-            description: l.description,
-            expenseAccountCode: l.expenseAccountCode,
-            base: l.base,
-            taxRate: l.taxRate,
-            quota: l.quota,
-            retention: l.retention,
-            costCenterId: l.costCenterId,
-            investmentGood: l.investmentGood
-          }))
-        }
-      },
-      include: { lines: true }
-    });
+  assertLinkedDocumentFieldsAllowed(data, input.origin);
+  const organizationId = input.organizationId ?? (await organizationOfProperty(tx, input.propertyId));
+  await assertLinkedDocumentOwned(tx, { organizationId, propertyId: input.propertyId, incomingDocumentId: data.incomingDocumentId });
+  const header = await resolveHeader(tx, organizationId, data);
+  const totals = computeBillTotals(data.lines, header.retentionRate, data.expectedTotal ?? null);
+  await assertLineAccounts(tx, organizationId, totals.lines);
+  await assertNotDuplicate(tx, { organizationId, supplierId: header.supplierId, supplierTaxId: header.supplierTaxId, invoiceNumber: data.invoiceNumber, issueDate: data.issueDate });
+  const documentObjectKey = data.attachment ? inlineAttachmentUri(data.attachment) : (data.documentObjectKey ?? null);
+  const row = await tx.supplierBill.create({
+    data: {
+      propertyId: input.propertyId,
+      organizationId,
+      supplierId: header.supplierId,
+      supplierName: header.supplierName,
+      supplierTaxId: header.supplierTaxId,
+      invoiceNumber: data.invoiceNumber,
+      issueDate: data.issueDate,
+      dueDate: header.dueDate,
+      baseTotal: totals.baseTotal,
+      taxTotal: totals.taxTotal,
+      retentionRate: header.retentionRate,
+      retentionAmount: totals.retentionAmount,
+      rowCode: header.retentionRowCode,
+      total: totals.total,
+      suggestedAccountCode: data.payableAccountCode ?? defaultPayableAccount(totals.lines),
+      roomId: data.roomId ?? null,
+      status: "draft",
+      documentObjectKey,
+      // Tanda 8a (SoD): the registrar never approves nor pays its own bill.
+      createdByUserId: input.createdByUserId === undefined ? input.context.userId : input.createdByUserId,
+      // Tanda T9 (documentos): recepción, documento origen y procedencia.
+      receptionDate: data.receptionDate ?? null,
+      incomingDocumentId: data.incomingDocumentId ?? null,
+      source: data.source ?? "manual",
+      lines: { create: totals.lines.map(lineCreateData) }
+    },
+    include: { lines: true }
   });
-  const dto = toDto(row);
+  return toDto(row);
+}
+
+/** Auditoría del alta (tras el commit): la usan createSupplierBill y el approve del documento (T9-08). */
+export function auditSupplierBillRegistered(dto: SupplierBillDto, input: { context: UserContext; propertyId: string; correlationId: string; extra?: Record<string, unknown> }): void {
   recordAuditEvent({
-    organizationId,
+    organizationId: dto.organizationId,
     propertyId: input.propertyId,
     actorUserId: input.context.userId,
     actorType: "user",
     action: "SUPPLIER_BILL_REGISTERED",
     entityType: "supplier_bill",
     entityId: dto.id,
-    afterJson: { supplierName: dto.supplierName, supplierTaxId: dto.supplierTaxId, invoiceNumber: dto.invoiceNumber, total: dto.total, status: dto.status },
+    afterJson: { supplierName: dto.supplierName, supplierTaxId: dto.supplierTaxId, invoiceNumber: dto.invoiceNumber, total: dto.total, status: dto.status, source: dto.source, incomingDocumentId: dto.incomingDocumentId, ...(input.extra ?? {}) },
     correlationId: input.correlationId
   });
+}
+
+export async function createSupplierBill(input: CommandInput & { body: unknown }): Promise<SupplierBillDto> {
+  requirePermissions(input.context, ["payables.create"]);
+  const organizationId = await organizationOfProperty(prisma, input.propertyId);
+  const dto = await prisma.$transaction((tx) => createSupplierBillInTx(tx, { context: input.context, propertyId: input.propertyId, organizationId, body: input.body }));
+  auditSupplierBillRegistered(dto, { context: input.context, propertyId: input.propertyId, correlationId: input.correlationId });
   return dto;
 }
 
 export async function updateSupplierBill(input: CommandInput & { billId: string; body: unknown }): Promise<SupplierBillDto> {
   requirePermissions(input.context, ["payables.create"]);
   const data = parseOr400(billSchema, input.body ?? {}, "Factura recibida");
+  // SEC-01: por HTTP el enlace al documento y la procedencia no se tocan (400); el PATCH conserva los valores.
+  assertLinkedDocumentFieldsAllowed(data, undefined);
   const row = await prisma.$transaction(async (tx) => {
     const before = await requireBill(tx, input.propertyId, input.billId);
     assertStatus(before, ["draft"], "modificar");
@@ -779,19 +952,12 @@ export async function updateSupplierBill(input: CommandInput & { billId: string;
         suggestedAccountCode: data.payableAccountCode ?? defaultPayableAccount(totals.lines),
         roomId: data.roomId ?? null,
         documentObjectKey,
-        lines: {
-          create: totals.lines.map((l) => ({
-            lineNo: l.lineNo,
-            description: l.description,
-            expenseAccountCode: l.expenseAccountCode,
-            base: l.base,
-            taxRate: l.taxRate,
-            quota: l.quota,
-            retention: l.retention,
-            costCenterId: l.costCenterId,
-            investmentGood: l.investmentGood
-          }))
-        }
+        // Tanda T9 (documentos): un cliente que no envía el campo conserva el valor; el enlace al
+        // documento y la procedencia nunca cambian por PATCH (SEC-01: los fija el flujo de documentos).
+        receptionDate: data.receptionDate === undefined ? before.receptionDate : data.receptionDate,
+        incomingDocumentId: before.incomingDocumentId,
+        source: before.source,
+        lines: { create: totals.lines.map(lineCreateData) }
       },
       include: { lines: true }
     });
@@ -811,6 +977,40 @@ export async function updateSupplierBill(input: CommandInput & { billId: string;
   return dto;
 }
 
+export type MatchGuardBill = { matchStatus: string; lines: ReadonlyArray<{ expenseAccountCode: string }> };
+
+/**
+ * Tanda T9 (§7.1): decisión pura de la guarda `requireMatchForApproval`:
+ * `variance` bloquea siempre; `none` bloquea solo con líneas de compra (60x) y
+ * albaranes del proveedor pendientes de cotejar (`pendingReceipts` > 0).
+ * Devuelve el motivo o null cuando la aprobación puede seguir.
+ */
+export function matchGuardReason(bill: MatchGuardBill, settings: { requireMatchForApproval: boolean } | null | undefined, pendingReceipts: number): "variance" | "pending_receipts" | null {
+  if (!settings?.requireMatchForApproval) return null;
+  if (bill.matchStatus === "variance") return "variance";
+  if (bill.matchStatus === "none" && bill.lines.some((line) => line.expenseAccountCode.startsWith("60")) && pendingReceipts > 0) return "pending_receipts";
+  return null;
+}
+
+async function assertMatchForApproval(db: Tx | typeof prisma, bill: BillRow): Promise<void> {
+  const organizationId = bill.organizationId;
+  if (!organizationId) return;
+  const settings = await db.documentSettings.findUnique({ where: { organizationId }, select: { requireMatchForApproval: true } });
+  if (!settings?.requireMatchForApproval) return;
+  const supplierFilter: Prisma.GoodsReceiptWhereInput[] = [...(bill.supplierId ? [{ supplierId: bill.supplierId }] : []), ...(bill.supplierTaxId ? [{ supplierTaxId: bill.supplierTaxId }] : [])];
+  const pending = supplierFilter.length > 0 ? await db.goodsReceipt.count({ where: { organizationId, status: { in: ["received", "matched"] }, OR: supplierFilter } }) : 0;
+  const reason = matchGuardReason({ matchStatus: bill.matchStatus, lines: bill.lines }, settings, pending);
+  if (!reason) return;
+  throw typed(
+    409,
+    "SUPPLIER_BILL_MATCH_REQUIRED",
+    reason === "variance"
+      ? "El cotejo con los albaranes tiene diferencias fuera de tolerancia: resuélvelas antes de aprobar la factura."
+      : `El proveedor tiene ${pending} albarán(es) pendientes de cotejar y la factura tiene líneas de compra: coteja antes de aprobar.`,
+    { matchStatus: bill.matchStatus, reason, pendingReceipts: pending }
+  );
+}
+
 export async function approveSupplierBill(input: CommandInput & { billId: string; body?: unknown }): Promise<SupplierBillDto> {
   const body = parseOr400(approveSchema, input.body ?? {}, "Aprobación");
   // Tanda 8a: the gate runs on the loaded bill BEFORE the transaction (the
@@ -821,6 +1021,8 @@ export async function approveSupplierBill(input: CommandInput & { billId: string
     { context: input.context, bill: { id: loaded.id, propertyId: loaded.propertyId, createdByUserId: loaded.createdByUserId ?? null, total: loaded.total }, supervisorAuthorizationId: body?.supervisorAuthorizationId ?? null },
     input.rbac ?? defaultRbacDeps
   );
+  // Tanda T9 (§7.1): guarda opcional por organización (DocumentSettings.requireMatchForApproval).
+  await assertMatchForApproval(prisma, loaded);
   const row = await prisma.$transaction(async (tx) => {
     const before = await requireBill(tx, input.propertyId, input.billId);
     assertStatus(before, ["draft"], "aprobar");
@@ -873,7 +1075,10 @@ export async function postSupplierBill(input: CommandInput & { billId: string; b
       quota: dec(l.quota),
       retention: dec(l.retention),
       costCenterId: l.costCenterId ?? null,
-      investmentGood: l.investmentGood
+      investmentGood: l.investmentGood,
+      quantity: l.quantity === null || l.quantity === undefined ? null : dec(l.quantity),
+      unitPrice: l.unitPrice === null || l.unitPrice === undefined ? null : dec(l.unitPrice),
+      deliveryNoteRef: l.deliveryNoteRef ?? null
     }));
     const totals: BillTotals = {
       lines,
@@ -907,7 +1112,8 @@ export async function postSupplierBill(input: CommandInput & { billId: string; b
     await writeInputVatRows(tx, {
       organizationId,
       propertyId: input.propertyId,
-      date: before.issueDate,
+      // Tanda T9 (§7.1): el libro de recibidas fecha por la recepción cuando se conoce (deuda de la Tanda 6).
+      date: before.receptionDate ?? before.issueDate,
       number: before.invoiceNumber,
       counterpartyNif: before.supplierTaxId,
       counterpartyName: before.supplierName ?? null,
@@ -954,6 +1160,26 @@ export async function postSupplierBill(input: CommandInput & { billId: string; b
       data: { status: "posted", journalEntryId: entry.id, postedAt: new Date(), suggestedAccountCode: payableAccountCode },
       include: { lines: true }
     });
+    // Tanda T9 (§6.1 fila approved → posted): el documento enlazado sigue a la factura en el mismo commit,
+    // acotado a la organización y al centro de la factura (SEC-01) y con su retentionUntil (§3.2: 31/12 del
+    // ejercicio + 6 años; RV-04: sin ella el job de retención nunca lo bloquearía ni purgaría).
+    if (before.incomingDocumentId) {
+      const document = await tx.incomingDocument.findFirst({
+        where: { id: before.incomingDocumentId, organizationId, propertyId: input.propertyId, status: "approved", deletedAt: null },
+        select: { id: true, kind: true, documentDate: true, capturedAt: true, extendedRetention: true, guestId: true }
+      });
+      if (document) {
+        const settings = await tx.documentSettings.findUnique({ where: { organizationId }, select: { retentionYearsDefault: true, letterRetentionYears: true, extendedRetentionYears: true } });
+        const retentionUntil = retentionUntilFor({
+          kind: retentionKindOf(document.kind),
+          documentDate: before.issueDate ?? document.documentDate ?? document.capturedAt,
+          extendedRetention: document.extendedRetention,
+          personalData: document.guestId !== null,
+          settings: settings ? { retentionYears: settings.retentionYearsDefault, letterRetentionYears: settings.letterRetentionYears, extendedRetentionYears: settings.extendedRetentionYears } : null
+        });
+        await tx.incomingDocument.updateMany({ where: { id: document.id, status: "approved" }, data: { status: "posted", postedAt: row.postedAt, retentionUntil } });
+      }
+    }
     return { row, entry };
   });
   const dto = await getSupplierBill(input.propertyId, posted.row.id);
@@ -1078,7 +1304,7 @@ export async function cancelSupplierBill(input: CommandInput & { billId: string;
   const data = parseOr400(cancelSchema, input.body ?? {}, "Anulación");
   const result = await prisma.$transaction(async (tx) => {
     const before = await requireBill(tx, input.propertyId, input.billId);
-    if (before.status === "cancelled") return { row: before, reversal: null as LedgerEntryResult | null };
+    if (before.status === "cancelled") return { row: before, reversal: null as LedgerEntryResult | null, documentReturned: null as { id: string; registryNumber: string } | null };
     assertStatus(before, ["draft", "approved", "posted"], "anular");
     const organizationId = before.organizationId ?? (await organizationOfProperty(tx, input.propertyId));
     let reversal: LedgerEntryResult | null = null;
@@ -1100,7 +1326,35 @@ export async function cancelSupplierBill(input: CommandInput & { billId: string;
       await tx.withholdingTaxRecord.deleteMany({ where: { sourceType: "vendor_invoice", sourceId: before.id } });
     }
     const row = await tx.supplierBill.update({ where: { id: before.id }, data: { status: "cancelled", cancelledAt: new Date() }, include: { lines: true } });
-    return { row, reversal };
+    // Tanda T9 (§6.1 fila approved · posted → in_review [S]): el documento enlazado (de la misma organización
+    // y centro, SEC-01) vuelve a revisión sin la factura anulada (supplierBillId null, RV-19), con la razón en
+    // rejectNote y aviso in-app a quien lo decidió; la retención vuelve a fijarse al decidir de nuevo.
+    let documentReturned: { id: string; registryNumber: string } | null = null;
+    if (before.incomingDocumentId) {
+      const document = await tx.incomingDocument.findFirst({
+        where: { id: before.incomingDocumentId, organizationId, propertyId: input.propertyId, status: { in: ["approved", "posted"] }, deletedAt: null },
+        select: { id: true, registryNumber: true, decidedBy: true, propertyId: true, organizationId: true }
+      });
+      if (document) {
+        const note = `Factura ${before.invoiceNumber ?? before.id} anulada: ${data.reason}`.slice(0, 2000);
+        await tx.incomingDocument.update({ where: { id: document.id }, data: { status: "in_review", postedAt: null, decidedAt: null, decidedBy: null, supplierBillId: null, retentionUntil: null, rejectReason: null, rejectNote: note } });
+        if (document.decidedBy) {
+          await tx.notification.create({
+            data: {
+              organizationId: document.organizationId,
+              propertyId: document.propertyId,
+              userId: document.decidedBy,
+              type: "system",
+              title: `Factura anulada: el documento ${document.registryNumber} vuelve a revisión`,
+              body: `La factura ${before.invoiceNumber ?? before.id} se ha anulado (${data.reason}). El documento ${document.registryNumber} vuelve a «en revisión» para decidir de nuevo.`,
+              status: "unread"
+            }
+          });
+        }
+        documentReturned = { id: document.id, registryNumber: document.registryNumber };
+      }
+    }
+    return { row, reversal, documentReturned };
   });
   const dto = await getSupplierBill(input.propertyId, result.row.id);
   recordAuditEvent({
@@ -1111,7 +1365,7 @@ export async function cancelSupplierBill(input: CommandInput & { billId: string;
     action: "SUPPLIER_BILL_CANCELLED",
     entityType: "supplier_bill",
     entityId: dto.id,
-    afterJson: { status: dto.status, reason: data.reason, reversalJournalEntryId: result.reversal?.id ?? null },
+    afterJson: { status: dto.status, reason: data.reason, reversalJournalEntryId: result.reversal?.id ?? null, incomingDocumentId: dto.incomingDocumentId, documentReturnedToReview: result.documentReturned },
     correlationId: input.correlationId
   });
   if (result.reversal) {

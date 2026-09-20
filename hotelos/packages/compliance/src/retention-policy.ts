@@ -62,6 +62,17 @@ export const DEFAULT_RETENTION_POLICIES: RetentionPolicy[] = [
     mode: "scheduled_delete",
     retentionMonths: 1,
     legalHoldAllowed: false
+  },
+  {
+    // Tanda T9 (documentos digitalizados, diseño §3.2 / §7.5): 6 años desde el
+    // 31/12 del ejercicio (CCom art. 30; 72 meses como referencia), fijados por
+    // tipo en apps/api/src/modules/documents/retention-rules.ts; el job del API
+    // bloquea al vencer y purga 12 meses después salvo legalHold.
+    entityType: "incoming_document",
+    mode: "manual_review",
+    retentionMonths: 72,
+    legalHoldAllowed: true,
+    auditAction: "DOCUMENT_PURGED"
   }
 ];
 

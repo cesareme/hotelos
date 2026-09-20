@@ -501,7 +501,9 @@ AUDIT sin categoría fiscal), 705.1 −218,18, 705.2 −56,81, 705.3 −184,71.
 | `payments.clientRequestId/methodCode/reversalOfId/journalEntryId` | lote cobros (`postPayment` idempotente y transaccional) | arqueo, tesorería, conciliación bancaria, liquidación de datáfono |
 | `pos_orders.invoiceId/journalEntryId/cashClosureId/taxTotal/businessDate` | lote TPV | arqueo, libro de emitidas |
 | `cash_closures` | lote TPV/arqueo | tesorería, conciliación |
-| `suppliers` (nuevos campos), `supplier_bills`, `supplier_bill_lines`, `expenses` | lote proveedores y gastos | 303 (soportado), 347, 111/115, tesorería (pagos pendientes), amortizaciones (`investmentGood`) |
+| `suppliers` (nuevos campos), `supplier_bills`, `supplier_bill_lines`, `expenses` | lote proveedores y gastos; **Tanda T9** (documentos): `supplier_bills.reception_date / incoming_document_id / source (manual · digitized · e_invoice) / match_status` y `supplier_bill_lines.quantity / unit_price / delivery_note_ref` los escribe también el flujo de documentos (`createSupplierBillInTx` desde `POST …/documents/:id/approve { action: create_supplier_bill }`, factura en `draft`) y `bill-matching.service.ts` (`match_status`); `postSupplierBill` pasa el documento enlazado `approved → posted` en la misma transacción y `cancelSupplierBill` lo devuelve a `in_review` con aviso in-app | 303 (soportado), 347, 111/115, tesorería (pagos pendientes), amortizaciones (`investmentGood`); el libro de recibidas fecha por `receptionDate ?? issueDate` (T9, deuda de la Tanda 6 cerrada) |
+| `incoming_documents`, `document_files`, `document_pages`, `document_extractions`, `document_actions`, `document_dispatch_batches`, `document_settings` (Tanda T9, migración `20260920120000_documentos_digitalizacion`; runbook `docs/runbooks/documentos-digitalizacion.md`) | módulo `documents` (`documents.service.ts` captura/registro/almacén; `pipeline.service.ts` clasificación/extracción/cotejo/propuesta; `workflow.service.ts` + `actions.service.ts` flujo centro → oficina; `archive.service.ts`, `retention.service.ts`, `documents-retention.job.ts` bloqueo/purga; `settings.service.ts`; buzón `email-documents.service.ts`; `gdpr.service.ts` pseudonimiza vía `eraseGuestDocuments`); nunca el diario directamente | payables (factura desde documento, `documentObjectKey` → descarga binaria), cola Hoy › Pendientes de la IA, KPIs de documentos, front Digitalizar / Documentos / Archivo |
+| `goods_receipts`, `goods_receipt_lines`, `bill_line_matches` (Tanda T9) | `documents/goods-receipts.service.ts` (alta manual `POST /properties/:propertyId/goods-receipts` o `approve { action: create_goods_receipt }`; el `StockMovement receipt` se escribe en la misma transacción con `recordStockMovement(…, tx)`, solo con artículo y ubicación) y `documents/bill-matching.service.ts` (`POST …/supplier-bills/:billId/match`: `bill_line_matches`, `supplier_bills.match_status`, `goods_receipts.status billed`) | facturas recibidas (`matchStatus`, guarda `requireMatchForApproval`), KPIs «facturas sin albarán / albaranes sin factura», front Operaciones › Compras › Recepciones |
 | `fixed_assets` (nuevos campos), `depreciation_runs`, `depreciation_lines` | lote amortizaciones | balance, PyG, memoria (cuadro de inmovilizado) |
 | `payroll_periods` (nuevos campos) | lote nóminas | PyG, 111/190, USALI (personal por departamento vía `costCenterId`) |
 | `payroll_cost_imports`, `payroll_cost_lines`, `payroll_cost_references` (Tanda 6c, §18) | lote coste de personal importado (`payroll/cost-import.service.ts`: la previsualización nunca escribe; crear / contabilizar / revertir en una transacción bajo advisory lock; CLI `payroll:import-cost`) | informe `GET /payroll/cost-report` (líneas de lotes `posted` + referencias), USALI y PyG por centro / reparto (headcount de respaldo cuando no hay recibos: `employeesReported` o Σ `headcount`), front Nóminas › Coste de personal |
@@ -858,9 +860,12 @@ Qué quedó cableado en el working tree (sin commit):
   `registerFinancialStatementsRoutes`. Los seis handlers TPV y los cuatro de
   night audit inline se retiraron (mismos paths, ahora en los módulos); sus
   entradas del manifiesto viven en el primer array de cada partial. Las rutas
-  heredadas del diario (`/organizations/:id/journal-entries`, `/journal-entries/*`),
-  de proveedores (`/supplier-bills/drafts`) y de modelos (`/accounting/reports/modelo-*`,
-  ahora también con `?period=`) siguen registradas y numeran por el motor.
+  heredadas del diario (`/organizations/:id/journal-entries`, `/journal-entries/*`)
+  y de modelos (`/accounting/reports/modelo-*`, ahora también con `?period=`)
+  siguen registradas y numeran por el motor; las de proveedores
+  (`GET /properties/:propertyId/supplier-bills`, `POST /supplier-bills/drafts`)
+  se retiraron en la Tanda T9 (lote T9-15): responden 404 y la factura de
+  proveedor solo nace por `payables` o desde un documento digitalizado.
   `GET /organizations/:id/accounts` responde 409 `CHART_NOT_PROVISIONED` sin plan.
 - **Permisos**: spread de los diez partials en `security/route-permissions.ts`;
   el contract test descubre cualquier `*route-permissions.partial.ts` (accounting
@@ -1198,7 +1203,11 @@ tener sentido cuando los partials de PMS empezaron a llevar rutas con importes):
 `payroll` (coste de personal importado, Tanda 6c, §18.7) + **15 del partial
 `accounting (ledger-import)`** (importación desde Sage 200, Tanda 7c, §19:
 `modules/accounting/ledger-import-route-permissions.partial.ts`, envuelto con
-`requireAccountingReportsKey`; la lectura de la plantilla incluida). Fuera de
+`requireAccountingReportsKey`; la lectura de la plantilla incluida) + **5 filas
+de la Tanda T9 en el partial `payables`** (recepciones de mercancía y cotejo) y
+**30 del módulo `documents`** (cuatro partials; tabla exacta en
+`docs/runbooks/documentos-digitalizacion.md` §6.1, atada por
+`tests/documentos-docs-contract.test.mjs`). Fuera de
 Finanzas pero en el mismo manifiesto: 6 del partial `pms` (importación masiva de
 reservas, Tanda 7) y 15 del partial `pms-shadow` (OPERA Cloud en modo sombra, Tanda
 7b), documentados en `docs/api-contracts.md` y no en esta tabla.
@@ -1225,9 +1234,15 @@ reservas, Tanda 7) y 15 del partial `pms-shadow` (OPERA Cloud en modo sombra, Ta
 | night-audit | `GET …/night-audit/business-date`, `GET …/runs`, `GET …/runs/:runId`, `GET …/preflight` | `analytics.read` | low |
 | | `POST …/night-audit/run` | `accounting.journal.post` | high |
 | payables | `GET|POST /organizations/:organizationId/payables/suppliers`, `GET|PATCH …/suppliers/:supplierId` | `procurement.read` (GET) · `procurement.manage` | medium · high |
-| | `GET …/payables/supplier-bills`, `GET …/supplier-bills/:billId`, `GET …/:billId/attachment`, `GET …/payables/aging`, `GET …/payables/expenses`, `GET …/expenses/:expenseId` | `accounting.reports.read` | medium |
-| | `POST …/payables/supplier-bills`, `PATCH …/supplier-bills/:billId`, `POST …/:billId/approve` | `procurement.manage` | high |
-| | `POST …/:billId/post|pay|cancel`, `POST …/expenses/:expenseId/reverse` | `accounting.journal.post` | critical |
+| | `GET …/payables/supplier-bills`, `GET …/supplier-bills/:billId`, `GET …/:billId/attachment` (Tanda T9: una clave `org/…` del almacén de documentos responde `documentId` + `downloadPath` en vez de base64), `GET …/payables/aging` | `payables.read` (Tanda 8a) | medium |
+| | `GET …/payables/expenses`, `GET …/expenses/:expenseId` | `accounting.reports.read` | medium |
+| | `POST …/payables/supplier-bills`, `PATCH …/supplier-bills/:billId` (Tanda T9: cuerpo con `receptionDate?`, `incomingDocumentId?`, `source?` y líneas con `quantity?` / `unitPrice?` / `deliveryNoteRef?`) | `payables.create` (Tanda 8a) | high |
+| | `POST …/:billId/approve` (Tanda T9: 409 `SUPPLIER_BILL_MATCH_REQUIRED` con `DocumentSettings.requireMatchForApproval`) | `payables.approve` (Tanda 8a) | high |
+| | `POST …/:billId/pay` | `payables.pay` (Tanda 8a) | critical |
+| | `POST …/:billId/post|cancel`, `POST …/expenses/:expenseId/reverse` | `accounting.journal.post` | critical |
+| | `POST …/supplier-bills/:billId/match` (Tanda T9 · cotejo a 2 vías con albaranes: `{ goodsReceiptIds?, auto? }` → `{ supplierBillId, matchStatus, matches[] }`) | `procurement.manage` | high |
+| | `POST /properties/:propertyId/goods-receipts` (Tanda T9 · recepción de mercancía, `GoodsReceiptRequest`; 409 `GOODS_RECEIPT_DUPLICATE`), `POST …/goods-receipts/:id/dispute` | `procurement.manage` | high |
+| | `GET …/goods-receipts`, `GET …/goods-receipts/:id` (Tanda T9; el diseño decía `accounting.read \| inventory.read`: el manifiesto es conjunción y `accounting.read` se remapea, así que va con la clave de inventario) | `inventory.read` | medium |
 | | `POST …/payables/expenses` | `accounting.journal.post` | high |
 | fixed-assets | `GET …/asset-register`, `GET …/asset-register/:assetId` | `assets.read` | medium |
 | | `POST …/asset-register`, `PATCH …/asset-register/:assetId` | `assets.manage` | high |
@@ -1272,16 +1287,18 @@ plan), `GET /organizations/:organizationId/journal-entries`, `POST
 (`accounting.reports.read`), `GET|POST /accounting/fiscal-years`, `GET
 …/fiscal-years/:id/status`, `POST …/fiscal-years/:id/close|reopen`, `GET|POST
 /accounting/fiscal-periods`, `POST …/fiscal-periods/:id/close|reopen`,
-`GET /finance/exchange-rates` (calendario: `accounting.read`), `GET
-/properties/:propertyId/supplier-bills` y `POST /supplier-bills/drafts`
-(borrador heredado: ya no asienta), `GET /properties/:propertyId/fixed-assets`,
+`GET /finance/exchange-rates` (calendario: `accounting.read`),
+`GET /properties/:propertyId/fixed-assets`,
 `POST /properties/:propertyId/banking/csb43/import` y `POST
 /banking/sepa/remittances` (`banking.reconcile`), `GET /payroll/contracts|periods`
 (ámbito por `resolveOrganizationScope`), `POST /payroll/contracts`, `POST
 /commissions/rules` (zod estricto), `GET /payroll/periods/:id/export`
 (vista previa de solo lectura), `GET /dashboards/finance-position`
 (`analytics.read`: cobros, pagos y tesorería visibles para toda la plantilla —
-sin cambiar, decisión pendiente).
+sin cambiar, decisión pendiente). Retiradas en la Tanda T9 (lote T9-15, dosier
+§3.4): `GET /properties/:propertyId/supplier-bills` y `POST /supplier-bills/drafts`
+(borrador heredado sin líneas, sin entrada en el manifiesto: 404); la función
+`createSupplierBillDraft` de `accounting.service.ts` queda `@deprecated` sin llamador.
 
 Plantillas (`packages/shared/src/permissions.ts`, catálogo 221 claves = 220 de
 organización + 1 de plataforma): `accountant` = lectura de calendario e
@@ -1409,6 +1426,7 @@ puede completar sin datos, cuentas o decisiones externas:
 | Nóminas | Cálculo con los porcentajes de SS del régimen general (6,35 % / 30,5 %) sin tablas de cotización reales ni `payCount` 14 pagas; exportes «compatible A3/Sage» marcados `validateWithAdvisor`; NIF de empleado no almacenado. | Datos de convenio y bases de cotización reales (o la gestoría laboral sigue llevando las nóminas y aquí solo se asientan). |
 | Email de factura | Adjunta el PDF real; sin proveedor responde `{ status: "simulated" }` y lo audita. | `EMAIL_PROVIDER` + clave (Postmark/SendGrid) en el VPS; el dispatcher de notificaciones aún no reenvía adjuntos (handoff `providers/types.ts`). |
 | Front | Ninguna pantalla consume todavía las rutas nuevas (siguiente workflow): lista en el informe de cierre §5. | Prioridad de pantallas. |
+| Documentos digitalizados (Tanda T9; `docs/runbooks/documentos-digitalizacion.md` §11) | Captura (subida, foto PWA, buzón de correo por centro, XML Facturae/UBL), registro `DOC-<centro>-<año>-<n>`, almacén `inline` (demo) / `disk` (cifrado en reposo) / `s3` (SigV4 propio, sin SDK ni cuenta real), pipeline con IA por ai-core y fallback por reglas (`AI_PROVIDER=none` → extractor de texto de PDF + regex + diccionario de proveedores de Sage; imágenes sin OCR → formulario manual), cotejo a 2 vías, factura en borrador por `payables`, recepciones, tareas con plazo, archivo con retención 6/10/4/+1 años, bloqueo y purga (job diario del líder), GDPR. Copia «digital no certificada»: el papel se conserva. | (1) `AI_PROVIDER=anthropic` + clave + `AI_MODEL` y el encargo de tratamiento (DPA / zero data retention, residencia); (2) un buzón `docs-<centro>@…` por centro (Gmail Workspace o Microsoft 365) y `GMAIL_CLIENT_ID/SECRET` o `MS_CLIENT_ID/SECRET`; (3) modelo y configuración de cada escáner (scan-to-email, 200-300 ppp, dúplex); (4) digitalización certificada: conservar el papel (defecto), homologar o integrar un software homologado (Orden EHA/962/2007 art. 7); (5) almacén en el VPS (`disk` + volumen `documents-data` + backup junto al `pg_dump`) o S3 compatible en la UE (proveedor, región, bucket, credenciales); (6) política de retención firmada (6/10 años, cartas, `legalHold`) y registro de actividades de tratamiento; (7) tolerancias de cotejo, SLA de la oficina, centros con envío automático, quién revisa y aprueba, si la oficina central también captura; (8) 50 facturas reales anonimizadas para medir acierto, latencia y coste por modelo; (9) volumen por centro y mes; (10) régimen de cada sociedad (SII, > 8 M€) para el calendario de la factura electrónica B2B (RD 238/2026). |
 
 Límites técnicos asumidos: PDF/XLSX sin diseño gráfico; contenido de las
 exportaciones inline en `GestoriaExport` (tope 20 MB, sin almacén de objetos);

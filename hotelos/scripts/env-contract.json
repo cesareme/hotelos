@@ -15,6 +15,7 @@
     "IA",
     "OTA",
     "Pagos",
+    "Documentos",
     "Wallet",
     "Sentry",
     "Frontend",
@@ -435,6 +436,119 @@
       "readBy": [
         "scripts/smoke-director-dashboard.mjs"
       ]
+    },
+    "DOCUMENT_ENCRYPT_AT_REST": {
+      "section": "Documentos",
+      "format": "bool",
+      "default": "true",
+      "doc": "true cifra cada fichero del almacén en disco con AES-256-GCM y la clave de campos (HOTELOS_FIELD_KEY → ENCRYPTION_KEY); en s3 pide cifrado del proveedor (x-amz-server-side-encryption: AES256). Sin clave válida el almacén en disco no arranca.",
+      "readBy": []
+    },
+    "DOCUMENT_MAX_BYTES": {
+      "section": "Documentos",
+      "format": "int",
+      "min": 65536,
+      "max": 1073741824,
+      "default": "26214400",
+      "doc": "Tamaño máximo por fichero capturado en bytes (25 MiB por defecto); el almacén inline aplica además su tope de 2 MiB.",
+      "readBy": []
+    },
+    "DOCUMENT_RETENTION_JOB_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el job diario de retención de documentos (bloqueo al vencer retentionUntil, purga y pseudonimización a los 12 meses). Solo actúa en el líder (RUN_SCHEDULERS).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "DOCUMENT_S3_ACCESS_KEY_ID": {
+      "section": "Documentos",
+      "required": {
+        "when": "DOCUMENT_STORAGE_KIND=s3"
+      },
+      "format": "string",
+      "doc": "Id de la clave de acceso del bucket de documentos.",
+      "readBy": []
+    },
+    "DOCUMENT_S3_BUCKET": {
+      "section": "Documentos",
+      "required": {
+        "when": "DOCUMENT_STORAGE_KIND=s3"
+      },
+      "format": "string",
+      "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$",
+      "doc": "Bucket de los documentos (privado; sin URLs firmadas públicas: el API sirve los ficheros).",
+      "example": "ehotelos-documentos",
+      "readBy": []
+    },
+    "DOCUMENT_S3_ENDPOINT": {
+      "section": "Documentos",
+      "required": {
+        "when": "DOCUMENT_STORAGE_KIND=s3"
+      },
+      "format": "url",
+      "origin": true,
+      "httpsInProduction": true,
+      "doc": "Origen del endpoint compatible S3 (path-style: <endpoint>/<bucket>/<clave>); región europea para evitar la comunicación del art. 22 RD 1619/2012.",
+      "example": "https://s3.eu-central-1.example",
+      "readBy": []
+    },
+    "DOCUMENT_S3_REGION": {
+      "section": "Documentos",
+      "required": {
+        "when": "DOCUMENT_STORAGE_KIND=s3"
+      },
+      "format": "string",
+      "doc": "Región de la firma SigV4 del endpoint S3 (p. ej. eu-central-1).",
+      "example": "eu-central-1",
+      "readBy": []
+    },
+    "DOCUMENT_S3_SECRET_ACCESS_KEY": {
+      "section": "Documentos",
+      "required": {
+        "when": "DOCUMENT_STORAGE_KIND=s3"
+      },
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Clave secreta del bucket de documentos (nunca en el repo ni en logs).",
+      "readBy": []
+    },
+    "DOCUMENT_STORAGE_DIR": {
+      "section": "Documentos",
+      "required": {
+        "when": "DOCUMENT_STORAGE_KIND=disk"
+      },
+      "format": "path",
+      "productionExample": "/var/lib/anfitorio/documents",
+      "doc": "Directorio raíz del almacén en disco (DOCUMENT_STORAGE_KIND=disk). En compose es el volumen documents-data:/var/lib/anfitorio/documents montado en api e incluido en el backup.",
+      "readBy": []
+    },
+    "DOCUMENT_STORAGE_KIND": {
+      "section": "Documentos",
+      "required": "production",
+      "format": "enum",
+      "values": [
+        "inline",
+        "disk",
+        "s3"
+      ],
+      "default": "inline",
+      "example": "inline",
+      "productionExample": "disk",
+      "doc": "Almacén de los documentos capturados: inline (base64 en la fila, tope 2 MiB, SOLO demo / desarrollo: en producción no se admite), disk (ficheros bajo DOCUMENT_STORAGE_DIR, cifrados en reposo) o s3 (endpoint compatible S3 con firma SigV4 propia, sin SDK).",
+      "readBy": []
+    },
+    "DOCUMENT_UPLOAD_BODY_LIMIT": {
+      "section": "Documentos",
+      "format": "int",
+      "min": 131072,
+      "max": 2147483647,
+      "default": "41943040",
+      "doc": "bodyLimit de Fastify en las rutas de subida de documentos (JSON base64 ≈ 4/3 del fichero): 40 MiB por defecto.",
+      "readBy": []
     },
     "EMAIL_FROM": {
       "section": "Email y mensajería",

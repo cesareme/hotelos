@@ -27,23 +27,37 @@ import { classifyInboundEmail } from "../../reputation/review-email.parser.js";
 import { PMS_SHADOW_MAX_FILE_BYTES } from "@hotelos/shared";
 import { PMS_SHADOW_ATTACHMENT_EXTENSIONS, addDaysIso, attachmentExtension, classifyFeed, localDateTime, scheduleFeedsOf, systemContext } from "../../pms-shadow/pms-shadow.rules.js";
 import { createAlertIfOpen, findProfile, ingestPmsShadowFile } from "../../pms-shadow/pms-shadow.service.js";
+// Documentos (Tanda T9 · T9-07): un buzón con propósito `documents` entrega cada adjunto
+// PDF / imagen / XML al módulo de documentos (un IncomingDocument por adjunto, source
+// `email`); el HITL de reservas no interviene y el cuerpo no se persiste (solo el snippet).
+import { documentsMaxBytes, ingestDocumentAttachments, isDocumentAttachment, type EmailDocumentsOutcome } from "./email-documents.service.js";
+import { decodeBase64, base64DecodedSize, isBase64 } from "../../../schemas/documents.schemas.js";
+
+export { DOCUMENT_ATTACHMENT_EXTENSIONS, isDocumentAttachment } from "./email-documents.service.js";
 
 const PROVIDERS = ["gmail", "microsoft", "imap", "manual"] as const;
 type Provider = (typeof PROVIDERS)[number];
 
-/** Propósito del buzón (`configJson.purpose`): extraer reservas con IA (defecto) o alimentar el modo sombra OPERA. */
-export const EMAIL_PURPOSES = ["reservation_ai", "pms_shadow"] as const;
+/** Propósito del buzón (`configJson.purpose`): extraer reservas con IA (defecto), alimentar el modo sombra OPERA o capturar documentos del centro. */
+export const EMAIL_PURPOSES = ["reservation_ai", "pms_shadow", "documents"] as const;
 export type EmailPurpose = (typeof EMAIL_PURPOSES)[number];
+
+/** Propósitos que leen adjuntos (Gmail `has:attachment`, Graph `hasAttachments`) y los descargan de forma perezosa. */
+export function purposeReadsAttachments(purpose: EmailPurpose): boolean {
+  return purpose === "pms_shadow" || purpose === "documents";
+}
 
 /** Adjunto de un correo: metadatos y descarga PEREZOSA (solo se baja lo que pasa el filtro). */
 export type NormalizedAttachment = {
   fileName: string;
   mimeType: string;
   size: number;
+  /** Gmail `body.attachmentId` · Graph `attachment.id` · manual `manual-<n>` (dedupe por (messageId, attachmentId) del buzón `documents`). */
+  attachmentId?: string;
   download: () => Promise<Buffer>;
 };
 
-type NormalizedEmail = {
+export type NormalizedEmail = {
   messageId: string;
   threadId?: string;
   from: string;
@@ -61,7 +75,18 @@ type FetchOptions = { purpose: EmailPurpose; fromDomain?: string | null };
 /** `configJson.purpose` de la conexión; cualquier valor desconocido o ausente = reservation_ai. */
 export function purposeOf(connection: { configJson?: unknown }): EmailPurpose {
   const config = connection.configJson && typeof connection.configJson === "object" && !Array.isArray(connection.configJson) ? (connection.configJson as Record<string, unknown>) : {};
-  return config.purpose === "pms_shadow" ? "pms_shadow" : "reservation_ai";
+  return config.purpose === "pms_shadow" ? "pms_shadow" : config.purpose === "documents" ? "documents" : "reservation_ai";
+}
+
+/**
+ * Consulta de Gmail según el propósito: los buzones de adjuntos (pms_shadow, documents) solo
+ * listan correos con adjunto de los últimos 3 días (Report Scheduler diario / sondeo cada 5 min)
+ * y, si hay filtro, del dominio remitente; el flujo de reservas lee 30 días sin filtro.
+ */
+export function gmailQueryFor(options: FetchOptions): string {
+  if (!purposeReadsAttachments(options.purpose)) return "newer_than:30d";
+  const domain = options.fromDomain?.trim().replace(/^@/, "");
+  return `has:attachment newer_than:3d${domain ? ` from:${domain}` : ""}`;
 }
 
 function configText(connection: { configJson?: unknown }, key: string): string | null {
@@ -256,8 +281,9 @@ function collectGmailAttachments(payload: unknown, out: Array<{ fileName: string
 
 async function fetchGmail(connection: { id: string; provider: string; oauthRefreshToken: string | null }, options: FetchOptions = { purpose: "reservation_ai" }): Promise<NormalizedEmail[]> {
   const token = await getAccessToken(connection);
-  // pms_shadow: solo correos con adjunto de los últimos 3 días (Report Scheduler diario) y, si hay filtro, del dominio remitente.
-  const query = options.purpose === "pms_shadow" ? `has:attachment newer_than:3d${options.fromDomain ? ` from:${options.fromDomain.trim().replace(/^@/, "")}` : ""}` : "newer_than:30d";
+  // pms_shadow / documents: solo correos con adjunto de los últimos 3 días y, si hay filtro, del dominio remitente (gmailQueryFor).
+  const query = gmailQueryFor(options);
+  const readsAttachments = purposeReadsAttachments(options.purpose);
   const list = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15&q=" + encodeURIComponent(query), { headers: { Authorization: `Bearer ${token}` } });
   if (!list.ok) throw new BadRequestError(`Gmail list falló: ${list.status}`);
   const ids = ((await list.json())?.messages ?? []) as Array<{ id: string }>;
@@ -269,11 +295,12 @@ async function fetchGmail(connection: { id: string; provider: string; oauthRefre
     const headers = (msg?.payload?.headers ?? []) as Array<{ name: string; value: string }>;
     const h = (n: string) => headers.find((x) => x.name.toLowerCase() === n.toLowerCase())?.value ?? "";
     const attachments: NormalizedAttachment[] =
-      options.purpose === "pms_shadow"
+      readsAttachments
         ? collectGmailAttachments(msg.payload).map((part) => ({
             fileName: part.fileName,
             mimeType: part.mimeType,
             size: part.size,
+            attachmentId: part.attachmentId,
             download: async () => {
               const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}/attachments/${part.attachmentId}`, { headers: { Authorization: `Bearer ${token}` } });
               if (!res.ok) throw new BadRequestError(`Gmail attachment falló: ${res.status}`);
@@ -289,8 +316,9 @@ async function fetchGmail(connection: { id: string; provider: string; oauthRefre
       subject: h("Subject"),
       receivedAt: new Date(Number(msg.internalDate)).toISOString(),
       // pms_shadow: el cuerpo no se lee (solo importan los adjuntos); nunca se persiste.
-      bodyText: options.purpose === "pms_shadow" ? "" : decodeGmailBody(msg.payload) || msg.snippet || "",
-      ...(options.purpose === "pms_shadow" ? { attachments } : {})
+      // documents: solo el snippet de Gmail (≈ 200 caracteres) para el InboundEmail; el cuerpo completo no se decodifica.
+      bodyText: options.purpose === "pms_shadow" ? "" : options.purpose === "documents" ? String(msg.snippet ?? "") : decodeGmailBody(msg.payload) || msg.snippet || "",
+      ...(readsAttachments ? { attachments } : {})
     });
   }
   return out;
@@ -298,7 +326,8 @@ async function fetchGmail(connection: { id: string; provider: string; oauthRefre
 
 async function fetchGraph(connection: { id: string; provider: string; oauthRefreshToken: string | null }, options: FetchOptions = { purpose: "reservation_ai" }): Promise<NormalizedEmail[]> {
   const token = await getAccessToken(connection);
-  const filter = options.purpose === "pms_shadow" ? "&$filter=hasAttachments%20eq%20true" : "";
+  const readsAttachments = purposeReadsAttachments(options.purpose);
+  const filter = readsAttachments ? "&$filter=hasAttachments%20eq%20true" : "";
   const url = `https://graph.microsoft.com/v1.0/me/messages?$top=15&$orderby=receivedDateTime%20desc&$select=id,subject,from,receivedDateTime,bodyPreview,body,hasAttachments${filter}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.body-content-type="text"' } });
   if (!res.ok) throw new BadRequestError(`Graph messages falló: ${res.status}`);
@@ -307,7 +336,7 @@ async function fetchGraph(connection: { id: string; provider: string; oauthRefre
   for (const m of items) {
     const messageId = String(m.id);
     let attachments: NormalizedAttachment[] | undefined;
-    if (options.purpose === "pms_shadow" && m.hasAttachments === true) {
+    if (readsAttachments && m.hasAttachments === true) {
       // Solo metadatos aquí (sin contentBytes); la descarga es perezosa por adjunto.
       const listed = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/attachments?$select=id,name,contentType,size`, { headers: { Authorization: `Bearer ${token}` } });
       const rows = listed.ok ? (((await listed.json())?.value ?? []) as Array<Record<string, unknown>>) : [];
@@ -317,6 +346,7 @@ async function fetchGraph(connection: { id: string; provider: string; oauthRefre
           fileName: String(row.name ?? ""),
           mimeType: String(row.contentType ?? "application/octet-stream"),
           size: Number(row.size ?? 0),
+          attachmentId: String(row.id ?? ""),
           download: async () => {
             const one = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/attachments/${String(row.id)}`, { headers: { Authorization: `Bearer ${token}` } });
             if (!one.ok) throw new BadRequestError(`Graph attachment falló: ${one.status}`);
@@ -331,7 +361,8 @@ async function fetchGraph(connection: { id: string; provider: string; oauthRefre
       from: ((m.from as { emailAddress?: { address?: string } })?.emailAddress?.address) ?? "",
       subject: String(m.subject ?? ""),
       receivedAt: String(m.receivedDateTime ?? ""),
-      bodyText: options.purpose === "pms_shadow" ? "" : String((m.body as { content?: string })?.content ?? m.bodyPreview ?? ""),
+      // documents: solo bodyPreview (≈ 255 caracteres) para el snippet del InboundEmail; el cuerpo completo no se lee.
+      bodyText: options.purpose === "pms_shadow" ? "" : options.purpose === "documents" ? String(m.bodyPreview ?? "") : String((m.body as { content?: string })?.content ?? m.bodyPreview ?? ""),
       ...(attachments ? { attachments } : {})
     });
   }
@@ -360,7 +391,7 @@ function looksLikeBooking(email: NormalizedEmail): boolean {
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
-async function processNormalizedEmail(input: { context: UserContext; connection: { id: string; propertyId: string; provider: string }; email: NormalizedEmail; correlationId: string }) {
+async function processNormalizedEmail(input: { context: UserContext; connection: { id: string; propertyId: string; provider: string; configJson?: unknown }; email: NormalizedEmail; correlationId: string }) {
   const { connection, email } = input;
   const existing = await prisma.inboundEmail.findUnique({ where: { connectionId_messageId: { connectionId: connection.id, messageId: email.messageId } } });
   if (existing && existing.status !== "received" && existing.status !== "error") return existing; // dedup
@@ -390,6 +421,14 @@ async function processNormalizedEmail(input: { context: UserContext; connection:
       create: { ...base, status: "review_notification" },
       update: { status: "review_notification", snippet, detectedSource }
     });
+  }
+
+  // Documentos (Tanda T9 · T9-07): un buzón `documents` no extrae reservas ni pasa por el
+  // HITL; cada adjunto reconocido es un IncomingDocument del centro. Va ANTES de
+  // looksLikeBooking (un albarán con «reserva» en el asunto sigue siendo un documento)
+  // y resuelve el tenant desde la conexión, no desde input.context (poller demo).
+  if (purposeOf(connection) === "documents") {
+    return (await processDocumentsEmail({ connection, email, correlationId: input.correlationId })).row;
   }
 
   if (!looksLikeBooking(email)) {
@@ -524,6 +563,83 @@ async function processShadowEmail(input: {
   return { status, ingested, failed, ignored: 0 };
 }
 
+// ---- documents: un correo del buzón del centro → un IncomingDocument por adjunto ------
+
+export type DocumentsEmailOutcome = { status: "documents_ingested" | "documents_ignored" | "seen"; ingested: number; failed: number; ignored: number };
+
+/** Estado del InboundEmail del buzón `documents` (dedupe por (connectionId, messageId): los dos son «ya visto»). */
+export const DOCUMENTS_INBOUND_STATUSES = ["documents_ingested", "documents_ignored"] as const;
+
+/**
+ * Propósito `documents` (Tanda T9 · T9-07): por mensaje NO visto, filtros opcionales
+ * `subjectContains` / `fromDomain`, y por adjunto pdf | jpg | jpeg | png | tif | tiff | xml
+ * ≤ DOCUMENT_MAX_BYTES → captureIncomingDocuments (source "email", emailMeta con
+ * messageId / attachmentId / remitente / asunto) con el contexto de sistema de la
+ * organización de la propiedad (nunca el contexto del poller). El HITL no se llama; el
+ * cuerpo se conserva solo como `snippet`; cada adjunto se descarga, se captura y se
+ * descarta. draftJson guarda el resultado por adjunto (sin bytes ni cuerpo).
+ */
+async function processDocumentsEmail(input: {
+  connection: { id: string; propertyId: string; provider: string; configJson?: unknown };
+  email: NormalizedEmail;
+  correlationId: string;
+}): Promise<{ row: Awaited<ReturnType<typeof prisma.inboundEmail.upsert>>; outcome: DocumentsEmailOutcome }> {
+  const { connection, email } = input;
+  const existing = await prisma.inboundEmail.findUnique({ where: { connectionId_messageId: { connectionId: connection.id, messageId: email.messageId } } });
+  if (existing && (DOCUMENTS_INBOUND_STATUSES as readonly string[]).includes(existing.status)) {
+    return { row: existing, outcome: { status: "seen", ingested: 0, failed: 0, ignored: 0 } };
+  }
+  const property = await prisma.property.findUnique({ where: { id: connection.propertyId }, select: { organizationId: true } });
+  if (!property) throw new BadRequestError("La propiedad del buzón no existe.");
+
+  const snippet = email.bodyText.slice(0, 280);
+  const base = {
+    connectionId: connection.id,
+    propertyId: connection.propertyId,
+    provider: connection.provider,
+    messageId: email.messageId,
+    threadId: email.threadId,
+    fromAddress: email.from,
+    subject: email.subject,
+    receivedAt: email.receivedAt ? new Date(email.receivedAt) : null,
+    snippet,
+    detectedSource: "documents"
+  };
+  const persist = async (status: "documents_ingested" | "documents_ignored", draft: Record<string, unknown>) =>
+    prisma.inboundEmail.upsert({
+      where: { connectionId_messageId: { connectionId: connection.id, messageId: email.messageId } },
+      create: { ...base, status, parseSource: "none", draftJson: draft as Prisma.InputJsonValue },
+      update: { status, parseSource: "none", draftJson: draft as Prisma.InputJsonValue, snippet, detectedSource: "documents" }
+    });
+
+  const subjectContains = configText(connection, "subjectContains");
+  const fromDomain = configText(connection, "fromDomain");
+  if (!matchesSubjectFilter(email.subject, subjectContains) || !matchesFromDomain(email.from, fromDomain)) {
+    const row = await persist("documents_ignored", { purpose: "documents", reason: "filter", subjectContains, fromDomain });
+    return { row, outcome: { status: "documents_ignored", ingested: 0, failed: 0, ignored: 1 } };
+  }
+  const maxBytes = documentsMaxBytes();
+  const candidates = (email.attachments ?? []).filter((attachment) => isDocumentAttachment(attachment, maxBytes));
+  if (candidates.length === 0) {
+    // SEC-07: de un correo sin adjunto reconocible solo se guardan conteos, extensiones y tamaños.
+    const attachmentsSummary = (email.attachments ?? []).map((a) => ({ extension: attachmentExtension(a.fileName) || null, size: a.size }));
+    const row = await persist("documents_ignored", { purpose: "documents", reason: "no_attachment", attachments: attachmentsSummary, maxBytes });
+    return { row, outcome: { status: "documents_ignored", ingested: 0, failed: 0, ignored: 1 } };
+  }
+
+  // Todos los adjuntos: los no reconocidos quedan `ignored: unsupported` en el resultado (solo extensión y tamaño).
+  const context = systemContext(property.organizationId, connection.propertyId);
+  const result: EmailDocumentsOutcome = await ingestDocumentAttachments({
+    context,
+    connection: { id: connection.id, propertyId: connection.propertyId },
+    email: { messageId: email.messageId, from: email.from, subject: email.subject, receivedAt: email.receivedAt, attachments: email.attachments },
+    correlationId: input.correlationId
+  });
+  const status = result.ingested > 0 ? "documents_ingested" : "documents_ignored";
+  const row = await persist(status, { purpose: "documents", ingested: result.ingested, ignored: result.ignored, failed: result.failed, attachments: result.attachments });
+  return { row, outcome: { status, ingested: result.ingested, failed: result.failed, ignored: result.ignored } };
+}
+
 export async function pollConnection(input: { context: UserContext; connectionId: string; correlationId: string }) {
   const connection = await prisma.emailConnection.findUnique({ where: { id: input.connectionId } });
   if (!connection) throw new BadRequestError("Conexión no encontrada.");
@@ -556,6 +672,22 @@ export async function pollConnection(input: { context: UserContext; connectionId
         ignored += outcome.ignored;
       }
       await prisma.emailConnection.update({ where: { id: connection.id }, data: { lastSyncAt: new Date(), lastError: failed > 0 ? `${failed} adjunto(s) no ingerido(s) en el último sondeo (ver el registro de cortes).` : null } });
+      return { processed, purpose, ingested, failed, ignored };
+    }
+    if (purpose === "documents") {
+      // Buzón de documentos del centro (T9-07): adjuntos → IncomingDocument; tenant desde la conexión.
+      let ingested = 0;
+      let failed = 0;
+      let ignored = 0;
+      for (const email of messages) {
+        const { outcome } = await processDocumentsEmail({ connection, email, correlationId: input.correlationId });
+        if (outcome.status === "seen") continue;
+        processed++;
+        ingested += outcome.ingested;
+        failed += outcome.failed;
+        ignored += outcome.ignored;
+      }
+      await prisma.emailConnection.update({ where: { id: connection.id }, data: { lastSyncAt: new Date(), lastError: failed > 0 ? `${failed} adjunto(s) no capturado(s) en el último sondeo (ver el registro del API).` : null } });
       return { processed, purpose, ingested, failed, ignored };
     }
     for (const email of messages) {
@@ -608,10 +740,28 @@ function isReviewAlreadyDecided(err: unknown): boolean {
   return /Cannot (approve|reject) a review item with status/.test(message);
 }
 
-/** Manual/demo ingest: paste an email and run the identical pipeline. */
-export async function ingestManualEmail(input: { context: UserContext; propertyId: string; connectionId?: string; from?: string; subject?: string; body: string; correlationId: string }) {
+/** Adjunto de la ingesta manual (T9-07): bytes en base64 estándar (misma forma que DocumentUploadFile). */
+export type ManualEmailAttachment = { fileName: string; mimeType?: string; base64: string };
+
+/** Adjuntos pegados → NormalizedAttachment con descarga en memoria y `attachmentId` manual-<n> (dedupe por mensaje). */
+export function normalizeManualAttachments(attachments: ManualEmailAttachment[] | undefined): NormalizedAttachment[] {
+  return (attachments ?? []).map((attachment, index) => {
+    if (!isBase64(attachment.base64)) throw new BadRequestError(`El adjunto «${attachment.fileName}» no es base64 válido (alfabeto estándar, sin espacios ni prefijo data:).`);
+    return {
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType?.trim() || "application/octet-stream",
+      size: base64DecodedSize(attachment.base64),
+      attachmentId: `manual-${index + 1}`,
+      download: async () => decodeBase64(attachment.base64)
+    };
+  });
+}
+
+/** Manual/demo ingest: paste an email and run the identical pipeline (con adjuntos, el buzón `documents` los captura). */
+export async function ingestManualEmail(input: { context: UserContext; propertyId: string; connectionId?: string; from?: string; subject?: string; body: string; attachments?: ManualEmailAttachment[]; correlationId: string }) {
   requirePermissions(input.context, ["integrations.connect"]);
-  if (!input.body || !input.body.trim()) throw new BadRequestError("El cuerpo del email es obligatorio.");
+  const attachments = normalizeManualAttachments(input.attachments);
+  if ((!input.body || !input.body.trim()) && attachments.length === 0) throw new BadRequestError("El cuerpo del email es obligatorio.");
   let connection = input.connectionId ? await prisma.emailConnection.findUnique({ where: { id: input.connectionId } }) : null;
   if (!connection) {
     connection = await prisma.emailConnection.findFirst({ where: { propertyId: input.propertyId, provider: "manual" } });
@@ -624,9 +774,10 @@ export async function ingestManualEmail(input: { context: UserContext; propertyI
     from: input.from?.trim() || "huesped@example.com",
     subject: input.subject?.trim() || "(sin asunto)",
     receivedAt: new Date().toISOString(),
-    bodyText: input.body
+    bodyText: input.body ?? "",
+    ...(attachments.length > 0 ? { attachments } : {})
   };
-  const row = await processNormalizedEmail({ context: input.context, connection: { id: connection.id, propertyId: connection.propertyId, provider: "manual" }, email, correlationId: input.correlationId });
+  const row = await processNormalizedEmail({ context: input.context, connection: { id: connection.id, propertyId: connection.propertyId, provider: "manual", configJson: connection.configJson }, email, correlationId: input.correlationId });
   return row;
 }
 
@@ -644,7 +795,8 @@ export async function createConnection(input: { context: UserContext; propertyId
   if (!PROVIDERS.includes(provider)) throw new BadRequestError("Proveedor no válido.");
   const isOAuth = provider === "gmail" || provider === "microsoft";
   // Tanda 7b (L3): propósito y filtros del buzón (para todos los proveedores) además de host/port/username del IMAP.
-  const purpose: EmailPurpose = input.payload.purpose === "pms_shadow" ? "pms_shadow" : "reservation_ai";
+  // Tanda T9 (T9-07): `documents` = cada adjunto PDF / imagen / XML crea un documento entrante del centro.
+  const purpose: EmailPurpose = (EMAIL_PURPOSES as readonly unknown[]).includes(input.payload.purpose) ? (input.payload.purpose as EmailPurpose) : "reservation_ai";
   const filters = {
     ...(typeof input.payload.fromDomain === "string" && input.payload.fromDomain.trim() ? { fromDomain: input.payload.fromDomain.trim() } : {}),
     ...(typeof input.payload.subjectContains === "string" && input.payload.subjectContains.trim() ? { subjectContains: input.payload.subjectContains.trim() } : {})

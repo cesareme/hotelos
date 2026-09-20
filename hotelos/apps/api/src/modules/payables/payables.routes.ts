@@ -1,6 +1,9 @@
 // Payables · HTTP surface (Finanzas 2026-09-15, lote proveedores-activos).
 //
 // Registrado desde server.ts con `registerPayablesRoutes(app)` (integrador).
+// Tanda T9 (T9-09): también registra las 4 rutas de recepciones de mercancía
+// (modules/documents/goods-receipts.routes.ts) y la ruta de cotejo
+// POST …/supplier-bills/:billId/match; sus 5 filas van en el partial de aquí.
 // Permisos: route-permissions.partial.ts — entradas fusionadas en
 // routePermissionManifest (security/route-permissions.ts); el contract test
 // lee este fichero y el partial.
@@ -34,6 +37,9 @@ import {
   updateSupplierBill
 } from "./supplier-bills.service.js";
 import { createSupplier, getSupplier, listSuppliers, updateSupplier } from "./suppliers.service.js";
+// Tanda T9 (documentos · lote T9-09): recepciones de mercancía y cotejo factura–albarán.
+import { matchSupplierBill } from "../documents/bill-matching.service.js";
+import { registerGoodsReceiptRoutes } from "../documents/goods-receipts.routes.js";
 
 type OrganizationParams = { organizationId: string };
 type SupplierParams = OrganizationParams & { supplierId: string };
@@ -142,6 +148,12 @@ export function registerPayablesRoutes(app: FastifyInstance): void {
     return getSupplierBillAttachment(params.propertyId, params.billId);
   });
 
+  // Tanda T9 (diseño §7.2 / §9): cotejo a 2 vías con albaranes (procurement.manage).
+  app.post("/properties/:propertyId/payables/supplier-bills/:billId/match", async (request) => {
+    const params = request.params as BillParams;
+    return matchSupplierBill({ context: request.userContext, propertyId: params.propertyId, billId: params.billId, body: request.body, correlationId: createId("corr") });
+  });
+
   // ── Expenses / tickets (property-owned) ───────────────────────────────────
   app.get("/properties/:propertyId/payables/expenses", async (request) => {
     const { propertyId } = request.params as PropertyParams;
@@ -164,4 +176,7 @@ export function registerPayablesRoutes(app: FastifyInstance): void {
     const params = request.params as ExpenseParams;
     return reverseExpense({ context: request.userContext, propertyId: params.propertyId, expenseId: params.expenseId, body: request.body, correlationId: createId("corr") });
   });
+
+  // ── Recepciones de mercancía (Tanda T9 · T9-09; rutas en modules/documents/goods-receipts.routes.ts, filas en el partial de este módulo) ──
+  registerGoodsReceiptRoutes(app);
 }

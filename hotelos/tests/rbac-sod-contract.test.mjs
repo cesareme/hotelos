@@ -197,9 +197,9 @@ const TEMPLATES_24 = [
 // Catálogo y plantillas
 // ---------------------------------------------------------------------------
 
-describe("RBAC · SoD · catálogo de 250 claves (223 + 27 de §4.6)", () => {
-  it("PERMISSIONS tiene 250 claves, las mismas que el tipo PermissionKey, y admin.tenants.manage sigue siendo la única de plataforma", () => {
-    assert.equal(catalog.length, 250);
+describe("RBAC · SoD · catálogo de 254 claves (223 + 27 de §4.6 + 4 documents.* de la Tanda T9)", () => {
+  it("PERMISSIONS tiene 254 claves, las mismas que el tipo PermissionKey, y admin.tenants.manage sigue siendo la única de plataforma", () => {
+    assert.equal(catalog.length, 254);
     assert.deepEqual([...catalog].sort(), [...permissionKeyUnion].sort());
     assert.deepEqual(catalog.filter((key) => key.startsWith("admin.") || key.startsWith("platform.")), ["admin.tenants.manage"]);
     assert.match(permissionsSource, /export const PLATFORM_PERMISSION_KEYS: readonly PermissionKey\[\] = \["admin\.tenants\.manage"\];/);
@@ -310,8 +310,8 @@ describe("RBAC · SoD · 24 plantillas (§4.2)", () => {
     assert.ok(templates.general_manager.has("security.break_glass") && templates.general_manager.has("payments.refund_approve"));
   });
 
-  it("revocaciones v2 (v3 es aditiva): ROLE_TEMPLATE_REVOCATIONS[k] ∩ ROLE_PERMISSION_MAP[k] = ∅ y ⊆ PERMISSIONS; cifras de §6.5", () => {
-    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 3;/);
+  it("revocaciones v2 (v3 y v4 son aditivas): ROLE_TEMPLATE_REVOCATIONS[k] ∩ ROLE_PERMISSION_MAP[k] = ∅ y ⊆ PERMISSIONS; cifras de §6.5", () => {
+    assert.match(permissionsSource, /export const ROLE_TEMPLATE_VERSION = 4;/);
     for (const key of TEMPLATES_24) {
       const revoked = revocations[key];
       assert.ok(revoked instanceof Set, `${key} missing from ROLE_TEMPLATE_REVOCATIONS`);

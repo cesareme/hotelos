@@ -25,12 +25,17 @@ const PROD_BASE: NodeJS.ProcessEnv = {
   JWT_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef",
   ENCRYPTION_KEY: VALID_KEY,
   APP_BASE_URL: "https://app.example.com",
-  TRUST_PROXY: "1"
+  TRUST_PROXY: "1",
+  // Tanda T9 (corrector SEC-03): el almacén de documentos es obligatorio en producción y `inline` no se admite.
+  DOCUMENT_STORAGE_KIND: "disk",
+  DOCUMENT_STORAGE_DIR: tmpdir()
 };
 const DEV_BASE: NodeJS.ProcessEnv = {
   NODE_ENV: "development",
   DATABASE_URL: "postgresql://hotelos:hotelos@localhost:5432/hotelos",
-  JWT_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef"
+  JWT_SECRET: "0123456789abcdef0123456789abcdef0123456789abcdef",
+  // Tanda T9 (SEC-03): [PROD] como APP_BASE_URL — sin ella el desarrollo solo avisa; .env.example la lleva (inline).
+  DOCUMENT_STORAGE_KIND: "inline"
 };
 
 const prod = (extra: NodeJS.ProcessEnv = {}) => validateEnv({ ...PROD_BASE, ...extra }, { production: true });

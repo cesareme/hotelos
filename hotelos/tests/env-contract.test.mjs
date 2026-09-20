@@ -111,7 +111,10 @@ describe("Environment contract (Tanda 4 · DATA-04)", () => {
       "JWT_SECRET=0123456789abcdef0123456789abcdef0123456789",
       `ENCRYPTION_KEY=${Buffer.alloc(32, 7).toString("base64")}`,
       "APP_BASE_URL=https://app.example.com",
-      "TRUST_PROXY=1"
+      "TRUST_PROXY=1",
+      // Tanda T9 (SEC-03): el almacén de documentos es obligatorio en producción y `inline` no se admite.
+      "DOCUMENT_STORAGE_KIND=disk",
+      `DOCUMENT_STORAGE_DIR=${dir}`
     ];
     const write = (name, lines) => {
       const path = join(dir, name);
@@ -121,6 +124,14 @@ describe("Environment contract (Tanda 4 · DATA-04)", () => {
     const okFile = write("ok.env", base);
     const ok = runValidator([okFile, "--role", "production-native", "--json"]);
     assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+
+    // SEC-03: sin DOCUMENT_STORAGE_KIND → falta (obligatoria en producción); inline → rechazado.
+    const noStore = runValidator([write("no-store.env", base.filter((line) => !line.startsWith("DOCUMENT_STORAGE_"))), "--role", "production-native", "--json"]);
+    assert.equal(noStore.status, 1);
+    assert.match(JSON.parse(noStore.stdout).errors.join("\n"), /Falta DOCUMENT_STORAGE_KIND \(obligatoria con NODE_ENV=production\)/);
+    const inlineStore = runValidator([write("inline.env", [...base.filter((line) => !line.startsWith("DOCUMENT_STORAGE_")), "DOCUMENT_STORAGE_KIND=inline"]), "--role", "production-native", "--json"]);
+    assert.equal(inlineStore.status, 1);
+    assert.match(JSON.parse(inlineStore.stdout).errors.join("\n"), /DOCUMENT_STORAGE_KIND=inline no se admite en producción/);
 
     const demo = runValidator([write("demo.env", [...base, "HOTELOS_ALLOW_DEMO_AUTH=true"]), "--role", "production-native", "--json"]);
     assert.equal(demo.status, 1);
