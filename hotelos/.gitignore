@@ -67,3 +67,6 @@ deploy/certs/
 
 # Tanda UX-3: medida de pisos/mantenimiento p1…p6 (baseline copiada a docs/audits/ux-pisos/)
 apps/admin-web/e2e/measure/results-pisos.json
+
+# PDF del manual: se generan con docs/manual/tools/pdf.mjs y no se versionan
+docs/manual/pdf/
