@@ -68,4 +68,4 @@ Esta sección es para quien actualiza el manual.
 
 ## Manual en PDF
 
-Los PDF (uno por guía, las fichas rápidas, el plan de formación, la FAQ y este índice) se generan con `node docs/manual/tools/pdf.mjs` desde `hotelos/`; quedan en `docs/manual/pdf/` y no se versionan. Usa el navegador sin interfaz que ya trae el proyecto para las pruebas, sin dependencias nuevas; `--only 70-recepcion` genera solo una guía.
+Los PDF (uno por guía, las fichas rápidas, el plan de formación, la FAQ y este índice) se generan con `node docs/manual/tools/pdf.mjs` desde `hotelos/`; quedan en `docs/manual-pdf/` y no se versionan. Usa el navegador sin interfaz que ya trae el proyecto para las pruebas, sin dependencias nuevas; `--only 70-recepcion` genera solo una guía.

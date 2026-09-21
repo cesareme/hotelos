@@ -69,4 +69,4 @@ deploy/certs/
 apps/admin-web/e2e/measure/results-pisos.json
 
 # PDF del manual: se generan con docs/manual/tools/pdf.mjs y no se versionan
-docs/manual/pdf/
+docs/manual-pdf/
